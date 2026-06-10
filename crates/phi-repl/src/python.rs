@@ -1,0 +1,603 @@
+//! Python subprocess backend: embedded driver script, ndjson over stdio.
+
+use std::io::Write as _;
+use std::process::Stdio;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use async_trait::async_trait;
+use serde_json::{Value, json};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
+use tokio::process::{Child, ChildStdin, ChildStdout, Command};
+use tokio::sync::{Mutex, Semaphore};
+
+use crate::protocol::DriverFrame;
+use crate::{
+    AnswerState, EnvSetup, ReplEnv, ReplError, ReplResult, SubcallHandler, SubcallRequest,
+    SubcallResponse,
+};
+
+const DRIVER: &str = include_str!("driver.py");
+const SETUP_TIMEOUT: Duration = Duration::from_secs(30);
+const ANSWER_STATE_TIMEOUT: Duration = Duration::from_secs(10);
+/// Extra wait beyond the driver's soft timeout. The driver backgrounds
+/// long-running code and replies within the soft timeout on its own; the
+/// hard timeout only fires when the driver itself is wedged, and that path
+/// still kills and respawns the interpreter.
+const EXEC_GRACE: Duration = Duration::from_secs(15);
+const STDERR_CAP: usize = 64 * 1024;
+
+pub struct PythonRepl {
+    python: String,
+    handler: Arc<dyn SubcallHandler>,
+    setup: Option<EnvSetup>,
+    proc: Option<Proc>,
+    next_id: u64,
+}
+
+struct Proc {
+    child: Child,
+    stdin: Arc<Mutex<ChildStdin>>,
+    lines: Lines<BufReader<ChildStdout>>,
+    stderr: Arc<std::sync::Mutex<String>>,
+    semaphore: Arc<Semaphore>,
+    _driver: tempfile::TempPath,
+}
+
+impl PythonRepl {
+    pub fn new(handler: Arc<dyn SubcallHandler>) -> Self {
+        Self::with_python("python3", handler)
+    }
+
+    pub fn with_python(python: impl Into<String>, handler: Arc<dyn SubcallHandler>) -> Self {
+        Self {
+            python: python.into(),
+            handler,
+            setup: None,
+            proc: None,
+            next_id: 0,
+        }
+    }
+
+    async fn send(stdin: &Arc<Mutex<ChildStdin>>, frame: &Value) -> std::io::Result<()> {
+        let mut line = frame.to_string();
+        line.push('\n');
+        let mut guard = stdin.lock().await;
+        guard.write_all(line.as_bytes()).await?;
+        guard.flush().await
+    }
+
+    /// Read frames until `stop` matches, serving subcall frames in between.
+    async fn pump(
+        proc: &mut Proc,
+        handler: &Arc<dyn SubcallHandler>,
+        mut stop: impl FnMut(&DriverFrame) -> bool,
+    ) -> Result<DriverFrame, ReplError> {
+        loop {
+            let Some(line) = proc.lines.next_line().await? else {
+                let stderr = proc.stderr.lock().unwrap().clone();
+                return Err(ReplError::Protocol(format!(
+                    "driver exited unexpectedly: {}",
+                    stderr.trim()
+                )));
+            };
+            if line.trim().is_empty() {
+                continue;
+            }
+            let frame: DriverFrame = serde_json::from_str(&line)
+                .map_err(|e| ReplError::Protocol(format!("bad driver frame ({e}): {line}")))?;
+            if stop(&frame) {
+                return Ok(frame);
+            }
+            match frame {
+                DriverFrame::Subcall {
+                    id,
+                    kind,
+                    prompt,
+                    model,
+                    name,
+                    args,
+                    kwargs,
+                } => {
+                    let request = match kind.as_str() {
+                        "llm" => SubcallRequest::Llm {
+                            prompt: prompt.unwrap_or_default(),
+                            model,
+                        },
+                        "rlm" => SubcallRequest::Rlm {
+                            prompt: prompt.unwrap_or_default(),
+                            model,
+                        },
+                        "fn" => SubcallRequest::HostFn {
+                            name: name.unwrap_or_default(),
+                            args: args.unwrap_or_else(|| Value::Array(Vec::new())),
+                            kwargs: kwargs.unwrap_or_else(|| json!({})),
+                        },
+                        other => {
+                            let frame = json!({"type": "subcall_result", "id": id, "error": format!("unknown subcall kind: {other}")});
+                            Self::send(&proc.stdin, &frame).await?;
+                            continue;
+                        }
+                    };
+                    let handler = handler.clone();
+                    let stdin = proc.stdin.clone();
+                    let semaphore = proc.semaphore.clone();
+                    tokio::spawn(async move {
+                        let _permit = semaphore.acquire_owned().await;
+                        let frame = match handler.handle(request).await {
+                            Ok(SubcallResponse::Text(text)) => {
+                                json!({"type": "subcall_result", "id": id, "text": text})
+                            }
+                            Ok(SubcallResponse::Value(value)) => {
+                                json!({"type": "subcall_result", "id": id, "value": value})
+                            }
+                            Err(error) => {
+                                json!({"type": "subcall_result", "id": id, "error": error})
+                            }
+                        };
+                        let _ = Self::send(&stdin, &frame).await;
+                    });
+                }
+                DriverFrame::Fatal { error } => {
+                    return Err(ReplError::Protocol(format!("driver error: {error}")));
+                }
+                other => {
+                    return Err(ReplError::Protocol(format!(
+                        "unexpected driver frame: {other:?}"
+                    )));
+                }
+            }
+        }
+    }
+
+    async fn spawn(&mut self) -> Result<(), ReplError> {
+        let setup = self.setup.clone().ok_or(ReplError::NotStarted)?;
+
+        let mut driver = tempfile::Builder::new()
+            .prefix("phi-repl-driver-")
+            .suffix(".py")
+            .tempfile()?;
+        driver.write_all(DRIVER.as_bytes())?;
+        driver.flush()?;
+        let driver = driver.into_temp_path();
+
+        let mut child = Command::new(&self.python)
+            .arg(&driver)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()?;
+
+        let stdin = Arc::new(Mutex::new(child.stdin.take().expect("piped stdin")));
+        let stdout = child.stdout.take().expect("piped stdout");
+        let stderr_pipe = child.stderr.take().expect("piped stderr");
+        let stderr = Arc::new(std::sync::Mutex::new(String::new()));
+        {
+            let stderr = stderr.clone();
+            tokio::spawn(async move {
+                let mut lines = BufReader::new(stderr_pipe).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    let mut buf = stderr.lock().unwrap();
+                    if buf.len() < STDERR_CAP {
+                        buf.push_str(&line);
+                        buf.push('\n');
+                    }
+                }
+            });
+        }
+
+        let mut proc = Proc {
+            child,
+            stdin,
+            lines: BufReader::new(stdout).lines(),
+            stderr,
+            semaphore: Arc::new(Semaphore::new(setup.max_concurrent_subcalls.max(1))),
+            _driver: driver,
+        };
+
+        let frame = json!({
+            "type": "setup",
+            "context": setup.context,
+            "context_str": setup.context_str,
+            "setup_code": setup.setup_code,
+            "cwd": setup.cwd,
+            "host_fns": setup.host_fns,
+            "max_concurrent_subcalls": setup.max_concurrent_subcalls,
+            "max_output_chars": setup.max_output_chars,
+        });
+        Self::send(&proc.stdin, &frame).await?;
+
+        let handler = self.handler.clone();
+        let ready = tokio::time::timeout(
+            SETUP_TIMEOUT,
+            Self::pump(&mut proc, &handler, |f| {
+                matches!(f, DriverFrame::Ready { .. })
+            }),
+        )
+        .await
+        .map_err(|_| ReplError::Timeout(SETUP_TIMEOUT))??;
+        if let DriverFrame::Ready { error: Some(error) } = ready {
+            return Err(ReplError::Protocol(format!("setup failed: {error}")));
+        }
+
+        self.proc = Some(proc);
+        Ok(())
+    }
+
+    async fn kill_current(&mut self) {
+        if let Some(mut proc) = self.proc.take() {
+            let _ = proc.child.start_kill();
+            let _ = proc.child.wait().await;
+        }
+    }
+
+    /// Best-effort kill + fresh spawn with the stored setup.
+    async fn respawn(&mut self) {
+        self.kill_current().await;
+        if self.spawn().await.is_err() {
+            self.proc = None;
+        }
+    }
+}
+
+#[async_trait]
+impl ReplEnv for PythonRepl {
+    async fn start(&mut self, setup: EnvSetup) -> Result<(), ReplError> {
+        self.setup = Some(setup);
+        self.kill_current().await;
+        self.spawn().await
+    }
+
+    async fn exec(&mut self, code: &str, timeout: Duration) -> Result<ReplResult, ReplError> {
+        let start = Instant::now();
+        self.next_id += 1;
+        let id = self.next_id;
+        let handler = self.handler.clone();
+        let proc = self.proc.as_mut().ok_or(ReplError::NotStarted)?;
+
+        if let Err(e) = Self::send(
+            &proc.stdin,
+            &json!({"type": "exec", "id": id, "code": code, "timeout": timeout.as_secs_f64()}),
+        )
+        .await
+        {
+            let stderr = proc.stderr.lock().unwrap().clone();
+            self.respawn().await;
+            return Err(ReplError::Crashed(format!("{e}: {}", stderr.trim())));
+        }
+
+        let outcome = tokio::time::timeout(
+            timeout + EXEC_GRACE,
+            Self::pump(
+                proc,
+                &handler,
+                |f| matches!(f, DriverFrame::ExecResult { id: rid, .. } if *rid == id),
+            ),
+        )
+        .await;
+
+        match outcome {
+            Ok(Ok(DriverFrame::ExecResult {
+                stdout,
+                stderr,
+                vars,
+                final_answer,
+                truncated,
+                ..
+            })) => Ok(ReplResult {
+                stdout,
+                stderr,
+                vars,
+                final_answer,
+                duration: start.elapsed(),
+                truncated,
+            }),
+            Ok(Ok(_)) => unreachable!("pump stop predicate guarantees ExecResult"),
+            Ok(Err(e)) => {
+                self.respawn().await;
+                Err(match e {
+                    ReplError::Protocol(msg) => ReplError::Crashed(msg),
+                    other => other,
+                })
+            }
+            Err(_) => {
+                self.respawn().await;
+                Err(ReplError::Timeout(timeout))
+            }
+        }
+    }
+
+    async fn answer_state(&mut self) -> Result<AnswerState, ReplError> {
+        self.next_id += 1;
+        let id = self.next_id;
+        let handler = self.handler.clone();
+        let proc = self.proc.as_mut().ok_or(ReplError::NotStarted)?;
+        Self::send(&proc.stdin, &json!({"type": "answer_state", "id": id})).await?;
+        let frame = tokio::time::timeout(
+            ANSWER_STATE_TIMEOUT,
+            Self::pump(
+                proc,
+                &handler,
+                |f| matches!(f, DriverFrame::AnswerState { id: rid, .. } if *rid == id),
+            ),
+        )
+        .await
+        .map_err(|_| ReplError::Timeout(ANSWER_STATE_TIMEOUT))??;
+        match frame {
+            DriverFrame::AnswerState { content, ready, .. } => Ok(AnswerState { content, ready }),
+            _ => unreachable!("pump stop predicate guarantees AnswerState"),
+        }
+    }
+
+    async fn shutdown(&mut self) {
+        if let Some(mut proc) = self.proc.take() {
+            let _ = Self::send(&proc.stdin, &json!({"type": "shutdown"})).await;
+            if tokio::time::timeout(Duration::from_secs(2), proc.child.wait())
+                .await
+                .is_err()
+            {
+                let _ = proc.child.start_kill();
+                let _ = proc.child.wait().await;
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct TestHandler;
+
+    #[async_trait]
+    impl SubcallHandler for TestHandler {
+        async fn handle(&self, request: SubcallRequest) -> Result<SubcallResponse, String> {
+            match request {
+                SubcallRequest::Llm { prompt, .. } => {
+                    Ok(SubcallResponse::Text(format!("llm:{prompt}")))
+                }
+                SubcallRequest::Rlm { prompt, .. } => {
+                    Ok(SubcallResponse::Text(format!("rlm:{prompt}")))
+                }
+                SubcallRequest::HostFn { name, args, .. } => match name.as_str() {
+                    "add" => {
+                        let sum: i64 = args
+                            .as_array()
+                            .map(|a| a.iter().filter_map(Value::as_i64).sum())
+                            .unwrap_or(0);
+                        Ok(SubcallResponse::Value(json!(sum)))
+                    }
+                    "boom" => Err("host fn exploded".into()),
+                    other => Err(format!("unknown fn: {other}")),
+                },
+            }
+        }
+    }
+
+    async fn started(setup: EnvSetup) -> PythonRepl {
+        let mut repl = PythonRepl::new(Arc::new(TestHandler));
+        repl.start(setup).await.expect("start");
+        repl
+    }
+
+    const EXEC_TIMEOUT: Duration = Duration::from_secs(20);
+
+    #[tokio::test]
+    async fn persists_namespace_across_execs() {
+        let mut repl = started(EnvSetup::default()).await;
+        let r = repl.exec("x = 41", EXEC_TIMEOUT).await.unwrap();
+        assert_eq!(r.stdout, "");
+        assert!(r.vars.contains(&"x".to_owned()));
+        let r = repl.exec("print(x + 1)", EXEC_TIMEOUT).await.unwrap();
+        assert_eq!(r.stdout, "42\n");
+        repl.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn answer_protocol_round_trips() {
+        let mut repl = started(EnvSetup::default()).await;
+        let r = repl
+            .exec("answer['content'] = 'done'", EXEC_TIMEOUT)
+            .await
+            .unwrap();
+        assert_eq!(r.final_answer, None);
+        let state = repl.answer_state().await.unwrap();
+        assert!(!state.ready);
+        let r = repl
+            .exec("answer['ready'] = True", EXEC_TIMEOUT)
+            .await
+            .unwrap();
+        assert_eq!(r.final_answer.as_deref(), Some("done"));
+        let state = repl.answer_state().await.unwrap();
+        assert!(state.ready);
+        assert_eq!(state.content, "done");
+        repl.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn llm_query_round_trips() {
+        let mut repl = started(EnvSetup::default()).await;
+        let r = repl
+            .exec("print(llm_query('hi'))", EXEC_TIMEOUT)
+            .await
+            .unwrap();
+        assert_eq!(r.stdout, "llm:hi\n");
+        let r = repl
+            .exec("print(rlm_query('deep'))", EXEC_TIMEOUT)
+            .await
+            .unwrap();
+        assert_eq!(r.stdout, "rlm:deep\n");
+        repl.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn batched_queries_preserve_order() {
+        let mut repl = started(EnvSetup::default()).await;
+        let r = repl
+            .exec(
+                "print(llm_query_batched(['a', 'b', 'c', 'd', 'e']))",
+                EXEC_TIMEOUT,
+            )
+            .await
+            .unwrap();
+        assert_eq!(r.stdout, "['llm:a', 'llm:b', 'llm:c', 'llm:d', 'llm:e']\n");
+        repl.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn host_fns_round_trip_and_raise() {
+        let setup = EnvSetup {
+            host_fns: vec!["add".into(), "boom".into()],
+            ..EnvSetup::default()
+        };
+        let mut repl = started(setup).await;
+        let r = repl.exec("print(add(2, 3))", EXEC_TIMEOUT).await.unwrap();
+        assert_eq!(r.stdout, "5\n");
+        let r = repl.exec("boom()", EXEC_TIMEOUT).await.unwrap();
+        assert!(
+            r.stderr.contains("RuntimeError: host fn exploded"),
+            "{}",
+            r.stderr
+        );
+        repl.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn errors_surface_in_stderr_and_env_survives() {
+        let mut repl = started(EnvSetup::default()).await;
+        let r = repl.exec("missing_var", EXEC_TIMEOUT).await.unwrap();
+        assert!(r.stderr.contains("NameError"), "{}", r.stderr);
+        let r = repl.exec("print('ok')", EXEC_TIMEOUT).await.unwrap();
+        assert_eq!(r.stdout, "ok\n");
+        repl.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn soft_timeout_backgrounds_long_exec() {
+        let mut repl = started(EnvSetup::default()).await;
+        let r = repl
+            .exec(
+                "import time\nprint('starting')\ntime.sleep(30)",
+                Duration::from_millis(500),
+            )
+            .await
+            .unwrap();
+        assert!(r.stdout.contains("starting"), "{}", r.stdout);
+        assert!(r.stdout.contains("background job 1"), "{}", r.stdout);
+        // The interpreter survives: namespace intact, no respawn.
+        let r = repl
+            .exec("x = 7\nprint('alive')", EXEC_TIMEOUT)
+            .await
+            .unwrap();
+        assert_eq!(r.stdout, "alive\n");
+        let r = repl.exec("print(x)", EXEC_TIMEOUT).await.unwrap();
+        assert_eq!(r.stdout, "7\n");
+        let r = repl
+            .exec("print(job_status(1))", EXEC_TIMEOUT)
+            .await
+            .unwrap();
+        assert!(r.stdout.contains("running"), "{}", r.stdout);
+        repl.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn bg_jobs_run_and_write_back() {
+        let mut repl = started(EnvSetup::default()).await;
+        let r = repl
+            .exec(
+                "jid = bg(\"import time\\ntime.sleep(0.3)\\nx = 99\\nprint('marker')\")\nprint(jid > 0)",
+                EXEC_TIMEOUT,
+            )
+            .await
+            .unwrap();
+        assert_eq!(r.stdout, "True\n");
+
+        let mut status = String::new();
+        for _ in 0..50 {
+            let r = repl
+                .exec("print(job_status(jid))", EXEC_TIMEOUT)
+                .await
+                .unwrap();
+            status = r.stdout;
+            if status.contains("[done") {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(status.contains("[done"), "{status}");
+
+        let r = repl
+            .exec("print(job_output(jid))", EXEC_TIMEOUT)
+            .await
+            .unwrap();
+        assert!(r.stdout.contains("marker"), "{}", r.stdout);
+        // Variables assigned by the job land in the shared namespace.
+        let r = repl.exec("print(x)", EXEC_TIMEOUT).await.unwrap();
+        assert_eq!(r.stdout, "99\n");
+        repl.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn job_output_isolated_from_foreground() {
+        let mut repl = started(EnvSetup::default()).await;
+        let r = repl
+            .exec(
+                "jid = bg(\"import time\\ntime.sleep(0.5)\\nprint('from bg')\")\nprint('fg only')",
+                EXEC_TIMEOUT,
+            )
+            .await
+            .unwrap();
+        assert!(r.stdout.contains("fg only"), "{}", r.stdout);
+        assert!(!r.stdout.contains("from bg"), "{}", r.stdout);
+        repl.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn output_is_truncated() {
+        let setup = EnvSetup {
+            max_output_chars: 1000,
+            ..EnvSetup::default()
+        };
+        let mut repl = started(setup).await;
+        let r = repl.exec("print('a' * 5000)", EXEC_TIMEOUT).await.unwrap();
+        assert!(r.truncated);
+        assert!(r.stdout.starts_with(&"a".repeat(1000)));
+        assert!(r.stdout.contains("chars...]"), "{}", r.stdout);
+        repl.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn context_loads_and_scaffold_restores() {
+        let setup = EnvSetup {
+            context_str: Some("hello".into()),
+            ..EnvSetup::default()
+        };
+        let mut repl = started(setup).await;
+        let r = repl
+            .exec("print(len(context))", EXEC_TIMEOUT)
+            .await
+            .unwrap();
+        assert_eq!(r.stdout, "5\n");
+        repl.exec("context = 'clobbered'", EXEC_TIMEOUT)
+            .await
+            .unwrap();
+        let r = repl.exec("print(context)", EXEC_TIMEOUT).await.unwrap();
+        assert_eq!(r.stdout, "hello\n");
+        let r = repl.exec("print(SHOW_VARS())", EXEC_TIMEOUT).await.unwrap();
+        assert!(r.stdout.contains("context_0"), "{}", r.stdout);
+        repl.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn setup_code_runs_before_first_exec() {
+        let setup = EnvSetup {
+            setup_code: Some("base = 10".into()),
+            ..EnvSetup::default()
+        };
+        let mut repl = started(setup).await;
+        let r = repl.exec("print(base * 2)", EXEC_TIMEOUT).await.unwrap();
+        assert_eq!(r.stdout, "20\n");
+        repl.shutdown().await;
+    }
+}

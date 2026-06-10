@@ -1,0 +1,11 @@
+[package]
+name = "phi-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+phi-ext = { path = "../phi-ext" }
+serde.workspace = true
+

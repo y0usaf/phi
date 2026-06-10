@@ -1,0 +1,16 @@
+[package]
+name = "phi-builtins"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+phi-ext = { path = "../phi-ext" }
+
+[dev-dependencies]
+async-trait.workspace = true
+phi-repl.workspace = true
+tempfile.workspace = true
+tokio.workspace = true
+

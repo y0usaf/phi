@@ -1,0 +1,15 @@
+[package]
+name = "phi-tui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+crossterm.workspace = true
+pulldown-cmark.workspace = true
+syntect.workspace = true
+unicode-segmentation.workspace = true
+unicode-width.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
