@@ -274,6 +274,22 @@ impl<W: Write> Terminal<W> {
         self.out.flush()
     }
 
+    /// Wipe the whole screen (viewport + scrollback) and home the cursor,
+    /// resetting frame accounting so the next render repaints from a blank
+    /// terminal. Used when replacing the transcript wholesale (e.g. /resume),
+    /// so old sessions don't pile up in scrollback.
+    pub fn clear_all(&mut self) -> std::io::Result<()> {
+        // \x1b[2J clears the viewport, \x1b[3J drops saved scrollback,
+        // \x1b[H homes the cursor.
+        self.out.write_all(b"\x1b[2J\x1b[3J\x1b[H")?;
+        self.out.flush()?;
+        self.prev.clear();
+        self.cursor_row = 0;
+        self.cursor_col = 0;
+        self.cursor_shown = false;
+        Ok(())
+    }
+
     fn move_to_origin(&self, buf: &mut String) {
         buf.push('\r');
         if self.cursor_row > 0 {
@@ -296,6 +312,15 @@ fn move_rows(buf: &mut String, from: usize, to: usize) {
 /// Display width of `s`, ignoring ANSI escape sequences.
 pub fn visible_width(s: &str) -> usize {
     strip_ansi(s).width()
+}
+
+/// Paint `row` over the SGR background sequence `bg`, padding with spaces to
+/// `width` visible columns. Full resets inside the row re-open the
+/// background so it spans the whole padded row.
+pub fn fill_bg(row: &str, bg: &str, width: usize) -> String {
+    let pad = width.saturating_sub(visible_width(row));
+    let body = row.replace("\x1b[0m", &format!("\x1b[0m{bg}"));
+    format!("{bg}{body}{:pad$}\x1b[0m", "")
 }
 
 /// Remove ANSI escape sequences (CSI and OSC) from `s`.
@@ -338,34 +363,146 @@ pub fn strip_ansi(s: &str) -> String {
     out
 }
 
-/// Hard-wrap a (possibly ANSI-styled) line into rows of at most `width`
-/// display columns. Escape sequences carry zero width and are never split.
+/// Active terminal styling at a point in a styled string: SGR attributes
+/// since the last reset, plus any open OSC 8 hyperlink. Re-emitted at the
+/// start of wrapped continuation rows so styles survive the break even when
+/// callers interleave their own styled prefixes.
+#[derive(Clone, Default)]
+struct AnsiState {
+    sgr: Vec<String>,
+    link: Option<String>,
+}
+
+impl AnsiState {
+    fn apply(&mut self, esc: &str) {
+        if let Some(body) = esc.strip_prefix("\x1b[") {
+            if body.ends_with('m') {
+                if matches!(body, "m" | "0m") {
+                    self.sgr.clear();
+                } else {
+                    self.sgr.push(esc.to_owned());
+                }
+            }
+        } else if let Some(body) = esc.strip_prefix("\x1b]8;") {
+            let uri = body
+                .trim_end_matches('\x07')
+                .trim_end_matches("\x1b\\")
+                .split_once(';')
+                .map_or("", |(_, uri)| uri);
+            self.link = (!uri.is_empty()).then(|| esc.to_owned());
+        }
+    }
+
+    fn reopen(&self) -> String {
+        let mut s = self.link.clone().unwrap_or_default();
+        for code in &self.sgr {
+            s.push_str(code);
+        }
+        s
+    }
+}
+
+/// Row-building cursor for `wrap_ansi`.
+struct Wrapper {
+    width: usize,
+    rows: Vec<String>,
+    row: String,
+    col: usize,
+}
+
+impl Wrapper {
+    /// Emit one committed word (escapes included), preceded by its pending
+    /// spaces; wraps before the word when it would overflow, mid-word when
+    /// it cannot fit on a row of its own.
+    fn place(&mut self, word: &str, word_w: usize, spaces: usize, word_state: &AnsiState) {
+        if self.col > 0 && self.col + spaces + word_w > self.width {
+            self.break_row(word_state);
+        } else {
+            for _ in 0..spaces {
+                self.row.push(' ');
+            }
+            self.col += spaces;
+        }
+        let mut local = word_state.clone();
+        let mut rest = word;
+        while !rest.is_empty() {
+            if let Some(stripped) = rest.strip_prefix('\x1b') {
+                let len = escape_len(stripped) + 1;
+                self.row.push_str(&rest[..len]);
+                local.apply(&rest[..len]);
+                rest = &rest[len..];
+                continue;
+            }
+            let grapheme = rest.graphemes(true).next().unwrap();
+            let gw = grapheme.width();
+            if self.col + gw > self.width && self.col > 0 {
+                self.break_row(&local);
+            }
+            self.row.push_str(grapheme);
+            self.col += gw;
+            rest = &rest[grapheme.len()..];
+        }
+    }
+
+    fn break_row(&mut self, state: &AnsiState) {
+        self.rows.push(std::mem::take(&mut self.row));
+        self.row.push_str(&state.reopen());
+        self.col = 0;
+    }
+}
+
+/// Wrap a (possibly ANSI-styled) line into rows of at most `width` display
+/// columns. Breaks at word boundaries when possible, splitting per grapheme
+/// only for words wider than a row; the whitespace at each break is dropped
+/// (leading indentation is preserved) and active SGR/hyperlink state is
+/// re-opened on every continuation row. Escape sequences carry zero width.
 pub fn wrap_ansi(line: &str, width: usize) -> Vec<String> {
-    let width = width.max(1);
-    let mut rows = Vec::new();
-    let mut row = String::new();
-    let mut col = 0;
+    let mut w = Wrapper {
+        width: width.max(1),
+        rows: Vec::new(),
+        row: String::new(),
+        col: 0,
+    };
+
+    let mut state = AnsiState::default();
+    let mut word_state = AnsiState::default();
+    let mut word = String::new();
+    let mut word_w = 0;
+    let mut spaces = 0;
 
     let mut rest = line;
     while !rest.is_empty() {
         if let Some(stripped) = rest.strip_prefix('\x1b') {
+            // Escapes attach to the upcoming word so they are never dropped
+            // with the whitespace at a wrap point.
             let len = escape_len(stripped) + 1;
-            row.push_str(&rest[..len]);
+            word.push_str(&rest[..len]);
+            state.apply(&rest[..len]);
             rest = &rest[len..];
             continue;
         }
-        let grapheme = rest.graphemes(true).next().unwrap();
-        let gw = grapheme.width();
-        if col + gw > width && col > 0 {
-            rows.push(std::mem::take(&mut row));
-            col = 0;
+        if let Some(r) = rest.strip_prefix(' ') {
+            if !word.is_empty() {
+                w.place(&word, word_w, spaces, &word_state);
+                word.clear();
+                word_w = 0;
+                spaces = 0;
+            }
+            spaces += 1;
+            word_state = state.clone();
+            rest = r;
+            continue;
         }
-        row.push_str(grapheme);
-        col += gw;
+        let grapheme = rest.graphemes(true).next().unwrap();
+        word.push_str(grapheme);
+        word_w += grapheme.width();
         rest = &rest[grapheme.len()..];
     }
-    rows.push(row);
-    rows
+    if !word.is_empty() {
+        w.place(&word, word_w, spaces, &word_state);
+    }
+    w.rows.push(w.row);
+    w.rows
 }
 
 /// Byte length of an escape sequence body (after the ESC byte).
@@ -424,6 +561,38 @@ mod tests {
     fn wrap_ansi_keeps_escapes_zero_width() {
         let rows = wrap_ansi("\x1b[1mabc\x1b[0mdef", 3);
         assert_eq!(rows, vec!["\x1b[1mabc\x1b[0m", "def"]);
+    }
+
+    #[test]
+    fn wrap_ansi_breaks_at_word_boundaries() {
+        assert_eq!(wrap_ansi("hello world", 8), vec!["hello", "world"]);
+        assert_eq!(
+            wrap_ansi("the quick brown fox", 10),
+            vec!["the quick", "brown fox"]
+        );
+        // Leading indentation is preserved; the wrap space is dropped.
+        assert_eq!(wrap_ansi("  foo barbaz", 7), vec!["  foo", "barbaz"]);
+        // Words wider than a row still split per grapheme.
+        assert_eq!(wrap_ansi("ab cdefgh", 4), vec!["ab", "cdef", "gh"]);
+    }
+
+    #[test]
+    fn wrap_ansi_reopens_styles_across_rows() {
+        let rows = wrap_ansi("\x1b[1mhello world\x1b[0m", 8);
+        assert_eq!(rows, vec!["\x1b[1mhello", "\x1b[1mworld\x1b[0m"]);
+        // A reset before the break is not re-opened.
+        let rows = wrap_ansi("\x1b[2mdim\x1b[0m plain word", 9);
+        assert_eq!(rows, vec!["\x1b[2mdim\x1b[0m plain", "word"]);
+        // Open hyperlinks are re-established on continuation rows.
+        let link = "\x1b]8;;http://x\x07aaaa bbbb\x1b]8;;\x07";
+        let rows = wrap_ansi(link, 5);
+        assert_eq!(
+            rows,
+            vec![
+                "\x1b]8;;http://x\x07aaaa",
+                "\x1b]8;;http://x\x07bbbb\x1b]8;;\x07"
+            ]
+        );
     }
 
     #[test]

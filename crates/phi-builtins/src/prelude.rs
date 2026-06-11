@@ -22,36 +22,44 @@ For long-running work (builds, test suites, servers) prefer a background job, e.
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
     use async_trait::async_trait;
     use phi_repl::{
-        EnvSetup, PythonRepl, ReplEnv, SubcallHandler, SubcallRequest, SubcallResponse,
+        EnvSetup, PythonRepl, ReplEnv, SubcallHandler, SubcallRequest, SubcallResponse, ToolEvent,
     };
 
     use super::CODING_PRELUDE;
 
-    struct NoSubcalls;
+    #[derive(Default)]
+    struct NoSubcalls {
+        tool_events: Mutex<Vec<ToolEvent>>,
+    }
 
     #[async_trait]
     impl SubcallHandler for NoSubcalls {
         async fn handle(&self, _request: SubcallRequest) -> Result<SubcallResponse, String> {
             Err("no subcalls in prelude tests".to_owned())
         }
+
+        fn notify_tool(&self, event: ToolEvent) {
+            self.tool_events.lock().unwrap().push(event);
+        }
     }
 
     const EXEC_TIMEOUT: Duration = Duration::from_secs(20);
 
-    async fn started() -> PythonRepl {
-        let mut repl = PythonRepl::new(Arc::new(NoSubcalls));
+    async fn started() -> (PythonRepl, Arc<NoSubcalls>) {
+        let handler = Arc::new(NoSubcalls::default());
+        let mut repl = PythonRepl::new(handler.clone());
         repl.start(EnvSetup {
             setup_code: Some(CODING_PRELUDE.to_owned()),
             ..EnvSetup::default()
         })
         .await
         .expect("start");
-        repl
+        (repl, handler)
     }
 
     #[tokio::test]
@@ -59,7 +67,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("sub").join("note.txt");
         let path = path.to_str().unwrap();
-        let mut repl = started().await;
+        let (mut repl, _events) = started().await;
 
         let r = repl
             .exec(
@@ -98,7 +106,7 @@ mod tests {
 
     #[tokio::test]
     async fn bash_runs_commands() {
-        let mut repl = started().await;
+        let (mut repl, _events) = started().await;
         let r = repl
             .exec("print(bash('echo hi; exit 3'))", EXEC_TIMEOUT)
             .await
@@ -114,7 +122,7 @@ mod tests {
         std::fs::write(dir.path().join("a.txt"), "needle here\n").unwrap();
         std::fs::write(dir.path().join("b.log"), "nothing\n").unwrap();
         let root = dir.path().to_str().unwrap();
-        let mut repl = started().await;
+        let (mut repl, _events) = started().await;
 
         let r = repl
             .exec(
@@ -146,7 +154,7 @@ mod tests {
     async fn cwd_setting_controls_working_directory() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("marker.txt"), "here\n").unwrap();
-        let mut repl = PythonRepl::new(Arc::new(NoSubcalls));
+        let mut repl = PythonRepl::new(Arc::new(NoSubcalls::default()));
         repl.start(EnvSetup {
             setup_code: Some(CODING_PRELUDE.to_owned()),
             cwd: Some(dir.path().to_str().unwrap().to_owned()),
@@ -165,8 +173,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn tools_emit_start_and_end_events() {
+        let (mut repl, handler) = started().await;
+        repl.exec("print(bash('echo hi'))", EXEC_TIMEOUT)
+            .await
+            .unwrap();
+        repl.exec("print(edit_file('/nonexistent', 'a', 'b'))", EXEC_TIMEOUT)
+            .await
+            .unwrap();
+        let events = handler.tool_events.lock().unwrap();
+        assert_eq!(events.len(), 4, "events: {events:?}");
+        match &events[0] {
+            ToolEvent::Start { name, args, .. } => {
+                assert_eq!(name, "bash");
+                assert_eq!(args["cmd"], "echo hi");
+            }
+            other => panic!("expected bash start, got {other:?}"),
+        }
+        match &events[1] {
+            ToolEvent::End {
+                name,
+                result,
+                error,
+                ..
+            } => {
+                assert_eq!(name, "bash");
+                assert!(result.contains("hi"), "result: {result}");
+                assert!(error.is_none());
+            }
+            other => panic!("expected bash end, got {other:?}"),
+        }
+        match &events[3] {
+            ToolEvent::End { name, error, .. } => {
+                assert_eq!(name, "edit_file");
+                assert!(error.is_some(), "failures mark the end event: {events:?}");
+            }
+            other => panic!("expected edit_file end, got {other:?}"),
+        }
+        repl.shutdown().await;
+    }
+
+    #[tokio::test]
     async fn prelude_internals_hidden_from_vars() {
-        let mut repl = started().await;
+        let (mut repl, _events) = started().await;
         let r = repl.exec("x = 1", EXEC_TIMEOUT).await.unwrap();
         assert!(r.vars.contains(&"x".to_owned()));
         assert!(

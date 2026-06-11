@@ -20,6 +20,10 @@ pub struct Completion {
 /// accumulated so far).
 pub type DeltaSink = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 
+/// Receives streamed provider-thinking chunks during a completion.
+/// Observational only: thinking never affects generation control flow.
+pub type ThinkingSink = Arc<dyn Fn(&str) + Send + Sync>;
+
 /// Implemented by plain provider-backed models (phi-runtime wires phi-ai in)
 /// and by `Rlm` itself — recursion is just trait recursion.
 #[async_trait]
@@ -33,8 +37,9 @@ pub trait LanguageModel: Send + Sync {
         &self,
         prompt: &[ChatMessage],
         on_delta: DeltaSink,
+        on_thinking: Option<ThinkingSink>,
     ) -> Result<Completion, String> {
-        let _ = on_delta;
+        let _ = (on_delta, on_thinking);
         self.complete(prompt).await
     }
 }
@@ -78,10 +83,16 @@ impl LmHandler {
         &self,
         prompt: &[ChatMessage],
         on_delta: Option<DeltaSink>,
+        on_thinking: Option<ThinkingSink>,
     ) -> Result<Completion, String> {
-        let completion = match on_delta {
-            Some(sink) => self.root.complete_streaming(prompt, sink).await?,
-            None => self.root.complete(prompt).await?,
+        let completion = match (on_delta, on_thinking) {
+            (Some(sink), thinking) => self.root.complete_streaming(prompt, sink, thinking).await?,
+            (None, Some(thinking)) => {
+                self.root
+                    .complete_streaming(prompt, Arc::new(|_: &str| true), Some(thinking))
+                    .await?
+            }
+            (None, None) => self.root.complete(prompt).await?,
         };
         self.track(&completion.usage);
         Ok(completion)

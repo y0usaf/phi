@@ -1,4 +1,4 @@
-//! Persistent chat sessions (port of pi's session-manager): append-only
+//! Persistent sessions (port of pi's session-manager): append-only
 //! JSONL files where message entries carry id/parent_id, forming a branch
 //! tree. Files live under the phi data dir, in a per-cwd folder. Files are
 //! created lazily on the first message, so empty sessions leave no trace.

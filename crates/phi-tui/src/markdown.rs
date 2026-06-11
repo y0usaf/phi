@@ -85,6 +85,14 @@ pub fn render_markdown(text: &str, width: usize) -> Vec<String> {
     r.lines
 }
 
+struct ListLevel {
+    /// Next ordered-list number, or None for bullets.
+    next: Option<u64>,
+    /// Display width of the current item's marker: wrapped continuations
+    /// (and nested lists) hang under the item text, not the marker.
+    hang: usize,
+}
+
 struct Renderer {
     width: usize,
     lines: Vec<String>,
@@ -92,8 +100,7 @@ struct Renderer {
     col: usize,
     indent: String,
     style: Style,
-    /// Per-level: next ordered-list number, or None for bullets.
-    list_stack: Vec<Option<u64>>,
+    list_stack: Vec<ListLevel>,
     quote_depth: usize,
     in_code_block: bool,
     /// Language of the current fenced code block (drives highlighting and
@@ -179,20 +186,33 @@ impl Renderer {
                 } else {
                     self.flush_line();
                 }
-                self.list_stack.push(start);
+                self.list_stack.push(ListLevel {
+                    next: start,
+                    hang: 0,
+                });
                 self.update_indent();
             }
             Tag::Item => {
                 self.flush_line();
                 let marker = match self.list_stack.last_mut() {
-                    Some(Some(n)) => {
+                    Some(ListLevel { next: Some(n), .. }) => {
                         let m = format!("{n}. ");
                         *n += 1;
                         m
                     }
                     _ => "• ".to_owned(),
                 };
+                // The marker line starts at the enclosing indent; wrapped
+                // continuations hang under the item text.
+                if let Some(level) = self.list_stack.last_mut() {
+                    level.hang = 0;
+                }
+                self.update_indent();
                 self.push_words(&marker);
+                if let Some(level) = self.list_stack.last_mut() {
+                    level.hang = marker.width();
+                }
+                self.update_indent();
             }
             Tag::Emphasis => self.style.italic = true,
             Tag::Strong => self.style.bold = true,
@@ -251,11 +271,8 @@ impl Renderer {
     }
 
     fn update_indent(&mut self) {
-        let mut indent = "  ".repeat(self.list_stack.len().saturating_sub(1));
-        if !self.list_stack.is_empty() {
-            indent.push_str("  ");
-        }
-        let mut prefix = format!("{}{}", "│ ".repeat(self.quote_depth), indent);
+        let hang: usize = self.list_stack.iter().map(|l| l.hang).sum();
+        let mut prefix = format!("{}{}", "│ ".repeat(self.quote_depth), " ".repeat(hang));
         if self.quote_depth > 0 {
             prefix = format!("{DIM}{prefix}");
         }
@@ -427,6 +444,25 @@ mod tests {
         );
         assert!(
             p.iter().any(|l| l.trim_start().starts_with("2. y")),
+            "{p:?}"
+        );
+    }
+
+    #[test]
+    fn wrapped_list_items_hang_under_text() {
+        let p = plain(&render_markdown(
+            "- alpha beta gamma delta epsilon\n- short",
+            20,
+        ));
+        assert!(p[0].starts_with("• alpha"), "{p:?}");
+        // Continuations align under the item text, past the marker.
+        assert!(p[1].starts_with("  ") && !p[1].starts_with("   "), "{p:?}");
+        assert!(p.iter().any(|l| l.starts_with("• short")), "{p:?}");
+
+        let p = plain(&render_markdown("1. alpha beta gamma delta epsilon", 20));
+        assert!(p[0].starts_with("1. alpha"), "{p:?}");
+        assert!(
+            p[1].starts_with("   ") && !p[1].starts_with("    "),
             "{p:?}"
         );
     }

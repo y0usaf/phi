@@ -104,11 +104,33 @@ pub enum SubcallResponse {
     Value(Value),
 }
 
+/// Notification that a tool function ran inside the environment (emitted by
+/// the prelude around `bash`, `edit_file`, ... calls). Purely informational:
+/// the tool already executed in-env; no response flows back.
+#[derive(Clone, Debug)]
+pub enum ToolEvent {
+    Start {
+        call_id: u64,
+        name: String,
+        args: Value,
+    },
+    End {
+        call_id: u64,
+        name: String,
+        result: String,
+        error: Option<String>,
+        duration: Duration,
+    },
+}
+
 /// Serves subcalls while an `exec` is in flight. Errors surface in the REPL
 /// as `"Error: ..."` strings (queries) or raised `RuntimeError` (host fns).
 #[async_trait]
 pub trait SubcallHandler: Send + Sync {
     async fn handle(&self, request: SubcallRequest) -> Result<SubcallResponse, String>;
+
+    /// Observe in-env tool activity. Default: ignored.
+    fn notify_tool(&self, _event: ToolEvent) {}
 }
 
 #[async_trait]

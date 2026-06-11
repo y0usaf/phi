@@ -1,6 +1,7 @@
-mod chat;
+mod config;
 mod files;
 mod session;
+mod tui;
 
 use std::io::{IsTerminal, Read};
 use std::sync::Arc;
@@ -58,12 +59,20 @@ async fn main() -> Result<()> {
 }
 
 async fn run(args: Args, storage: Arc<AuthStorage>, registry: Arc<Registry>) -> Result<()> {
-    let root_model = find_model(&registry, &args.model)?;
-    let sub_model = match &args.sub_model {
+    let cwd = std::env::current_dir().context("could not determine working directory")?;
+    let prompt = args.prompt_text();
+    let tui_mode = prompt.is_none()
+        && args.context.is_none()
+        && std::io::stdin().is_terminal()
+        && std::io::stdout().is_terminal();
+    let settings = config::Settings::resolve(&args, config::Config::load(&cwd)?, tui_mode);
+
+    let root_model = find_model(&registry, &settings.model)?;
+    let sub_model = match &settings.sub_model {
         Some(query) => find_model(&registry, query)?,
         None => root_model.clone(),
     };
-    let thinking: ThinkingLevel = args
+    let thinking: ThinkingLevel = settings
         .thinking
         .parse()
         .map_err(|e: String| anyhow::anyhow!(e))?;
@@ -74,20 +83,14 @@ async fn run(args: Args, storage: Arc<AuthStorage>, registry: Arc<Registry>) -> 
             storage.set_runtime_api_key(&sub_model.provider, key);
         }
     }
-    let prompt = args.prompt_text();
-    let chat_mode = prompt.is_none()
-        && args.context.is_none()
-        && std::io::stdin().is_terminal()
-        && std::io::stdout().is_terminal();
-
     let mut missing_credentials = Vec::new();
     for provider in [&root_model.provider, &sub_model.provider] {
         if !missing_credentials.contains(provider) && storage.resolve(provider).await?.is_none() {
             missing_credentials.push(provider.clone());
         }
     }
-    // In chat mode missing credentials are handled in-TUI via /login.
-    if !chat_mode && let Some(provider) = missing_credentials.first() {
+    // In TUI mode missing credentials are handled in-TUI via /login.
+    if !tui_mode && let Some(provider) = missing_credentials.first() {
         bail!(
             "no credentials for provider '{provider}': run `phi --login {provider}`, \
              pass --api-key, or set {}_API_KEY",
@@ -96,13 +99,13 @@ async fn run(args: Args, storage: Arc<AuthStorage>, registry: Arc<Registry>) -> 
     }
 
     let mut config = RlmConfig {
-        max_depth: args.max_depth,
-        max_iterations: args.max_iterations,
-        max_budget: args.budget,
-        max_timeout: args.timeout.map(Duration::from_secs),
-        max_tokens: args.max_tokens,
-        max_errors: args.max_errors,
-        max_concurrent_subcalls: args.max_concurrent_subcalls,
+        max_depth: settings.max_depth,
+        max_iterations: settings.max_iterations,
+        max_budget: settings.budget,
+        max_timeout: settings.timeout.map(Duration::from_secs),
+        max_tokens: settings.max_tokens,
+        max_errors: settings.max_errors,
+        max_concurrent_subcalls: settings.max_concurrent_subcalls,
         ..RlmConfig::default()
     };
 
@@ -119,11 +122,10 @@ async fn run(args: Args, storage: Arc<AuthStorage>, registry: Arc<Registry>) -> 
         ThinkingLevel::Off,
     ));
     let envs = Arc::new(PythonEnvFactory {
-        python: args.python.clone(),
+        python: settings.python.clone(),
     });
 
-    if chat_mode {
-        let cwd = std::env::current_dir().context("could not determine working directory")?;
+    if tui_mode {
         config.setup_code = Some(CODING_PRELUDE.to_owned());
         config.tools_section = Some(coding_tools_section());
         config.cwd = Some(cwd.display().to_string());
@@ -136,13 +138,13 @@ async fn run(args: Args, storage: Arc<AuthStorage>, registry: Arc<Registry>) -> 
         let store = session::SessionStore::new(&cwd)?;
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let rlm = Rlm::new(config, root.clone(), sub.clone(), envs).with_events(tx);
-        return chat::run(chat::ChatSetup {
+        return tui::run(tui::TuiSetup {
             rlm,
             payload,
             events: rx,
             missing_credentials,
-            ui: chat::UiSetup {
-                max_iterations: args.max_iterations,
+            ui: tui::UiSetup {
+                max_iterations: settings.max_iterations,
                 storage,
                 registry,
                 root_lm: root,
@@ -157,7 +159,9 @@ async fn run(args: Args, storage: Arc<AuthStorage>, registry: Arc<Registry>) -> 
         Some(source) => (ContextPayload::Str(read_context(source)?), prompt.clone()),
         None => match prompt.clone() {
             Some(text) => (ContextPayload::Str(text), None),
-            None => bail!("provide a prompt and/or --context (or run on a TTY to chat)"),
+            None => {
+                bail!("provide a prompt and/or --context (or run on a TTY for the interactive TUI)")
+            }
         },
     };
 
@@ -169,7 +173,7 @@ async fn run(args: Args, storage: Arc<AuthStorage>, registry: Arc<Registry>) -> 
         printer = Some(tokio::spawn(print_events(
             rx,
             args.verbose,
-            args.max_iterations,
+            settings.max_iterations,
         )));
     }
 
@@ -309,6 +313,24 @@ async fn print_events(
                 Some(error) => eprintln!("  [subcall {model} failed: {error}]"),
                 None => eprintln!("  [subcall {model} done {:.1}s]", duration.as_secs_f64()),
             },
+            RlmEvent::ToolStart {
+                depth, name, args, ..
+            } => {
+                eprintln!(
+                    "  [{name}{}] {}",
+                    depth_tag(depth),
+                    tool_args_preview(&args)
+                );
+            }
+            RlmEvent::ToolEnd {
+                name,
+                error,
+                duration,
+                ..
+            } => match error {
+                Some(error) => eprintln!("  [{name} failed: {}]", preview(&error, 4, verbose)),
+                None => eprintln!("  [{name} done {:.1}s]", duration.as_secs_f64()),
+            },
             RlmEvent::AnswerSubmitted { .. } => eprintln!("  [answer submitted]"),
             RlmEvent::LimitHit { limit, detail, .. } => {
                 eprintln!("  [limit {}] {detail}", limit_name(limit));
@@ -317,9 +339,30 @@ async fn print_events(
             | RlmEvent::RunEnd { .. }
             | RlmEvent::IterationEnd { .. }
             | RlmEvent::RootDelta { .. }
+            | RlmEvent::RootThinkingDelta { .. }
             | RlmEvent::RootText { .. } => {}
         }
     }
+}
+
+/// Compact one-line `key=value` summary of a tool call's arguments.
+fn tool_args_preview(args: &serde_json::Value) -> String {
+    let Some(map) = args.as_object() else {
+        return String::new();
+    };
+    map.iter()
+        .map(|(key, value)| {
+            let text = match value {
+                serde_json::Value::String(s) => s.clone(),
+                other => other.to_string(),
+            };
+            let flat = text.replace('\n', "\\n");
+            let short: String = flat.chars().take(60).collect();
+            let ellipsis = if short.len() < flat.len() { "…" } else { "" };
+            format!("{key}={short}{ellipsis}")
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn depth_tag(depth: usize) -> String {

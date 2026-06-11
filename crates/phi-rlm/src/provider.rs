@@ -9,7 +9,7 @@ use phi_ai::{
     Registry, StreamOptions, ThinkingLevel, UserMessage,
 };
 
-use crate::handler::{Completion, DeltaSink, LanguageModel};
+use crate::handler::{Completion, DeltaSink, LanguageModel, ThinkingSink};
 use crate::{ChatMessage, Role};
 
 pub struct ProviderLm {
@@ -88,7 +88,7 @@ impl LanguageModel for ProviderLm {
     }
 
     async fn complete(&self, prompt: &[ChatMessage]) -> Result<Completion, String> {
-        self.complete_streaming(prompt, std::sync::Arc::new(|_: &str| true))
+        self.complete_streaming(prompt, std::sync::Arc::new(|_: &str| true), None)
             .await
     }
 
@@ -96,6 +96,7 @@ impl LanguageModel for ProviderLm {
         &self,
         prompt: &[ChatMessage],
         on_delta: DeltaSink,
+        on_thinking: Option<ThinkingSink>,
     ) -> Result<Completion, String> {
         let model = self.model();
         let auth = self
@@ -128,6 +129,11 @@ impl LanguageModel for ProviderLm {
                             text: accumulated,
                             usage: phi_ai::Usage::default(),
                         });
+                    }
+                }
+                AssistantEvent::ThinkingDelta { delta, .. } => {
+                    if let Some(sink) = &on_thinking {
+                        sink(&delta);
                     }
                 }
                 AssistantEvent::Done { message } | AssistantEvent::Error { message } => {

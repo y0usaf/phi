@@ -4,7 +4,7 @@ Frames from host: setup, exec {id, code, timeout?}, subcall_result
 {id, text|value|error}, answer_state {id}, shutdown.
 Frames to host: ready {error?}, exec_result {id, stdout, stderr, vars,
 final_answer, truncated}, subcall {id, kind, ...}, answer_state {id, content,
-ready}, fatal {error}.
+ready}, tool_event {phase, name, call_id, ...}, fatal {error}.
 
 The main thread reads stdin and dispatches; setup/exec run on a single worker
 thread so subcall round-trips (which block the worker) can still be served.
@@ -87,6 +87,13 @@ def _subcall(payload):
     event.wait()
     with _pending_lock:
         return _pending.pop(sid)[1]
+
+
+def _tool_event(phase, name, call_id, fields=None):
+    """Fire-and-forget notification that a prelude tool started/finished.
+    The host forwards these to its event stream; no reply is expected."""
+    frame = dict(fields or {}, type="tool_event", phase=phase, name=name, call_id=call_id)
+    _send(frame)
 
 
 def _make_host_fn(name):
@@ -305,6 +312,7 @@ class Env:
             "jobs": self._jobs_fn,
             "job_status": self._job_status,
             "job_output": self._job_output,
+            "__phi_tool_event__": _tool_event,
         }
         self.locals = {"answer": _AnswerDict(self._capture_answer)}
         for name in setup.get("host_fns") or []:

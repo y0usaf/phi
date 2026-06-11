@@ -1,4 +1,4 @@
-//! Interactive chat: an inline TUI (phi-style scrollback + live region)
+//! Interactive TUI: an inline interface (phi-style scrollback + live region)
 //! driving a persistent `RlmSession` as a coding agent. Auth is handled
 //! in-TUI via /login, mirroring ref/phi: the OAuth flow runs in the
 //! background, the URL lands in scrollback, and the editor doubles as the
@@ -14,12 +14,12 @@ use phi_ai::{
 };
 use phi_rlm::{
     ContextPayload, ProviderLm, ReplResult, Rlm, RlmCompletion, RlmEvent, StopCause,
-    split_at_first_block, split_prose,
+    could_open_block, find_code_blocks, split_at_first_block, split_prose,
 };
 use phi_tui::crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers};
 use phi_tui::{
     Editor, EditorAction, LiveCursor, RawModeGuard, Selector, SelectorItem, SelectorOutcome,
-    Spinner, Terminal, fuzzy_filter, render_markdown, wrap_ansi,
+    Spinner, Terminal, fill_bg, fuzzy_filter, render_markdown, wrap_ansi,
 };
 
 use crate::files::{self, FileSearcher};
@@ -33,15 +33,36 @@ const DIM: &str = "\x1b[2m";
 const CYAN: &str = "\x1b[36m";
 const YELLOW: &str = "\x1b[33m";
 
+// pi's dark-theme container backgrounds (theme/dark.json). Repl blocks share
+// the user-message gray so the green/red tool tints nested inside them stand
+// out; only a failed exec recolors the repl container itself (red).
+const USER_BG: &str = "\x1b[48;2;52;53;65m"; // userMessageBg #343541
+const REPL_BG: &str = USER_BG;
+const REPL_ERROR_BG: &str = "\x1b[48;2;70;40;45m"; // #46282d
+const TOOL_SUCCESS_BG: &str = "\x1b[48;2;40;50;40m"; // toolSuccessBg #283228
+const TOOL_ERROR_BG: &str = "\x1b[48;2;60;40;40m"; // toolErrorBg #3c2828
+
 const CODE_PREVIEW_LINES: usize = 8;
 const OUTPUT_PREVIEW_LINES: usize = 5;
 
+/// Byte offset of the first position in `text` that is, or could still grow
+/// into, a ```repl fence. The engine's block regex matches mid-line (the
+/// model sometimes glues ```repl to the end of a sentence), so this scans
+/// raw byte positions rather than line starts.
+fn first_block_start(text: &str) -> usize {
+    text.char_indices()
+        .filter(|&(_, c)| c == '`')
+        .map(|(i, _)| i)
+        .find(|&i| could_open_block(&text[i..]))
+        .unwrap_or(text.len())
+}
+
 /// Byte length of the prefix of `text` that is safe to flush into scrollback
 /// while streaming: it ends at a completed blank line, leaves no code fence
-/// open, and stops before the first complete ```repl block (which
-/// `CodeExecStart` will consume from the stream).
+/// open, and stops before anything that is or could become a ```repl block
+/// (which `CodeExecStart` will consume from the stream).
 fn stable_prefix(text: &str) -> usize {
-    let limit = split_at_first_block(text).map_or(text.len(), |(prose, _)| prose.len());
+    let limit = first_block_start(text);
     let mut fence_open = false;
     let mut boundary = 0;
     let mut pos = 0;
@@ -59,6 +80,33 @@ fn stable_prefix(text: &str) -> usize {
     boundary
 }
 
+/// Body of the first live ```repl block once its header newline has landed.
+/// Partial headers still return `None`; a closing fence, if already present,
+/// is excluded so the body can be previewed before `CodeExecStart` arrives.
+fn live_block_body(text: &str) -> Option<&str> {
+    let start = first_block_start(text);
+    let tail = &text[start..];
+    let rest = tail.strip_prefix("```repl")?;
+    let mut header_len = "```repl".len();
+    let mut saw_newline = false;
+    for (i, c) in rest.char_indices() {
+        match c {
+            ' ' | '\t' => continue,
+            '\n' => {
+                header_len += i + 1;
+                saw_newline = true;
+                break;
+            }
+            _ => return None,
+        }
+    }
+    if !saw_newline {
+        return None;
+    }
+    let body = &tail[header_len..];
+    Some(body.split_once("\n```").map_or(body, |(body, _)| body))
+}
+
 /// Gutter for the first line of an action at `depth`: one dim `│` column per
 /// enclosing level, then a cyan `⏺` anchor.
 fn dot_prefix(depth: usize) -> String {
@@ -68,6 +116,64 @@ fn dot_prefix(depth: usize) -> String {
 /// Gutter for continuation/result lines at `depth`: depth+1 dim `│` columns.
 fn bar_prefix(depth: usize) -> String {
     format!("{DIM}{}{RESET}", "│ ".repeat(depth + 1))
+}
+
+/// Title line for a nested tool block: the tool's defining argument, pi-style
+/// (`$ cmd` for bash, `read path`, ...), falling back to `name key=value`.
+fn tool_title(name: &str, args: &serde_json::Value) -> String {
+    let arg = |key: &str| {
+        args.get(key)
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+    };
+    let one_line = |text: &str| {
+        let flat = text.lines().next().unwrap_or("").trim().to_owned();
+        let short: String = flat.chars().take(80).collect();
+        if short.len() < flat.len() || text.lines().count() > 1 {
+            format!("{short}…")
+        } else {
+            short
+        }
+    };
+    let in_path = |path: &str| {
+        if path.is_empty() || path == "." {
+            String::new()
+        } else {
+            format!(" in {path}")
+        }
+    };
+    match name {
+        "bash" => format!("{BOLD}${RESET} {}", one_line(arg("cmd"))),
+        "read_file" => format!("{BOLD}read{RESET} {}", arg("path")),
+        "write_file" => format!("{BOLD}write{RESET} {}", arg("path")),
+        "edit_file" => format!("{BOLD}edit{RESET} {}", arg("path")),
+        "grep" => format!(
+            "{BOLD}grep{RESET} {}{}",
+            one_line(arg("pattern")),
+            in_path(arg("path"))
+        ),
+        "find" => format!(
+            "{BOLD}find{RESET} {}{}",
+            one_line(arg("pattern")),
+            in_path(arg("path"))
+        ),
+        "ls" => format!("{BOLD}ls{RESET} {}", arg("path"))
+            .trim_end()
+            .to_owned(),
+        _ => match args.as_object() {
+            Some(map) if !map.is_empty() => {
+                let pairs: Vec<String> = map
+                    .iter()
+                    .map(|(key, value)| match value {
+                        serde_json::Value::String(s) => format!("{key}={}", one_line(s)),
+                        other => format!("{key}={other}"),
+                    })
+                    .collect();
+                format!("{BOLD}{name}{RESET} {}", pairs.join(" "))
+            }
+            _ => format!("{BOLD}{name}{RESET}"),
+        },
+    }
 }
 
 fn format_tokens(count: u64) -> String {
@@ -133,7 +239,7 @@ enum LoginMsg {
     },
 }
 
-pub struct ChatSetup {
+pub struct TuiSetup {
     pub rlm: Rlm,
     pub payload: ContextPayload,
     pub events: mpsc::UnboundedReceiver<RlmEvent>,
@@ -403,8 +509,8 @@ fn extract_path_token(before: &str) -> String {
     before[start..].to_owned()
 }
 
-pub async fn run(setup: ChatSetup) -> Result<()> {
-    let ChatSetup {
+pub async fn run(setup: TuiSetup) -> Result<()> {
+    let TuiSetup {
         rlm,
         payload,
         mut events,
@@ -636,6 +742,10 @@ struct Ui {
     /// permanent, so the toggle affects output from now on (unlike pi,
     /// which re-renders retained components).
     expand_tools: bool,
+    /// ctrl+t: show thinking blocks from now on. Like tool expansion, old
+    /// scrollback is permanent, so toggling only affects the current live
+    /// block and future output.
+    expand_thinking: bool,
     /// Follow-up prompts queued while a turn is in flight; sent FIFO as
     /// turns complete.
     queued: Vec<String>,
@@ -643,12 +753,27 @@ struct Ui {
     last_ctrl_c: Option<std::time::Instant>,
     /// Lines to flush into scrollback on the next draw.
     pending: Vec<String>,
+    /// Rows of the in-flight depth-0 REPL block (with everything nested in
+    /// it), shown live with the pending background and committed to
+    /// scrollback with the success/error background when the exec ends.
+    /// A row tagged with its own background (a finished nested tool) keeps
+    /// it instead of the block's.
+    block: Vec<(String, Option<&'static str>)>,
+    block_active: bool,
+    /// Index into `block` of the first row of the nested tool currently
+    /// executing; its rows are tinted with the tool background on `ToolEnd`.
+    tool_rows_from: Option<usize>,
+    /// Prose flushed while a block is active; committed after the block so
+    /// scrollback stays chronological.
+    after_block: Vec<String>,
     /// Whether the last scrollback line was gutter activity; a blank line is
     /// inserted before a depth-0 action that follows prose.
     last_gutter: bool,
     /// Streamed root-model text for the current iteration, minus the
     /// paragraphs/fences already flushed to scrollback.
     stream: String,
+    /// Streamed provider thinking for the current iteration.
+    thinking: String,
     /// Whether any `RootDelta` arrived this iteration; when false the model
     /// did not stream and `RootText` carries the only copy of the text.
     streamed: bool,
@@ -745,11 +870,17 @@ impl Ui {
             editor_scroll: 0,
             external_edit: false,
             expand_tools: false,
+            expand_thinking: false,
             queued: Vec::new(),
             last_ctrl_c: None,
             pending: Vec::new(),
+            block: Vec::new(),
+            block_active: false,
+            tool_rows_from: None,
+            after_block: Vec::new(),
             last_gutter: false,
             stream: String::new(),
+            thinking: String::new(),
             streamed: false,
             status: String::new(),
             turn: 0,
@@ -791,8 +922,41 @@ impl Ui {
         // While a turn is in flight, the unflushed stream tail renders as
         // live markdown above the status footer, capped so the whole live
         // region (tail + status + editor + queue + hints) fits the viewport.
+        // Anything that is (or could still become) a ```repl fence is kept
+        // out of markdown so it never appears as mangled prose. Once the
+        // opening fence lands, render a provisional tool block immediately;
+        // `CodeExecStart` takes over in scrollback when the block closes.
         if self.running.is_some() {
-            let mut tail = render_markdown(self.stream.trim(), self.markdown_width());
+            let bg_width = self.term.width();
+            let visible = &self.stream[..first_block_start(&self.stream)];
+            let live_block = live_block_body(&self.stream);
+            let mut tail = self.live_thinking_lines();
+            // The executing block renders live over the pending background,
+            // followed by any prose already flushed behind it.
+            if self.block_active {
+                if !tail.is_empty() {
+                    tail.push(String::new());
+                }
+                tail.extend(self.block.iter().map(|(row, row_bg)| {
+                    fill_bg(row, row_bg.unwrap_or(REPL_BG), bg_width)
+                }));
+                tail.extend(self.after_block.iter().cloned());
+            }
+            let mut prose = render_markdown(visible.trim(), self.markdown_width());
+            if !tail.is_empty() && (!prose.is_empty() || live_block.is_some()) {
+                tail.push(String::new());
+            }
+            tail.append(&mut prose);
+            if let Some(block) = live_block {
+                if !tail.is_empty() {
+                    tail.push(String::new());
+                }
+                tail.extend(
+                    self.tool_lines(0, &format!("{BOLD}repl{RESET}"), block, self.code_limit())
+                        .iter()
+                        .map(|row| fill_bg(row, REPL_BG, bg_width)),
+                );
+            }
             let editor_visible = self
                 .editor
                 .render()
@@ -1280,8 +1444,11 @@ impl Ui {
     }
 
     /// Re-render the active branch into scrollback, mirroring how prompts
-    /// and responses looked live.
+    /// and responses looked live. The screen (and its scrollback) is wiped
+    /// first so the replayed transcript replaces the old one instead of
+    /// stacking below it.
     fn replay_branch(&mut self) {
+        let _ = self.term.clear_all();
         let entries: Vec<(session::Role, String)> = self
             .store
             .branch()
@@ -1290,15 +1457,25 @@ impl Ui {
             .collect();
         for (role, text) in entries {
             match role {
-                session::Role::User => {
-                    self.pending.push(String::new());
-                    for (i, line) in text.lines().enumerate() {
-                        let prefix = if i == 0 { "›" } else { " " };
-                        self.pending.push(format!("{BOLD}{prefix} {line}{RESET}"));
-                    }
-                    self.last_gutter = false;
-                }
-                session::Role::Assistant => self.push_prose(&text),
+                session::Role::User => self.push_user_message(&text),
+                session::Role::Assistant => self.push_assistant_message(&text),
+            }
+        }
+    }
+
+    /// Render a persisted assistant message the way it looked live: prose as
+    /// markdown, with each ```repl block shown as a committed repl container
+    /// (code preview over the repl background) rather than raw fenced text.
+    fn push_assistant_message(&mut self, text: &str) {
+        let blocks = find_code_blocks(text);
+        let segments = split_prose(text);
+        for (i, segment) in segments.iter().enumerate() {
+            self.push_prose(segment);
+            if let Some(code) = blocks.get(i) {
+                self.begin_block();
+                self.push_dot(0, format!("{BOLD}repl{RESET}"));
+                self.push_preview(0, code, self.code_limit());
+                self.commit_block(REPL_BG);
             }
         }
     }
@@ -1312,6 +1489,19 @@ impl Ui {
             .unwrap_or(0);
         let next = ThinkingLevel::ALL[(idx + 1) % ThinkingLevel::ALL.len()];
         self.root_lm.set_thinking(next);
+    }
+
+    /// ctrl+t: collapse or expand provider thinking blocks from now on.
+    fn toggle_thinking(&mut self) {
+        self.expand_thinking = !self.expand_thinking;
+        self.pending.push(format!(
+            "{DIM}[thinking {} from here on]{RESET}",
+            if self.expand_thinking {
+                "expanded"
+            } else {
+                "collapsed"
+            }
+        ));
     }
 
     /// ctrl-p / ctrl-shift-p: cycle the root model through the registry.
@@ -1457,6 +1647,10 @@ impl Ui {
                     self.open_model_selector(true);
                     return false;
                 }
+                if key.code == KeyCode::Char('t') && ctrl {
+                    self.toggle_thinking();
+                    return false;
+                }
                 if key.code == KeyCode::Char('g') && ctrl {
                     self.external_edit = true;
                     return false;
@@ -1549,11 +1743,13 @@ impl Ui {
                     "{DIM}keys: enter send (queues mid-run) · shift+enter newline · tab complete · up/down history{RESET}"
                 ));
                 self.pending.push(format!(
-                    "{DIM}      ctrl-y yank · ctrl-_ undo · ctrl-p cycle model · ctrl-l models · shift+tab thinking{RESET}"
+                    "{DIM}      ctrl-y yank · ctrl-_ undo · ctrl-p cycle model · ctrl-l models · shift+tab thinking level{RESET}"
                 ));
                 self.pending.push(format!(
-                    "{DIM}      ctrl-o expand tool output · ctrl-g $EDITOR · ctrl-z suspend · esc cancel · ctrl-c ctrl-c quit{RESET}"
+                    "{DIM}      ctrl-t show/hide thinking · ctrl-o expand tool output · ctrl-g $EDITOR · ctrl-z suspend{RESET}"
                 ));
+                self.pending
+                    .push(format!("{DIM}      esc cancel · ctrl-c ctrl-c quit{RESET}"));
                 self.pending.push(format!(
                     "{DIM}      esc esc session tree (empty editor){RESET}"
                 ));
@@ -1637,7 +1833,8 @@ impl Ui {
         }
         let code = format!("print(bash({}))", python_quote(cmd));
         if record {
-            self.push_dot(0, "repl".to_owned());
+            self.begin_block();
+            self.push_dot(0, format!("{BOLD}repl{RESET}"));
             self.push_preview(0, &code, self.code_limit());
         } else {
             self.pending.push(String::new());
@@ -1648,12 +1845,7 @@ impl Ui {
     }
 
     fn send_prompt(&mut self, prompt: &str, cmd_tx: &mpsc::UnboundedSender<Cmd>) {
-        self.pending.push(String::new());
-        for (i, line) in prompt.lines().enumerate() {
-            let prefix = if i == 0 { "›" } else { " " };
-            self.pending.push(format!("{BOLD}{prefix} {line}{RESET}"));
-        }
-        self.last_gutter = false;
+        self.push_user_message(prompt);
         if let Err(e) = self.store.append(session::Role::User, prompt) {
             self.pending
                 .push(format!("{YELLOW}session not saved:{RESET} {e}"));
@@ -1662,6 +1854,7 @@ impl Ui {
         self.running = Some(cancel.clone());
         self.turn = 0;
         self.stream.clear();
+        self.thinking.clear();
         self.status = "thinking...".to_owned();
         let _ = cmd_tx.send(Cmd::Prompt {
             text: prompt.to_owned(),
@@ -1797,20 +1990,119 @@ impl Ui {
         self.term.width().saturating_sub(2 * (depth + 1)).max(1)
     }
 
+    /// Live/scrollback tool block rows using the same gutter formatting as
+    /// finalized action blocks.
+    fn tool_lines(&self, depth: usize, title: &str, body: &str, max: usize) -> Vec<String> {
+        let mut lines = Vec::new();
+        let mut rows = wrap_ansi(title, self.gutter_text_width(depth)).into_iter();
+        let first = rows.next().unwrap_or_default();
+        lines.push(format!("{}{first}{RESET}", dot_prefix(depth)));
+        for row in rows {
+            lines.push(format!("{}{row}{RESET}", bar_prefix(depth)));
+        }
+
+        let trimmed = body.trim_end();
+        if !trimmed.is_empty() {
+            let avail = self.gutter_text_width(depth).saturating_sub(2).max(1);
+            let rows: Vec<String> = trimmed
+                .lines()
+                .flat_map(|line| wrap_ansi(line, avail))
+                .collect();
+            let shown = rows.len().min(max);
+            for row in &rows[..shown] {
+                lines.push(format!("{}{DIM}  {row}{RESET}", bar_prefix(depth)));
+            }
+            if rows.len() > max {
+                lines.push(format!(
+                    "{}{DIM}  … ({} more lines){RESET}",
+                    bar_prefix(depth),
+                    rows.len() - max
+                ));
+            }
+        }
+        lines
+    }
+
+    fn live_thinking_lines(&self) -> Vec<String> {
+        if self.thinking.trim().is_empty() {
+            return Vec::new();
+        }
+        if self.expand_thinking {
+            self.tool_lines(
+                0,
+                &format!("{DIM}thinking{RESET}"),
+                &self.thinking,
+                usize::MAX,
+            )
+        } else {
+            vec![format!(
+                "{}{DIM}thinking hidden · ctrl+t to show{RESET}",
+                dot_prefix(0)
+            )]
+        }
+    }
+
+    fn flush_thinking(&mut self) {
+        let thinking = std::mem::take(&mut self.thinking);
+        if thinking.trim().is_empty() {
+            return;
+        }
+        if self.expand_thinking {
+            self.push_dot(0, format!("{DIM}thinking{RESET}"));
+            self.push_preview(0, &thinking, usize::MAX);
+        } else {
+            self.push_dot(0, format!("{DIM}thinking hidden · ctrl+t to show{RESET}"));
+        }
+    }
+
+    /// Append an action row to the active block buffer, or straight to
+    /// scrollback when no block is in flight.
+    fn push_row(&mut self, row: String) {
+        if self.block_active {
+            self.block.push((row, None));
+        } else {
+            self.pending.push(row);
+        }
+    }
+
+    /// Start buffering the depth-0 REPL block that is about to execute. Rows
+    /// pushed until `commit_block` render live with the pending background.
+    fn begin_block(&mut self) {
+        if !self.last_gutter {
+            self.pending.push(String::new());
+        }
+        self.block_active = true;
+    }
+
+    /// Commit the buffered block to scrollback over its final status
+    /// background, followed by any prose that streamed in behind it.
+    fn commit_block(&mut self, bg: &str) {
+        if !self.block_active {
+            return;
+        }
+        self.block_active = false;
+        self.tool_rows_from = None;
+        let width = self.term.width();
+        for (row, row_bg) in std::mem::take(&mut self.block) {
+            self.pending
+                .push(fill_bg(&row, row_bg.unwrap_or(bg), width));
+        }
+        let after = std::mem::take(&mut self.after_block);
+        self.pending.extend(after);
+    }
+
     /// First line of an action block: gutter columns, then a `⏺` anchor.
     /// Wrapped continuations keep the gutter. A depth-0 action that follows
     /// prose gets a separating blank line first.
     fn push_dot(&mut self, depth: usize, text: String) {
-        if depth == 0 && !self.last_gutter {
+        if depth == 0 && !self.last_gutter && !self.block_active {
             self.pending.push(String::new());
         }
         let mut rows = wrap_ansi(&text, self.gutter_text_width(depth)).into_iter();
         let first = rows.next().unwrap_or_default();
-        self.pending
-            .push(format!("{}{DIM}{first}{RESET}", dot_prefix(depth)));
+        self.push_row(format!("{}{first}{RESET}", dot_prefix(depth)));
         for row in rows {
-            self.pending
-                .push(format!("{}{DIM}{row}{RESET}", bar_prefix(depth)));
+            self.push_row(format!("{}{row}{RESET}", bar_prefix(depth)));
         }
         self.last_gutter = true;
     }
@@ -1819,8 +2111,7 @@ impl Ui {
     /// terminal width so every row keeps the gutter.
     fn push_bar(&mut self, depth: usize, text: String) {
         for row in wrap_ansi(&text, self.gutter_text_width(depth)) {
-            self.pending
-                .push(format!("{}{DIM}{row}{RESET}", bar_prefix(depth)));
+            self.push_row(format!("{}{DIM}{row}{RESET}", bar_prefix(depth)));
         }
         self.last_gutter = true;
     }
@@ -1846,15 +2137,38 @@ impl Ui {
         }
     }
 
-    /// Render finalized prose (markdown) into scrollback.
+    /// Echo a user message into scrollback as a pi-style container: full-width
+    /// `userMessageBg` fill with one cell of padding on every side.
+    fn push_user_message(&mut self, text: &str) {
+        let width = self.term.width();
+        let inner = width.saturating_sub(2).max(1);
+        self.pending.push(String::new());
+        self.pending.push(fill_bg("", USER_BG, width));
+        for line in text.lines() {
+            for row in wrap_ansi(line, inner) {
+                self.pending
+                    .push(fill_bg(&format!(" {row}"), USER_BG, width));
+            }
+        }
+        self.pending.push(fill_bg("", USER_BG, width));
+        self.last_gutter = false;
+    }
+
+    /// Render finalized prose (markdown) into scrollback. While a block is
+    /// in flight the prose waits behind it so scrollback stays chronological.
     fn push_prose(&mut self, text: &str) {
         let text = text.trim();
         if text.is_empty() {
             return;
         }
-        self.pending.push(String::new());
-        self.pending
-            .extend(render_markdown(text, self.markdown_width()));
+        let rendered = render_markdown(text, self.markdown_width());
+        let sink = if self.block_active {
+            &mut self.after_block
+        } else {
+            &mut self.pending
+        };
+        sink.push(String::new());
+        sink.extend(rendered);
         self.last_gutter = false;
     }
 
@@ -1867,6 +2181,7 @@ impl Ui {
                 self.turn = iteration + 1;
                 self.status = "thinking...".to_owned();
                 self.stream.clear();
+                self.thinking.clear();
                 self.streamed = false;
             }
             RlmEvent::RootDelta {
@@ -1883,7 +2198,13 @@ impl Ui {
                     self.push_prose(&para);
                 }
             }
+            RlmEvent::RootThinkingDelta {
+                depth: 0, delta, ..
+            } => {
+                self.thinking.push_str(&delta);
+            }
             RlmEvent::RootText { depth: 0, text, .. } => {
+                self.flush_thinking();
                 // Streaming: paragraphs and blocks were flushed as they
                 // arrived; render the leftover tail. Non-streaming: render
                 // the full text's prose (blocks were previewed by
@@ -1909,8 +2230,9 @@ impl Ui {
                         self.stream = rest;
                     }
                     self.status = "running code...".to_owned();
+                    self.begin_block();
                 }
-                self.push_dot(depth, "repl".to_owned());
+                self.push_dot(depth, format!("{BOLD}repl{RESET}"));
                 self.push_preview(depth, &code, self.code_limit());
             }
             RlmEvent::CodeExecEnd {
@@ -1924,7 +2246,57 @@ impl Ui {
                 self.push_preview(depth, &stdout, self.output_limit());
                 self.push_preview(depth, &stderr, self.output_limit());
                 if depth == 0 {
+                    let bg = if stderr.trim().is_empty() {
+                        REPL_BG
+                    } else {
+                        REPL_ERROR_BG
+                    };
+                    self.commit_block(bg);
                     self.status = "thinking...".to_owned();
+                }
+            }
+            // Prelude tools run inside the REPL block at `depth`, so they
+            // render one gutter level deeper, nested in that block.
+            RlmEvent::ToolStart {
+                depth, name, args, ..
+            } => {
+                if self.block_active {
+                    self.tool_rows_from = Some(self.block.len());
+                }
+                self.push_dot(depth + 1, tool_title(&name, &args));
+                if depth == 0 {
+                    self.status = format!("{name}...");
+                }
+            }
+            RlmEvent::ToolEnd {
+                depth,
+                result,
+                error,
+                duration,
+                ..
+            } => {
+                let bg = if error.is_some() {
+                    TOOL_ERROR_BG
+                } else {
+                    TOOL_SUCCESS_BG
+                };
+                match error {
+                    Some(error) => {
+                        self.push_bar(depth + 1, format!("failed {:.1}s", duration.as_secs_f64()));
+                        self.push_preview(depth + 1, &error, self.output_limit());
+                    }
+                    None => {
+                        self.push_bar(depth + 1, format!("done {:.1}s", duration.as_secs_f64()));
+                        self.push_preview(depth + 1, &result, self.output_limit());
+                    }
+                }
+                if let Some(start) = self.tool_rows_from.take() {
+                    for (_, row_bg) in &mut self.block[start..] {
+                        *row_bg = Some(bg);
+                    }
+                }
+                if depth == 0 {
+                    self.status = "running code...".to_owned();
                 }
             }
             RlmEvent::SubcallStart {
@@ -1932,7 +2304,10 @@ impl Ui {
                 model,
                 prompt_preview,
             } => {
-                self.push_dot(depth, format!("{model} ← \"{prompt_preview}\""));
+                self.push_dot(
+                    depth,
+                    format!("{BOLD}{model}{RESET} ← \"{prompt_preview}\""),
+                );
                 if depth == 0 {
                     self.status = format!("waiting on {model}...");
                 }
@@ -1950,7 +2325,7 @@ impl Ui {
                 self.push_bar(depth, text);
             }
             RlmEvent::RunStart { depth } if depth > 0 => {
-                self.push_dot(depth, "rlm".to_owned());
+                self.push_dot(depth, format!("{BOLD}rlm{RESET}"));
             }
             RlmEvent::RunEnd {
                 depth,
@@ -2016,6 +2391,12 @@ impl Ui {
                 self.push_bar(0, format!("exec {:.1}s", res.duration.as_secs_f64()));
                 self.push_preview(0, &res.stdout, self.output_limit());
                 self.push_preview(0, &res.stderr, self.output_limit());
+                let bg = if res.stderr.trim().is_empty() {
+                    REPL_BG
+                } else {
+                    REPL_ERROR_BG
+                };
+                self.commit_block(bg);
             }
             Ok(res) => {
                 let output = format!("{}{}", res.stdout, res.stderr);
@@ -2028,22 +2409,29 @@ impl Ui {
                 self.last_gutter = false;
             }
             Err(e) => {
-                self.pending.push(format!("\x1b[31merror:{RESET} {e}"));
-                self.last_gutter = false;
+                if self.block_active {
+                    self.push_bar(0, format!("failed: {e}"));
+                    self.commit_block(REPL_ERROR_BG);
+                } else {
+                    self.pending.push(format!("\x1b[31merror:{RESET} {e}"));
+                    self.last_gutter = false;
+                }
             }
         }
     }
 
     fn handle_run_done(&mut self, completion: RlmCompletion) {
+        // A block still open here never finished (cancel/failure mid-exec).
+        self.commit_block(REPL_ERROR_BG);
         self.running = None;
         self.stream.clear();
+        self.thinking.clear();
         self.pending.push(String::new());
         if completion.stop == StopCause::Failed {
             let error = completion.error.unwrap_or_else(|| "run failed".to_owned());
             self.pending.push(format!("\x1b[31merror:{RESET} {error}"));
         } else if !completion.response.is_empty() {
-            self.pending
-                .extend(render_markdown(&completion.response, self.markdown_width()));
+            self.push_assistant_message(&completion.response);
         }
         // Mirror the env's history condition so the store and the REPL's
         // history_N variables stay aligned.
@@ -2104,6 +2492,46 @@ mod tests {
         // consumed from the stream by CodeExecStart.
         let with_block = "intro\n\n```repl\nprint(1)\n```\n\nafter";
         assert_eq!(stable_prefix(with_block), "intro\n\n".len());
+        // The engine's regex matches mid-line fences, so blank lines inside
+        // a still-open block glued to prose are not boundaries either.
+        let mid_line = "para\n\nintro.```repl\nx = 1\n\ny = 2\n";
+        assert_eq!(stable_prefix(mid_line), "para\n\n".len());
+        // A trailing partial fence opening is held back too.
+        assert_eq!(stable_prefix("para\n\n```re"), "para\n\n".len());
+    }
+
+    #[test]
+    fn first_block_start_guards_repl_fences() {
+        // Complete, unclosed, and partial fences all stop the prefix.
+        assert_eq!(first_block_start("a\n```repl\nx\n```\nb"), 2);
+        assert_eq!(first_block_start("a.```repl\nx = 1"), 2);
+        assert_eq!(first_block_start("text ```re"), 5);
+        // Ordinary fences and inline code are not held back.
+        let python = "```python\nx\n```\ndone";
+        assert_eq!(first_block_start(python), python.len());
+        let inline = "use `foo` here";
+        assert_eq!(first_block_start(inline), inline.len());
+        // A bare trailing ``` could still grow into ```repl: held back.
+        assert_eq!(first_block_start("done\n```"), "done\n".len());
+    }
+
+    #[test]
+    fn live_block_body_streams_open_and_closed_repl_blocks() {
+        assert_eq!(live_block_body("text ```re"), None);
+        assert_eq!(live_block_body("text ```repl"), None);
+        assert_eq!(live_block_body("text ```repl \t"), None);
+        assert_eq!(live_block_body("text ```python\nx = 1"), None);
+
+        assert_eq!(live_block_body("text ```repl\n"), Some(""));
+        assert_eq!(live_block_body("text ```repl\nprint(1)"), Some("print(1)"));
+        assert_eq!(
+            live_block_body("text ```repl\nprint(1)\n```\nafter"),
+            Some("print(1)")
+        );
+        assert_eq!(
+            live_block_body("text\n```repl \t\nanswer = 42\nmore"),
+            Some("answer = 42\nmore")
+        );
     }
 
     #[test]

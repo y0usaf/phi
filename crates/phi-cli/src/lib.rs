@@ -1,9 +1,10 @@
+pub use clap;
 use clap::Parser;
 
 #[derive(Debug, Clone, Parser)]
 #[command(name = "phi", about = "Recursive Language Model (RLM) coding agent")]
 pub struct Args {
-    /// One-shot prompt; without it (on a TTY) an interactive chat starts.
+    /// One-shot prompt; without it (on a TTY) the interactive TUI starts.
     #[arg()]
     pub prompt: Vec<String>,
 
@@ -12,23 +13,27 @@ pub struct Args {
     #[arg(long, value_name = "PATH")]
     pub context: Option<String>,
 
-    /// Root model id, optionally qualified as provider/model-id.
-    #[arg(long, default_value = "claude-opus-4-7")]
-    pub model: String,
+    /// Root model id, optionally qualified as provider/model-id
+    /// [default: claude-opus-4-7].
+    #[arg(long)]
+    pub model: Option<String>,
 
     /// Model for llm_query sub-calls (defaults to the root model).
     #[arg(long, value_name = "MODEL")]
     pub sub_model: Option<String>,
 
-    /// Thinking level for the root model: off|minimal|low|medium|high|xhigh.
-    #[arg(long, default_value = "off")]
-    pub thinking: String,
+    /// Thinking level for the root model: off|minimal|low|medium|high|xhigh
+    /// [default: off].
+    #[arg(long)]
+    pub thinking: Option<String>,
 
-    #[arg(long, default_value_t = 30)]
-    pub max_iterations: usize,
+    /// [default: 30]
+    #[arg(long)]
+    pub max_iterations: Option<usize>,
 
-    #[arg(long, default_value_t = 1)]
-    pub max_depth: usize,
+    /// Maximum rlm_query recursion depth [default: 3 in the TUI, 2 one-shot]
+    #[arg(long)]
+    pub max_depth: Option<usize>,
 
     /// Maximum spend in USD across the run.
     #[arg(long, value_name = "USD")]
@@ -46,12 +51,13 @@ pub struct Args {
     #[arg(long, value_name = "N")]
     pub max_errors: Option<usize>,
 
-    #[arg(long, default_value_t = 4)]
-    pub max_concurrent_subcalls: usize,
+    /// [default: 4]
+    #[arg(long)]
+    pub max_concurrent_subcalls: Option<usize>,
 
-    /// Python interpreter for the REPL environment.
-    #[arg(long, default_value = "python3")]
-    pub python: String,
+    /// Python interpreter for the REPL environment [default: python3].
+    #[arg(long)]
+    pub python: Option<String>,
 
     /// API key for the root model's provider (this run only, not persisted).
     #[arg(long, value_name = "KEY")]

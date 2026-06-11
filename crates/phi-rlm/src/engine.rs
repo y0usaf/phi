@@ -9,12 +9,13 @@ use base64::Engine as _;
 use phi_ai::Usage;
 use phi_repl::{
     EnvSetup, PythonRepl, ReplEnv, ReplResult, SubcallHandler, SubcallRequest, SubcallResponse,
+    ToolEvent,
 };
 use serde_json::Value;
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 use tokio_util::sync::CancellationToken;
 
-use crate::handler::{DeltaSink, LanguageModel, LmHandler};
+use crate::handler::{DeltaSink, LanguageModel, LmHandler, ThinkingSink};
 use crate::parsing::{
     ExecutedBlock, could_open_block, find_code_blocks, format_iteration, last_block_end,
 };
@@ -123,6 +124,12 @@ pub enum RlmEvent {
         iteration: usize,
         delta: String,
     },
+    /// Streamed provider-thinking chunk for the current root completion.
+    RootThinkingDelta {
+        depth: usize,
+        iteration: usize,
+        delta: String,
+    },
     /// Full root-model response for the iteration.
     RootText {
         depth: usize,
@@ -139,6 +146,21 @@ pub enum RlmEvent {
         iteration: usize,
         stdout: String,
         stderr: String,
+        duration: Duration,
+    },
+    /// A prelude tool (bash, edit_file, ...) started inside this run's REPL.
+    ToolStart {
+        depth: usize,
+        call_id: u64,
+        name: String,
+        args: Value,
+    },
+    ToolEnd {
+        depth: usize,
+        call_id: u64,
+        name: String,
+        result: String,
+        error: Option<String>,
         duration: Duration,
     },
     SubcallStart {
@@ -360,6 +382,36 @@ impl EngineSubcalls {
 
 #[async_trait]
 impl SubcallHandler for EngineSubcalls {
+    fn notify_tool(&self, event: ToolEvent) {
+        let depth = self.rlm.depth;
+        self.rlm.events.emit(match event {
+            ToolEvent::Start {
+                call_id,
+                name,
+                args,
+            } => RlmEvent::ToolStart {
+                depth,
+                call_id,
+                name,
+                args,
+            },
+            ToolEvent::End {
+                call_id,
+                name,
+                result,
+                error,
+                duration,
+            } => RlmEvent::ToolEnd {
+                depth,
+                call_id,
+                name,
+                result,
+                error,
+                duration,
+            },
+        });
+    }
+
     async fn handle(&self, request: SubcallRequest) -> Result<SubcallResponse, String> {
         match request {
             SubcallRequest::Llm { prompt, model } => self.query(prompt, model, "LM").await,
@@ -619,7 +671,9 @@ impl Rlm {
             let sink = self.eager_sink(i, code_tx.clone(), sent.clone());
 
             let stream = async {
-                let result = handler.complete_root(history, Some(sink)).await;
+                let result = handler
+                    .complete_root(history, Some(sink), Some(self.thinking_sink(i)))
+                    .await;
                 if let Ok(completion) = &result {
                     // Catch-up for non-streaming models (no deltas) and any
                     // trailing block: same regex, same order, deduped by count.
@@ -793,7 +847,11 @@ impl Rlm {
             content: DEFAULT_ANSWER_NUDGE.to_owned(),
         });
         match handler
-            .complete_root(history, Some(self.delta_sink(iterations)))
+            .complete_root(
+                history,
+                Some(self.delta_sink(iterations)),
+                Some(self.thinking_sink(iterations)),
+            )
             .await
         {
             Ok(completion) => {
@@ -834,6 +892,18 @@ impl Rlm {
                 delta: delta.to_owned(),
             });
             true
+        })
+    }
+
+    fn thinking_sink(&self, iteration: usize) -> ThinkingSink {
+        let events = self.events.clone();
+        let depth = self.depth;
+        Arc::new(move |delta: &str| {
+            events.emit(RlmEvent::RootThinkingDelta {
+                depth,
+                iteration,
+                delta: delta.to_owned(),
+            });
         })
     }
 
@@ -1340,6 +1410,7 @@ mod tests {
             &self,
             _prompt: &[ChatMessage],
             on_delta: DeltaSink,
+            _on_thinking: Option<ThinkingSink>,
         ) -> Result<Completion, String> {
             let head =
                 "Running.\n```repl\nanswer['content'] = 'done'\nanswer['ready'] = True\n```\n";

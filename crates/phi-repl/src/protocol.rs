@@ -41,4 +41,19 @@ pub(crate) enum DriverFrame {
         content: String,
         ready: bool,
     },
+    /// Fire-and-forget notification that a prelude tool started/finished.
+    ToolEvent {
+        phase: String,
+        name: String,
+        #[serde(default)]
+        call_id: u64,
+        #[serde(default)]
+        args: Option<Value>,
+        #[serde(default)]
+        result: Option<String>,
+        #[serde(default)]
+        error: Option<String>,
+        #[serde(default)]
+        duration: Option<f64>,
+    },
 }

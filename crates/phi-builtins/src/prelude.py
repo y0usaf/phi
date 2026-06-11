@@ -2,10 +2,55 @@ import subprocess as _subprocess
 import os as _os
 import re as _re
 import fnmatch as _fnmatch
+import inspect as _inspect
+import time as _time
 
 _PRELUDE_MAX_LINES = 2000
 _PRELUDE_MAX_BYTES = 50_000
 _PRELUDE_SKIP_DIRS = (".git", "node_modules", "target", "__pycache__", ".venv", "dist", "build")
+
+_tool_calls = [0]
+
+
+def _tool(fn):
+    """Emit driver tool_event frames around each call so the host TUI can
+    render the call nested inside its REPL block, live."""
+
+    def _wrapped(*args, **kwargs):
+        _tool_calls[0] += 1
+        cid = _tool_calls[0]
+        try:
+            params = dict(_inspect.signature(fn).bind(*args, **kwargs).arguments)
+        except TypeError:
+            params = {}
+        __phi_tool_event__("start", fn.__name__, cid, {"args": params})
+        t0 = _time.time()
+        try:
+            result = fn(*args, **kwargs)
+        except BaseException as e:
+            __phi_tool_event__(
+                "end",
+                fn.__name__,
+                cid,
+                {"error": "%s: %s" % (type(e).__name__, e), "duration": _time.time() - t0},
+            )
+            raise
+        error = result if isinstance(result, str) and result.startswith("Error:") else None
+        __phi_tool_event__(
+            "end",
+            fn.__name__,
+            cid,
+            {
+                "result": result if isinstance(result, str) else repr(result),
+                "error": error,
+                "duration": _time.time() - t0,
+            },
+        )
+        return result
+
+    _wrapped.__name__ = fn.__name__
+    _wrapped.__doc__ = fn.__doc__
+    return _wrapped
 
 
 def _prelude_truncate(text):
@@ -18,6 +63,7 @@ def _prelude_truncate(text):
     return text
 
 
+@_tool
 def bash(cmd, timeout=120):
     try:
         proc = _subprocess.run(
@@ -33,6 +79,7 @@ def bash(cmd, timeout=120):
     return _prelude_truncate(out) if out else "(no output)"
 
 
+@_tool
 def read_file(path, offset=0, limit=2000):
     with open(path, errors="replace") as f:
         lines = f.read().split("\n")
@@ -47,6 +94,7 @@ def read_file(path, offset=0, limit=2000):
     return _prelude_truncate(text)
 
 
+@_tool
 def write_file(path, content):
     parent = _os.path.dirname(_os.path.abspath(path))
     if parent:
@@ -56,6 +104,7 @@ def write_file(path, content):
     return "Wrote %d bytes to %s" % (len(content.encode()), path)
 
 
+@_tool
 def edit_file(path, old, new, replace_all=False):
     with open(path, errors="replace") as f:
         content = f.read()
@@ -73,6 +122,7 @@ def edit_file(path, old, new, replace_all=False):
     return "Replaced %d occurrence(s) in %s" % (count if replace_all else 1, path)
 
 
+@_tool
 def grep(pattern, path=".", glob=None, max_results=200):
     rx = _re.compile(pattern)
     results = []
@@ -95,6 +145,7 @@ def grep(pattern, path=".", glob=None, max_results=200):
     return "\n".join(results) if results else "(no matches)"
 
 
+@_tool
 def find(pattern, path=".", max_results=200):
     results = []
     for root, dirs, files in _os.walk(path):
@@ -108,6 +159,7 @@ def find(pattern, path=".", max_results=200):
     return "\n".join(results) if results else "(no matches)"
 
 
+@_tool
 def ls(path="."):
     entries = sorted(_os.listdir(path))
     out = []

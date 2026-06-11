@@ -13,8 +13,8 @@ pub use engine::{
     EnvFactory, LimitKind, PythonEnvFactory, Rlm, RlmCompletion, RlmConfig, RlmEvent, RlmSession,
     StopCause,
 };
-pub use handler::{Completion, DeltaSink, LanguageModel, LmHandler};
-pub use parsing::{split_at_first_block, split_prose};
+pub use handler::{Completion, DeltaSink, LanguageModel, LmHandler, ThinkingSink};
+pub use parsing::{could_open_block, find_code_blocks, split_at_first_block, split_prose};
 pub use phi_repl::ReplResult;
 pub use provider::ProviderLm;
 

@@ -6,8 +6,9 @@ use std::sync::LazyLock;
 use phi_repl::ReplResult;
 use regex_lite::Regex;
 
-static CODE_BLOCK: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?s)```repl[ \t]*\n(.*?)\n```").expect("code block regex"));
+static CODE_BLOCK: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?s)```repl[ \t]*\r?\n(.*?)\r?\n[ \t]*```[ \t]*").expect("code block regex")
+});
 
 pub fn find_code_blocks(text: &str) -> Vec<String> {
     CODE_BLOCK
@@ -149,6 +150,14 @@ mod tests {
         let text = "plan\n```repl\nprint(1)\n```\nmore\n```repl\nx = 2\nprint(x)\n```\n";
         assert_eq!(find_code_blocks(text), vec!["print(1)", "x = 2\nprint(x)"]);
         assert!(find_code_blocks("```python\nprint(1)\n```").is_empty());
+        assert_eq!(
+            find_code_blocks("```repl\r\nprint(1)\r\n```   "),
+            vec!["print(1)"]
+        );
+        assert_eq!(
+            find_code_blocks("```repl\nprint(1)\n   ```\t"),
+            vec!["print(1)"]
+        );
         assert!(find_code_blocks("no code").is_empty());
     }
 
@@ -156,6 +165,10 @@ mod tests {
     fn splits_at_first_block() {
         let text = "plan\n```repl\nprint(1)\n```\nmore";
         assert_eq!(split_at_first_block(text), Some(("plan\n", "\nmore")));
+        assert_eq!(
+            split_at_first_block("plan\r\n```repl\r\nprint(1)\r\n```   \r\nmore"),
+            Some(("plan\r\n", "\r\nmore"))
+        );
         assert!(split_at_first_block("plan\n```repl\nprint(1)").is_none());
         assert!(split_at_first_block("no code").is_none());
     }
@@ -191,6 +204,10 @@ mod tests {
     fn splits_prose_around_blocks() {
         let text = "plan\n```repl\nprint(1)\n```\nmore\n```repl\nx = 2\n```\ntail";
         assert_eq!(split_prose(text), vec!["plan\n", "\nmore\n", "\ntail"]);
+        assert_eq!(
+            split_prose("a\r\n```repl\r\nx\r\n```   \r\nb"),
+            vec!["a\r\n", "\r\nb"]
+        );
         assert_eq!(split_prose("no code"), vec!["no code"]);
     }
 

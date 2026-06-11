@@ -14,7 +14,7 @@ use tokio::sync::{Mutex, Semaphore};
 use crate::protocol::DriverFrame;
 use crate::{
     AnswerState, EnvSetup, ReplEnv, ReplError, ReplResult, SubcallHandler, SubcallRequest,
-    SubcallResponse,
+    SubcallResponse, ToolEvent,
 };
 
 const DRIVER: &str = include_str!("driver.py");
@@ -137,6 +137,32 @@ impl PythonRepl {
                         };
                         let _ = Self::send(&stdin, &frame).await;
                     });
+                }
+                DriverFrame::ToolEvent {
+                    phase,
+                    name,
+                    call_id,
+                    args,
+                    result,
+                    error,
+                    duration,
+                } => {
+                    let event = match phase.as_str() {
+                        "start" => ToolEvent::Start {
+                            call_id,
+                            name,
+                            args: args.unwrap_or_else(|| json!({})),
+                        },
+                        "end" => ToolEvent::End {
+                            call_id,
+                            name,
+                            result: result.unwrap_or_default(),
+                            error,
+                            duration: Duration::from_secs_f64(duration.unwrap_or(0.0)),
+                        },
+                        _ => continue,
+                    };
+                    handler.notify_tool(event);
                 }
                 DriverFrame::Fatal { error } => {
                     return Err(ReplError::Protocol(format!("driver error: {error}")));
