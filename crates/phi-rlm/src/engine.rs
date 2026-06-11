@@ -803,6 +803,28 @@ impl Rlm {
             }
 
             let final_answer = blocks.iter().find_map(|b| b.result.final_answer.clone());
+
+            // Enforce REPL-first behavior on the opening turn: a plain prose
+            // reply with no executed blocks means the model ignored the
+            // environment. Instead of banking that as progress, bounce it
+            // with an explicit reminder and continue the loop.
+            if i == 0 && blocks.is_empty() {
+                history.push(ChatMessage {
+                    role: Role::Assistant,
+                    content: response,
+                });
+                history.push(ChatMessage {
+                    role: Role::User,
+                    content: "You must inspect the `context` via the REPL before answering. Write a ```repl``` block that probes the environment (for example, print a small slice, length, or keys) and continue from there.".to_owned(),
+                });
+                self.events.emit(RlmEvent::IterationEnd {
+                    depth: self.depth,
+                    iteration: i,
+                    duration: iter_start.elapsed(),
+                });
+                continue;
+            }
+
             if !response.trim().is_empty() {
                 best_partial = Some(response.clone());
             }
@@ -1516,6 +1538,38 @@ mod tests {
             .expect("assistant message");
         assert!(assistant.content.ends_with("```"), "{}", assistant.content);
         assert!(!assistant.content.contains("vanish"));
+    }
+
+    #[tokio::test]
+    async fn first_turn_plain_prose_is_bounced_until_repl_used() {
+        let root = Arc::new(ScriptedLm::new(
+            "root-model",
+            &[
+                "I can answer without using the REPL.",
+                "Probing now.\n```repl\nprint(context[:4])\n```",
+                "```repl\nanswer['content'] = context.split()[-1]\nanswer['ready'] = True\n```",
+            ],
+        ));
+        let engine = rlm(RlmConfig::default(), root.clone(), quiet_sub());
+        let result = engine
+            .completion(
+                ContextPayload::Str("The magic number is 42".into()),
+                Some("What is the magic number?"),
+                &CancellationToken::new(),
+            )
+            .await;
+        assert_eq!(result.stop, StopCause::Answer, "{:?}", result.error);
+        assert_eq!(result.response, "42");
+        assert_eq!(result.iterations, 3);
+
+        let prompts = root.recorded_prompts();
+        let second = &prompts[1];
+        assert!(second.iter().any(|m| m.role == Role::Assistant && m.content.contains("without using the REPL")));
+        let reminder = second
+            .iter()
+            .find(|m| m.role == Role::User && m.content.contains("You must inspect the `context` via the REPL"))
+            .expect("bounce reminder");
+        assert!(reminder.content.contains("```repl```"));
     }
 
     #[tokio::test]
