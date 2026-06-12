@@ -882,7 +882,8 @@ mod tests {
             .open(store.path())
             .unwrap();
         file.write_all(&[0xff, 0xfe, b'{', b'\n']).unwrap();
-        file.write_all(b"{\"type\":\"message\",\"id\":\"tor").unwrap();
+        file.write_all(b"{\"type\":\"message\",\"id\":\"tor")
+            .unwrap();
         drop(file);
 
         let loaded = SessionStore::load(store.path()).unwrap();

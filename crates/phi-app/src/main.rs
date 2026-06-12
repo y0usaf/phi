@@ -10,7 +10,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context as _, Result, bail};
-use phi_ai::{AuthStorage, LoginMethod, OAuthProviderId, PrintCallbacks, Registry, ThinkingLevel};
+use phi_ai::{
+    AuthStorage, LoginMethod, Model, OAuthProviderId, PrintCallbacks, Registry, ThinkingLevel,
+    Usage,
+};
 use phi_cli::Args;
 use phi_rlm::engine::PythonEnvFactory;
 use phi_rlm::{ContextPayload, LimitKind, ProviderLm, Rlm, RlmConfig, RlmEvent, StopCause};
@@ -48,13 +51,64 @@ async fn main() -> Result<()> {
         for model in registry.supported_models() {
             let qualified = format!("{}/{}", model.provider, model.id);
             if pattern.is_empty() || qualified.contains(pattern.as_str()) {
-                println!("{qualified:<40} {}", model.name);
+                println!(
+                    "{qualified:<40} {:<28} {}",
+                    model.name,
+                    format_model_pricing(model)
+                );
             }
         }
         return Ok(());
     }
 
     run(args, storage, registry).await
+}
+
+fn format_tokens(count: u64) -> String {
+    match count {
+        0..=999 => count.to_string(),
+        1_000..=9_999 => format!("{:.1}k", count as f64 / 1_000.0),
+        10_000..=999_999 => format!("{}k", count / 1_000),
+        _ => format!("{:.1}M", count as f64 / 1_000_000.0),
+    }
+}
+
+fn format_rate(rate: f64) -> String {
+    if rate == 0.0 {
+        "$0/M".to_owned()
+    } else if rate >= 10.0 {
+        format!("${rate:.0}/M")
+    } else if rate >= 1.0 {
+        format!("${rate:.2}/M")
+    } else {
+        format!("${rate:.4}/M")
+    }
+}
+
+fn format_model_pricing(model: &Model) -> String {
+    let mut parts = vec![
+        format!("in {}", format_rate(model.cost.input)),
+        format!("out {}", format_rate(model.cost.output)),
+    ];
+    if model.cost.cache_write > 0.0 {
+        parts.push(format!("cache+ {}", format_rate(model.cost.cache_write)));
+    }
+    if model.cost.cache_read > 0.0 {
+        parts.push(format!("cache↺ {}", format_rate(model.cost.cache_read)));
+    }
+    parts.join(" · ")
+}
+
+fn format_usage_summary(usage: &Usage) -> String {
+    format!(
+        "usage: in {} · out {} · cache+ {} · cache↺ {} · total {} · ${:.4}",
+        format_tokens(usage.input),
+        format_tokens(usage.output),
+        format_tokens(usage.cache_write),
+        format_tokens(usage.cache_read),
+        format_tokens(usage.total_tokens),
+        usage.cost.total
+    )
 }
 
 async fn run(args: Args, storage: Arc<AuthStorage>, registry: Arc<Registry>) -> Result<()> {
@@ -194,13 +248,12 @@ async fn run(args: Args, storage: Arc<AuthStorage>, registry: Arc<Registry>) -> 
     println!("{}", result.response);
     if !args.quiet {
         eprintln!(
-            "\n[{:?}] {} iteration(s), {:.1}s, {} tokens, ${:.4}",
+            "\n[{:?}] {} iteration(s), {:.1}s",
             result.stop,
             result.iterations,
             result.duration.as_secs_f64(),
-            result.usage.total_tokens,
-            result.usage.cost.total
         );
+        eprintln!("{}", format_usage_summary(&result.usage));
     }
     if result.stop == StopCause::Failed {
         bail!(result.error.unwrap_or_else(|| "run failed".to_owned()));
@@ -365,4 +418,60 @@ fn indent(text: &str) -> String {
         .map(|line| format!("  | {line}"))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use phi_ai::{Api, Cost, CostRates};
+    use std::collections::BTreeMap;
+
+    fn test_model() -> Model {
+        Model {
+            id: "m".into(),
+            name: "Model".into(),
+            api: Api::AnthropicMessages,
+            provider: "anthropic".into(),
+            base_url: "https://example.test".into(),
+            reasoning: false,
+            input: vec![],
+            cost: CostRates {
+                input: 3.0,
+                output: 15.0,
+                cache_read: 0.3,
+                cache_write: 3.75,
+            },
+            context_window: 200_000,
+            max_tokens: 8_192,
+            headers: BTreeMap::new(),
+            thinking_levels: None,
+        }
+    }
+
+    #[test]
+    fn format_model_pricing_includes_cache_rates_when_present() {
+        assert_eq!(
+            format_model_pricing(&test_model()),
+            "in $3.00/M · out $15/M · cache+ $3.75/M · cache↺ $0.3000/M"
+        );
+    }
+
+    #[test]
+    fn format_usage_summary_shows_breakdown_and_total() {
+        let usage = Usage {
+            input: 1_200,
+            output: 34_000,
+            cache_read: 5_600,
+            cache_write: 7_800,
+            total_tokens: 48_600,
+            cost: Cost {
+                total: 0.1234,
+                ..Cost::default()
+            },
+        };
+        assert_eq!(
+            format_usage_summary(&usage),
+            "usage: in 1.2k · out 34k · cache+ 7.8k · cache↺ 5.6k · total 48k · $0.1234"
+        );
+    }
 }

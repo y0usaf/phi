@@ -1024,4 +1024,3 @@ mod tests {
         assert_eq!(ed.text(), "one");
     }
 }
-

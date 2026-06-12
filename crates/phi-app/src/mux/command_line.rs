@@ -326,4 +326,3 @@ mod tests {
         assert_eq!(col, 4);
     }
 }
-

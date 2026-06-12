@@ -26,9 +26,7 @@ use super::ui::cell_surface::CellSurface;
 use super::ui::layout::{CellLayout, SIDEBAR_WIDTH_DEFAULT, compute_cell_layout};
 use super::ui::overlays::archive::{ArchiveOutcome, ArchiveViewerState, render_archive_viewer};
 use super::ui::overlays::help::{HelpOverlayState, render_help_overlay};
-use super::ui::overlays::model::{
-    ModelOverlayOutcome, ModelOverlayState, render_model_overlay,
-};
+use super::ui::overlays::model::{ModelOverlayOutcome, ModelOverlayState, render_model_overlay};
 use super::ui::overlays::usage::{UsageOverlayState, render_usage_overlay};
 use super::ui::scene::{
     Chrome, MuxMode, ScenePalette, StatusNoteKind, render_scene, statusline_status,
@@ -876,10 +874,13 @@ impl MuxApp {
                 let _ = request.response_tx.send(Ok(None));
             }
             HostModalKind::Model { root, current } => {
-                if self.focused_session().is_none_or(|session| session.key != key) {
-                    let _ = request
-                        .response_tx
-                        .send(Err("session lost focus before opening model picker".to_owned()));
+                if self
+                    .focused_session()
+                    .is_none_or(|session| session.key != key)
+                {
+                    let _ = request.response_tx.send(Err(
+                        "session lost focus before opening model picker".to_owned(),
+                    ));
                     return;
                 }
                 if let Some(mut existing) = self.model_overlay.take() {
@@ -919,7 +920,6 @@ impl MuxApp {
     }
 
     // ----- suspension ($EDITOR) --------------------------------------------
-
 
     fn handle_suspend(&mut self, guard: &RawModeGuard, request: tui::SuspendRequest) {
         let mut stdout = std::io::stdout();

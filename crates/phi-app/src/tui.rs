@@ -18,8 +18,10 @@ use phi_rlm::{
 };
 use phi_tui::crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers};
 use phi_tui::{
-    Editor, EditorAction, LiveCursor, RawModeGuard, Selector, SelectorItem, SelectorOutcome,
-    Spinner, Terminal, fill_bg, fuzzy_filter, highlight_code, render_markdown, wrap_ansi,
+    Editor, EditorAction, LiveCursor, RawModeGuard, Selector, SelectorItem,
+    SelectorOutcome, Spinner, Terminal, fill_bg, fuzzy_filter, highlight_code,
+    highlight_diff_line, highlight_output,
+    render_markdown, wrap_ansi,
 };
 
 use crate::files::{self, FileSearcher};
@@ -37,6 +39,20 @@ const YELLOW: &str = "\x1b[33m";
 const GREEN: &str = "\x1b[32m";
 const RED: &str = "\x1b[31m";
 const REPL_FENCE: &str = "\x1b[38;2;180;140;255m";
+// Warm gold for tool verbs: the same accent highlight_known_repl_calls uses
+// for tool calls inside repl code, so "tool" reads as one color everywhere.
+const TOOL_ACCENT: &str = "\x1b[1m\x1b[38;2;255;210;120m";
+// Violet for sub-LLM/rlm activity: the same accent as the repl fence, so
+// "recursion" reads as one color everywhere.
+const SUBCALL_ACCENT: &str = "\x1b[1m\x1b[38;2;180;140;255m";
+/// Soft blue for path-like args in tool titles (matches highlight_output paths).
+const PATH_FG: &str = "\x1b[38;2;130;180;230m";
+/// Muted green for quoted-string-like args (patterns, subcall prompt previews).
+const STRING_FG: &str = "\x1b[38;2;150;190;150m";
+/// Violet accent for numbers/durations (matches highlight_output numbers).
+const NUM_FG: &str = "\x1b[38;2;170;150;230m";
+// User-echo text: legible but not white; white is reserved for model prose.
+const USER_FG: &str = "\x1b[38;2;190;200;215m";
 
 // User messages stay as full-width containers; repl/tool rendering is now
 // fence/indent-first with no container backgrounds.
@@ -161,21 +177,33 @@ fn tool_title(name: &str, args: &serde_json::Value) -> String {
         }
     };
     match name {
-        "bash" => format!("{BOLD}${RESET} {}", one_line(arg("cmd"))),
-        "read_file" => format!("{BOLD}read{RESET} {}", arg("path")),
-        "write_file" => format!("{BOLD}write{RESET} {}", arg("path")),
-        "edit_file" => format!("{BOLD}edit{RESET} {}", arg("path")),
+        "bash" => {
+            let cmd = arg("cmd");
+            if cmd.lines().count() > 1 {
+                format!("{TOOL_ACCENT}${RESET} {DIM}{}{RESET}", one_line(cmd))
+            } else {
+                let echoed = one_line(cmd);
+                let lit = highlight_code(&echoed, Some("bash"))
+                    .into_iter()
+                    .next()
+                    .unwrap_or(echoed);
+                format!("{TOOL_ACCENT}${RESET} {lit}{RESET}")
+            }
+        }
+        "read_file" => format!("{TOOL_ACCENT}read{RESET} {PATH_FG}{}{RESET}", arg("path")),
+        "write_file" => format!("{TOOL_ACCENT}write{RESET} {PATH_FG}{}{RESET}", arg("path")),
+        "edit_file" => format!("{TOOL_ACCENT}edit{RESET} {PATH_FG}{}{RESET}", arg("path")),
         "grep" => format!(
-            "{BOLD}grep{RESET} {}{}",
+            "{TOOL_ACCENT}grep{RESET} {STRING_FG}{}{RESET}{PATH_FG}{}{RESET}",
             one_line(arg("pattern")),
             in_path(arg("path"))
         ),
         "find" => format!(
-            "{BOLD}find{RESET} {}{}",
+            "{TOOL_ACCENT}find{RESET} {STRING_FG}{}{RESET}{PATH_FG}{}{RESET}",
             one_line(arg("pattern")),
             in_path(arg("path"))
         ),
-        "ls" => format!("{BOLD}ls{RESET} {}", arg("path"))
+        "ls" => format!("{TOOL_ACCENT}ls{RESET} {PATH_FG}{}{RESET}", arg("path"))
             .trim_end()
             .to_owned(),
         _ => match args.as_object() {
@@ -187,9 +215,9 @@ fn tool_title(name: &str, args: &serde_json::Value) -> String {
                         other => format!("{key}={other}"),
                     })
                     .collect();
-                format!("{BOLD}{name}{RESET} {}", pairs.join(" "))
+                format!("{TOOL_ACCENT}{name}{RESET} {DIM}{}{RESET}", pairs.join(" "))
             }
-            _ => format!("{BOLD}{name}{RESET}"),
+            _ => format!("{TOOL_ACCENT}{name}{RESET}"),
         },
     }
 }
@@ -240,6 +268,32 @@ fn format_tokens(count: u64) -> String {
         10_000..=999_999 => format!("{}k", count / 1_000),
         _ => format!("{:.1}M", count as f64 / 1_000_000.0),
     }
+}
+
+fn format_rate(rate: f64) -> String {
+    if rate == 0.0 {
+        "$0/M".to_owned()
+    } else if rate >= 10.0 {
+        format!("${rate:.0}/M")
+    } else if rate >= 1.0 {
+        format!("${rate:.2}/M")
+    } else {
+        format!("${rate:.4}/M")
+    }
+}
+
+fn format_model_pricing(model: &Model) -> String {
+    let mut parts = vec![
+        format!("in {}", format_rate(model.cost.input)),
+        format!("out {}", format_rate(model.cost.output)),
+    ];
+    if model.cost.cache_write > 0.0 {
+        parts.push(format!("cache+ {}", format_rate(model.cost.cache_write)));
+    }
+    if model.cost.cache_read > 0.0 {
+        parts.push(format!("cache↺ {}", format_rate(model.cost.cache_read)));
+    }
+    parts.join(" · ")
 }
 
 enum Cmd {
@@ -1514,8 +1568,13 @@ impl Ui {
             .iter()
             .map(|name| {
                 let (provider, id) = name.split_once('/').unwrap_or(("", name));
+                let detail = self
+                    .registry
+                    .find(name)
+                    .map(|model| format!("[{provider}] {}", format_model_pricing(model)))
+                    .unwrap_or_else(|| format!("[{provider}]"));
                 SelectorItem::new(name.clone(), id.to_owned())
-                    .detail(format!("[{provider}]"))
+                    .detail(detail)
                     .current(*name == current)
             })
             .collect();
@@ -1816,11 +1875,11 @@ impl Ui {
             self.push_dot(1, tool_title(&tool.name, &tool.args));
             match &tool.error {
                 Some(error) => {
-                    self.push_bar(1, format!("{RED}failed {:.1}s{RESET}", tool.duration_secs));
+                    self.push_bar(1, format!("{RED}failed{RESET} {NUM_FG}{:.1}s{RESET}", tool.duration_secs));
                     self.push_preview(1, error, self.output_limit());
                 }
                 None => {
-                    self.push_bar(1, format!("{GREEN}done {:.1}s{RESET}", tool.duration_secs));
+                    self.push_bar(1, format!("{GREEN}done{RESET} {NUM_FG}{:.1}s{RESET}", tool.duration_secs));
                     self.push_preview_with_lang(
                         1,
                         &tool.result,
@@ -1834,14 +1893,14 @@ impl Ui {
             self.push_dot(
                 0,
                 format!(
-                    "{BOLD}{}{RESET} ← \"{}\"",
+                    "{SUBCALL_ACCENT}{}{RESET} {DIM}←{RESET} {STRING_FG}\"{}\"{RESET}",
                     subcall.model, subcall.prompt_preview
                 ),
             );
             let text = match &subcall.error {
                 Some(error) => format!("{RED}{} failed:{RESET} {error}", subcall.model),
                 None => format!(
-                    "{GREEN}{} done {:.1}s{RESET}",
+                    "{GREEN}{} done{RESET} {NUM_FG}{:.1}s{RESET}",
                     subcall.model, subcall.duration_secs
                 ),
             };
@@ -1850,7 +1909,7 @@ impl Ui {
                 self.push_preview(0, result_preview, self.output_limit());
             }
         }
-        self.push_bar(0, format!("exec {duration_secs:.1}s"));
+        self.push_bar(0, format!("exec{RESET} {NUM_FG}{duration_secs:.1}s"));
         self.push_preview(0, stdout, self.output_limit());
         self.push_preview(0, stderr, self.output_limit());
         let bg = if stderr.trim().is_empty() {
@@ -2245,7 +2304,7 @@ impl Ui {
             self.push_repl_block(0, &code, self.code_limit());
         } else {
             self.pending.push(String::new());
-            self.pending.push(format!("{BOLD}${RESET} {cmd}"));
+            self.pending.push(format!("{TOOL_ACCENT}${RESET} {DIM}{cmd}{RESET}"));
             self.last_gutter = false;
         }
         let _ = cmd_tx.send(Cmd::Shell { code, record });
@@ -2445,10 +2504,11 @@ impl Ui {
         let trimmed = body.trim_end();
         if !trimmed.is_empty() {
             let avail = self.gutter_text_width(depth).saturating_sub(2).max(1);
-            let rows: Vec<String> = highlight_code(trimmed, Some("repl"))
-                .into_iter()
-                .flat_map(|line| wrap_ansi(&line, avail))
-                .collect();
+            let rows: Vec<String> =
+                highlight_code(trimmed, Some("repl"))
+                    .into_iter()
+                    .flat_map(|line| wrap_ansi(&line, avail))
+                    .collect();
             let shown = rows.len().min(max);
             for row in &rows[..shown] {
                 lines.push(format!("{}  {row}{RESET}", bar_prefix(depth)));
@@ -2566,8 +2626,15 @@ impl Ui {
         }
         let avail = self.gutter_text_width(depth).saturating_sub(2).max(1);
         let base_rows: Vec<String> = match lang {
-            Some(lang) => highlight_code(trimmed, Some(lang)),
-            None => trimmed.lines().map(str::to_owned).collect(),
+            Some(lang) => {
+                highlight_code(trimmed, Some(lang))
+            }
+            None => trimmed
+                .lines()
+                .map(|line| {
+                    highlight_diff_line(line).unwrap_or_else(|| highlight_output(line))
+                })
+                .collect(),
         };
         let rows: Vec<String> = base_rows
             .into_iter()
@@ -2575,11 +2642,7 @@ impl Ui {
             .collect();
         let shown = rows.len().min(max);
         for row in &rows[..shown] {
-            if lang.is_some() {
-                self.push_row(format!("{}  {row}{RESET}", bar_prefix(depth)));
-            } else {
-                self.push_bar(depth, format!("  {row}"));
-            }
+            self.push_row(format!("{}  {row}{RESET}", bar_prefix(depth)));
         }
         if rows.len() > max {
             self.push_bar(depth, format!("  … ({} more lines)", rows.len() - max));
@@ -2591,10 +2654,11 @@ impl Ui {
         let trimmed = text.trim_end();
         if !trimmed.is_empty() {
             let avail = self.gutter_text_width(depth).saturating_sub(2).max(1);
-            let rows: Vec<String> = highlight_code(trimmed, Some("repl"))
-                .into_iter()
-                .flat_map(|line| wrap_ansi(&line, avail))
-                .collect();
+            let rows: Vec<String> =
+                highlight_code(trimmed, Some("repl"))
+                    .into_iter()
+                    .flat_map(|line| wrap_ansi(&line, avail))
+                    .collect();
             let shown = rows.len().min(max);
             for row in &rows[..shown] {
                 self.push_row(format!("{}  {row}{RESET}", bar_prefix(depth)));
@@ -2621,7 +2685,7 @@ impl Ui {
         for line in text.lines() {
             for row in wrap_ansi(line, inner) {
                 self.pending
-                    .push(fill_bg(&format!(" {row}"), USER_BG, width));
+                    .push(fill_bg(&format!(" {USER_FG}{row}"), USER_BG, width));
             }
         }
         self.pending.push(fill_bg("", USER_BG, width));
@@ -2716,7 +2780,7 @@ impl Ui {
                 duration,
                 ..
             } => {
-                self.push_bar(depth, format!("exec {:.1}s", duration.as_secs_f64()));
+                self.push_bar(depth, format!("exec{RESET} {NUM_FG}{:.1}s", duration.as_secs_f64()));
                 self.push_preview(depth, &stdout, self.output_limit());
                 self.push_preview(depth, &stderr, self.output_limit());
                 if depth == 0 {
@@ -2791,14 +2855,14 @@ impl Ui {
                     Some(error) => {
                         self.push_bar(
                             depth + 1,
-                            format!("{RED}failed {:.1}s{RESET}", duration.as_secs_f64()),
+                            format!("{RED}failed{RESET} {NUM_FG}{:.1}s{RESET}", duration.as_secs_f64()),
                         );
                         self.push_preview(depth + 1, &error, self.output_limit());
                     }
                     None => {
                         self.push_bar(
                             depth + 1,
-                            format!("{GREEN}done {:.1}s{RESET}", duration.as_secs_f64()),
+                            format!("{GREEN}done{RESET} {NUM_FG}{:.1}s{RESET}", duration.as_secs_f64()),
                         );
                         self.push_preview_with_lang(
                             depth + 1,
@@ -2822,7 +2886,7 @@ impl Ui {
                 }
                 self.push_dot(
                     depth,
-                    format!("{BOLD}{model}{RESET} ← \"{prompt_preview}\""),
+                    format!("{SUBCALL_ACCENT}{model}{RESET} {DIM}←{RESET} {STRING_FG}\"{prompt_preview}\"{RESET}"),
                 );
                 if depth == 0 {
                     self.status = format!("waiting on {model}...");
@@ -2847,7 +2911,7 @@ impl Ui {
                 }
                 let text = match error {
                     Some(error) => format!("{RED}{model} failed:{RESET} {error}"),
-                    None => format!("{GREEN}{model} done {:.1}s{RESET}", duration.as_secs_f64()),
+                    None => format!("{GREEN}{model} done{RESET} {NUM_FG}{:.1}s{RESET}", duration.as_secs_f64()),
                 };
                 self.push_bar(depth, text);
                 if let Some(result_preview) = result_preview {
@@ -2855,7 +2919,7 @@ impl Ui {
                 }
             }
             RlmEvent::RunStart { depth } if depth > 0 => {
-                self.push_dot(depth, format!("{BOLD}rlm{RESET}"));
+                self.push_dot(depth, format!("{SUBCALL_ACCENT}rlm{RESET}"));
             }
             RlmEvent::RunEnd {
                 depth,
@@ -2927,7 +2991,7 @@ impl Ui {
     ) {
         match result {
             Ok(res) if record => {
-                self.push_bar(0, format!("exec {:.1}s", res.duration.as_secs_f64()));
+                self.push_bar(0, format!("exec{RESET} {NUM_FG}{:.1}s", res.duration.as_secs_f64()));
                 self.push_preview(0, &res.stdout, self.output_limit());
                 self.push_preview(0, &res.stderr, self.output_limit());
                 let bg = if res.stderr.trim().is_empty() {

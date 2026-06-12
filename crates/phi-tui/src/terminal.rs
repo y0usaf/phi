@@ -427,7 +427,14 @@ impl Wrapper {
     /// spaces; wraps before the word when it would overflow, mid-word when
     /// it cannot fit on a row of its own. `src` is the source display column
     /// of the first pending space.
-    fn place(&mut self, word: &str, word_w: usize, spaces: usize, word_state: &AnsiState, src: usize) {
+    fn place(
+        &mut self,
+        word: &str,
+        word_w: usize,
+        spaces: usize,
+        word_state: &AnsiState,
+        src: usize,
+    ) {
         let mut src = src;
         if self.col > 0 && self.col + spaces + word_w > self.width {
             // The break drops the spaces from the output, but the cursor can
@@ -497,7 +504,10 @@ pub fn wrap_ansi_locate(line: &str, width: usize, col: usize) -> (Vec<String>, (
     (rows, pos)
 }
 
-fn wrap_ansi_core(line: &str, width: usize) -> (Vec<String>, Vec<(usize, usize, usize)>, (usize, usize)) {
+fn wrap_ansi_core(
+    line: &str,
+    width: usize,
+) -> (Vec<String>, Vec<(usize, usize, usize)>, (usize, usize)) {
     let mut w = Wrapper {
         width: width.max(1),
         rows: Vec::new(),

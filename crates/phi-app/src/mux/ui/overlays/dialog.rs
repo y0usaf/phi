@@ -23,7 +23,14 @@ pub fn render_dialog_title_line(
     // A quiet rule carries the eye from title to info without decoration
     // competing with the dialog body.
     for index in 0..(rule_end - rule_start).max(0) {
-        surface.set_cell(rule_start + index, row, theme::BORDER, theme::SURFACE, "─", false);
+        surface.set_cell(
+            rule_start + index,
+            row,
+            theme::BORDER,
+            theme::SURFACE,
+            "─",
+            false,
+        );
     }
     if info_width > 0 && width > info_width {
         surface.put_text(
