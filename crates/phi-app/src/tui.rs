@@ -54,12 +54,11 @@ const NUM_FG: &str = "\x1b[38;2;170;150;230m";
 // User-echo text: legible but not white; white is reserved for model prose.
 const USER_FG: &str = "\x1b[38;2;190;200;215m";
 
-// Full-width container fills: user echoes and committed repl/tool blocks
-// both sit on a background; the fill re-applies it after each reset so
-// syntax highlighting renders on top of the surface.
+// User messages stay as full-width containers; repl/tool rendering is now
+// fence/indent-first with no container backgrounds.
 const USER_BG: &str = "\x1b[48;2;52;53;65m"; // userMessageBg #343541
 const REPL_BG: &str = USER_BG;
-const REPL_ERROR_BG: &str = "\x1b[48;2;70;40;45m"; // failed/interrupted block fill
+const REPL_ERROR_BG: &str = "\x1b[48;2;70;40;45m"; // retained for interrupted/error commit paths
 
 const CODE_PREVIEW_LINES: usize = 8;
 const OUTPUT_PREVIEW_LINES: usize = 5;
@@ -126,16 +125,15 @@ fn live_block_body(text: &str) -> Option<&str> {
     Some(body.split_once("\n```").map_or(body, |(body, _)| body))
 }
 
-/// Gutter for the first line of an action at `depth`: dim `│` rail columns,
-/// then a violet `⏺` anchor (violet = repl/recursion boundary, matching the
-/// fence color).
+/// Prefix for nested action rows. We keep only visual indentation now:
+/// no tree glyphs, no bullets, just space depth.
 fn dot_prefix(depth: usize) -> String {
-    format!("{DIM}{}{RESET}{REPL_FENCE}⏺{RESET} ", "│ ".repeat(depth))
+    "  ".repeat(depth + 1)
 }
 
-/// Gutter for continuation/result lines at `depth`: depth+1 dim `│` columns.
+/// Continuation/result lines stay aligned with the first line.
 fn bar_prefix(depth: usize) -> String {
-    format!("{DIM}{}{RESET}", "│ ".repeat(depth + 1))
+    "  ".repeat(depth + 1)
 }
 
 /// Cap persisted tool results at roughly the replay preview budget. The full
@@ -1215,8 +1213,7 @@ impl Ui {
                 if !tail.is_empty() {
                     tail.push(String::new());
                 }
-                let width = self.term.width();
-                tail.extend(self.block.iter().map(|row| fill_bg(row, REPL_BG, width)));
+                tail.extend(self.block.iter().cloned());
                 tail.extend(self.after_block.iter().cloned());
             }
             let mut prose = render_markdown(visible.trim(), self.markdown_width());
@@ -1228,12 +1225,7 @@ impl Ui {
                 if !tail.is_empty() {
                     tail.push(String::new());
                 }
-                let width = self.term.width();
-                tail.extend(
-                    self.repl_code_lines(0, block, self.code_limit())
-                        .into_iter()
-                        .map(|row| fill_bg(&row, REPL_BG, width)),
-                );
+                tail.extend(self.repl_code_lines(0, block, self.code_limit()));
             }
             let editor_visible = self
                 .editor
@@ -2584,19 +2576,14 @@ impl Ui {
         self.block_active = true;
     }
 
-    /// Commit the buffered block to scrollback over its final status
-    /// background, followed by any prose that streamed in behind it. The
-    /// fill re-applies the background after every reset, so syntax
-    /// highlighting inside the block survives on top of it.
-    fn commit_block(&mut self, bg: &str) {
+    /// Commit the buffered block to scrollback, followed by any prose that
+    /// streamed in behind it.
+    fn commit_block(&mut self, _bg: &str) {
         if !self.block_active {
             return;
         }
         self.block_active = false;
-        let width = self.term.width();
-        for row in std::mem::take(&mut self.block) {
-            self.pending.push(fill_bg(&row, bg, width));
-        }
+        self.pending.extend(std::mem::take(&mut self.block));
         let after = std::mem::take(&mut self.after_block);
         self.pending.extend(after);
     }
