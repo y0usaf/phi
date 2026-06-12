@@ -19,6 +19,24 @@ pub struct ProviderLm {
     thinking: RwLock<ThinkingLevel>,
 }
 
+/// Transient-looking provider failures are retried; auth/4xx errors are not.
+fn is_transient(error: &str) -> bool {
+    let e = error.to_ascii_lowercase();
+    let codes = ["429", "500", "502", "503", "504", "529"];
+    codes.iter().any(|c| e.contains(c))
+        || e.contains("overloaded")
+        || e.contains("rate limit")
+        || e.contains("rate_limit")
+        || e.contains("timed out")
+        || e.contains("timeout")
+        || e.contains("connection")
+        || e.contains("temporarily")
+        || e.contains("stream ended without a terminal event")
+}
+
+const RETRIES: u32 = 3;
+const BASE_BACKOFF_MS: u64 = 500;
+
 impl ProviderLm {
     pub fn new(
         registry: Arc<Registry>,
@@ -98,6 +116,45 @@ impl LanguageModel for ProviderLm {
         on_delta: DeltaSink,
         on_thinking: Option<ThinkingSink>,
     ) -> Result<Completion, String> {
+        // Retry-with-backoff on transient faults (429/5xx/transport), but
+        // only while nothing has streamed: once deltas reached the caller,
+        // retrying would duplicate visible output, so the error surfaces.
+        let mut attempt = 0u32;
+        loop {
+            let streamed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let flag = streamed.clone();
+            let inner = on_delta.clone();
+            let wrapped: DeltaSink = std::sync::Arc::new(move |delta: &str| {
+                flag.store(true, std::sync::atomic::Ordering::Relaxed);
+                inner(delta)
+            });
+            match self
+                .attempt_streaming(prompt, wrapped, on_thinking.clone())
+                .await
+            {
+                Ok(completion) => return Ok(completion),
+                Err(e)
+                    if attempt < RETRIES
+                        && is_transient(&e)
+                        && !streamed.load(std::sync::atomic::Ordering::Relaxed) =>
+                {
+                    let backoff = BASE_BACKOFF_MS << attempt;
+                    attempt += 1;
+                    tokio::time::sleep(std::time::Duration::from_millis(backoff)).await;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+}
+
+impl ProviderLm {
+    async fn attempt_streaming(
+        &self,
+        prompt: &[ChatMessage],
+        on_delta: DeltaSink,
+        on_thinking: Option<ThinkingSink>,
+    ) -> Result<Completion, String> {
         let model = self.model();
         let auth = self
             .auth
@@ -152,5 +209,23 @@ impl LanguageModel for ProviderLm {
             text: message.text(),
             usage: message.usage,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_transient;
+
+    #[test]
+    fn transient_classification() {
+        assert!(is_transient("HTTP 429 rate limit exceeded"));
+        assert!(is_transient("server error: 503 Service Unavailable"));
+        assert!(is_transient("Overloaded"));
+        assert!(is_transient("connection reset by peer"));
+        assert!(is_transient("request timed out"));
+        assert!(is_transient("stream ended without a terminal event"));
+        assert!(!is_transient("HTTP 401 unauthorized"));
+        assert!(!is_transient("no credentials for provider 'anthropic'"));
+        assert!(!is_transient("HTTP 400 invalid request"));
     }
 }
