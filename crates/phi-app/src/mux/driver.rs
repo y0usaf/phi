@@ -12,7 +12,7 @@ use tokio::task::JoinHandle;
 
 use super::status::{self, SessionStatus};
 use crate::session_builder::{self, SharedResources};
-use crate::tui::{self, SessionIo, SuspendRequest};
+use crate::tui::{self, HostModalRequest, SessionIo, SuspendRequest};
 
 /// Mux-local session identity, stable across rescans and restarts.
 pub type SessionKey = u64;
@@ -80,6 +80,7 @@ pub struct MuxChannels {
     pub status_tx: UnboundedSender<(SessionKey, SessionStatus)>,
     pub redraw_tx: UnboundedSender<()>,
     pub suspend_tx: UnboundedSender<(SessionKey, SuspendRequest)>,
+    pub host_modal_tx: UnboundedSender<(SessionKey, HostModalRequest)>,
 }
 
 /// Build and launch one embedded session for `cwd` (optionally resuming an
@@ -121,6 +122,16 @@ pub async fn spawn(
         }
     });
 
+    let (sess_host_modal_tx, mut sess_host_modal_rx) = mpsc::unbounded_channel();
+    let host_modal_relay = channels.host_modal_tx.clone();
+    tokio::spawn(async move {
+        while let Some(request) = sess_host_modal_rx.recv().await {
+            if host_modal_relay.send((key, request)).is_err() {
+                break;
+            }
+        }
+    });
+
     let (width, height) = size;
     let parser = Arc::new(Mutex::new(vt100::Parser::new(height, width, SCROLLBACK)));
     let (input_tx, input_rx) = mpsc::unbounded_channel();
@@ -134,6 +145,7 @@ pub async fn spawn(
         dimensions: Some(size),
         embedded: true,
         suspend_tx: Some(sess_suspend_tx),
+        host_modal_tx: Some(sess_host_modal_tx),
         cwd: cwd.to_path_buf(),
     };
     // Run the session under its own unwind boundary so one panicking

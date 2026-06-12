@@ -26,6 +26,9 @@ use super::ui::cell_surface::CellSurface;
 use super::ui::layout::{CellLayout, SIDEBAR_WIDTH_DEFAULT, compute_cell_layout};
 use super::ui::overlays::archive::{ArchiveOutcome, ArchiveViewerState, render_archive_viewer};
 use super::ui::overlays::help::{HelpOverlayState, render_help_overlay};
+use super::ui::overlays::model::{
+    ModelOverlayOutcome, ModelOverlayState, render_model_overlay,
+};
 use super::ui::overlays::usage::{UsageOverlayState, render_usage_overlay};
 use super::ui::scene::{
     Chrome, MuxMode, ScenePalette, StatusNoteKind, render_scene, statusline_status,
@@ -39,7 +42,7 @@ use super::ui::sidebar::{
 use super::workspace::{self, Workspace};
 use crate::config::MuxConfig;
 use crate::session_builder::SharedResources;
-use crate::tui;
+use crate::tui::{self, HostModalKind, HostModalRequest};
 
 const ANIMATION_TICK: Duration = Duration::from_millis(60);
 const NOTE_TTL: Duration = Duration::from_secs(4);
@@ -122,6 +125,7 @@ pub async fn run(shared: SharedResources, mux_config: MuxConfig, cwd: PathBuf) -
     let (status_tx, status_rx) = mpsc::unbounded_channel();
     let (redraw_tx, redraw_rx) = mpsc::unbounded_channel();
     let (suspend_tx, suspend_rx) = mpsc::unbounded_channel();
+    let (host_modal_tx, host_modal_rx) = mpsc::unbounded_channel();
 
     let mut app = MuxApp {
         shared,
@@ -131,6 +135,7 @@ pub async fn run(shared: SharedResources, mux_config: MuxConfig, cwd: PathBuf) -
         command_line: None,
         help_overlay: None,
         usage_overlay: None,
+        model_overlay: None,
         archive_viewer: None,
         selection: TerminalSelection::default(),
         clipboard: MuxClipboard::default(),
@@ -142,12 +147,13 @@ pub async fn run(shared: SharedResources, mux_config: MuxConfig, cwd: PathBuf) -
             status_tx,
             redraw_tx,
             suspend_tx,
+            host_modal_tx,
         },
         quit: false,
     };
 
     let result = app
-        .main_loop(&guard, status_rx, redraw_rx, suspend_rx)
+        .main_loop(&guard, status_rx, redraw_rx, suspend_rx, host_modal_rx)
         .await;
 
     app.persist_now();
@@ -170,6 +176,7 @@ struct MuxApp {
     command_line: Option<CommandLineState>,
     help_overlay: Option<HelpOverlayState>,
     usage_overlay: Option<UsageOverlayState>,
+    model_overlay: Option<ModelOverlayState>,
     archive_viewer: Option<ArchiveViewerState>,
     selection: TerminalSelection,
     clipboard: MuxClipboard,
@@ -188,6 +195,7 @@ impl MuxApp {
         mut status_rx: mpsc::UnboundedReceiver<(SessionKey, SessionStatus)>,
         mut redraw_rx: mpsc::UnboundedReceiver<()>,
         mut suspend_rx: mpsc::UnboundedReceiver<(SessionKey, tui::SuspendRequest)>,
+        mut host_modal_rx: mpsc::UnboundedReceiver<(SessionKey, HostModalRequest)>,
     ) -> Result<()> {
         use futures::StreamExt as _;
         let mut events = EventStream::new();
@@ -218,6 +226,10 @@ impl MuxApp {
                 }
                 Some((_key, request)) = suspend_rx.recv() => {
                     self.handle_suspend(guard, request);
+                    dirty = true;
+                }
+                Some((key, request)) = host_modal_rx.recv() => {
+                    self.handle_host_modal_request(key, request);
                     dirty = true;
                 }
                 _ = ticker.tick() => {
@@ -265,7 +277,10 @@ impl MuxApp {
     }
 
     fn overlay_active(&self) -> bool {
-        self.help_overlay.is_some() || self.usage_overlay.is_some() || self.archive_viewer.is_some()
+        self.help_overlay.is_some()
+            || self.usage_overlay.is_some()
+            || self.model_overlay.is_some()
+            || self.archive_viewer.is_some()
     }
 
     fn persist_now(&self) {
@@ -436,6 +451,14 @@ impl MuxApp {
             }
             return;
         }
+        if let Some(model) = &mut self.model_overlay {
+            match model.handle_key(&key, cols, rows) {
+                ModelOverlayOutcome::None => {}
+                ModelOverlayOutcome::Close => self.finish_model_overlay(None),
+                ModelOverlayOutcome::Submit(value) => self.finish_model_overlay(Some(value)),
+            }
+            return;
+        }
         if let Some(usage) = &mut self.usage_overlay {
             if usage.handle_key(&key, cols, rows) {
                 self.usage_overlay = None;
@@ -507,6 +530,8 @@ impl MuxApp {
             };
             if let Some(viewer) = &mut self.archive_viewer {
                 viewer.move_selection(delta);
+            } else if let Some(model) = &mut self.model_overlay {
+                model.move_selection(delta);
             } else if let Some(usage) = &mut self.usage_overlay {
                 usage.scroll_by(delta, cols, rows);
             } else if let Some(help) = &mut self.help_overlay {
@@ -844,7 +869,57 @@ impl MuxApp {
         }
     }
 
+    fn handle_host_modal_request(&mut self, key: SessionKey, request: HostModalRequest) {
+        match request.kind {
+            HostModalKind::Usage => {
+                self.usage_overlay = Some(UsageOverlayState::load());
+                let _ = request.response_tx.send(Ok(None));
+            }
+            HostModalKind::Model { root, current } => {
+                if self.focused_session().is_none_or(|session| session.key != key) {
+                    let _ = request
+                        .response_tx
+                        .send(Err("session lost focus before opening model picker".to_owned()));
+                    return;
+                }
+                if let Some(mut existing) = self.model_overlay.take() {
+                    if let Some(tx) = existing.response_tx.take() {
+                        let _ = tx.send(Ok(None));
+                    }
+                }
+                let models = self
+                    .shared
+                    .registry
+                    .supported_models()
+                    .map(|m| format!("{}/{}", m.provider, m.id))
+                    .collect::<Vec<_>>();
+                if models.is_empty() {
+                    let _ = request
+                        .response_tx
+                        .send(Err("no supported models available".to_owned()));
+                    return;
+                }
+                self.model_overlay = Some(ModelOverlayState::new(
+                    key,
+                    root,
+                    current,
+                    models,
+                    request.response_tx,
+                ));
+            }
+        }
+    }
+
+    fn finish_model_overlay(&mut self, selected: Option<String>) {
+        if let Some(mut model) = self.model_overlay.take()
+            && let Some(tx) = model.response_tx.take()
+        {
+            let _ = tx.send(Ok(selected));
+        }
+    }
+
     // ----- suspension ($EDITOR) --------------------------------------------
+
 
     fn handle_suspend(&mut self, guard: &RawModeGuard, request: tui::SuspendRequest) {
         let mut stdout = std::io::stdout();
@@ -936,6 +1011,9 @@ impl MuxApp {
 
         if let Some(viewer) = &mut self.archive_viewer {
             render_archive_viewer(&mut surface, viewer);
+            hardware_cursor = None;
+        } else if let Some(model) = &mut self.model_overlay {
+            render_model_overlay(&mut surface, model);
             hardware_cursor = None;
         } else if let Some(usage) = &mut self.usage_overlay {
             render_usage_overlay(&mut surface, usage);

@@ -23,6 +23,8 @@ use phi_tui::{
 };
 
 use crate::files::{self, FileSearcher};
+use crate::mux::ui::overlays::usage::usage_overlay_lines;
+use crate::mux::usage::load_usage_report;
 use crate::session::{self, SessionStore};
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
@@ -283,12 +285,29 @@ pub struct SuspendRequest {
     pub response_tx: oneshot::Sender<std::result::Result<Option<String>, String>>,
 }
 
+#[derive(Clone, Debug)]
+pub enum HostModalKind {
+    Model { root: bool, current: String },
+    Usage,
+}
+
+pub struct HostModalRequest {
+    pub kind: HostModalKind,
+    pub response_tx: oneshot::Sender<std::result::Result<Option<String>, String>>,
+}
+
+struct PendingHostModal {
+    kind: HostModalKind,
+    response_rx: oneshot::Receiver<std::result::Result<Option<String>, String>>,
+}
+
 pub struct SessionIo {
     pub writer: Option<Box<dyn std::io::Write + Send>>,
     pub event_rx: Option<mpsc::UnboundedReceiver<Event>>,
     pub dimensions: Option<(u16, u16)>,
     pub embedded: bool,
     pub suspend_tx: Option<mpsc::UnboundedSender<SuspendRequest>>,
+    pub host_modal_tx: Option<mpsc::UnboundedSender<HostModalRequest>>,
     pub cwd: PathBuf,
 }
 
@@ -300,6 +319,7 @@ impl SessionIo {
             dimensions: None,
             embedded: false,
             suspend_tx: None,
+            host_modal_tx: None,
             cwd,
         }
     }
@@ -372,6 +392,11 @@ const COMMANDS: &[CommandSpec] = &[
         desc: "reset the session (fresh REPL, history cleared)",
     },
     CommandSpec {
+        name: "usage",
+        args: "",
+        desc: "show usage totals",
+    },
+    CommandSpec {
         name: "help",
         args: "",
         desc: "show commands and keys",
@@ -399,6 +424,8 @@ enum PopupKind {
 enum SelectorKind {
     /// Value is a `provider/id` model name; true switches the root model.
     Model { root: bool },
+    /// Read-only usage browser; confirm just closes it.
+    Usage,
     /// Value is a session file path to resume.
     Resume,
     /// Value is the entry id of a user message to fork from.
@@ -632,6 +659,7 @@ pub async fn run(setup: TuiSetup, mut io: SessionIo) -> Result<()> {
         ui_setup,
         login_tx,
         io.cwd.clone(),
+        io.host_modal_tx.take(),
     );
     let restoring = ui.store.leaf().is_some();
     if restoring {
@@ -741,6 +769,22 @@ pub async fn run(setup: TuiSetup, mut io: SessionIo) -> Result<()> {
                 Ok(Some(new_text)) => {
                     ui.editor.set_text(new_text.trim_end_matches('\n'));
                     ui.refresh_popup();
+                }
+                Ok(None) => {}
+                Err(e) => ui.pending.push(format!("\x1b[31merror:{RESET} {e}")),
+            }
+        }
+        if let Some(pending_modal) = ui.pending_host_modal.take() {
+            let kind = pending_modal.kind.clone();
+            let result = pending_modal
+                .response_rx
+                .await
+                .unwrap_or_else(|_| Err("host modal request cancelled".to_owned()));
+            match result {
+                Ok(Some(value)) => {
+                    if let HostModalKind::Model { root, .. } = kind {
+                        ui.switch_model(&value, root);
+                    }
                 }
                 Ok(None) => {}
                 Err(e) => ui.pending.push(format!("\x1b[31merror:{RESET} {e}")),
@@ -917,6 +961,8 @@ struct Ui {
     /// Qualified `provider/id` names offered by /model completion.
     model_names: Vec<String>,
     login_tx: mpsc::UnboundedSender<LoginMsg>,
+    host_modal_tx: Option<mpsc::UnboundedSender<HostModalRequest>>,
+    pending_host_modal: Option<PendingHostModal>,
     /// Usage of the most recent completed run (footer stats).
     usage: Usage,
     /// Cached git branch for the footer, refreshed on a short TTL.
@@ -971,6 +1017,7 @@ impl Ui {
         setup: UiSetup,
         login_tx: mpsc::UnboundedSender<LoginMsg>,
         cwd: PathBuf,
+        host_modal_tx: Option<mpsc::UnboundedSender<HostModalRequest>>,
     ) -> Self {
         let UiSetup {
             max_iterations,
@@ -1026,6 +1073,8 @@ impl Ui {
             sub_lm,
             model_names,
             login_tx,
+            host_modal_tx,
+            pending_host_modal: None,
             usage: Usage::default(),
             branch: None,
             branch_at: std::time::Instant::now() - Duration::from_secs(60),
@@ -1341,6 +1390,78 @@ impl Ui {
         self.selector = Some((kind, widget));
     }
 
+    fn request_host_model_modal(&mut self, root: bool) -> bool {
+        let Some(host_modal_tx) = &self.host_modal_tx else {
+            return false;
+        };
+        let current = {
+            let m = if root {
+                self.root_lm.model()
+            } else {
+                self.sub_lm.model()
+            };
+            format!("{}/{}", m.provider, m.id)
+        };
+        let kind = HostModalKind::Model {
+            root,
+            current: current.clone(),
+        };
+        let (response_tx, response_rx) = oneshot::channel();
+        if host_modal_tx
+            .send(HostModalRequest {
+                kind: kind.clone(),
+                response_tx,
+            })
+            .is_err()
+        {
+            return false;
+        }
+        self.pending_host_modal = Some(PendingHostModal { kind, response_rx });
+        true
+    }
+
+    fn request_host_usage_modal(&mut self) -> bool {
+        let Some(host_modal_tx) = &self.host_modal_tx else {
+            return false;
+        };
+        let kind = HostModalKind::Usage;
+        let (response_tx, response_rx) = oneshot::channel();
+        if host_modal_tx
+            .send(HostModalRequest {
+                kind: kind.clone(),
+                response_tx,
+            })
+            .is_err()
+        {
+            return false;
+        }
+        self.pending_host_modal = Some(PendingHostModal { kind, response_rx });
+        true
+    }
+
+    fn open_usage_selector(&mut self) {
+        let report = load_usage_report();
+        let mut items = vec![SelectorItem::new(
+            "__usage_total__",
+            format!(
+                "entries {} · files {} · total {} tok · ${:.4}",
+                report.entries,
+                report.files_scanned,
+                format_tokens(report.totals.total_tokens()),
+                report.totals.total_cost
+            ),
+        )];
+        for (index, line) in usage_overlay_lines(&report).into_iter().enumerate() {
+            items.push(SelectorItem::new(format!("usage-{index}"), line));
+        }
+        let widget = Selector::new(
+            format!("Usage · {} entries", report.entries),
+            items,
+            false,
+        );
+        self.open_selector(SelectorKind::Usage, widget);
+    }
+
     /// /model, /submodel, ctrl-l: full-width model selector (pi-style),
     /// preselected at the active model.
     fn open_model_selector(&mut self, root: bool) {
@@ -1500,6 +1621,7 @@ impl Ui {
                 let value = widget.items()[index].value.clone();
                 match kind {
                     SelectorKind::Model { root } => self.switch_model(&value, root),
+                    SelectorKind::Usage => {}
                     SelectorKind::Resume => self.resume_session(&value, cmd_tx),
                     SelectorKind::Fork => self.fork_from(&value, cmd_tx),
                     SelectorKind::Tree => self.navigate_tree(&value, cmd_tx),
@@ -1882,7 +2004,9 @@ impl Ui {
                     return false;
                 }
                 if key.code == KeyCode::Char('l') && ctrl {
-                    self.open_model_selector(true);
+                    if !self.request_host_model_modal(true) {
+                        self.open_model_selector(true);
+                    }
                     return false;
                 }
                 if key.code == KeyCode::Char('t') && ctrl {
@@ -2003,10 +2127,17 @@ impl Ui {
             "/resume" => self.open_resume_selector(),
             "/tree" => self.open_tree_selector(),
             "/fork" => self.open_fork_selector(),
+            "/usage" => {
+                if !self.request_host_usage_modal() {
+                    self.open_usage_selector();
+                }
+            }
             _ if trimmed == "/model" || trimmed.starts_with("/model ") => {
                 let query = trimmed.strip_prefix("/model").unwrap().trim();
                 if query.is_empty() {
-                    self.open_model_selector(true);
+                    if !self.request_host_model_modal(true) {
+                        self.open_model_selector(true);
+                    }
                 } else {
                     self.switch_model(query, true);
                 }
@@ -2014,7 +2145,9 @@ impl Ui {
             _ if trimmed == "/submodel" || trimmed.starts_with("/submodel ") => {
                 let query = trimmed.strip_prefix("/submodel").unwrap().trim();
                 if query.is_empty() {
-                    self.open_model_selector(false);
+                    if !self.request_host_model_modal(false) {
+                        self.open_model_selector(false);
+                    }
                 } else {
                     self.switch_model(query, false);
                 }
