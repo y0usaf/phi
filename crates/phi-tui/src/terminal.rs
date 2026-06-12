@@ -153,13 +153,19 @@ impl<W: Write> Terminal<W> {
         let mut rows = Vec::new();
         let mut cursor_target = None;
         for (i, line) in live.iter().enumerate() {
-            let wrapped = wrap_ansi(line, self.width);
-            if let Some(c) = cursor
+            let wrapped = if let Some(c) = cursor
                 && c.line == i
             {
+                // Locate the cursor through the word-wrap layout (pi-style);
+                // dividing the column by the width is wrong as soon as a
+                // break drops whitespace or refuses to split a word.
                 let col = c.col.min(visible_width(line));
-                cursor_target = Some((rows.len() + col / self.width, col % self.width));
-            }
+                let (wrapped, (row, col)) = wrap_ansi_locate(line, self.width, col);
+                cursor_target = Some((rows.len() + row, col.min(self.width.saturating_sub(1))));
+                wrapped
+            } else {
+                wrap_ansi(line, self.width)
+            };
             rows.extend(wrapped);
         }
         // The live region is repainted by moving the cursor back up, which
@@ -408,20 +414,36 @@ struct Wrapper {
     rows: Vec<String>,
     row: String,
     col: usize,
+    /// `(source display column, row index, row column)` for every visible
+    /// grapheme placed, plus trailing-space and end-of-text marks. Maps a
+    /// display column of the unwrapped line to its wrapped position
+    /// (pi-style: the cursor is located through the wrap layout, never by
+    /// dividing the column by the width, which breaks under word-wrap).
+    marks: Vec<(usize, usize, usize)>,
 }
 
 impl Wrapper {
     /// Emit one committed word (escapes included), preceded by its pending
     /// spaces; wraps before the word when it would overflow, mid-word when
-    /// it cannot fit on a row of its own.
-    fn place(&mut self, word: &str, word_w: usize, spaces: usize, word_state: &AnsiState) {
+    /// it cannot fit on a row of its own. `src` is the source display column
+    /// of the first pending space.
+    fn place(&mut self, word: &str, word_w: usize, spaces: usize, word_state: &AnsiState, src: usize) {
+        let mut src = src;
         if self.col > 0 && self.col + spaces + word_w > self.width {
+            // The break drops the spaces from the output, but the cursor can
+            // still sit on them: keep them addressable past the row's end.
+            for i in 0..spaces {
+                self.marks.push((src + i, self.rows.len(), self.col + i));
+            }
+            src += spaces;
             self.break_row(word_state);
         } else {
             for _ in 0..spaces {
+                self.marks.push((src, self.rows.len(), self.col));
                 self.row.push(' ');
+                self.col += 1;
+                src += 1;
             }
-            self.col += spaces;
         }
         let mut local = word_state.clone();
         let mut rest = word;
@@ -438,8 +460,10 @@ impl Wrapper {
             if self.col + gw > self.width && self.col > 0 {
                 self.break_row(&local);
             }
+            self.marks.push((src, self.rows.len(), self.col));
             self.row.push_str(grapheme);
             self.col += gw;
+            src += gw;
             rest = &rest[grapheme.len()..];
         }
     }
@@ -457,11 +481,29 @@ impl Wrapper {
 /// (leading indentation is preserved) and active SGR/hyperlink state is
 /// re-opened on every continuation row. Escape sequences carry zero width.
 pub fn wrap_ansi(line: &str, width: usize) -> Vec<String> {
+    wrap_ansi_core(line, width).0
+}
+
+/// `wrap_ansi`, plus the wrapped (row, column) for a display column of the
+/// source line — the position the cursor must take after word-wrap. Columns
+/// past the end of the text park after the last grapheme.
+pub fn wrap_ansi_locate(line: &str, width: usize, col: usize) -> (Vec<String>, (usize, usize)) {
+    let (rows, marks, end) = wrap_ansi_core(line, width);
+    let pos = marks
+        .iter()
+        .find(|&&(src, _, _)| src >= col)
+        .map(|&(_, row, c)| (row, c))
+        .unwrap_or(end);
+    (rows, pos)
+}
+
+fn wrap_ansi_core(line: &str, width: usize) -> (Vec<String>, Vec<(usize, usize, usize)>, (usize, usize)) {
     let mut w = Wrapper {
         width: width.max(1),
         rows: Vec::new(),
         row: String::new(),
         col: 0,
+        marks: Vec::new(),
     };
 
     let mut state = AnsiState::default();
@@ -469,6 +511,10 @@ pub fn wrap_ansi(line: &str, width: usize) -> Vec<String> {
     let mut word = String::new();
     let mut word_w = 0;
     let mut spaces = 0;
+    // Source display column of the first pending space (or of the pending
+    // word when there are no pending spaces).
+    let mut src = 0;
+    let mut consumed = 0;
 
     let mut rest = line;
     while !rest.is_empty() {
@@ -483,12 +529,14 @@ pub fn wrap_ansi(line: &str, width: usize) -> Vec<String> {
         }
         if let Some(r) = rest.strip_prefix(' ') {
             if !word.is_empty() {
-                w.place(&word, word_w, spaces, &word_state);
+                w.place(&word, word_w, spaces, &word_state, src);
+                src = consumed;
                 word.clear();
                 word_w = 0;
                 spaces = 0;
             }
             spaces += 1;
+            consumed += 1;
             word_state = state.clone();
             rest = r;
             continue;
@@ -496,13 +544,25 @@ pub fn wrap_ansi(line: &str, width: usize) -> Vec<String> {
         let grapheme = rest.graphemes(true).next().unwrap();
         word.push_str(grapheme);
         word_w += grapheme.width();
+        consumed += grapheme.width();
         rest = &rest[grapheme.len()..];
     }
     if !word.is_empty() {
-        w.place(&word, word_w, spaces, &word_state);
+        w.place(&word, word_w, spaces, &word_state, src);
+        src = consumed - spaces;
+        spaces = 0;
     }
+    // Trailing spaces stay invisible (as before) but remain addressable so
+    // the cursor can sit on / after them; render clamps to the last column.
+    let _ = src;
+    for i in 0..spaces {
+        let row = w.rows.len();
+        w.marks.push((consumed - spaces + i, row, w.col + i));
+    }
+    let end_col = w.col + spaces;
     w.rows.push(w.row);
-    w.rows
+    let end = (w.rows.len() - 1, end_col);
+    (w.rows, w.marks, end)
 }
 
 /// Byte length of an escape sequence body (after the ESC byte).
@@ -613,6 +673,46 @@ mod tests {
         // Cursor moved up from row 1 to row 0, column 8 (1-based).
         assert!(out.contains("\x1b[1A"));
         assert!(out.contains("\x1b[8G"));
+    }
+
+    #[test]
+    fn wrap_ansi_locate_follows_word_wrap() {
+        // "hello world" at width 8 wraps to ["hello", "world"]; the old
+        // col/width arithmetic put col 7 ("o" of world, source col 7) at
+        // row 0 col 7 — it must be row 1 col 1.
+        let (rows, pos) = wrap_ansi_locate("hello world", 8, 7);
+        assert_eq!(rows, vec!["hello", "world"]);
+        assert_eq!(pos, (1, 1));
+        // Start of "world" (source col 6) is row 1 col 0.
+        assert_eq!(wrap_ansi_locate("hello world", 8, 6).1, (1, 0));
+        // The dropped break space (source col 5) parks at the end of row 0.
+        assert_eq!(wrap_ansi_locate("hello world", 8, 5).1, (0, 5));
+        // End of text parks after the last grapheme.
+        assert_eq!(wrap_ansi_locate("hello world", 8, 11).1, (1, 5));
+        // Hard character wrap still matches the plain arithmetic.
+        assert_eq!(wrap_ansi_locate("abcdefgh", 4, 6).1, (1, 2));
+        assert_eq!(wrap_ansi_locate("abcdefgh", 4, 8).1, (1, 4));
+        // Wide graphemes never split: 日本語 at width 4 → ["日本", "語"].
+        assert_eq!(wrap_ansi_locate("日本語", 4, 4).1, (1, 0));
+        // Empty line: cursor at origin.
+        assert_eq!(wrap_ansi_locate("", 4, 0).1, (0, 0));
+        // Trailing spaces stay addressable.
+        assert_eq!(wrap_ansi_locate("ab  ", 8, 4).1, (0, 4));
+    }
+
+    #[test]
+    fn render_cursor_tracks_word_wrapped_live_lines() {
+        let mut term = Terminal::new(Vec::new(), 8, 24);
+        term.render(
+            &[],
+            &["hello world".to_owned()],
+            Some(LiveCursor { line: 0, col: 8 }),
+        )
+        .unwrap();
+        // ["hello", "world"]: source col 8 is "r" → row 1, col 2.
+        assert_eq!(term.prev.len(), 2);
+        assert_eq!(term.cursor_row, 1);
+        assert_eq!(term.cursor_col, 2);
     }
 
     #[test]

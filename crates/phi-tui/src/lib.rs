@@ -17,4 +17,5 @@ pub use selector::{Selector, SelectorItem, SelectorOutcome};
 pub use spinner::Spinner;
 pub use terminal::{
     LiveCursor, RawModeGuard, Terminal, fill_bg, strip_ansi, visible_width, wrap_ansi,
+    wrap_ansi_locate,
 };

@@ -25,6 +25,19 @@ static THEME: LazyLock<Theme> = LazyLock::new(|| {
         .expect("bundled theme")
 });
 
+fn normalize_code_lang(lang: &str) -> String {
+    match lang.trim().to_ascii_lowercase().as_str() {
+        "rs" => "rust".to_owned(),
+        "js" | "javascript" | "jsx" | "ts" | "typescript" | "tsx" => "javascript".to_owned(),
+        "py" | "repl" => "python".to_owned(),
+        "sh" | "shell" | "zsh" | "fish" | "console" | "terminal" => "bash".to_owned(),
+        "yml" => "yaml".to_owned(),
+        "md" => "markdown".to_owned(),
+        "dockerfile" => "docker".to_owned(),
+        other => other.to_owned(),
+    }
+}
+
 #[derive(Clone, Copy, Default)]
 struct Style {
     bold: bool,
@@ -319,7 +332,8 @@ impl Renderer {
         let syntax = self
             .code_lang
             .as_deref()
-            .and_then(|lang| SYNTAXES.find_syntax_by_token(lang));
+            .map(normalize_code_lang)
+            .and_then(|lang| SYNTAXES.find_syntax_by_token(&lang));
         match syntax {
             Some(syntax) => {
                 let mut highlighter = HighlightLines::new(syntax, &THEME);
@@ -503,6 +517,27 @@ mod tests {
         let lines = render_markdown("```nosuchlang\nfoo bar\n```", 80);
         let code = lines.iter().find(|l| l.contains("foo bar")).unwrap();
         assert!(code.contains(DIM));
+    }
+
+    #[test]
+    fn common_language_aliases_are_highlighted() {
+        for lang in ["ts", "tsx", "js", "jsx", "py", "sh", "shell", "console"] {
+            let sample = match lang {
+                "py" => "print(1)",
+                "sh" | "shell" | "console" => "echo hi",
+                "ts" | "tsx" => "const x: number = 1;",
+                _ => "const x = 1;",
+            };
+            let lines = render_markdown(&format!("```{lang}\n{sample}\n```"), 80);
+            let code = lines
+                .iter()
+                .find(|l| crate::terminal::strip_ansi(l).contains(sample))
+                .unwrap();
+            assert!(
+                code.contains("\x1b[38;2;"),
+                "alias {lang} was not highlighted: {code:?}"
+            );
+        }
     }
 
     #[test]

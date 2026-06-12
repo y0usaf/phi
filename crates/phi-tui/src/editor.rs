@@ -50,6 +50,10 @@ pub struct Editor {
     /// Char-jump mode (ctrl+] / ctrl+alt+]): the next printable key jumps
     /// the cursor to that character within the current line, vi f/F style.
     jump: Option<JumpDir>,
+    /// Preferred visual column for vertical cursor movement, pi-style: when a
+    /// short line clamps the cursor, keep the original display column and
+    /// restore it once a later line is wide enough again.
+    preferred_col: Option<usize>,
 }
 
 impl Default for Editor {
@@ -73,6 +77,7 @@ impl Editor {
             pastes: Vec::new(),
             paste_counter: 0,
             jump: None,
+            preferred_col: None,
         }
     }
 
@@ -91,6 +96,7 @@ impl Editor {
         }
         self.row = self.lines.len() - 1;
         self.col = grapheme_count(&self.lines[self.row]);
+        self.preferred_col = None;
     }
 
     pub fn cursor_row(&self) -> usize {
@@ -129,6 +135,7 @@ impl Editor {
         self.col = 0;
         self.history_idx = None;
         self.draft = None;
+        self.preferred_col = None;
     }
 
     /// Logical lines and the cursor as (line index, display column). The
@@ -198,6 +205,9 @@ impl Editor {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let alt = key.modifiers.contains(KeyModifiers::ALT);
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+        if !matches!(key.code, KeyCode::Up | KeyCode::Down) {
+            self.preferred_col = None;
+        }
         // Yank state survives only across consecutive yanks (alt-y).
         let prev_yank = self.last_yank.take();
 
@@ -335,18 +345,40 @@ impl Editor {
 
     fn move_up(&mut self) {
         if self.row > 0 {
+            let current_visual = width_of_graphemes(&self.lines[self.row], self.col);
             self.row -= 1;
-            self.col = self.col.min(grapheme_count(&self.lines[self.row]));
+            let target_line = &self.lines[self.row];
+            let target_visual = width_of_graphemes(target_line, grapheme_count(target_line));
+            let desired = self.preferred_col.unwrap_or(current_visual);
+            if desired > target_visual {
+                self.preferred_col.get_or_insert(current_visual);
+                self.col = grapheme_count(target_line);
+            } else {
+                self.col = grapheme_index_at_width(target_line, desired);
+                self.preferred_col = None;
+            }
         } else {
+            self.preferred_col = None;
             self.history_prev();
         }
     }
 
     fn move_down(&mut self) {
         if self.row + 1 < self.lines.len() {
+            let current_visual = width_of_graphemes(&self.lines[self.row], self.col);
             self.row += 1;
-            self.col = self.col.min(grapheme_count(&self.lines[self.row]));
+            let target_line = &self.lines[self.row];
+            let target_visual = width_of_graphemes(target_line, grapheme_count(target_line));
+            let desired = self.preferred_col.unwrap_or(current_visual);
+            if desired > target_visual {
+                self.preferred_col.get_or_insert(current_visual);
+                self.col = grapheme_count(target_line);
+            } else {
+                self.col = grapheme_index_at_width(target_line, desired);
+                self.preferred_col = None;
+            }
         } else {
+            self.preferred_col = None;
             self.history_next();
         }
     }
@@ -376,6 +408,7 @@ impl Editor {
             self.lines = draft;
             self.row = self.lines.len() - 1;
             self.col = grapheme_count(&self.lines[self.row]);
+            self.preferred_col = None;
         }
     }
 
@@ -634,6 +667,22 @@ fn width_of_graphemes(s: &str, count: usize) -> usize {
     s.graphemes(true).take(count).map(|g| g.width()).sum()
 }
 
+fn grapheme_index_at_width(s: &str, target_width: usize) -> usize {
+    if target_width == 0 {
+        return 0;
+    }
+    let mut width = 0;
+    let mut index = 0;
+    for grapheme in s.graphemes(true) {
+        width += grapheme.width();
+        index += 1;
+        if width >= target_width {
+            return index;
+        }
+    }
+    index
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -752,6 +801,25 @@ mod tests {
         assert_eq!(ed.text(), "second");
         ed.handle_key(key(KeyCode::Down));
         assert_eq!(ed.text(), "draft");
+    }
+
+    #[test]
+    fn vertical_movement_preserves_preferred_column() {
+        let mut ed = Editor::new();
+        ed.set_text("abcde\nx\nabcde");
+        assert_eq!(ed.render().1, (2, 5));
+
+        ed.handle_key(key(KeyCode::Up));
+        assert_eq!(ed.render().1, (1, 1));
+
+        ed.handle_key(key(KeyCode::Up));
+        assert_eq!(ed.render().1, (0, 5));
+
+        ed.handle_key(key(KeyCode::Down));
+        assert_eq!(ed.render().1, (1, 1));
+
+        ed.handle_key(key(KeyCode::Down));
+        assert_eq!(ed.render().1, (2, 5));
     }
 
     #[test]
@@ -956,3 +1024,4 @@ mod tests {
         assert_eq!(ed.text(), "one");
     }
 }
+
