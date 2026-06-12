@@ -1,9 +1,9 @@
-//! Interactive TUI: an inline interface (phi-style scrollback + live region)
 //! driving a persistent `RlmSession` as a coding agent. Auth is handled
 //! in-TUI via /login, mirroring ref/phi: the OAuth flow runs in the
 //! background, the URL lands in scrollback, and the editor doubles as the
 //! paste-the-redirect-URL input (racing the localhost callback server).
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -13,8 +13,8 @@ use phi_ai::{
     Usage,
 };
 use phi_rlm::{
-    ContextPayload, ProviderLm, ReplResult, Rlm, RlmCompletion, RlmEvent, StopCause,
-    could_open_block, find_code_blocks, split_at_first_block, split_prose,
+    ContextPayload, ProviderLm, ReplResult, RestoredExchange, RestoredRepl, Rlm, RlmCompletion,
+    RlmEvent, StopCause, could_open_block, find_code_blocks, split_at_first_block, split_prose,
 };
 use phi_tui::crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers};
 use phi_tui::{
@@ -24,7 +24,7 @@ use phi_tui::{
 
 use crate::files::{self, FileSearcher};
 use crate::session::{self, SessionStore};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
 const RESET: &str = "\x1b[0m";
@@ -118,6 +118,22 @@ fn bar_prefix(depth: usize) -> String {
     format!("{DIM}{}{RESET}", "│ ".repeat(depth + 1))
 }
 
+/// Cap persisted tool results at roughly the replay preview budget. The full
+/// output already lives in the repl stdout payload; storing it twice only
+/// bloats the log with bytes nothing ever reads back.
+const TOOL_RESULT_LOG_BUDGET: usize = 4096;
+
+fn truncate_for_log(text: &str) -> String {
+    if text.len() <= TOOL_RESULT_LOG_BUDGET {
+        return text.to_owned();
+    }
+    let mut end = TOOL_RESULT_LOG_BUDGET;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}\n[truncated {} bytes]", &text[..end], text.len() - end)
+}
+
 /// Title line for a nested tool block: the tool's defining argument, pi-style
 /// (`$ cmd` for bash, `read path`, ...), falling back to `name key=value`.
 fn tool_title(name: &str, args: &serde_json::Value) -> String {
@@ -199,7 +215,8 @@ enum Cmd {
     Reset,
     /// Rebuild env history from persisted exchanges (resume/fork/tree).
     Restore {
-        exchanges: Vec<(String, String)>,
+        exchanges: Vec<RestoredExchange>,
+        pending: Vec<RestoredRepl>,
     },
     Shutdown,
 }
@@ -207,6 +224,7 @@ enum Cmd {
 enum Done {
     Run(RlmCompletion),
     Shell {
+        code: String,
         record: bool,
         result: Result<ReplResult, String>,
     },
@@ -258,6 +276,52 @@ pub struct UiSetup {
     pub sub_lm: Arc<ProviderLm>,
     /// On-disk session store recording the conversation tree.
     pub store: SessionStore,
+}
+
+pub struct SuspendRequest {
+    pub text: String,
+    pub response_tx: oneshot::Sender<std::result::Result<Option<String>, String>>,
+}
+
+pub struct SessionIo {
+    pub writer: Option<Box<dyn std::io::Write + Send>>,
+    pub event_rx: Option<mpsc::UnboundedReceiver<Event>>,
+    pub dimensions: Option<(u16, u16)>,
+    pub embedded: bool,
+    pub suspend_tx: Option<mpsc::UnboundedSender<SuspendRequest>>,
+    pub cwd: PathBuf,
+}
+
+impl SessionIo {
+    pub fn standalone(cwd: PathBuf) -> Self {
+        Self {
+            writer: None,
+            event_rx: None,
+            dimensions: None,
+            embedded: false,
+            suspend_tx: None,
+            cwd,
+        }
+    }
+}
+
+enum InputSource {
+    Tty(EventStream),
+    Forwarded(mpsc::UnboundedReceiver<Event>),
+    Closed,
+}
+
+impl InputSource {
+    async fn next(&mut self) -> Option<std::io::Result<Event>> {
+        match self {
+            Self::Tty(events) => {
+                use futures::StreamExt as _;
+                events.next().await
+            }
+            Self::Forwarded(rx) => rx.recv().await.map(Ok),
+            Self::Closed => None,
+        }
+    }
 }
 
 struct CommandSpec {
@@ -509,7 +573,7 @@ fn extract_path_token(before: &str) -> String {
     before[start..].to_owned()
 }
 
-pub async fn run(setup: TuiSetup) -> Result<()> {
+pub async fn run(setup: TuiSetup, mut io: SessionIo) -> Result<()> {
     let TuiSetup {
         rlm,
         payload,
@@ -534,13 +598,13 @@ pub async fn run(setup: TuiSetup) -> Result<()> {
                 }
                 Cmd::Shell { code, record } => {
                     let result = session.exec_shell(&code, record).await;
-                    if done_tx.send(Done::Shell { record, result }).is_err() {
+                    if done_tx.send(Done::Shell { code, record, result }).is_err() {
                         break;
                     }
                 }
                 Cmd::Reset => session.reset().await,
-                Cmd::Restore { exchanges } => {
-                    let result = session.restore_history(&exchanges).await;
+                Cmd::Restore { exchanges, pending } => {
+                    let result = session.restore_session(&exchanges, &pending).await;
                     if done_tx.send(Done::Restored(result)).is_err() {
                         break;
                     }
@@ -551,14 +615,33 @@ pub async fn run(setup: TuiSetup) -> Result<()> {
         session.shutdown().await;
     });
 
-    let guard = RawModeGuard::new()?;
-    let (width, height) = phi_tui::crossterm::terminal::size().unwrap_or((80, 24));
+    let guard = if io.embedded {
+        None
+    } else {
+        Some(RawModeGuard::new()?)
+    };
+    let (width, height) = io
+        .dimensions
+        .unwrap_or_else(|| phi_tui::crossterm::terminal::size().unwrap_or((80, 24)));
+    let writer = io
+        .writer
+        .take()
+        .unwrap_or_else(|| Box::new(std::io::stdout()));
     let mut ui = Ui::new(
-        Terminal::new(std::io::stdout(), width, height),
+        Terminal::new(writer, width, height),
         ui_setup,
         login_tx,
+        io.cwd.clone(),
     );
-    let mut input = EventStream::new();
+    let restoring = ui.store.leaf().is_some();
+    if restoring {
+        ui.replay_branch();
+        ui.restore_rlm(&cmd_tx);
+    }
+    let mut input = match io.event_rx.take() {
+        Some(rx) => InputSource::Forwarded(rx),
+        None => InputSource::Tty(EventStream::new()),
+    };
     let mut ticker = tokio::time::interval(Duration::from_millis(100));
     // Coalesce redraws to ~60fps (pi-style): bursts of stream deltas collapse
     // into one frame instead of repainting per SSE chunk.
@@ -567,28 +650,41 @@ pub async fn run(setup: TuiSetup) -> Result<()> {
     let mut dirty = false;
 
     // Terminal title (OSC 0), pi-style.
-    {
+    if !io.embedded {
         use std::io::Write as _;
         let mut out = std::io::stdout();
         let _ = write!(out, "\x1b]0;phi · {}\x07", display_path(&ui.cwd));
         let _ = out.flush();
     }
 
-    ui.greet(&missing_credentials);
+    if !restoring {
+        ui.greet(&missing_credentials);
+    }
     ui.draw()?;
 
     loop {
-        use futures::StreamExt;
         let quit = tokio::select! {
             maybe = input.next() => match maybe {
+                #[cfg(unix)]
+                Some(Ok(Event::Key(key)))
+                    if guard.is_some()
+                        && !io.embedded
+                        && key.kind != KeyEventKind::Release
+                        && key.code == KeyCode::Char('z')
+                        && key.modifiers.contains(KeyModifiers::CONTROL) =>
+                {
+                    let _ = ui.term.finish();
+                    if let Some(guard) = &guard {
+                        guard.suspend();
+                    }
+                    false
+                }
                 #[cfg(unix)]
                 Some(Ok(Event::Key(key)))
                     if key.kind != KeyEventKind::Release
                         && key.code == KeyCode::Char('z')
                         && key.modifiers.contains(KeyModifiers::CONTROL) =>
                 {
-                    let _ = ui.term.finish();
-                    guard.suspend();
                     false
                 }
                 Some(Ok(event)) => ui.handle_input(event, &cmd_tx),
@@ -620,10 +716,27 @@ pub async fn run(setup: TuiSetup) -> Result<()> {
             // Stop the event reader and hand the tty to the editor; the
             // cleared live region forces a full repaint afterwards.
             let _ = ui.term.finish();
-            drop(input);
             let text = ui.editor.expanded_text();
-            let result = guard.with_suspended(|| external_editor(&text));
-            input = EventStream::new();
+            let result = if let Some(guard) = &guard {
+                drop(std::mem::replace(&mut input, InputSource::Closed));
+                let result = guard.with_suspended(|| external_editor(&text));
+                input = InputSource::Tty(EventStream::new());
+                result
+            } else if let Some(suspend_tx) = &io.suspend_tx {
+                let (response_tx, response_rx) = oneshot::channel();
+                if suspend_tx
+                    .send(SuspendRequest { text, response_tx })
+                    .is_err()
+                {
+                    Err("external editor unavailable".to_owned())
+                } else {
+                    response_rx
+                        .await
+                        .unwrap_or_else(|_| Err("external editor request cancelled".to_owned()))
+                }
+            } else {
+                Err("external editor unavailable".to_owned())
+            };
             match result {
                 Ok(Some(new_text)) => {
                     ui.editor.set_text(new_text.trim_end_matches('\n'));
@@ -651,13 +764,15 @@ pub async fn run(setup: TuiSetup) -> Result<()> {
     ui.term.finish()?;
     drop(guard);
     let _ = tokio::time::timeout(Duration::from_secs(5), session_task).await;
-    println!("bye");
+    if !io.embedded {
+        println!("bye");
+    }
     Ok(())
 }
 
 /// Write `text` to a temp file, open it in $VISUAL/$EDITOR, and return the
 /// edited content (None when the editor exits non-zero).
-fn external_editor(text: &str) -> Result<Option<String>, String> {
+pub(crate) fn external_editor(text: &str) -> Result<Option<String>, String> {
     let editor = std::env::var("VISUAL")
         .or_else(|_| std::env::var("EDITOR"))
         .map_err(|_| "set $VISUAL or $EDITOR to use ctrl+g".to_owned())?;
@@ -714,7 +829,7 @@ impl LoginCallbacks for TuiLoginCallbacks {
 }
 
 struct Ui {
-    term: Terminal<std::io::Stdout>,
+    term: Terminal<Box<dyn std::io::Write + Send>>,
     editor: Editor,
     spinner: Spinner,
     /// Cancel token of the in-flight turn, if any.
@@ -760,6 +875,20 @@ struct Ui {
     /// it instead of the block's.
     block: Vec<(String, Option<&'static str>)>,
     block_active: bool,
+    /// Code of the in-flight depth-0 agent REPL block, stashed at
+    /// `CodeExecStart` and persisted to the session store at `CodeExecEnd`.
+    live_code: Option<String>,
+    /// Tool calls observed inside the in-flight depth-0 REPL block; args
+    /// stashed at `ToolStart`, completed at `ToolEnd`, persisted with the
+    /// block at `CodeExecEnd` so resume re-renders the same tool cards.
+    live_tools: Vec<session::ToolCall>,
+    /// Args of depth-0 tools still executing, keyed by engine call_id.
+    open_tool_args: std::collections::HashMap<u64, serde_json::Value>,
+    /// Sub-LLM calls observed inside the in-flight depth-0 REPL block;
+    /// prompt previews queue at `SubcallStart` and pair with `SubcallEnd`
+    /// in FIFO order (the engine emits no subcall ids).
+    live_subcalls: Vec<session::SubcallRecord>,
+    open_subcall_previews: std::collections::VecDeque<String>,
     /// Index into `block` of the first row of the nested tool currently
     /// executing; its rows are tinted with the tool background on `ToolEnd`.
     tool_rows_from: Option<usize>,
@@ -838,9 +967,10 @@ fn model_label(root: &Model, sub: &Model) -> String {
 
 impl Ui {
     fn new(
-        term: Terminal<std::io::Stdout>,
+        term: Terminal<Box<dyn std::io::Write + Send>>,
         setup: UiSetup,
         login_tx: mpsc::UnboundedSender<LoginMsg>,
+        cwd: PathBuf,
     ) -> Self {
         let UiSetup {
             max_iterations,
@@ -854,7 +984,6 @@ impl Ui {
             .supported_models()
             .map(|m| format!("{}/{}", m.provider, m.id))
             .collect();
-        let cwd = std::env::current_dir().unwrap_or_default();
         Self {
             term,
             editor: Editor::new(),
@@ -876,6 +1005,11 @@ impl Ui {
             pending: Vec::new(),
             block: Vec::new(),
             block_active: false,
+            live_code: None,
+            live_tools: Vec::new(),
+            open_tool_args: std::collections::HashMap::new(),
+            live_subcalls: Vec::new(),
+            open_subcall_previews: std::collections::VecDeque::new(),
             tool_rows_from: None,
             after_block: Vec::new(),
             last_gutter: false,
@@ -937,9 +1071,11 @@ impl Ui {
                 if !tail.is_empty() {
                     tail.push(String::new());
                 }
-                tail.extend(self.block.iter().map(|(row, row_bg)| {
-                    fill_bg(row, row_bg.unwrap_or(REPL_BG), bg_width)
-                }));
+                tail.extend(
+                    self.block
+                        .iter()
+                        .map(|(row, row_bg)| fill_bg(row, row_bg.unwrap_or(REPL_BG), bg_width)),
+                );
                 tail.extend(self.after_block.iter().cloned());
             }
             let mut prose = render_markdown(visible.trim(), self.markdown_width());
@@ -963,7 +1099,8 @@ impl Ui {
                 .0
                 .len()
                 .min((self.term.height() * 3 / 10).max(5));
-            let reserved = 5 + editor_visible + self.queued.len();
+            let reserved =
+                5 + editor_visible + self.queued.len() + usize::from(!self.queued.is_empty());
             let budget = self.term.height().saturating_sub(reserved).max(1);
             if tail.len() > budget {
                 tail.drain(..tail.len() - budget);
@@ -979,30 +1116,29 @@ impl Ui {
         }
 
         let width = self.term.width();
-        let rule = |indicator: String| {
-            if indicator.is_empty() {
-                format!("{DIM}{}{RESET}", "─".repeat(width))
-            } else {
-                let pad = width.saturating_sub(indicator.len());
-                format!(
-                    "{DIM}───{indicator}{}{RESET}",
-                    "─".repeat(pad.saturating_sub(3))
-                )
-            }
-        };
+
+        // Persistent footer chrome: contrast line first, then cwd/branch.
+        if self.branch_at.elapsed() > Duration::from_secs(5) {
+            self.branch = git_branch(&self.cwd);
+            self.branch_at = std::time::Instant::now();
+        }
+        let mut pwd = display_path(&self.cwd);
+        if let Some(branch) = &self.branch {
+            pwd.push_str(&format!(" ({branch})"));
+        }
+        lines.push(format!("{RESET}{}{RESET}", "─".repeat(width)));
+        lines.push(format!("{DIM}{pwd}{RESET}"));
 
         let cursor;
         if let Some((_, widget)) = &self.selector {
-            // Selector replaces the editor area (pi's showSelector).
+            // Selector replaces the editor area below the cwd line.
             let (sel_lines, sel_cursor) = widget.render(width);
-            let top = lines.len() + 1;
-            lines.push(rule(String::new()));
+            let top = lines.len();
             cursor = sel_cursor.map(|(line, col)| LiveCursor {
                 line: top + line,
                 col,
             });
             lines.extend(sel_lines);
-            lines.push(rule(String::new()));
             let hint = if widget.searchable() {
                 "type to filter · up/down select · enter confirm · esc cancel"
             } else {
@@ -1010,9 +1146,10 @@ impl Ui {
             };
             lines.push(format!("{DIM}{hint}{RESET}"));
         } else {
-            // Editor viewport, pi-style: at most 30% of the terminal (min 5
-            // lines), scrolled to keep the cursor visible, with `↑/↓ N more`
-            // indicators in the rules.
+            // Editor viewport: at most 30% of the terminal (min 5 lines),
+            // scrolled to keep the cursor visible. No surrounding rails; the
+            // first line keeps the bold prompt marker and continuations stay
+            // minimally indented.
             let (editor_lines, (row, col)) = self.editor.render();
             let max_visible = (self.term.height() * 3 / 10).max(5);
             if row < self.editor_scroll {
@@ -1024,30 +1161,31 @@ impl Ui {
                 .editor_scroll
                 .min(editor_lines.len().saturating_sub(max_visible));
             let end = (self.editor_scroll + max_visible).min(editor_lines.len());
-            let below = editor_lines.len() - end;
 
-            let editor_top = lines.len() + 1;
-            let above = self.editor_scroll;
-            lines.push(rule(if above > 0 {
-                format!(" ↑ {above} more ")
-            } else {
-                String::new()
-            }));
+            let editor_top = lines.len();
             for (i, line) in editor_lines[self.editor_scroll..end].iter().enumerate() {
                 if i + self.editor_scroll == 0 {
-                    lines.push(format!("{BOLD}›{RESET} {line}"));
+                    if line.is_empty() {
+                        lines.push(format!("{BOLD}›{RESET}"));
+                    } else {
+                        lines.push(format!("{BOLD}›{RESET} {line}"));
+                    }
                 } else {
                     lines.push(format!("  {line}"));
                 }
             }
-            lines.push(rule(if below > 0 {
-                format!(" ↓ {below} more ")
+            if end < editor_lines.len() {
+                let below = editor_lines.len() - end;
+                lines.push(format!("{DIM}↓ {below} more{RESET}"));
+            }
+            let prompt_cols = if row == 0 && editor_lines.first().is_some_and(|line| line.is_empty()) {
+                1
             } else {
-                String::new()
-            }));
+                2
+            };
             cursor = Some(LiveCursor {
                 line: editor_top + (row - self.editor_scroll),
-                col: col + 2,
+                col: col + prompt_cols,
             });
 
             for text in &self.queued {
@@ -1060,34 +1198,25 @@ impl Ui {
                 lines.extend(render_popup(popup));
             }
 
-            // Contextual hint, shown only when there is a mode to explain.
-            let hint = if self.login.is_some() {
-                Some(
+            // Contextual hints, shown only when there is a mode to explain.
+            let hints: &[&str] = if self.login.is_some() {
+                &[
                     "finish login in the browser, or paste the redirect URL and press enter · esc cancels",
-                )
+                ]
             } else if self.popup.is_some() {
-                Some("tab complete · up/down select · enter accept · esc dismiss")
+                &["tab complete · up/down select · enter accept · esc dismiss"]
+            } else if self.running.is_some() && self.queued.is_empty() {
+                &["enter queue follow-up · esc cancel"]
             } else if self.running.is_some() {
-                Some("enter queue follow-up · alt+up edit queued · esc cancel")
+                &["enter queue follow-up", "alt+up edit queued · esc cancel"]
             } else {
-                None
+                &[]
             };
-            if let Some(hint) = hint {
+            for hint in hints {
                 lines.push(format!("{DIM}{hint}{RESET}"));
             }
         }
 
-        // Persistent footer (pi-style): pwd (branch), then stats left and
-        // model · thinking right.
-        if self.branch_at.elapsed() > Duration::from_secs(5) {
-            self.branch = git_branch(&self.cwd);
-            self.branch_at = std::time::Instant::now();
-        }
-        let mut pwd = display_path(&self.cwd);
-        if let Some(branch) = &self.branch {
-            pwd.push_str(&format!(" ({branch})"));
-        }
-        lines.push(format!("{DIM}{pwd}{RESET}"));
         let left = if self.usage.total_tokens > 0 {
             format!(
                 "↑{} ↓{} ${:.4}",
@@ -1098,20 +1227,24 @@ impl Ui {
         } else {
             String::new()
         };
-        let right = format!(
+        let mut right = format!(
             "{} · thinking:{}",
             self.model_label,
             self.root_lm.thinking().as_str()
         );
-        let used = phi_tui::visible_width(&left) + phi_tui::visible_width(&right);
-        if used < width {
-            lines.push(format!(
-                "{DIM}{left}{}{right}{RESET}",
-                " ".repeat(width - used)
-            ));
-        } else {
-            lines.push(format!("{DIM}{left} {right}{RESET}"));
+        if self.expand_thinking {
+            right.push_str(" · thoughts:show");
         }
+        if self.expand_tools {
+            right.push_str(" · tools:full");
+        }
+        let footer = match (left.is_empty(), right.is_empty()) {
+            (true, true) => String::new(),
+            (true, false) => right,
+            (false, true) => left,
+            (false, false) => format!("{left} · {right}"),
+        };
+        lines.push(format!("{DIM}{footer}{RESET}"));
         (lines, cursor)
     }
 
@@ -1310,6 +1443,7 @@ impl Ui {
         self.open_selector(SelectorKind::Fork, widget);
     }
 
+
     /// /tree (or esc esc): navigate the whole session tree.
     fn open_tree_selector(&mut self) {
         if !self.session_idle() {
@@ -1439,8 +1573,8 @@ impl Ui {
 
     /// Rebuild the REPL env history from the active branch.
     fn restore_rlm(&mut self, cmd_tx: &mpsc::UnboundedSender<Cmd>) {
-        let exchanges = self.store.branch_exchanges();
-        let _ = cmd_tx.send(Cmd::Restore { exchanges });
+        let (exchanges, pending) = self.store.branch_restore();
+        let _ = cmd_tx.send(Cmd::Restore { exchanges, pending });
     }
 
     /// Re-render the active branch into scrollback, mirroring how prompts
@@ -1449,18 +1583,122 @@ impl Ui {
     /// stacking below it.
     fn replay_branch(&mut self) {
         let _ = self.term.clear_all();
-        let entries: Vec<(session::Role, String)> = self
+        enum ReplayItem {
+            Message(session::Role, String),
+            Repl {
+                code: String,
+                stdout: String,
+                stderr: String,
+                duration_secs: f64,
+                tools: Vec<session::ToolCall>,
+                subcalls: Vec<session::SubcallRecord>,
+            },
+        }
+        let items: Vec<ReplayItem> = self
             .store
-            .branch()
+            .branch_items()
             .into_iter()
-            .map(|e| (e.role, e.text.clone()))
+            .map(|item| match item {
+                session::BranchItem::Message(entry) => {
+                    ReplayItem::Message(entry.role, entry.text.clone())
+                }
+                session::BranchItem::Repl(repl) => ReplayItem::Repl {
+                    code: repl.code.clone(),
+                    stdout: repl.stdout.clone(),
+                    stderr: repl.stderr.clone(),
+                    duration_secs: repl.duration_secs,
+                    tools: repl.tools.clone(),
+                    subcalls: repl.subcalls.clone(),
+                },
+            })
             .collect();
-        for (role, text) in entries {
-            match role {
-                session::Role::User => self.push_user_message(&text),
-                session::Role::Assistant => self.push_assistant_message(&text),
+        for item in items {
+            match item {
+                ReplayItem::Message(role, text) => match role {
+                    session::Role::User => self.push_user_message(&text),
+                    session::Role::Assistant => self.push_assistant_message(&text),
+                },
+                ReplayItem::Repl {
+                    code,
+                    stdout,
+                    stderr,
+                    duration_secs,
+                    tools,
+                    subcalls,
+                } => self.push_repl_replay(&code, &stdout, &stderr, duration_secs, &tools, &subcalls),
             }
         }
+        // A previous run died mid-turn (exchange_start without its
+        // exchange_end): say so instead of silently presenting a transcript
+        // that ends earlier than the user remembers, then durably close the
+        // exchange so the notice appears once.
+        if self.store.interrupted_exchange().is_some() {
+            self.pending.push(String::new());
+            self.pending.push(format!(
+                "{YELLOW}previous run was interrupted mid-turn; completed work up to the last checkpoint is shown above{RESET}"
+            ));
+            self.last_gutter = false;
+            let _ = self.store.acknowledge_interrupted();
+        }
+    }
+
+    fn push_repl_replay(
+        &mut self,
+        code: &str,
+        stdout: &str,
+        stderr: &str,
+        duration_secs: f64,
+        tools: &[session::ToolCall],
+        subcalls: &[session::SubcallRecord],
+    ) {
+        self.begin_block();
+        self.push_dot(0, format!("{BOLD}repl{RESET}"));
+        self.push_preview(0, code, self.code_limit());
+        // Replay the persisted tool calls and sub-LLM calls nested in the
+        // block, mirroring the live ToolStart/ToolEnd rendering so a
+        // resumed session looks like the one the user actually saw.
+        for tool in tools {
+            let start = self.block.len();
+            self.push_dot(1, tool_title(&tool.name, &tool.args));
+            let bg = if tool.error.is_some() {
+                TOOL_ERROR_BG
+            } else {
+                TOOL_SUCCESS_BG
+            };
+            match &tool.error {
+                Some(error) => {
+                    self.push_bar(1, format!("failed {:.1}s", tool.duration_secs));
+                    self.push_preview(1, error, self.output_limit());
+                }
+                None => {
+                    self.push_bar(1, format!("done {:.1}s", tool.duration_secs));
+                    self.push_preview(1, &tool.result, self.output_limit());
+                }
+            }
+            for (_, row_bg) in &mut self.block[start..] {
+                *row_bg = Some(bg);
+            }
+        }
+        for subcall in subcalls {
+            self.push_dot(
+                0,
+                format!("{BOLD}{}{RESET} ← \"{}\"", subcall.model, subcall.prompt_preview),
+            );
+            let text = match &subcall.error {
+                Some(error) => format!("{} failed: {error}", subcall.model),
+                None => format!("{} done {:.1}s", subcall.model, subcall.duration_secs),
+            };
+            self.push_bar(0, text);
+        }
+        self.push_bar(0, format!("exec {duration_secs:.1}s"));
+        self.push_preview(0, stdout, self.output_limit());
+        self.push_preview(0, stderr, self.output_limit());
+        let bg = if stderr.trim().is_empty() {
+            REPL_BG
+        } else {
+            REPL_ERROR_BG
+        };
+        self.commit_block(bg);
     }
 
     /// Render a persisted assistant message the way it looked live: prose as
@@ -1850,6 +2088,9 @@ impl Ui {
             self.pending
                 .push(format!("{YELLOW}session not saved:{RESET} {e}"));
         }
+        // Durable turn boundary: an exchange_start without its exchange_end
+        // is how a crash mid-turn stays detectable after restart.
+        let _ = self.store.begin_exchange();
         let cancel = CancellationToken::new();
         self.running = Some(cancel.clone());
         self.turn = 0;
@@ -2231,6 +2472,7 @@ impl Ui {
                     }
                     self.status = "running code...".to_owned();
                     self.begin_block();
+                    self.live_code = Some(code.clone());
                 }
                 self.push_dot(depth, format!("{BOLD}repl{RESET}"));
                 self.push_preview(depth, &code, self.code_limit());
@@ -2253,13 +2495,36 @@ impl Ui {
                     };
                     self.commit_block(bg);
                     self.status = "thinking...".to_owned();
+                    // Checkpoint the completed step as it happens (not at
+                    // exchange end): a crash later in the turn must not lose
+                    // work already paid for. `branch_restore` replays these
+                    // to rebuild the REPL env.
+                    if let Some(code) = self.live_code.take() {
+                        let _ = self.store.append_repl(
+                            &code,
+                            &stdout,
+                            &stderr,
+                            duration.as_secs_f64(),
+                            session::ReplKind::Agent,
+                            std::mem::take(&mut self.live_tools),
+                            std::mem::take(&mut self.live_subcalls),
+                        );
+                    }
+                    self.open_tool_args.clear();
+                    self.open_subcall_previews.clear();
                 }
             }
             // Prelude tools run inside the REPL block at `depth`, so they
             // render one gutter level deeper, nested in that block.
             RlmEvent::ToolStart {
-                depth, name, args, ..
+                depth,
+                call_id,
+                name,
+                args,
             } => {
+                if depth == 0 {
+                    self.open_tool_args.insert(call_id, args.clone());
+                }
                 if self.block_active {
                     self.tool_rows_from = Some(self.block.len());
                 }
@@ -2270,11 +2535,25 @@ impl Ui {
             }
             RlmEvent::ToolEnd {
                 depth,
+                call_id,
+                name,
                 result,
                 error,
                 duration,
-                ..
             } => {
+                if depth == 0 {
+                    let args = self.open_tool_args.remove(&call_id).unwrap_or_default();
+                    // Replay only ever renders a short preview, and the full
+                    // text already lands in the repl stdout payload, so cap
+                    // what gets persisted per tool call.
+                    self.live_tools.push(session::ToolCall {
+                        name: name.clone(),
+                        args,
+                        result: truncate_for_log(&result),
+                        error: error.as_deref().map(truncate_for_log),
+                        duration_secs: duration.as_secs_f64(),
+                    });
+                }
                 let bg = if error.is_some() {
                     TOOL_ERROR_BG
                 } else {
@@ -2304,6 +2583,10 @@ impl Ui {
                 model,
                 prompt_preview,
             } => {
+                if depth == 0 {
+                    self.open_subcall_previews
+                        .push_back(prompt_preview.clone());
+                }
                 self.push_dot(
                     depth,
                     format!("{BOLD}{model}{RESET} ← \"{prompt_preview}\""),
@@ -2318,6 +2601,15 @@ impl Ui {
                 duration,
                 error,
             } => {
+                if depth == 0 {
+                    let prompt_preview = self.open_subcall_previews.pop_front().unwrap_or_default();
+                    self.live_subcalls.push(session::SubcallRecord {
+                        model: model.clone(),
+                        prompt_preview,
+                        error: error.clone(),
+                        duration_secs: duration.as_secs_f64(),
+                    });
+                }
                 let text = match error {
                     Some(error) => format!("{model} failed: {error}"),
                     None => format!("{model} done {:.1}s", duration.as_secs_f64()),
@@ -2361,7 +2653,7 @@ impl Ui {
     fn handle_done(&mut self, done: Done, cmd_tx: &mpsc::UnboundedSender<Cmd>) {
         match done {
             Done::Run(completion) => self.handle_run_done(completion),
-            Done::Shell { record, result } => self.handle_shell_done(record, result),
+            Done::Shell { code, record, result } => self.handle_shell_done(code, record, result),
             Done::Restored(result) => {
                 if let Err(e) = result {
                     self.pending
@@ -2385,7 +2677,7 @@ impl Ui {
         }
     }
 
-    fn handle_shell_done(&mut self, record: bool, result: Result<ReplResult, String>) {
+    fn handle_shell_done(&mut self, code: String, record: bool, result: Result<ReplResult, String>) {
         match result {
             Ok(res) if record => {
                 self.push_bar(0, format!("exec {:.1}s", res.duration.as_secs_f64()));
@@ -2397,6 +2689,15 @@ impl Ui {
                     REPL_ERROR_BG
                 };
                 self.commit_block(bg);
+                let _ = self.store.append_repl(
+                    &code,
+                    &res.stdout,
+                    &res.stderr,
+                    res.duration.as_secs_f64(),
+                    session::ReplKind::Shell,
+                    Vec::new(),
+                    Vec::new(),
+                );
             }
             Ok(res) => {
                 let output = format!("{}{}", res.stdout, res.stderr);
@@ -2423,6 +2724,7 @@ impl Ui {
     fn handle_run_done(&mut self, completion: RlmCompletion) {
         // A block still open here never finished (cancel/failure mid-exec).
         self.commit_block(REPL_ERROR_BG);
+        self.live_code = None;
         self.running = None;
         self.stream.clear();
         self.thinking.clear();
@@ -2436,10 +2738,28 @@ impl Ui {
         // Mirror the env's history condition so the store and the REPL's
         // history_N variables stay aligned.
         if completion.stop != StopCause::Failed && !completion.response.trim().is_empty() {
-            let _ = self
-                .store
-                .append(session::Role::Assistant, &completion.response);
+            let usage = session::SessionUsage {
+                input: completion.usage.input,
+                output: completion.usage.output,
+                cache_read: completion.usage.cache_read,
+                cache_write: completion.usage.cache_write,
+                cost_total: completion.usage.cost.total,
+                model: self.model_label.clone(),
+            };
+            let _ = self.store.append_with_usage(
+                session::Role::Assistant,
+                &completion.response,
+                Some(usage),
+            );
         }
+        // Durably close the turn: completed, failed, or interrupted is a
+        // recorded fact, not an inference from a missing assistant message.
+        let status = match completion.stop {
+            StopCause::Failed => session::ExchangeStatus::Failed,
+            StopCause::Cancelled => session::ExchangeStatus::Interrupted,
+            _ => session::ExchangeStatus::Completed,
+        };
+        let _ = self.store.end_exchange(status);
         self.usage = completion.usage;
         self.pending.push(String::new());
         self.pending.push(format!(
@@ -2587,3 +2907,4 @@ mod tests {
         assert!(complete("/model two words", &models()).is_none());
     }
 }
+

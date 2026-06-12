@@ -1,0 +1,159 @@
+//! Per-project session construction shared by TUI mode and mux mode: loads
+//! the project's layered config, resolves models, and assembles the engine,
+//! session store, and UI handles for one interactive coding session.
+
+use std::path::Path;
+use std::sync::Arc;
+use std::time::Duration;
+
+use anyhow::{Context as _, Result};
+use phi_ai::{AuthStorage, Model, Registry, ThinkingLevel};
+use phi_builtins::prelude::{CODING_PRELUDE, coding_tools_section};
+use phi_cli::Args;
+use phi_rlm::engine::PythonEnvFactory;
+use phi_rlm::{ContextPayload, ProviderLm, Rlm, RlmConfig};
+
+use crate::config::{Config, Settings};
+use crate::session::SessionStore;
+use crate::tui::{TuiSetup, UiSetup};
+
+/// Process-wide handles shared by every session.
+pub struct SharedResources {
+    pub args: Args,
+    pub storage: Arc<AuthStorage>,
+    pub registry: Arc<Registry>,
+}
+
+/// Build a ready-to-run interactive session rooted at `cwd`. Each call loads
+/// the project's own `.phi/config.lua`, so projects in one mux can use
+/// different models, pythons, or limits. With `resume`, the session picks up
+/// an existing JSONL instead of starting fresh.
+pub async fn build_session(
+    cwd: &Path,
+    shared: &SharedResources,
+    resume: Option<&Path>,
+) -> Result<TuiSetup> {
+    let SharedResources {
+        args,
+        storage,
+        registry,
+    } = shared;
+    let settings = Settings::resolve(args, Config::load(cwd)?, true);
+
+    let root_model = find_model(registry, &settings.model)?;
+    let sub_model = match &settings.sub_model {
+        Some(query) => find_model(registry, query)?,
+        None => root_model.clone(),
+    };
+    let thinking: ThinkingLevel = settings
+        .thinking
+        .parse()
+        .map_err(|e: String| anyhow::anyhow!(e))?;
+    let sub_model_thinking: ThinkingLevel = settings
+        .sub_model_thinking
+        .parse()
+        .map_err(|e: String| anyhow::anyhow!(e))?;
+
+    if let Some(key) = &args.api_key {
+        storage.set_runtime_api_key(&root_model.provider, key);
+        if sub_model.provider != root_model.provider {
+            storage.set_runtime_api_key(&sub_model.provider, key);
+        }
+    }
+    let mut missing_credentials = Vec::new();
+    for provider in [&root_model.provider, &sub_model.provider] {
+        if !missing_credentials.contains(provider) && storage.resolve(provider).await?.is_none() {
+            missing_credentials.push(provider.clone());
+        }
+    }
+
+    let config = RlmConfig {
+        max_depth: settings.max_depth,
+        max_iterations: settings.max_iterations,
+        max_budget: settings.budget,
+        max_timeout: settings.timeout.map(Duration::from_secs),
+        max_tokens: settings.max_tokens,
+        max_errors: settings.max_errors,
+        max_concurrent_subcalls: settings.max_concurrent_subcalls,
+        setup_code: Some(CODING_PRELUDE.to_owned()),
+        tools_section: Some(coding_tools_section()),
+        cwd: Some(cwd.display().to_string()),
+        user_prologue: Some(format!(
+            "You are a coding agent operating directly in the user's working directory: {}. \
+             Use the pre-defined helper functions to explore and modify the project.",
+            cwd.display()
+        )),
+        ..RlmConfig::default()
+    };
+
+    let root = Arc::new(ProviderLm::new(
+        registry.clone(),
+        root_model,
+        storage.clone(),
+        thinking,
+    ));
+    let sub = Arc::new(ProviderLm::new(
+        registry.clone(),
+        sub_model,
+        storage.clone(),
+        sub_model_thinking,
+    ));
+    let envs = Arc::new(PythonEnvFactory {
+        python: settings.python.clone(),
+    });
+
+    let payload = ContextPayload::Str(workspace_context(cwd));
+    let store = match resume {
+        Some(path) => SessionStore::load(path)?,
+        None => SessionStore::new(cwd)?,
+    };
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let rlm = Rlm::new(config, root.clone(), sub.clone(), envs).with_events(tx);
+    Ok(TuiSetup {
+        rlm,
+        payload,
+        events: rx,
+        missing_credentials,
+        ui: UiSetup {
+            max_iterations: settings.max_iterations,
+            storage: storage.clone(),
+            registry: registry.clone(),
+            root_lm: root,
+            sub_lm: sub,
+            store,
+        },
+    })
+}
+
+pub fn find_model(registry: &Registry, query: &str) -> Result<Model> {
+    registry
+        .find(query)
+        .cloned()
+        .with_context(|| format!("unknown model '{query}' (see --list-models)"))
+}
+
+pub fn workspace_context(cwd: &Path) -> String {
+    let mut listing = String::new();
+    if let Ok(entries) = std::fs::read_dir(cwd) {
+        let mut names: Vec<String> = entries
+            .flatten()
+            .map(|e| {
+                let mut name = e.file_name().to_string_lossy().into_owned();
+                if e.path().is_dir() {
+                    name.push('/');
+                }
+                name
+            })
+            .collect();
+        names.sort();
+        for name in names.into_iter().take(200) {
+            listing.push_str(&name);
+            listing.push('\n');
+        }
+    }
+    format!(
+        "Top-level directory listing of {}:\n{}",
+        cwd.display(),
+        listing
+    )
+}

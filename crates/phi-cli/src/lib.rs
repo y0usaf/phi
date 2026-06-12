@@ -27,6 +27,11 @@ pub struct Args {
     #[arg(long)]
     pub thinking: Option<String>,
 
+    /// Thinking level for the llm_query/rlm_query sub-model.
+    /// Defaults to --thinking when omitted.
+    #[arg(long, value_name = "LEVEL")]
+    pub sub_model_thinking: Option<String>,
+
     /// [default: 30]
     #[arg(long)]
     pub max_iterations: Option<usize>,
@@ -78,6 +83,18 @@ pub struct Args {
     /// List known models (optionally filtered) and exit.
     #[arg(long, value_name = "PATTERN", num_args = 0..=1, default_missing_value = "")]
     pub list_models: Option<String>,
+
+    /// Run as a session multiplexer (one process, many sessions).
+    #[arg(long, conflicts_with = "no_mux")]
+    pub mux: bool,
+
+    /// Disable mux for this run, even if enabled in Lua config.
+    #[arg(long, conflicts_with = "mux")]
+    pub no_mux: bool,
+
+    /// Additional project directory for the multiplexer (repeatable).
+    #[arg(long, value_name = "DIR")]
+    pub project: Vec<String>,
 
     /// Print full REPL code and output instead of trimmed previews.
     #[arg(short, long)]

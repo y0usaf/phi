@@ -1,6 +1,8 @@
 mod config;
 mod files;
+mod mux;
 mod session;
+mod session_builder;
 mod tui;
 
 use std::io::{IsTerminal, Read};
@@ -8,10 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context as _, Result, bail};
-use phi_ai::{
-    AuthStorage, LoginMethod, Model, OAuthProviderId, PrintCallbacks, Registry, ThinkingLevel,
-};
-use phi_builtins::prelude::{CODING_PRELUDE, coding_tools_section};
+use phi_ai::{AuthStorage, LoginMethod, OAuthProviderId, PrintCallbacks, Registry, ThinkingLevel};
 use phi_cli::Args;
 use phi_rlm::engine::PythonEnvFactory;
 use phi_rlm::{ContextPayload, LimitKind, ProviderLm, Rlm, RlmConfig, RlmEvent, StopCause};
@@ -61,19 +60,52 @@ async fn main() -> Result<()> {
 async fn run(args: Args, storage: Arc<AuthStorage>, registry: Arc<Registry>) -> Result<()> {
     let cwd = std::env::current_dir().context("could not determine working directory")?;
     let prompt = args.prompt_text();
-    let tui_mode = prompt.is_none()
-        && args.context.is_none()
-        && std::io::stdin().is_terminal()
-        && std::io::stdout().is_terminal();
-    let settings = config::Settings::resolve(&args, config::Config::load(&cwd)?, tui_mode);
+    let tty = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+    let tui_mode = prompt.is_none() && args.context.is_none() && tty;
 
-    let root_model = find_model(&registry, &settings.model)?;
+    if args.mux || tui_mode {
+        let mux_config = config::Config::load(&cwd)?.mux.unwrap_or_default();
+        let mux_enabled =
+            args.mux || (!args.no_mux && tui_mode && mux_config.enabled.unwrap_or(false));
+        if mux_enabled {
+            if !tty {
+                bail!("--mux requires an interactive terminal");
+            }
+            if prompt.is_some() || args.context.is_some() {
+                bail!("--mux does not take a prompt or --context");
+            }
+            let shared = session_builder::SharedResources {
+                args,
+                storage,
+                registry,
+            };
+            return mux::app::run(shared, mux_config, cwd).await;
+        }
+    }
+
+    if tui_mode {
+        let shared = session_builder::SharedResources {
+            args,
+            storage,
+            registry,
+        };
+        let setup = session_builder::build_session(&cwd, &shared, None).await?;
+        return tui::run(setup, tui::SessionIo::standalone(cwd)).await;
+    }
+
+    let settings = config::Settings::resolve(&args, config::Config::load(&cwd)?, false);
+
+    let root_model = session_builder::find_model(&registry, &settings.model)?;
     let sub_model = match &settings.sub_model {
-        Some(query) => find_model(&registry, query)?,
+        Some(query) => session_builder::find_model(&registry, query)?,
         None => root_model.clone(),
     };
     let thinking: ThinkingLevel = settings
         .thinking
+        .parse()
+        .map_err(|e: String| anyhow::anyhow!(e))?;
+    let sub_model_thinking: ThinkingLevel = settings
+        .sub_model_thinking
         .parse()
         .map_err(|e: String| anyhow::anyhow!(e))?;
 
@@ -83,22 +115,17 @@ async fn run(args: Args, storage: Arc<AuthStorage>, registry: Arc<Registry>) -> 
             storage.set_runtime_api_key(&sub_model.provider, key);
         }
     }
-    let mut missing_credentials = Vec::new();
     for provider in [&root_model.provider, &sub_model.provider] {
-        if !missing_credentials.contains(provider) && storage.resolve(provider).await?.is_none() {
-            missing_credentials.push(provider.clone());
+        if storage.resolve(provider).await?.is_none() {
+            bail!(
+                "no credentials for provider '{provider}': run `phi --login {provider}`, \
+                 pass --api-key, or set {}_API_KEY",
+                provider.to_uppercase()
+            );
         }
     }
-    // In TUI mode missing credentials are handled in-TUI via /login.
-    if !tui_mode && let Some(provider) = missing_credentials.first() {
-        bail!(
-            "no credentials for provider '{provider}': run `phi --login {provider}`, \
-             pass --api-key, or set {}_API_KEY",
-            provider.to_uppercase()
-        );
-    }
 
-    let mut config = RlmConfig {
+    let config = RlmConfig {
         max_depth: settings.max_depth,
         max_iterations: settings.max_iterations,
         max_budget: settings.budget,
@@ -111,49 +138,19 @@ async fn run(args: Args, storage: Arc<AuthStorage>, registry: Arc<Registry>) -> 
 
     let root = Arc::new(ProviderLm::new(
         registry.clone(),
-        root_model.clone(),
+        root_model,
         storage.clone(),
         thinking,
     ));
     let sub = Arc::new(ProviderLm::new(
-        registry.clone(),
-        sub_model.clone(),
+        registry,
+        sub_model,
         storage.clone(),
-        ThinkingLevel::Off,
+        sub_model_thinking,
     ));
     let envs = Arc::new(PythonEnvFactory {
         python: settings.python.clone(),
     });
-
-    if tui_mode {
-        config.setup_code = Some(CODING_PRELUDE.to_owned());
-        config.tools_section = Some(coding_tools_section());
-        config.cwd = Some(cwd.display().to_string());
-        config.user_prologue = Some(format!(
-            "You are a coding agent operating directly in the user's working directory: {}. \
-             Use the pre-defined helper functions to explore and modify the project.",
-            cwd.display()
-        ));
-        let payload = ContextPayload::Str(workspace_context(&cwd));
-        let store = session::SessionStore::new(&cwd)?;
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        let rlm = Rlm::new(config, root.clone(), sub.clone(), envs).with_events(tx);
-        return tui::run(tui::TuiSetup {
-            rlm,
-            payload,
-            events: rx,
-            missing_credentials,
-            ui: tui::UiSetup {
-                max_iterations: settings.max_iterations,
-                storage,
-                registry,
-                root_lm: root,
-                sub_lm: sub,
-                store,
-            },
-        })
-        .await;
-    }
 
     let (payload, root_prompt) = match &args.context {
         Some(source) => (ContextPayload::Str(read_context(source)?), prompt.clone()),
@@ -220,39 +217,6 @@ fn auth_path() -> Result<std::path::PathBuf> {
 fn parse_oauth_provider(name: &str) -> Result<OAuthProviderId> {
     OAuthProviderId::parse(name)
         .with_context(|| format!("unknown provider '{name}' (expected: anthropic, openai)"))
-}
-
-fn find_model(registry: &Registry, query: &str) -> Result<Model> {
-    registry
-        .find(query)
-        .cloned()
-        .with_context(|| format!("unknown model '{query}' (see --list-models)"))
-}
-
-fn workspace_context(cwd: &std::path::Path) -> String {
-    let mut listing = String::new();
-    if let Ok(entries) = std::fs::read_dir(cwd) {
-        let mut names: Vec<String> = entries
-            .flatten()
-            .map(|e| {
-                let mut name = e.file_name().to_string_lossy().into_owned();
-                if e.path().is_dir() {
-                    name.push('/');
-                }
-                name
-            })
-            .collect();
-        names.sort();
-        for name in names.into_iter().take(200) {
-            listing.push_str(&name);
-            listing.push('\n');
-        }
-    }
-    format!(
-        "Top-level directory listing of {}:\n{}",
-        cwd.display(),
-        listing
-    )
 }
 
 fn read_context(source: &str) -> Result<String> {

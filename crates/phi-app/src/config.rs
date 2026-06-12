@@ -4,6 +4,7 @@
 //! is a Lua chunk returning a settings table — the same language planned
 //! for third-party extensions (phi-lua), nvim-style.
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::{Context as _, Result};
@@ -17,6 +18,7 @@ pub struct Config {
     pub model: Option<String>,
     pub sub_model: Option<String>,
     pub thinking: Option<String>,
+    pub sub_model_thinking: Option<String>,
     pub python: Option<String>,
     pub max_iterations: Option<usize>,
     pub max_depth: Option<usize>,
@@ -25,6 +27,18 @@ pub struct Config {
     pub timeout: Option<u64>,
     pub max_errors: Option<usize>,
     pub max_concurrent_subcalls: Option<usize>,
+    pub mux: Option<MuxConfig>,
+}
+
+/// Settings for mux mode (the in-process session multiplexer).
+#[derive(Debug, Default, Clone, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct MuxConfig {
+    pub enabled: Option<bool>,
+    /// Action name → single keybinding string (e.g. `new_session = "ctrl+n"`,
+    /// `quit = "ctrl+q"`). Overrides the defaults per action.
+    pub keybinds: Option<HashMap<String, String>>,
+    pub sidebar_width: Option<u16>,
 }
 
 impl Config {
@@ -66,6 +80,7 @@ impl Config {
             model,
             sub_model,
             thinking,
+            sub_model_thinking,
             python,
             max_iterations,
             max_depth,
@@ -75,6 +90,15 @@ impl Config {
             max_errors,
             max_concurrent_subcalls
         );
+        if let Some(other_mux) = other.mux {
+            let mux = self.mux.get_or_insert_with(MuxConfig::default);
+            macro_rules! take_mux {
+                ($($field:ident),*) => {
+                    $(if other_mux.$field.is_some() { mux.$field = other_mux.$field; })*
+                };
+            }
+            take_mux!(enabled, keybinds, sidebar_width);
+        }
     }
 }
 
@@ -83,6 +107,7 @@ pub struct Settings {
     pub model: String,
     pub sub_model: Option<String>,
     pub thinking: String,
+    pub sub_model_thinking: String,
     pub python: String,
     pub max_iterations: usize,
     pub max_depth: usize,
@@ -95,6 +120,11 @@ pub struct Settings {
 
 impl Settings {
     pub fn resolve(args: &Args, config: Config, tui_mode: bool) -> Self {
+        let thinking = args
+            .thinking
+            .clone()
+            .or(config.thinking.clone())
+            .unwrap_or_else(|| "off".to_owned());
         Self {
             model: args
                 .model
@@ -102,11 +132,12 @@ impl Settings {
                 .or(config.model)
                 .unwrap_or_else(|| "claude-opus-4-7".to_owned()),
             sub_model: args.sub_model.clone().or(config.sub_model),
-            thinking: args
-                .thinking
+            thinking: thinking.clone(),
+            sub_model_thinking: args
+                .sub_model_thinking
                 .clone()
-                .or(config.thinking)
-                .unwrap_or_else(|| "off".to_owned()),
+                .or(config.sub_model_thinking)
+                .unwrap_or_else(|| thinking.clone()),
             python: args
                 .python
                 .clone()
@@ -197,5 +228,35 @@ mod tests {
             Config::read(&dir.path().join("config.lua")).unwrap(),
             Config::default()
         );
+    }
+
+    #[test]
+    fn sub_model_thinking_inherits_thinking_when_unset() {
+        let args = Args::parse_from(["phi"]);
+        let config = eval("return { thinking = \"high\" }").unwrap();
+        let settings = Settings::resolve(&args, config, false);
+        assert_eq!(settings.thinking, "high");
+        assert_eq!(settings.sub_model_thinking, "high");
+    }
+
+    #[test]
+    fn sub_model_thinking_can_override_thinking() {
+        let args = Args::parse_from(["phi", "--thinking", "high", "--sub-model-thinking", "low"]);
+        let settings = Settings::resolve(&args, Config::default(), false);
+        assert_eq!(settings.thinking, "high");
+        assert_eq!(settings.sub_model_thinking, "low");
+    }
+
+    #[test]
+    fn mux_cli_flags_parse_and_conflict() {
+        let args = Args::parse_from(["phi", "--mux"]);
+        assert!(args.mux);
+        assert!(!args.no_mux);
+
+        let args = Args::parse_from(["phi", "--no-mux"]);
+        assert!(!args.mux);
+        assert!(args.no_mux);
+
+        assert!(Args::try_parse_from(["phi", "--mux", "--no-mux"]).is_err());
     }
 }

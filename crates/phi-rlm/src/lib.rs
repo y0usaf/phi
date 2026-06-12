@@ -10,8 +10,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub use engine::{
-    EnvFactory, LimitKind, PythonEnvFactory, Rlm, RlmCompletion, RlmConfig, RlmEvent, RlmSession,
-    StopCause,
+    EnvFactory, LimitKind, PythonEnvFactory, RestoredExchange, RestoredRepl, Rlm, RlmCompletion,
+    RlmConfig, RlmEvent, RlmSession, StopCause,
 };
 pub use handler::{Completion, DeltaSink, LanguageModel, LmHandler, ThinkingSink};
 pub use parsing::{could_open_block, find_code_blocks, split_at_first_block, split_prose};

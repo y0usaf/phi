@@ -20,7 +20,7 @@ use crate::parsing::{
     ExecutedBlock, could_open_block, find_code_blocks, format_iteration, last_block_end,
 };
 use crate::prompts::{
-    DEFAULT_ANSWER_NUDGE, QueryMetadata, build_system_prompt, build_user_prompt,
+    DEFAULT_ANSWER_NUDGE, PROSE_NUDGE, QueryMetadata, build_system_prompt, build_user_prompt,
     metadata_user_prompt,
 };
 use crate::{ChatMessage, ContextPayload, Role};
@@ -84,6 +84,9 @@ pub enum LimitKind {
 pub enum StopCause {
     /// The model flipped `answer["ready"] = True`.
     Answer,
+    /// Two consecutive turns with no ```repl``` block: after one corrective
+    /// reminder, the second prose-only message is accepted as the answer.
+    Prose,
     /// Iterations exhausted; answer synthesized from the trajectory.
     DefaultAnswer,
     /// `depth >= max_depth`: plain LM completion, no REPL.
@@ -516,6 +519,7 @@ impl Rlm {
             env: None,
             exchanges: 0,
             contexts: 1,
+            transcript: Vec::new(),
             pending_shell: Vec::new(),
         }
     }
@@ -629,6 +633,7 @@ impl Rlm {
         let mut best_partial: Option<String> = None;
         let mut consecutive_errors = 0usize;
         let mut iterations = 0usize;
+        let mut prose_nudged = false;
 
         for i in 0..self.config.max_iterations {
             if cancel.is_cancelled() {
@@ -726,14 +731,7 @@ impl Rlm {
                 }
             };
             let response = match completion {
-                // The turn ends at the last complete ```repl fence: anything
-                // after it (the aborted stream's tail, or trailing prose from
-                // a non-streaming model) is discarded, mirroring how a tool
-                // call ends an assistant turn.
-                Ok(completion) => match last_block_end(&completion.text) {
-                    Some(end) => completion.text[..end].to_owned(),
-                    None => completion.text,
-                },
+                Ok(completion) => completion.text,
                 Err(e) => {
                     let message = format!("Error: root completion failed - {e}");
                     return match best_partial {
@@ -804,11 +802,13 @@ impl Rlm {
 
             let final_answer = blocks.iter().find_map(|b| b.result.final_answer.clone());
 
-            // Enforce REPL-first behavior on the opening turn: a plain prose
-            // reply with no executed blocks means the model ignored the
-            // environment. Instead of banking that as progress, bounce it
-            // with an explicit reminder and continue the loop.
-            if i == 0 && blocks.is_empty() {
+            // Enforce REPL-first behavior on the opening turn of a cold run:
+            // a plain prose reply with no executed blocks means the model
+            // ignored the environment. Instead of banking that as progress,
+            // bounce it with an explicit reminder and continue the loop.
+            // Warm sends (history_count > 0) skip this: follow-ups may
+            // legitimately be answered in prose from prior context.
+            if i == 0 && history_count == 0 && blocks.is_empty() {
                 history.push(ChatMessage {
                     role: Role::Assistant,
                     content: response,
@@ -823,6 +823,47 @@ impl Rlm {
                     duration: iter_start.elapsed(),
                 });
                 continue;
+            }
+
+            // A turn with no ```repl``` block executed nothing and submitted
+            // nothing: re-prompting with a bare "Turn N:" gives the model no
+            // new information, so it re-emits the same prose until the
+            // iteration budget burns out. Instead, nudge once with a
+            // corrective reminder; a second consecutive block-free turn is
+            // accepted as the final answer.
+            if blocks.is_empty() && !response.trim().is_empty() {
+                best_partial = Some(response.clone());
+                if prose_nudged {
+                    self.events.emit(RlmEvent::IterationEnd {
+                        depth: self.depth,
+                        iteration: i,
+                        duration: iter_start.elapsed(),
+                    });
+                    return Outcome {
+                        stop: StopCause::Prose,
+                        response,
+                        error: None,
+                        iterations,
+                    };
+                }
+                prose_nudged = true;
+                history.push(ChatMessage {
+                    role: Role::Assistant,
+                    content: response,
+                });
+                history.push(ChatMessage {
+                    role: Role::User,
+                    content: PROSE_NUDGE.to_owned(),
+                });
+                self.events.emit(RlmEvent::IterationEnd {
+                    depth: self.depth,
+                    iteration: i,
+                    duration: iter_start.elapsed(),
+                });
+                continue;
+            }
+            if !blocks.is_empty() {
+                prose_nudged = false;
             }
 
             if !response.trim().is_empty() {
@@ -846,9 +887,17 @@ impl Rlm {
                 };
             }
 
+            // Bank the assistant turn up to the last closing fence: trailing
+            // prose after the final block is dead weight in history (the
+            // streaming sink already aborts there; this covers non-streamed
+            // completions).
+            let banked = match last_block_end(&response) {
+                Some(end) => response[..end].to_owned(),
+                None => response,
+            };
             history.push(ChatMessage {
                 role: Role::Assistant,
-                content: response,
+                content: banked,
             });
             if let Some(outputs) = format_iteration(&blocks, self.config.max_output_chars) {
                 history.push(ChatMessage {
@@ -1067,6 +1116,11 @@ pub struct RlmSession {
     env: Option<Box<dyn ReplEnv>>,
     exchanges: usize,
     contexts: usize,
+    /// In-band conversational transcript: prior (user prompt, final answer)
+    /// pairs replayed verbatim on every warm `send`, so follow-ups are real
+    /// continuations instead of cold starts. Full per-run trajectories still
+    /// land in the env as `history_N` variables (the archive tier).
+    transcript: Vec<ChatMessage>,
     /// User-initiated shell executions to replay to the model on the next
     /// `send`, as (assistant ```repl``` block, REPL-output user message)
     /// pairs — the model sees them as its own prior repl turns.
@@ -1109,9 +1163,23 @@ impl RlmSession {
 
         let env = self.env.as_mut().expect("env started above");
         let metadata = QueryMetadata::from_payload(&self.payload);
-        let mut history = self
-            .rlm
-            .initial_history(metadata, Some(prompt), self.exchanges);
+        let mut history = if self.transcript.is_empty() {
+            self.rlm
+                .initial_history(metadata, Some(prompt), self.exchanges)
+        } else {
+            // Warm send: replay the conversation so far in-band, then append
+            // the new prompt as its own user message.
+            let mut history = self.rlm.initial_history(metadata, None, self.exchanges);
+            history.extend(self.transcript.iter().cloned());
+            history.append(&mut self.pending_shell);
+            history.push(ChatMessage {
+                role: Role::User,
+                content: format!("Answer the following: {prompt}"),
+            });
+            history
+        };
+        // Cold send: replay user shell executions after the prompt (the warm
+        // branch drained them above, before the prompt).
         history.append(&mut self.pending_shell);
         let outcome = self
             .rlm
@@ -1129,6 +1197,14 @@ impl RlmSession {
             let snippet = history_snippet(self.exchanges, &history, &outcome.response);
             let _ = env.exec(&snippet, self.rlm.config.exec_timeout).await;
             self.exchanges += 1;
+            self.transcript.push(ChatMessage {
+                role: Role::User,
+                content: format!("Answer the following: {prompt}"),
+            });
+            self.transcript.push(ChatMessage {
+                role: Role::Assistant,
+                content: outcome.response.clone(),
+            });
         }
         self.rlm.complete_run(outcome, &self.handler, start)
     }
@@ -1193,27 +1269,58 @@ impl RlmSession {
         Ok(())
     }
 
-    /// Rebuild the env's `history_N` variables from persisted (prompt,
-    /// response) exchanges — resuming a session from disk. Replaces the
-    /// current env and history. Intermediate repl turns were not persisted,
-    /// so each restored history holds just the prompt/response pair.
-    pub async fn restore_history(&mut self, exchanges: &[(String, String)]) -> Result<(), String> {
+    /// Rebuild session state from the canonical persisted stream — resuming
+    /// a session from disk. Replaces the current env and history. Each
+    /// exchange's `history_N` holds the same trajectory the model saw live:
+    /// the user prompt, every executed ```repl block as an assistant turn
+    /// followed by its formatted output as a user turn, then the final
+    /// response. Trailing user shell executions land in `pending_shell`,
+    /// replayed to the model on the next send exactly as live.
+    pub async fn restore_session(
+        &mut self,
+        exchanges: &[RestoredExchange],
+        pending: &[RestoredRepl],
+    ) -> Result<(), String> {
         self.reset().await;
-        if exchanges.is_empty() {
+        if exchanges.is_empty() && pending.is_empty() {
             return Ok(());
         }
         self.ensure_env().await?;
         let env = self.env.as_mut().expect("env started above");
-        for (prompt, response) in exchanges {
-            let history = [ChatMessage {
+        for exchange in exchanges {
+            let mut history = Vec::new();
+            // Shell escapes recorded between the previous exchange and this
+            // prompt: live, they replay ahead of the new user message.
+            for repl in &exchange.pre_shell {
+                push_repl_turns(&mut history, repl, self.rlm.config.max_output_chars);
+            }
+            history.push(ChatMessage {
                 role: Role::User,
-                content: prompt.clone(),
-            }];
-            let snippet = history_snippet(self.exchanges, &history, response);
+                content: format!("Answer the following: {}", exchange.prompt),
+            });
+            for repl in &exchange.repls {
+                push_repl_turns(&mut history, repl, self.rlm.config.max_output_chars);
+            }
+            let snippet = history_snippet(self.exchanges, &history, &exchange.response);
             env.exec(&snippet, self.rlm.config.exec_timeout)
                 .await
                 .map_err(|e| format!("failed to restore history_{}: {e}", self.exchanges))?;
             self.exchanges += 1;
+            self.transcript.push(ChatMessage {
+                role: Role::User,
+                content: format!("Answer the following: {}", exchange.prompt),
+            });
+            self.transcript.push(ChatMessage {
+                role: Role::Assistant,
+                content: exchange.response.clone(),
+            });
+        }
+        for repl in pending {
+            push_repl_turns(
+                &mut self.pending_shell,
+                repl,
+                self.rlm.config.max_output_chars,
+            );
         }
         Ok(())
     }
@@ -1226,6 +1333,7 @@ impl RlmSession {
         }
         self.exchanges = 0;
         self.contexts = 1;
+        self.transcript.clear();
         self.pending_shell.clear();
     }
 
@@ -1257,6 +1365,51 @@ fn history_snippet(index: usize, history: &[ChatMessage], response: &str) -> Str
     format!(
         "import base64 as _b64, json as _json\nhistory_{index} = _json.loads(_b64.b64decode(\"{encoded}\").decode(\"utf-8\")){alias}\ndel _b64, _json"
     )
+}
+
+/// A REPL execution restored from the canonical session stream.
+#[derive(Clone, Debug)]
+pub struct RestoredRepl {
+    pub code: String,
+    pub stdout: String,
+    pub stderr: String,
+}
+
+/// One chat exchange restored from the canonical session stream, with the
+/// REPL executions that ran inside it (`repls`) and any user shell escapes
+/// recorded just before its prompt (`pre_shell`).
+#[derive(Clone, Debug, Default)]
+pub struct RestoredExchange {
+    pub pre_shell: Vec<RestoredRepl>,
+    pub prompt: String,
+    pub repls: Vec<RestoredRepl>,
+    pub response: String,
+}
+
+/// Append a restored execution as the same (assistant code, user output)
+/// message pair the model sees live.
+fn push_repl_turns(history: &mut Vec<ChatMessage>, repl: &RestoredRepl, max_output_chars: usize) {
+    history.push(ChatMessage {
+        role: Role::Assistant,
+        content: format!("```repl\n{}\n```", repl.code),
+    });
+    let block = ExecutedBlock {
+        code: repl.code.clone(),
+        result: ReplResult {
+            stdout: repl.stdout.clone(),
+            stderr: repl.stderr.clone(),
+            vars: Vec::new(),
+            final_answer: None,
+            duration: std::time::Duration::ZERO,
+            truncated: false,
+        },
+    };
+    if let Some(outputs) = format_iteration(std::slice::from_ref(&block), max_output_chars) {
+        history.push(ChatMessage {
+            role: Role::User,
+            content: outputs,
+        });
+    }
 }
 
 fn context_snippet(index: usize, text: &str) -> String {
@@ -1564,10 +1717,18 @@ mod tests {
 
         let prompts = root.recorded_prompts();
         let second = &prompts[1];
-        assert!(second.iter().any(|m| m.role == Role::Assistant && m.content.contains("without using the REPL")));
+        assert!(
+            second
+                .iter()
+                .any(|m| m.role == Role::Assistant && m.content.contains("without using the REPL"))
+        );
         let reminder = second
             .iter()
-            .find(|m| m.role == Role::User && m.content.contains("You must inspect the `context` via the REPL"))
+            .find(|m| {
+                m.role == Role::User
+                    && m.content
+                        .contains("You must inspect the `context` via the REPL")
+            })
             .expect("bounce reminder");
         assert!(reminder.content.contains("```repl```"));
     }
