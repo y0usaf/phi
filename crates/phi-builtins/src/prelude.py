@@ -4,6 +4,7 @@ import re as _re
 import fnmatch as _fnmatch
 import inspect as _inspect
 import time as _time
+import difflib as _difflib
 
 _PRELUDE_MAX_LINES = 2000
 _PRELUDE_MAX_BYTES = 50_000
@@ -63,6 +64,21 @@ def _prelude_truncate(text):
     return text
 
 
+def _format_unified_diff(path, before, after):
+    before_lines = before.splitlines(True)
+    after_lines = after.splitlines(True)
+    diff = "".join(
+        _difflib.unified_diff(
+            before_lines,
+            after_lines,
+            fromfile=path,
+            tofile=path,
+            lineterm="",
+        )
+    )
+    return _prelude_truncate(diff) if diff else "(no diff)"
+
+
 @_tool
 def bash(cmd, timeout=120):
     try:
@@ -99,9 +115,17 @@ def write_file(path, content):
     parent = _os.path.dirname(_os.path.abspath(path))
     if parent:
         _os.makedirs(parent, exist_ok=True)
+    existed = _os.path.exists(path)
+    before = ""
+    if existed:
+        with open(path, errors="replace") as f:
+            before = f.read()
     with open(path, "w") as f:
         f.write(content)
-    return "Wrote %d bytes to %s" % (len(content.encode()), path)
+    summary = "Wrote %d bytes to %s" % (len(content.encode()), path)
+    if existed:
+        return summary + "\n" + _format_unified_diff(path, before, content)
+    return summary
 
 
 @_tool
@@ -116,10 +140,14 @@ def edit_file(path, old, new, replace_all=False):
             "Error: string occurs %d times in %s; pass replace_all=True or a more specific string"
             % (count, path)
         )
-    content = content.replace(old, new)
+    updated = content.replace(old, new) if replace_all else content.replace(old, new, 1)
     with open(path, "w") as f:
-        f.write(content)
-    return "Replaced %d occurrence(s) in %s" % (count if replace_all else 1, path)
+        f.write(updated)
+    return "Replaced %d occurrence(s) in %s\n%s" % (
+        count if replace_all else 1,
+        path,
+        _format_unified_diff(path, content, updated),
+    )
 
 
 @_tool

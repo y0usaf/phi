@@ -86,6 +86,10 @@ mod tests {
             .await
             .unwrap();
         assert!(r.stdout.contains("Replaced 1"), "stdout: {}", r.stdout);
+        assert!(r.stdout.contains("--- "), "stdout: {}", r.stdout);
+        assert!(r.stdout.contains("+++ "), "stdout: {}", r.stdout);
+        assert!(r.stdout.contains("-hello world"), "stdout: {}", r.stdout);
+        assert!(r.stdout.contains("+hello there"), "stdout: {}", r.stdout);
 
         let r = repl
             .exec(&format!("print(read_file({path:?}))"), EXEC_TIMEOUT)
@@ -101,6 +105,29 @@ mod tests {
             .await
             .unwrap();
         assert!(r.stdout.starts_with("Error:"), "stdout: {}", r.stdout);
+        repl.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn write_file_overwrite_returns_diff() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("note.txt");
+        let path = path.to_str().unwrap();
+        std::fs::write(path, "alpha\nbeta\n").unwrap();
+        let (mut repl, _events) = started().await;
+
+        let r = repl
+            .exec(
+                &format!("print(write_file({path:?}, 'alpha\\ngamma\\n'))"),
+                EXEC_TIMEOUT,
+            )
+            .await
+            .unwrap();
+        assert!(r.stdout.contains("Wrote"), "stdout: {}", r.stdout);
+        assert!(r.stdout.contains("--- "), "stdout: {}", r.stdout);
+        assert!(r.stdout.contains("+++ "), "stdout: {}", r.stdout);
+        assert!(r.stdout.contains("-beta"), "stdout: {}", r.stdout);
+        assert!(r.stdout.contains("+gamma"), "stdout: {}", r.stdout);
         repl.shutdown().await;
     }
 
