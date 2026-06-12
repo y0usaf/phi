@@ -3,7 +3,7 @@
 //! background, the URL lands in scrollback, and the editor doubles as the
 //! paste-the-redirect-URL input (racing the localhost callback server).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -34,16 +34,15 @@ const BOLD: &str = "\x1b[1m";
 const DIM: &str = "\x1b[2m";
 const CYAN: &str = "\x1b[36m";
 const YELLOW: &str = "\x1b[33m";
+const GREEN: &str = "\x1b[32m";
+const RED: &str = "\x1b[31m";
 const REPL_FENCE: &str = "\x1b[38;2;180;140;255m";
 
-// pi's dark-theme container backgrounds (theme/dark.json). Repl blocks share
-// the user-message gray so the green/red tool tints nested inside them stand
-// out; only a failed exec recolors the repl container itself (red).
+// User messages stay as full-width containers; repl/tool rendering is now
+// fence/indent-first with no container backgrounds.
 const USER_BG: &str = "\x1b[48;2;52;53;65m"; // userMessageBg #343541
 const REPL_BG: &str = USER_BG;
-const REPL_ERROR_BG: &str = "\x1b[48;2;70;40;45m"; // #46282d
-const TOOL_SUCCESS_BG: &str = "\x1b[48;2;40;50;40m"; // toolSuccessBg #283228
-const TOOL_ERROR_BG: &str = "\x1b[48;2;60;40;40m"; // toolErrorBg #3c2828
+const REPL_ERROR_BG: &str = "\x1b[48;2;70;40;45m"; // retained for interrupted/error commit paths
 
 const CODE_PREVIEW_LINES: usize = 8;
 const OUTPUT_PREVIEW_LINES: usize = 5;
@@ -110,15 +109,15 @@ fn live_block_body(text: &str) -> Option<&str> {
     Some(body.split_once("\n```").map_or(body, |(body, _)| body))
 }
 
-/// Gutter for the first line of an action at `depth`: one dim `│` column per
-/// enclosing level, then a cyan `⏺` anchor.
+/// Prefix for nested action rows. We keep only visual indentation now:
+/// no tree glyphs, no bullets, just space depth.
 fn dot_prefix(depth: usize) -> String {
-    format!("{DIM}{}{RESET}{CYAN}├{RESET} ", "│ ".repeat(depth))
+    "  ".repeat(depth + 1)
 }
 
-/// Gutter for continuation/result lines at `depth`: depth+1 dim `│` columns.
+/// Continuation/result lines stay aligned with the first line.
 fn bar_prefix(depth: usize) -> String {
-    format!("{DIM}{}{RESET}", "│ ".repeat(depth + 1))
+    "  ".repeat(depth + 1)
 }
 
 /// Cap persisted tool results at roughly the replay preview budget. The full
@@ -192,6 +191,45 @@ fn tool_title(name: &str, args: &serde_json::Value) -> String {
             }
             _ => format!("{BOLD}{name}{RESET}"),
         },
+    }
+}
+
+fn lang_hint_for_path(path: &str) -> Option<&'static str> {
+    let path = Path::new(path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(path);
+    if path.eq_ignore_ascii_case("dockerfile") {
+        return Some("docker");
+    }
+    let ext = path
+        .rsplit_once('.')
+        .map(|(_, ext)| ext.to_ascii_lowercase())?;
+    match ext.as_str() {
+        "rs" => Some("rust"),
+        "py" => Some("python"),
+        "js" | "jsx" | "mjs" | "cjs" => Some("javascript"),
+        "ts" | "tsx" => Some("typescript"),
+        "sh" | "bash" | "zsh" | "fish" => Some("bash"),
+        "json" => Some("json"),
+        "toml" => Some("toml"),
+        "yaml" | "yml" => Some("yaml"),
+        "md" => Some("markdown"),
+        "html" | "htm" => Some("html"),
+        "css" | "scss" => Some("css"),
+        "sql" => Some("sql"),
+        "xml" => Some("xml"),
+        _ => None,
+    }
+}
+
+fn tool_preview_lang(name: &str, args: &serde_json::Value) -> Option<&'static str> {
+    match name {
+        "read_file" => args
+            .get("path")
+            .and_then(serde_json::Value::as_str)
+            .and_then(lang_hint_for_path),
+        _ => None,
     }
 }
 
@@ -626,7 +664,14 @@ pub async fn run(setup: TuiSetup, mut io: SessionIo) -> Result<()> {
                 }
                 Cmd::Shell { code, record } => {
                     let result = session.exec_shell(&code, record).await;
-                    if done_tx.send(Done::Shell { code, record, result }).is_err() {
+                    if done_tx
+                        .send(Done::Shell {
+                            code,
+                            record,
+                            result,
+                        })
+                        .is_err()
+                    {
                         break;
                     }
                 }
@@ -914,11 +959,8 @@ struct Ui {
     /// Lines to flush into scrollback on the next draw.
     pending: Vec<String>,
     /// Rows of the in-flight depth-0 REPL block (with everything nested in
-    /// it), shown live with the pending background and committed to
-    /// scrollback with the success/error background when the exec ends.
-    /// A row tagged with its own background (a finished nested tool) keeps
-    /// it instead of the block's.
-    block: Vec<(String, Option<&'static str>)>,
+    /// it), shown live and then committed to scrollback verbatim.
+    block: Vec<String>,
     block_active: bool,
     /// Code of the in-flight depth-0 agent REPL block, stashed at
     /// `CodeExecStart` and persisted to the session store at `CodeExecEnd`.
@@ -934,9 +976,7 @@ struct Ui {
     /// in FIFO order (the engine emits no subcall ids).
     live_subcalls: Vec<session::SubcallRecord>,
     open_subcall_previews: std::collections::VecDeque<String>,
-    /// Index into `block` of the first row of the nested tool currently
-    /// executing; its rows are tinted with the tool background on `ToolEnd`.
-    tool_rows_from: Option<usize>,
+
     /// Prose flushed while a block is active; committed after the block so
     /// scrollback stays chronological.
     after_block: Vec<String>,
@@ -1058,7 +1098,6 @@ impl Ui {
             open_tool_args: std::collections::HashMap::new(),
             live_subcalls: Vec::new(),
             open_subcall_previews: std::collections::VecDeque::new(),
-            tool_rows_from: None,
             after_block: Vec::new(),
             last_gutter: false,
             stream: String::new(),
@@ -1111,21 +1150,16 @@ impl Ui {
         // opening fence lands, render a provisional tool block immediately;
         // `CodeExecStart` takes over in scrollback when the block closes.
         if self.running.is_some() {
-            let bg_width = self.term.width();
             let visible = &self.stream[..first_block_start(&self.stream)];
             let live_block = live_block_body(&self.stream);
             let mut tail = self.live_thinking_lines();
-            // The executing block renders live over the pending background,
-            // followed by any prose already flushed behind it.
+            // The executing block renders live as literal fenced/indented
+            // rows, followed by any prose already flushed behind it.
             if self.block_active {
                 if !tail.is_empty() {
                     tail.push(String::new());
                 }
-                tail.extend(
-                    self.block
-                        .iter()
-                        .map(|(row, row_bg)| fill_bg(row, row_bg.unwrap_or(REPL_BG), bg_width)),
-                );
+                tail.extend(self.block.iter().cloned());
                 tail.extend(self.after_block.iter().cloned());
             }
             let mut prose = render_markdown(visible.trim(), self.markdown_width());
@@ -1137,11 +1171,7 @@ impl Ui {
                 if !tail.is_empty() {
                     tail.push(String::new());
                 }
-                tail.extend(
-                    self.repl_code_lines(0, block, self.code_limit())
-                        .iter()
-                        .map(|row| fill_bg(row, REPL_BG, bg_width)),
-                );
+                tail.extend(self.repl_code_lines(0, block, self.code_limit()));
             }
             let editor_visible = self
                 .editor
@@ -1149,8 +1179,7 @@ impl Ui {
                 .0
                 .len()
                 .min((self.term.height() * 3 / 10).max(5));
-            let reserved =
-                5 + editor_visible + usize::from(!self.queued.is_empty());
+            let reserved = 5 + editor_visible + usize::from(!self.queued.is_empty());
             let budget = self.term.height().saturating_sub(reserved).max(1);
             if tail.len() > budget {
                 tail.drain(..tail.len() - budget);
@@ -1229,11 +1258,12 @@ impl Ui {
                 let below = editor_lines.len() - end;
                 lines.push(format!("{DIM}↓ {below} more{RESET}"));
             }
-            let prompt_cols = if row == 0 && editor_lines.first().is_some_and(|line| line.is_empty()) {
-                1
-            } else {
-                2
-            };
+            let prompt_cols =
+                if row == 0 && editor_lines.first().is_some_and(|line| line.is_empty()) {
+                    1
+                } else {
+                    2
+                };
             cursor = Some(LiveCursor {
                 line: editor_top + (row - self.editor_scroll),
                 col: col + prompt_cols,
@@ -1461,11 +1491,7 @@ impl Ui {
         for (index, line) in usage_overlay_lines(&report).into_iter().enumerate() {
             items.push(SelectorItem::new(format!("usage-{index}"), line));
         }
-        let widget = Selector::new(
-            format!("Usage · {} entries", report.entries),
-            items,
-            false,
-        );
+        let widget = Selector::new(format!("Usage · {} entries", report.entries), items, false);
         self.open_selector(SelectorKind::Usage, widget);
     }
 
@@ -1570,7 +1596,6 @@ impl Ui {
         widget.preselect(&last);
         self.open_selector(SelectorKind::Fork, widget);
     }
-
 
     /// /tree (or esc esc): navigate the whole session tree.
     fn open_tree_selector(&mut self) {
@@ -1754,7 +1779,9 @@ impl Ui {
                     duration_secs,
                     tools,
                     subcalls,
-                } => self.push_repl_replay(&code, &stdout, &stderr, duration_secs, &tools, &subcalls),
+                } => {
+                    self.push_repl_replay(&code, &stdout, &stderr, duration_secs, &tools, &subcalls)
+                }
             }
         }
         // A previous run died mid-turn (exchange_start without its
@@ -1786,35 +1813,37 @@ impl Ui {
         // block, mirroring the live ToolStart/ToolEnd rendering so a
         // resumed session looks like the one the user actually saw.
         for tool in tools {
-            let start = self.block.len();
             self.push_dot(1, tool_title(&tool.name, &tool.args));
-            let bg = if tool.error.is_some() {
-                TOOL_ERROR_BG
-            } else {
-                TOOL_SUCCESS_BG
-            };
             match &tool.error {
                 Some(error) => {
-                    self.push_bar(1, format!("failed {:.1}s", tool.duration_secs));
+                    self.push_bar(1, format!("{RED}failed {:.1}s{RESET}", tool.duration_secs));
                     self.push_preview(1, error, self.output_limit());
                 }
                 None => {
-                    self.push_bar(1, format!("done {:.1}s", tool.duration_secs));
-                    self.push_preview(1, &tool.result, self.output_limit());
+                    self.push_bar(1, format!("{GREEN}done {:.1}s{RESET}", tool.duration_secs));
+                    self.push_preview_with_lang(
+                        1,
+                        &tool.result,
+                        self.output_limit(),
+                        tool_preview_lang(&tool.name, &tool.args),
+                    );
                 }
-            }
-            for (_, row_bg) in &mut self.block[start..] {
-                *row_bg = Some(bg);
             }
         }
         for subcall in subcalls {
             self.push_dot(
                 0,
-                format!("{BOLD}{}{RESET} ← \"{}\"", subcall.model, subcall.prompt_preview),
+                format!(
+                    "{BOLD}{}{RESET} ← \"{}\"",
+                    subcall.model, subcall.prompt_preview
+                ),
             );
             let text = match &subcall.error {
-                Some(error) => format!("{} failed: {error}", subcall.model),
-                None => format!("{} done {:.1}s", subcall.model, subcall.duration_secs),
+                Some(error) => format!("{RED}{} failed:{RESET} {error}", subcall.model),
+                None => format!(
+                    "{GREEN}{} done {:.1}s{RESET}",
+                    subcall.model, subcall.duration_secs
+                ),
             };
             self.push_bar(0, text);
             if let Some(result_preview) = &subcall.result_preview {
@@ -2365,14 +2394,13 @@ impl Ui {
         }
     }
 
-    /// Display columns left of the gutter at `depth` (dot and bar prefixes
-    /// are the same width: depth columns + anchor = depth+1 columns).
+    /// Display columns left after the indentation prefix at `depth`.
     fn gutter_text_width(&self, depth: usize) -> usize {
         self.term.width().saturating_sub(2 * (depth + 1)).max(1)
     }
 
-    /// Live/scrollback tool block rows using the same gutter formatting as
-    /// finalized action blocks.
+    /// Live/scrollback tool block rows using the same indentation formatting
+    /// as finalized action blocks.
     fn tool_lines(&self, depth: usize, title: &str, body: &str, max: usize) -> Vec<String> {
         let mut lines = Vec::new();
         let mut rows = wrap_ansi(title, self.gutter_text_width(depth)).into_iter();
@@ -2473,14 +2501,14 @@ impl Ui {
     /// scrollback when no block is in flight.
     fn push_row(&mut self, row: String) {
         if self.block_active {
-            self.block.push((row, None));
+            self.block.push(row);
         } else {
             self.pending.push(row);
         }
     }
 
     /// Start buffering the depth-0 REPL block that is about to execute. Rows
-    /// pushed until `commit_block` render live with the pending background.
+    /// pushed until `commit_block` render live as a grouped fenced block.
     fn begin_block(&mut self) {
         if !self.last_gutter {
             self.pending.push(String::new());
@@ -2488,26 +2516,21 @@ impl Ui {
         self.block_active = true;
     }
 
-    /// Commit the buffered block to scrollback over its final status
-    /// background, followed by any prose that streamed in behind it.
-    fn commit_block(&mut self, bg: &str) {
+    /// Commit the buffered block to scrollback, followed by any prose that
+    /// streamed in behind it.
+    fn commit_block(&mut self, _bg: &str) {
         if !self.block_active {
             return;
         }
         self.block_active = false;
-        self.tool_rows_from = None;
-        let width = self.term.width();
-        for (row, row_bg) in std::mem::take(&mut self.block) {
-            self.pending
-                .push(fill_bg(&row, row_bg.unwrap_or(bg), width));
-        }
+        self.pending.extend(std::mem::take(&mut self.block));
         let after = std::mem::take(&mut self.after_block);
         self.pending.extend(after);
     }
 
-    /// First line of an action block: gutter columns, then a `⏺` anchor.
-    /// Wrapped continuations keep the gutter. A depth-0 action that follows
-    /// prose gets a separating blank line first.
+    /// First line of an action block. Wrapped continuations keep the same
+    /// indentation. A depth-0 action that follows prose gets a separating
+    /// blank line first.
     fn push_dot(&mut self, depth: usize, text: String) {
         if depth == 0 && !self.last_gutter && !self.block_active {
             self.pending.push(String::new());
@@ -2522,7 +2545,7 @@ impl Ui {
     }
 
     /// Continuation/result line inside an action block; wraps to the
-    /// terminal width so every row keeps the gutter.
+    /// terminal width so every row keeps the indentation.
     fn push_bar(&mut self, depth: usize, text: String) {
         for row in wrap_ansi(&text, self.gutter_text_width(depth)) {
             self.push_row(format!("{}{DIM}{row}{RESET}", bar_prefix(depth)));
@@ -2533,18 +2556,30 @@ impl Ui {
     /// Indented code/output preview inside an action block: at most `max`
     /// visual rows (counting wraps), then a `… (n more lines)` marker.
     fn push_preview(&mut self, depth: usize, text: &str, max: usize) {
+        self.push_preview_with_lang(depth, text, max, None);
+    }
+
+    fn push_preview_with_lang(&mut self, depth: usize, text: &str, max: usize, lang: Option<&str>) {
         let trimmed = text.trim_end();
         if trimmed.is_empty() {
             return;
         }
         let avail = self.gutter_text_width(depth).saturating_sub(2).max(1);
-        let rows: Vec<String> = trimmed
-            .lines()
-            .flat_map(|line| wrap_ansi(line, avail))
+        let base_rows: Vec<String> = match lang {
+            Some(lang) => highlight_code(trimmed, Some(lang)),
+            None => trimmed.lines().map(str::to_owned).collect(),
+        };
+        let rows: Vec<String> = base_rows
+            .into_iter()
+            .flat_map(|line| wrap_ansi(&line, avail))
             .collect();
         let shown = rows.len().min(max);
         for row in &rows[..shown] {
-            self.push_bar(depth, format!("  {row}"));
+            if lang.is_some() {
+                self.push_row(format!("{}  {row}{RESET}", bar_prefix(depth)));
+            } else {
+                self.push_bar(depth, format!("  {row}"));
+            }
         }
         if rows.len() > max {
             self.push_bar(depth, format!("  … ({} more lines)", rows.len() - max));
@@ -2722,9 +2757,6 @@ impl Ui {
                 if depth == 0 {
                     self.open_tool_args.insert(call_id, args.clone());
                 }
-                if self.block_active {
-                    self.tool_rows_from = Some(self.block.len());
-                }
                 self.push_dot(depth + 1, tool_title(&name, &args));
                 if depth == 0 {
                     self.status = format!("{name}...");
@@ -2738,37 +2770,42 @@ impl Ui {
                 error,
                 duration,
             } => {
+                let args = if depth == 0 {
+                    self.open_tool_args.remove(&call_id).unwrap_or_default()
+                } else {
+                    serde_json::Value::Null
+                };
                 if depth == 0 {
-                    let args = self.open_tool_args.remove(&call_id).unwrap_or_default();
                     // Replay only ever renders a short preview, and the full
                     // text already lands in the repl stdout payload, so cap
                     // what gets persisted per tool call.
                     self.live_tools.push(session::ToolCall {
                         name: name.clone(),
-                        args,
+                        args: args.clone(),
                         result: truncate_for_log(&result),
                         error: error.as_deref().map(truncate_for_log),
                         duration_secs: duration.as_secs_f64(),
                     });
                 }
-                let bg = if error.is_some() {
-                    TOOL_ERROR_BG
-                } else {
-                    TOOL_SUCCESS_BG
-                };
                 match error {
                     Some(error) => {
-                        self.push_bar(depth + 1, format!("failed {:.1}s", duration.as_secs_f64()));
+                        self.push_bar(
+                            depth + 1,
+                            format!("{RED}failed {:.1}s{RESET}", duration.as_secs_f64()),
+                        );
                         self.push_preview(depth + 1, &error, self.output_limit());
                     }
                     None => {
-                        self.push_bar(depth + 1, format!("done {:.1}s", duration.as_secs_f64()));
-                        self.push_preview(depth + 1, &result, self.output_limit());
-                    }
-                }
-                if let Some(start) = self.tool_rows_from.take() {
-                    for (_, row_bg) in &mut self.block[start..] {
-                        *row_bg = Some(bg);
+                        self.push_bar(
+                            depth + 1,
+                            format!("{GREEN}done {:.1}s{RESET}", duration.as_secs_f64()),
+                        );
+                        self.push_preview_with_lang(
+                            depth + 1,
+                            &result,
+                            self.output_limit(),
+                            tool_preview_lang(&name, &args),
+                        );
                     }
                 }
                 if depth == 0 {
@@ -2781,8 +2818,7 @@ impl Ui {
                 prompt_preview,
             } => {
                 if depth == 0 {
-                    self.open_subcall_previews
-                        .push_back(prompt_preview.clone());
+                    self.open_subcall_previews.push_back(prompt_preview.clone());
                 }
                 self.push_dot(
                     depth,
@@ -2810,8 +2846,8 @@ impl Ui {
                     });
                 }
                 let text = match error {
-                    Some(error) => format!("{model} failed: {error}"),
-                    None => format!("{model} done {:.1}s", duration.as_secs_f64()),
+                    Some(error) => format!("{RED}{model} failed:{RESET} {error}"),
+                    None => format!("{GREEN}{model} done {:.1}s{RESET}", duration.as_secs_f64()),
                 };
                 self.push_bar(depth, text);
                 if let Some(result_preview) = result_preview {
@@ -2855,7 +2891,11 @@ impl Ui {
     fn handle_done(&mut self, done: Done, cmd_tx: &mpsc::UnboundedSender<Cmd>) {
         match done {
             Done::Run(completion) => self.handle_run_done(completion),
-            Done::Shell { code, record, result } => self.handle_shell_done(code, record, result),
+            Done::Shell {
+                code,
+                record,
+                result,
+            } => self.handle_shell_done(code, record, result),
             Done::Restored(result) => {
                 if let Err(e) = result {
                     self.pending
@@ -2879,7 +2919,12 @@ impl Ui {
         }
     }
 
-    fn handle_shell_done(&mut self, code: String, record: bool, result: Result<ReplResult, String>) {
+    fn handle_shell_done(
+        &mut self,
+        code: String,
+        record: bool,
+        result: Result<ReplResult, String>,
+    ) {
         match result {
             Ok(res) if record => {
                 self.push_bar(0, format!("exec {:.1}s", res.duration.as_secs_f64()));
@@ -3109,4 +3154,3 @@ mod tests {
         assert!(complete("/model two words", &models()).is_none());
     }
 }
-

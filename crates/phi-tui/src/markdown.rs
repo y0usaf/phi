@@ -46,6 +46,20 @@ pub fn highlight_code(text: &str, lang: Option<&str>) -> Vec<String> {
     if text.ends_with('\n') {
         code_lines.pop();
     }
+    highlight_code_lines(code_lines, lang)
+}
+
+/// Highlight a snippet when a language hint is available, otherwise return
+/// plain lines unchanged. Useful for previews nested inside the REPL UI.
+pub fn highlight_snippet(text: &str, lang: Option<&str>) -> Vec<String> {
+    let mut code_lines: Vec<&str> = text.split('\n').collect();
+    if text.ends_with('\n') {
+        code_lines.pop();
+    }
+    highlight_code_lines(code_lines, lang)
+}
+
+fn highlight_code_lines(code_lines: Vec<&str>, lang: Option<&str>) -> Vec<String> {
     if matches!(lang, Some(l) if l.trim().eq_ignore_ascii_case("repl")) {
         return highlight_repl_lines(code_lines);
     }
@@ -734,8 +748,27 @@ mod tests {
         let lines = highlight_code("print(bash('echo hi'))", Some("repl"));
         assert_eq!(lines.len(), 1);
         let stripped = strip_ansi(&lines[0]);
-        assert!(stripped.contains("bash"), "known repl call missing: {lines:?}");
-        assert!(lines[0].contains(REPL_FN), "known repl call not highlighted: {lines:?}");
+        assert!(
+            stripped.contains("bash"),
+            "known repl call missing: {lines:?}"
+        );
+        assert!(
+            lines[0].contains(REPL_FN),
+            "known repl call not highlighted: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn highlight_snippet_plain_without_lang() {
+        let lines = highlight_snippet("plain text", None);
+        assert_eq!(lines, vec!["plain text"]);
+    }
+
+    #[test]
+    fn highlight_snippet_with_lang_uses_syntax_theme() {
+        let lines = highlight_snippet("fn main() {}", Some("rust"));
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].contains("\x1b[38;2;"), "no highlight: {lines:?}");
     }
 
     #[test]
