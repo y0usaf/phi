@@ -15,6 +15,8 @@ const DIM: &str = "\x1b[2m";
 const ITALIC: &str = "\x1b[3m";
 const UNDERLINE: &str = "\x1b[4m";
 const CYAN: &str = "\x1b[36m";
+const REPL_FENCE: &str = "\x1b[38;2;180;140;255m";
+const REPL_FN: &str = "\x1b[38;2;255;210;120m";
 
 static SYNTAXES: LazyLock<SyntaxSet> = LazyLock::new(SyntaxSet::load_defaults_newlines);
 static THEME: LazyLock<Theme> = LazyLock::new(|| {
@@ -35,6 +37,201 @@ fn normalize_code_lang(lang: &str) -> String {
         "dockerfile" => "docker".to_owned(),
         other => other.to_owned(),
     }
+}
+
+/// Highlight source code as ANSI-styled lines using the bundled syntect theme.
+/// Common aliases are normalized (notably `repl` -> `python`).
+pub fn highlight_code(text: &str, lang: Option<&str>) -> Vec<String> {
+    let mut code_lines: Vec<&str> = text.split('\n').collect();
+    if text.ends_with('\n') {
+        code_lines.pop();
+    }
+    if matches!(lang, Some(l) if l.trim().eq_ignore_ascii_case("repl")) {
+        return highlight_repl_lines(code_lines);
+    }
+    let syntax = lang
+        .map(normalize_code_lang)
+        .and_then(|lang| SYNTAXES.find_syntax_by_token(&lang));
+    match syntax {
+        Some(syntax) => {
+            let mut highlighter = HighlightLines::new(syntax, &THEME);
+            code_lines
+                .into_iter()
+                .map(|line| {
+                    highlighter
+                        .highlight_line(line, &SYNTAXES)
+                        .map(|ranges| as_24_bit_terminal_escaped(&ranges, false))
+                        .unwrap_or_else(|_| line.to_owned())
+                })
+                .collect()
+        }
+        None => code_lines.into_iter().map(str::to_owned).collect(),
+    }
+}
+
+fn highlight_repl_lines(code_lines: Vec<&str>) -> Vec<String> {
+    let syntax = SYNTAXES.find_syntax_by_token("python");
+    match syntax {
+        Some(syntax) => {
+            let mut highlighter = HighlightLines::new(syntax, &THEME);
+            code_lines
+                .into_iter()
+                .map(|line| {
+                    let base = highlighter
+                        .highlight_line(line, &SYNTAXES)
+                        .map(|ranges| as_24_bit_terminal_escaped(&ranges, false))
+                        .unwrap_or_else(|_| line.to_owned());
+                    highlight_known_repl_calls(&base)
+                })
+                .collect()
+        }
+        None => code_lines
+            .into_iter()
+            .map(highlight_known_repl_calls)
+            .collect(),
+    }
+}
+
+fn strip_ansi(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == 0x1b {
+            i += 1;
+            if i < bytes.len() && bytes[i] == b'[' {
+                i += 1;
+                while i < bytes.len() && bytes[i] != b'm' {
+                    i += 1;
+                }
+                if i < bytes.len() {
+                    i += 1;
+                }
+            }
+        } else {
+            out.push(bytes[i] as char);
+            i += 1;
+        }
+    }
+    out
+}
+
+fn next_visible_char(text: &str, i: usize) -> Option<(usize, char)> {
+    let bytes = text.as_bytes();
+    let mut j = i;
+    while j < bytes.len() {
+        if bytes[j] == 0x1b {
+            j += 1;
+            if j < bytes.len() && bytes[j] == b'[' {
+                j += 1;
+                while j < bytes.len() && bytes[j] != b'm' {
+                    j += 1;
+                }
+                if j < bytes.len() {
+                    j += 1;
+                }
+            }
+            continue;
+        }
+        let ch = text[j..].chars().next()?;
+        return Some((j, ch));
+    }
+    None
+}
+
+fn visible_after_call(text: &str, mut i: usize) -> bool {
+    while let Some((j, ch)) = next_visible_char(text, i) {
+        if ch == ' ' || ch == '\t' {
+            i = j + ch.len_utf8();
+            continue;
+        }
+        return ch == '(';
+    }
+    false
+}
+
+fn highlight_known_repl_calls(line: impl AsRef<str>) -> String {
+    const NAMES: &[&str] = &[
+        "bash",
+        "read_file",
+        "write_file",
+        "edit_file",
+        "grep",
+        "find",
+        "ls",
+        "llm_query",
+        "llm_query_batched",
+        "rlm_query",
+        "rlm_query_batched",
+        "SHOW_VARS",
+        "jobs",
+        "job_status",
+        "job_output",
+        "bg",
+    ];
+    let line = line.as_ref();
+    let plain = strip_ansi(line);
+    let mut hits: Vec<String> = NAMES
+        .iter()
+        .copied()
+        .filter(|name| {
+            let pat = format!("{name}(");
+            plain.contains(&pat) || plain.contains(&format!("{name} ("))
+        })
+        .map(str::to_owned)
+        .collect();
+    hits.sort_by_key(|s| std::cmp::Reverse(s.len()));
+
+    let bytes = line.as_bytes();
+    let mut out = String::with_capacity(line.len() + 64);
+    let mut i = 0;
+    let mut prev_visible_ident = false;
+    while i < bytes.len() {
+        if bytes[i] == 0x1b {
+            let start = i;
+            i += 1;
+            if i < bytes.len() && bytes[i] == b'[' {
+                i += 1;
+                while i < bytes.len() && bytes[i] != b'm' {
+                    i += 1;
+                }
+                if i < bytes.len() {
+                    i += 1;
+                }
+            }
+            out.push_str(&line[start..i]);
+            continue;
+        }
+
+        let mut matched = None;
+        for name in &hits {
+            if !line[i..].starts_with(name) {
+                continue;
+            }
+            if prev_visible_ident {
+                continue;
+            }
+            if visible_after_call(line, i + name.len()) {
+                matched = Some(name.as_str());
+                break;
+            }
+        }
+
+        if let Some(name) = matched {
+            out.push_str(REPL_FN);
+            out.push_str(name);
+            out.push_str(RESET);
+            i += name.len();
+            prev_visible_ident = true;
+            continue;
+        }
+
+        let ch = line[i..].chars().next().unwrap();
+        out.push(ch);
+        prev_visible_ident = ch.is_ascii_alphanumeric() || ch == '_';
+        i += ch.len_utf8();
+    }
+    out
 }
 
 #[derive(Clone, Copy, Default)]
@@ -185,7 +382,11 @@ impl Renderer {
                 if let CodeBlockKind::Fenced(lang) = kind
                     && !lang.is_empty()
                 {
-                    self.lines.push(format!("{DIM}\u{258d} {lang}{RESET}"));
+                    if lang.trim().eq_ignore_ascii_case("repl") {
+                        self.lines.push(format!("{REPL_FENCE}```repl{RESET}"));
+                    } else {
+                        self.lines.push(format!("{DIM}\u{258d} {lang}{RESET}"));
+                    }
                     self.code_lang = Some(lang.to_string());
                 }
             }
@@ -255,6 +456,13 @@ impl Renderer {
                 self.flush_line();
             }
             TagEnd::CodeBlock => {
+                if self
+                    .code_lang
+                    .as_deref()
+                    .is_some_and(|lang| lang.eq_ignore_ascii_case("repl"))
+                {
+                    self.lines.push(format!("{REPL_FENCE}```{RESET}"));
+                }
                 self.in_code_block = false;
                 self.code_lang = None;
                 self.flush_line();
@@ -320,32 +528,10 @@ impl Renderer {
     }
 
     fn push_code_text(&mut self, text: &str) {
-        let mut code_lines: Vec<&str> = text.split('\n').collect();
-        if text.ends_with('\n') {
-            code_lines.pop();
-        }
-        let syntax = self
-            .code_lang
-            .as_deref()
-            .map(normalize_code_lang)
-            .and_then(|lang| SYNTAXES.find_syntax_by_token(&lang));
-        match syntax {
-            Some(syntax) => {
-                let mut highlighter = HighlightLines::new(syntax, &THEME);
-                for line in code_lines {
-                    let styled = highlighter
-                        .highlight_line(line, &SYNTAXES)
-                        .map(|ranges| as_24_bit_terminal_escaped(&ranges, false))
-                        .unwrap_or_else(|_| line.to_owned());
-                    self.lines
-                        .push(format!("{DIM}\u{258f}{RESET} {styled}{RESET}"));
-                }
-            }
-            None => {
-                for line in code_lines {
-                    self.lines.push(format!("{DIM}\u{258f} {line}{RESET}"));
-                }
-            }
+        let highlighted = highlight_code(text, self.code_lang.as_deref());
+        for line in highlighted {
+            self.lines
+                .push(format!("{DIM}\u{258f}{RESET} {line}{RESET}"));
         }
         self.started = true;
     }
@@ -534,5 +720,29 @@ mod tests {
     fn blockquote_prefixed() {
         let p = plain(&render_markdown("> quoted text", 80));
         assert!(p.iter().any(|l| l.contains("│ quoted text")), "{p:?}");
+    }
+
+    #[test]
+    fn highlight_code_treats_repl_as_python() {
+        let lines = highlight_code("print(1)", Some("repl"));
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].contains("\x1b[38;2;"), "no highlight: {lines:?}");
+    }
+
+    #[test]
+    fn repl_highlighting_marks_known_calls() {
+        let lines = highlight_code("print(bash('echo hi'))", Some("repl"));
+        assert_eq!(lines.len(), 1);
+        let stripped = strip_ansi(&lines[0]);
+        assert!(stripped.contains("bash"), "known repl call missing: {lines:?}");
+        assert!(lines[0].contains(REPL_FN), "known repl call not highlighted: {lines:?}");
+    }
+
+    #[test]
+    fn markdown_renders_repl_fences_literally() {
+        let lines = render_markdown("```repl\nprint(1)\n```", 80);
+        let p = plain(&lines);
+        assert_eq!(p.first().unwrap(), "```repl");
+        assert_eq!(p.last().unwrap(), "```");
     }
 }

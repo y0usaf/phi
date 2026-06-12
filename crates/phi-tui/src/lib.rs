@@ -12,7 +12,7 @@ pub mod terminal;
 pub use crossterm;
 pub use editor::{Editor, EditorAction};
 pub use fuzzy::{fuzzy_filter, fuzzy_match};
-pub use markdown::render_markdown;
+pub use markdown::{highlight_code, render_markdown};
 pub use selector::{Selector, SelectorItem, SelectorOutcome};
 pub use spinner::Spinner;
 pub use terminal::{

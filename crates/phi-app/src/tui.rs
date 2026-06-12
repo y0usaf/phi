@@ -19,7 +19,7 @@ use phi_rlm::{
 use phi_tui::crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers};
 use phi_tui::{
     Editor, EditorAction, LiveCursor, RawModeGuard, Selector, SelectorItem, SelectorOutcome,
-    Spinner, Terminal, fill_bg, fuzzy_filter, render_markdown, wrap_ansi,
+    Spinner, Terminal, fill_bg, fuzzy_filter, highlight_code, render_markdown, wrap_ansi,
 };
 
 use crate::files::{self, FileSearcher};
@@ -34,6 +34,7 @@ const BOLD: &str = "\x1b[1m";
 const DIM: &str = "\x1b[2m";
 const CYAN: &str = "\x1b[36m";
 const YELLOW: &str = "\x1b[33m";
+const REPL_FENCE: &str = "\x1b[38;2;180;140;255m";
 
 // pi's dark-theme container backgrounds (theme/dark.json). Repl blocks share
 // the user-message gray so the green/red tool tints nested inside them stand
@@ -112,7 +113,7 @@ fn live_block_body(text: &str) -> Option<&str> {
 /// Gutter for the first line of an action at `depth`: one dim `│` column per
 /// enclosing level, then a cyan `⏺` anchor.
 fn dot_prefix(depth: usize) -> String {
-    format!("{DIM}{}{RESET}{CYAN}⏺{RESET} ", "│ ".repeat(depth))
+    format!("{DIM}{}{RESET}{CYAN}├{RESET} ", "│ ".repeat(depth))
 }
 
 /// Gutter for continuation/result lines at `depth`: depth+1 dim `│` columns.
@@ -1137,7 +1138,7 @@ impl Ui {
                     tail.push(String::new());
                 }
                 tail.extend(
-                    self.tool_lines(0, &format!("{BOLD}repl{RESET}"), block, self.code_limit())
+                    self.repl_code_lines(0, block, self.code_limit())
                         .iter()
                         .map(|row| fill_bg(row, REPL_BG, bg_width)),
                 );
@@ -1780,8 +1781,7 @@ impl Ui {
         subcalls: &[session::SubcallRecord],
     ) {
         self.begin_block();
-        self.push_dot(0, format!("{BOLD}repl{RESET}"));
-        self.push_preview(0, code, self.code_limit());
+        self.push_repl_block(0, code, self.code_limit());
         // Replay the persisted tool calls and sub-LLM calls nested in the
         // block, mirroring the live ToolStart/ToolEnd rendering so a
         // resumed session looks like the one the user actually saw.
@@ -1817,6 +1817,9 @@ impl Ui {
                 None => format!("{} done {:.1}s", subcall.model, subcall.duration_secs),
             };
             self.push_bar(0, text);
+            if let Some(result_preview) = &subcall.result_preview {
+                self.push_preview(0, result_preview, self.output_limit());
+            }
         }
         self.push_bar(0, format!("exec {duration_secs:.1}s"));
         self.push_preview(0, stdout, self.output_limit());
@@ -1839,8 +1842,7 @@ impl Ui {
             self.push_prose(segment);
             if let Some(code) = blocks.get(i) {
                 self.begin_block();
-                self.push_dot(0, format!("{BOLD}repl{RESET}"));
-                self.push_preview(0, code, self.code_limit());
+                self.push_repl_block(0, code, self.code_limit());
                 self.commit_block(REPL_BG);
             }
         }
@@ -2211,8 +2213,7 @@ impl Ui {
         let code = format!("print(bash({}))", python_quote(cmd));
         if record {
             self.begin_block();
-            self.push_dot(0, format!("{BOLD}repl{RESET}"));
-            self.push_preview(0, &code, self.code_limit());
+            self.push_repl_block(0, &code, self.code_limit());
         } else {
             self.pending.push(String::new());
             self.pending.push(format!("{BOLD}${RESET} {cmd}"));
@@ -2403,6 +2404,39 @@ impl Ui {
         lines
     }
 
+    fn repl_open_line(&self, depth: usize) -> String {
+        format!("{}{REPL_FENCE}```repl{RESET}", dot_prefix(depth))
+    }
+
+    fn repl_close_line(&self, depth: usize) -> String {
+        format!("{}{REPL_FENCE}```{RESET}", bar_prefix(depth))
+    }
+
+    fn repl_code_lines(&self, depth: usize, body: &str, max: usize) -> Vec<String> {
+        let mut lines = vec![self.repl_open_line(depth)];
+        let trimmed = body.trim_end();
+        if !trimmed.is_empty() {
+            let avail = self.gutter_text_width(depth).saturating_sub(2).max(1);
+            let rows: Vec<String> = highlight_code(trimmed, Some("repl"))
+                .into_iter()
+                .flat_map(|line| wrap_ansi(&line, avail))
+                .collect();
+            let shown = rows.len().min(max);
+            for row in &rows[..shown] {
+                lines.push(format!("{}  {row}{RESET}", bar_prefix(depth)));
+            }
+            if rows.len() > max {
+                lines.push(format!(
+                    "{}{DIM}  … ({} more lines){RESET}",
+                    bar_prefix(depth),
+                    rows.len() - max
+                ));
+            }
+        }
+        lines.push(self.repl_close_line(depth));
+        lines
+    }
+
     fn live_thinking_lines(&self) -> Vec<String> {
         if self.thinking.trim().is_empty() {
             return Vec::new();
@@ -2517,6 +2551,31 @@ impl Ui {
         }
     }
 
+    fn push_repl_block(&mut self, depth: usize, text: &str, max: usize) {
+        self.push_row(self.repl_open_line(depth));
+        let trimmed = text.trim_end();
+        if !trimmed.is_empty() {
+            let avail = self.gutter_text_width(depth).saturating_sub(2).max(1);
+            let rows: Vec<String> = highlight_code(trimmed, Some("repl"))
+                .into_iter()
+                .flat_map(|line| wrap_ansi(&line, avail))
+                .collect();
+            let shown = rows.len().min(max);
+            for row in &rows[..shown] {
+                self.push_row(format!("{}  {row}{RESET}", bar_prefix(depth)));
+            }
+            if rows.len() > max {
+                self.push_row(format!(
+                    "{}{DIM}  … ({} more lines){RESET}",
+                    bar_prefix(depth),
+                    rows.len() - max
+                ));
+            }
+        }
+        self.push_row(self.repl_close_line(depth));
+        self.last_gutter = true;
+    }
+
     /// Echo a user message into scrollback as a pi-style container: full-width
     /// `userMessageBg` fill with one cell of padding on every side.
     fn push_user_message(&mut self, text: &str) {
@@ -2613,8 +2672,7 @@ impl Ui {
                     self.begin_block();
                     self.live_code = Some(code.clone());
                 }
-                self.push_dot(depth, format!("{BOLD}repl{RESET}"));
-                self.push_preview(depth, &code, self.code_limit());
+                self.push_repl_block(depth, &code, self.code_limit());
             }
             RlmEvent::CodeExecEnd {
                 depth,
@@ -2737,6 +2795,7 @@ impl Ui {
             RlmEvent::SubcallEnd {
                 depth,
                 model,
+                result_preview,
                 duration,
                 error,
             } => {
@@ -2745,6 +2804,7 @@ impl Ui {
                     self.live_subcalls.push(session::SubcallRecord {
                         model: model.clone(),
                         prompt_preview,
+                        result_preview: result_preview.clone(),
                         error: error.clone(),
                         duration_secs: duration.as_secs_f64(),
                     });
@@ -2754,6 +2814,9 @@ impl Ui {
                     None => format!("{model} done {:.1}s", duration.as_secs_f64()),
                 };
                 self.push_bar(depth, text);
+                if let Some(result_preview) = result_preview {
+                    self.push_preview(depth, &result_preview, self.output_limit());
+                }
             }
             RlmEvent::RunStart { depth } if depth > 0 => {
                 self.push_dot(depth, format!("{BOLD}rlm{RESET}"));

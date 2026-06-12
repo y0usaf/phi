@@ -73,6 +73,8 @@ pub struct SubcallRecord {
     pub model: String,
     pub prompt_preview: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_preview: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
     pub duration_secs: f64,
 }
@@ -785,6 +787,7 @@ mod tests {
                 vec![SubcallRecord {
                     model: "haiku".to_owned(),
                     prompt_preview: "summarize".to_owned(),
+                    result_preview: Some("done".to_owned()),
                     error: None,
                     duration_secs: 0.2,
                 }],

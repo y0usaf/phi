@@ -174,6 +174,8 @@ pub enum RlmEvent {
     SubcallEnd {
         depth: usize,
         model: String,
+        #[allow(dead_code)]
+        result_preview: Option<String>,
         duration: Duration,
         error: Option<String>,
     },
@@ -260,6 +262,17 @@ impl RunState {
     }
 }
 
+fn truncate_preview(text: &str, max: usize) -> String {
+    if text.len() <= max {
+        return text.to_owned();
+    }
+    let mut end = max;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &text[..end])
+}
+
 /// Routes subcall frames from the REPL: `llm_query` to the handler's sub
 /// model, `rlm_query` to a child `Rlm` at `depth + 1` (falling back to a
 /// plain completion at max depth, matching upstream), host fns to the
@@ -285,13 +298,21 @@ impl EngineSubcalls {
         });
         let start = Instant::now();
         let result = self.handler.complete_sub(&prompt, model.as_deref()).await;
-        let (outcome, error) = match result {
-            Ok(completion) => (Ok(SubcallResponse::Text(completion.text)), None),
-            Err(e) => (Err(format!("{kind} query failed - {e}")), Some(e)),
+        let (outcome, error, result_preview) = match result {
+            Ok(completion) => {
+                let preview = truncate_preview(&completion.text, 240);
+                (
+                    Ok(SubcallResponse::Text(completion.text)),
+                    None,
+                    Some(preview),
+                )
+            }
+            Err(e) => (Err(format!("{kind} query failed - {e}")), Some(e), None),
         };
         self.rlm.events.emit(RlmEvent::SubcallEnd {
             depth: self.rlm.depth + 1,
             model: model_name,
+            result_preview,
             duration: start.elapsed(),
             error,
         });
@@ -373,9 +394,15 @@ impl EngineSubcalls {
             .completion(ContextPayload::Str(prompt), None, &cancel)
             .await;
         self.handler.track(&completion.usage);
+        let result_preview = if completion.response.trim().is_empty() {
+            None
+        } else {
+            Some(truncate_preview(&completion.response, 240))
+        };
         self.rlm.events.emit(RlmEvent::SubcallEnd {
             depth: next_depth,
             model: model_name,
+            result_preview,
             duration: start.elapsed(),
             error: completion.error.clone(),
         });
