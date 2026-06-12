@@ -3,9 +3,10 @@
 //! it in place of the editor until the user confirms or cancels.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use unicode_width::UnicodeWidthChar;
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::fuzzy::fuzzy_filter;
+use crate::fuzzy::fuzzy_match;
 
 const RESET: &str = "\x1b[0m";
 const BOLD: &str = "\x1b[1m";
@@ -13,7 +14,8 @@ const DIM: &str = "\x1b[2m";
 const CYAN: &str = "\x1b[36m";
 const GREEN: &str = "\x1b[32m";
 
-const MAX_VISIBLE: usize = 10;
+/// Upper bound on the number of list rows, regardless of terminal height.
+const DEFAULT_MAX_VISIBLE: usize = 10;
 
 /// One selectable row. `label` and `detail` are plain text; the selector
 /// applies its own styling.
@@ -66,11 +68,15 @@ pub struct Selector {
     filtered: Vec<usize>,
     /// Index into `filtered`.
     selected: usize,
+    /// Pre-lowercased "label detail value" haystack per item, built once when
+    /// the items are set so `refilter` does not reallocate per keystroke.
+    search_blobs: Vec<String>,
 }
 
 impl Selector {
     pub fn new(title: impl Into<String>, items: Vec<SelectorItem>, searchable: bool) -> Self {
         let filtered = (0..items.len()).collect();
+        let search_blobs = build_search_blobs(&items);
         Self {
             title: title.into(),
             items,
@@ -78,6 +84,7 @@ impl Selector {
             searchable,
             filtered,
             selected: 0,
+            search_blobs,
         }
     }
 
@@ -101,10 +108,23 @@ impl Selector {
     }
 
     fn refilter(&mut self) {
-        self.filtered = fuzzy_filter((0..self.items.len()).collect(), &self.query, |&i| {
-            let item = &self.items[i];
-            format!("{} {} {}", item.label, item.detail, item.value)
-        });
+        let tokens: Vec<&str> = self.query.split_whitespace().collect();
+        if tokens.is_empty() {
+            self.filtered = (0..self.items.len()).collect();
+        } else {
+            let mut scored: Vec<(usize, f64)> = (0..self.items.len())
+                .filter_map(|i| {
+                    let blob = &self.search_blobs[i];
+                    let mut total = 0.0;
+                    for token in &tokens {
+                        total += fuzzy_match(token, blob)?;
+                    }
+                    Some((i, total))
+                })
+                .collect();
+            scored.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+            self.filtered = scored.into_iter().map(|(i, _)| i).collect();
+        }
         self.selected = self.selected.min(self.filtered.len().saturating_sub(1));
     }
 
@@ -148,7 +168,18 @@ impl Selector {
 
     /// Lines for the live region plus, for searchable selectors, the cursor
     /// position as (line offset, column) within those lines.
-    pub fn render(&self, width: usize) -> (Vec<String>, Option<(usize, usize)>) {
+    ///
+    /// `height` is the number of terminal rows available to the widget; two
+    /// rows are reserved (query line and the optional pager footer) and the
+    /// list is capped at [`DEFAULT_MAX_VISIBLE`] rows. `height == 0` means
+    /// "unknown" and falls back to the cap.
+    pub fn render(&self, width: usize, height: usize) -> (Vec<String>, Option<(usize, usize)>) {
+        let visible = if height == 0 {
+            DEFAULT_MAX_VISIBLE
+        } else {
+            height.saturating_sub(2).clamp(1, DEFAULT_MAX_VISIBLE)
+        };
+
         let mut lines = vec![format!("{BOLD}{}{RESET}", self.title)];
         let cursor = self.searchable.then(|| {
             lines.push(format!("{BOLD}›{RESET} {}", self.query));
@@ -171,9 +202,9 @@ impl Selector {
         // Window centered on the selection, pi-style.
         let start = self
             .selected
-            .saturating_sub(MAX_VISIBLE / 2)
-            .min(total.saturating_sub(MAX_VISIBLE));
-        let end = (start + MAX_VISIBLE).min(total);
+            .saturating_sub(visible / 2)
+            .min(total.saturating_sub(visible));
+        let end = (start + visible).min(total);
         for (pos, &index) in self.filtered[start..end].iter().enumerate() {
             let item = &self.items[index];
             let selected = start + pos == self.selected;
@@ -192,28 +223,38 @@ impl Selector {
             }
             lines.push(line);
         }
-        if total > MAX_VISIBLE {
+        if total > visible {
             lines.push(format!("{DIM}  ({}/{total}){RESET}", self.selected + 1));
         }
         (lines, cursor)
     }
 }
 
+/// Lowercased "label detail value" haystacks, rebuilt only when the item set
+/// changes.
+fn build_search_blobs(items: &[SelectorItem]) -> Vec<String> {
+    items
+        .iter()
+        .map(|item| format!("{} {} {}", item.label, item.detail, item.value).to_lowercase())
+        .collect()
+}
+
 /// Truncate plain text to `width` display columns, appending `…` on cut.
+/// Grapheme-safe: never splits a multi-codepoint cluster.
 pub fn truncate(text: &str, width: usize) -> String {
-    let total: usize = text.chars().map(|c| c.width().unwrap_or(0)).sum();
+    let total = UnicodeWidthStr::width(text);
     if total <= width {
         return text.to_owned();
     }
     let mut used = 0;
     let mut out = String::new();
-    for c in text.chars() {
-        let w = c.width().unwrap_or(0);
+    for grapheme in UnicodeSegmentation::graphemes(text, true) {
+        let w = UnicodeWidthStr::width(grapheme);
         if used + w > width.saturating_sub(1) {
             break;
         }
         used += w;
-        out.push(c);
+        out.push_str(grapheme);
     }
     out.push('…');
     out
@@ -282,7 +323,7 @@ mod tests {
         let mut s = selector();
         s.handle_key(key(KeyCode::Char('z')));
         s.handle_key(key(KeyCode::Char('z')));
-        let (lines, cursor) = s.render(80);
+        let (lines, cursor) = s.render(80, 12);
         assert!(lines.iter().any(|l| l.contains("no matches")));
         assert_eq!(cursor, Some((1, 4)));
         assert_eq!(s.handle_key(key(KeyCode::Enter)), SelectorOutcome::Pending);

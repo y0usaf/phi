@@ -1181,7 +1181,8 @@ impl Ui {
         let cursor;
         if let Some((_, widget)) = &self.selector {
             // Selector replaces the editor area below the cwd line.
-            let (sel_lines, sel_cursor) = widget.render(width);
+            let avail = self.term.height().saturating_sub(lines.len() + 1).max(1);
+            let (sel_lines, sel_cursor) = widget.render(width, avail);
             let top = lines.len();
             cursor = sel_cursor.map(|(line, col)| LiveCursor {
                 line: top + line,
