@@ -13,6 +13,8 @@ const BOLD: &str = "\x1b[1m";
 const DIM: &str = "\x1b[2m";
 const CYAN: &str = "\x1b[36m";
 const GREEN: &str = "\x1b[32m";
+/// Subtle raised surface behind the focused row.
+const SELECTED_BG: &str = "\x1b[48;5;236m";
 
 /// Upper bound on the number of list rows, regardless of terminal height.
 const DEFAULT_MAX_VISIBLE: usize = 10;
@@ -210,16 +212,31 @@ impl Selector {
             let selected = start + pos == self.selected;
             let mark = if item.current { " ✓" } else { "" };
             let label = truncate(&item.label, width.saturating_sub(4));
+            // One strong focus cue: a full-row surface with an accent rail.
+            // `✓` stays reserved for the current value, not the focus.
             let mut line = if selected {
-                format!("{CYAN}→ {label}{RESET}")
+                format!("{SELECTED_BG}{CYAN}▌{RESET}{SELECTED_BG}{BOLD}{label}{RESET}{SELECTED_BG}")
             } else {
                 format!("  {label}")
             };
             if !item.detail.is_empty() {
                 line.push_str(&format!(" {DIM}{}{RESET}", item.detail));
+                if selected {
+                    line.push_str(SELECTED_BG);
+                }
             }
             if !mark.is_empty() {
                 line.push_str(&format!("{GREEN}{mark}{RESET}"));
+                if selected {
+                    line.push_str(SELECTED_BG);
+                }
+            }
+            if selected {
+                let used = crate::terminal::visible_width(&line);
+                if width > used {
+                    line.push_str(&" ".repeat(width - used));
+                }
+                line.push_str(RESET);
             }
             lines.push(line);
         }

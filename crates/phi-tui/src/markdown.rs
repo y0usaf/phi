@@ -15,7 +15,6 @@ const DIM: &str = "\x1b[2m";
 const ITALIC: &str = "\x1b[3m";
 const UNDERLINE: &str = "\x1b[4m";
 const CYAN: &str = "\x1b[36m";
-const GREEN: &str = "\x1b[32m";
 
 static SYNTAXES: LazyLock<SyntaxSet> = LazyLock::new(SyntaxSet::load_defaults_newlines);
 static THEME: LazyLock<Theme> = LazyLock::new(|| {
@@ -45,6 +44,7 @@ struct Style {
     code: bool,
     dim: bool,
     link: bool,
+    heading: bool,
 }
 
 impl Style {
@@ -59,7 +59,7 @@ impl Style {
         if self.dim {
             s.push_str(DIM);
         }
-        if self.code {
+        if self.code || self.heading {
             s.push_str(CYAN);
         }
         if self.link {
@@ -153,7 +153,7 @@ impl Renderer {
                 Event::HardBreak => self.flush_line(),
                 Event::Rule => {
                     self.blank_line();
-                    let line = format!("{DIM}{}{RESET}", "─".repeat(self.width.min(40)));
+                    let line = format!("{DIM}{}{RESET}", "─".repeat(self.width));
                     self.lines.push(line);
                 }
                 Event::TaskListMarker(done) => {
@@ -170,11 +170,7 @@ impl Renderer {
             Tag::Heading { level, .. } => {
                 self.blank_line();
                 self.style.bold = true;
-                if level <= HeadingLevel::H2 {
-                    self.push_raw_style(GREEN);
-                }
-                let hashes = "#".repeat(heading_rank(level));
-                self.push_words(&format!("{hashes} "));
+                self.style.heading = level <= HeadingLevel::H2;
             }
             Tag::BlockQuote(_) => {
                 self.blank_line();
@@ -189,7 +185,7 @@ impl Renderer {
                 if let CodeBlockKind::Fenced(lang) = kind
                     && !lang.is_empty()
                 {
-                    self.lines.push(format!("{DIM}```{lang}{RESET}"));
+                    self.lines.push(format!("{DIM}\u{258d} {lang}{RESET}"));
                     self.code_lang = Some(lang.to_string());
                 }
             }
@@ -242,9 +238,15 @@ impl Renderer {
             TagEnd::Paragraph => {
                 self.flush_line();
             }
-            TagEnd::Heading(_) => {
+            TagEnd::Heading(level) => {
                 self.style.bold = false;
+                self.style.heading = false;
+                let title_width = self.col.min(self.width);
                 self.flush_line();
+                if level == HeadingLevel::H1 && title_width > 0 {
+                    self.lines
+                        .push(format!("{DIM}{}{RESET}", "─".repeat(title_width)));
+                }
             }
             TagEnd::BlockQuote(_) => {
                 self.quote_depth -= 1;
@@ -254,9 +256,7 @@ impl Renderer {
             }
             TagEnd::CodeBlock => {
                 self.in_code_block = false;
-                if self.code_lang.take().is_some() {
-                    self.lines.push(format!("{DIM}```{RESET}"));
-                }
+                self.code_lang = None;
                 self.flush_line();
             }
             TagEnd::List(_) => {
@@ -290,11 +290,6 @@ impl Renderer {
             prefix = format!("{DIM}{prefix}");
         }
         self.indent = prefix;
-    }
-
-    fn push_raw_style(&mut self, style: &str) {
-        self.ensure_line_started();
-        self.current.push_str(style);
     }
 
     fn push_words(&mut self, text: &str) {
@@ -342,12 +337,13 @@ impl Renderer {
                         .highlight_line(line, &SYNTAXES)
                         .map(|ranges| as_24_bit_terminal_escaped(&ranges, false))
                         .unwrap_or_else(|_| line.to_owned());
-                    self.lines.push(format!("  {styled}{RESET}"));
+                    self.lines
+                        .push(format!("{DIM}\u{258f}{RESET} {styled}{RESET}"));
                 }
             }
             None => {
                 for line in code_lines {
-                    self.lines.push(format!("  {DIM}{line}{RESET}"));
+                    self.lines.push(format!("{DIM}\u{258f} {line}{RESET}"));
                 }
             }
         }
@@ -378,17 +374,6 @@ impl Renderer {
             self.col = 0;
             self.started = true;
         }
-    }
-}
-
-fn heading_rank(level: HeadingLevel) -> usize {
-    match level {
-        HeadingLevel::H1 => 1,
-        HeadingLevel::H2 => 2,
-        HeadingLevel::H3 => 3,
-        HeadingLevel::H4 => 4,
-        HeadingLevel::H5 => 5,
-        HeadingLevel::H6 => 6,
     }
 }
 
@@ -436,8 +421,13 @@ mod tests {
     fn renders_heading_bold() {
         let lines = render_markdown("# Title\n\nbody", 80);
         assert!(lines[0].contains(BOLD));
-        assert!(plain(&lines)[0].contains("# Title"));
-        assert_eq!(plain(&lines).last().unwrap(), "body");
+        assert!(lines[0].contains(CYAN));
+        let p = plain(&lines);
+        assert_eq!(p[0], "Title");
+        assert!(!p[0].contains('#'), "literal markdown marker leaked: {p:?}");
+        // H1 carries an underline rule sized to the title.
+        assert_eq!(p[1], "─".repeat(5));
+        assert_eq!(p.last().unwrap(), "body");
     }
 
     #[test]
@@ -502,8 +492,8 @@ mod tests {
     fn fenced_code_is_highlighted_and_closed() {
         let lines = render_markdown("```rust\nlet x = 1;\n```", 80);
         let p = plain(&lines);
-        assert_eq!(p.first().unwrap(), "```rust");
-        assert_eq!(p.last().unwrap(), "```");
+        assert_eq!(p.first().unwrap(), "\u{258d} rust");
+        assert!(p.last().unwrap().starts_with('\u{258f}'), "{p:?}");
         // Highlighted lines carry truecolor escapes, not plain DIM.
         let code = lines
             .iter()
