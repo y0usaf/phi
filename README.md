@@ -17,7 +17,7 @@ Rust-first coding harness scaffold with an extension-first runtime and native CL
 - `crates/phi-ext`: extension API surface
 - `crates/phi-builtins`: bundled extensions that use the same host API
 - `docs/`: architecture notes
-- `ref/phi`: local checkout of the upstream reference implementation, ignored by git
+- `ref/`: local checkouts of upstream reference implementations (`pi/`, `rlm/`), ignored by git
 
 Runtime state uses the `phi` application name in XDG paths, for example
 `~/.local/share/phi/auth.json`.
