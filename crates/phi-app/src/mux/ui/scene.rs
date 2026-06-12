@@ -56,8 +56,9 @@ impl Default for ScenePalette {
             bg: theme::SURFACE,
             statusbar_fg: theme::STATUS_FG,
             statusbar_bg: theme::STATUS_BG,
-            // Sidebar reads as its own raised pane next to the terminal.
-            sidebar_bg: theme::SURFACE_RAISED,
+            // Keep the sidebar on the same plane as the rest of mux; row
+            // selection/focus should provide structure, not a slab background.
+            sidebar_bg: theme::SURFACE,
             border: theme::BORDER,
             muted: theme::MUTED,
             term_fg: theme::TERM_FG,
