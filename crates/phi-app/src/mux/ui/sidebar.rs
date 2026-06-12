@@ -7,8 +7,8 @@ use super::super::workspace::{MuxProject, MuxSession};
 use super::color::Color;
 use super::theme::{HEADING, MUTED, TEXT};
 
-pub const SIDEBAR_ANIMATION_FRAME_MS: u64 = 10;
-pub const SIDEBAR_SPINNER_FRAME_TICKS: u64 = 6;
+pub const SIDEBAR_ANIMATION_FRAME_MS: u64 = 40;
+pub const SIDEBAR_SPINNER_FRAME_TICKS: u64 = 2;
 pub const SIDEBAR_SPINNER_FRAME_MS: u64 = SIDEBAR_ANIMATION_FRAME_MS * SIDEBAR_SPINNER_FRAME_TICKS;
 pub const SIDEBAR_SPINNER_FRAMES: &[&str] = &[
     "⠋", "⠙", "⠹", "⠸", "⢸", "⢰", "⣰", "⣠", "⣤", "⣄", "⣆", "⡆", "⡇", "⠇", "⠏",

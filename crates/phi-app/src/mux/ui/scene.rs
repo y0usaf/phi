@@ -143,6 +143,7 @@ pub fn render_scene(
     palette: &ScenePalette,
     mode: MuxMode,
     now_ms: u64,
+    scrollback_total: usize,
 ) -> Option<HardwareCursorPos> {
     let sidebar_panel =
         (layout.sidebar.cols > 0 && layout.sidebar.rows > 0).then_some(layout.sidebar);
@@ -157,7 +158,14 @@ pub fn render_scene(
             now_ms,
         );
     }
-    let cursor = render_terminal(surface, layout.terminal, screen, selection, palette);
+    let cursor = render_terminal(
+        surface,
+        layout.terminal,
+        screen,
+        selection,
+        scrollback_total,
+        palette,
+    );
     render_statusbar(
         surface,
         layout.statusbar,
@@ -913,6 +921,7 @@ pub fn render_terminal(
     rect: CellRect,
     screen: Option<&vt100::Screen>,
     selection: Option<SelectionRange>,
+    scrollback_total: usize,
     palette: &ScenePalette,
 ) -> Option<HardwareCursorPos> {
     surface.fill_rect(rect, palette.term_fg, palette.term_bg);
@@ -942,7 +951,7 @@ pub fn render_terminal(
             );
         },
     );
-    render_terminal_scrollback(surface, rect, screen, palette);
+    render_terminal_scrollback(surface, rect, screen, scrollback_total, palette);
 
     hardware_cursor_for_screen(rect, screen)
 }
@@ -951,22 +960,24 @@ fn render_terminal_scrollback(
     surface: &mut CellSurface,
     rect: CellRect,
     screen: &vt100::Screen,
+    scrollback_total: usize,
     palette: &ScenePalette,
 ) {
     let visible_rows = usize::from(screen.size().0);
-    let scrollback = screen.scrollback();
-    if visible_rows == 0 || scrollback == 0 || rect.rows <= 0 {
+    let offset = screen.scrollback();
+    if visible_rows == 0 || offset == 0 || rect.rows <= 0 {
         return;
     }
 
+    let total_above = scrollback_total.max(offset);
     render_cell_scrollbar(
         surface,
         rect.col + rect.cols - 1,
         rect.row,
         rect.rows,
         visible_rows,
-        visible_rows.saturating_add(scrollback),
-        0,
+        visible_rows.saturating_add(total_above),
+        total_above.saturating_sub(offset),
         palette.border,
         palette.term_bg,
         SCROLLBAR_TRACK_GLYPH,
@@ -1023,6 +1034,7 @@ mod tests {
             rect,
             Some(parser.screen()),
             None,
+            0,
             &ScenePalette::default(),
         )
         .unwrap();

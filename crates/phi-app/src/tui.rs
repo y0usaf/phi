@@ -1149,7 +1149,7 @@ impl Ui {
                 .len()
                 .min((self.term.height() * 3 / 10).max(5));
             let reserved =
-                5 + editor_visible + self.queued.len() + usize::from(!self.queued.is_empty());
+                5 + editor_visible + usize::from(!self.queued.is_empty());
             let budget = self.term.height().saturating_sub(reserved).max(1);
             if tail.len() > budget {
                 tail.drain(..tail.len() - budget);
@@ -1237,10 +1237,15 @@ impl Ui {
                 col: col + prompt_cols,
             });
 
-            for text in &self.queued {
+            if let Some(text) = self.queued.first() {
                 let first = text.lines().next().unwrap_or("");
                 let more = if text.lines().count() > 1 { " …" } else { "" };
-                lines.push(format!("{DIM}queued › {first}{more}{RESET}"));
+                let count = if self.queued.len() > 1 {
+                    format!(" ×{}", self.queued.len())
+                } else {
+                    String::new()
+                };
+                lines.push(format!("{DIM}queued{count} › {first}{more}{RESET}"));
             }
 
             if let Some(popup) = &self.popup {

@@ -970,7 +970,18 @@ impl MuxApp {
             .focused_session()
             .and_then(|s| s.handle.as_ref())
             .map(|h| h.parser.clone());
-        let parser_guard = focused_parser.as_ref().map(|p| driver::lock_parser(p));
+        let mut parser_guard = focused_parser.as_ref().map(|p| driver::lock_parser(p));
+        let scrollback_total = parser_guard
+            .as_deref_mut()
+            .map(|p| {
+                let screen = p.screen_mut();
+                let offset = screen.scrollback();
+                screen.set_scrollback(usize::MAX);
+                let total = screen.scrollback();
+                screen.set_scrollback(offset);
+                total
+            })
+            .unwrap_or(0);
         let screen = parser_guard.as_deref().map(|p| p.screen());
 
         let mut hardware_cursor = render_scene(
@@ -984,6 +995,7 @@ impl MuxApp {
             &palette,
             mode,
             now_ms,
+            scrollback_total,
         )
         .map(|pos| HardwareCursor {
             col: pos.col,

@@ -72,7 +72,7 @@ impl Style {
 
 /// Render markdown to terminal lines, word-wrapped to `width` columns.
 pub fn render_markdown(text: &str, width: usize) -> Vec<String> {
-    let width = width.max(20);
+    let width = width.max(1);
     let options = Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TABLES;
     let parser = Parser::new_ext(text, options);
 
