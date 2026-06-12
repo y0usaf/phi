@@ -37,9 +37,13 @@ impl CellRect {
 }
 
 const STATUSBAR_ROWS: i32 = 1;
-const SIDEBAR_SHOW_MIN_COLS: i32 = 72;
+const SIDEBAR_SHOW_MIN_COLS: i32 = 64;
 const MIN_TERMINAL_COLS_WITH_SIDEBAR: i32 = 32;
 pub const SIDEBAR_WIDTH_DEFAULT: u16 = 36;
+/// Sidebar never drops below this many columns once shown.
+const SIDEBAR_MIN_COLS: i32 = 24;
+/// On wide screens the sidebar tops out at roughly a quarter of the frame.
+const SIDEBAR_MAX_FRACTION_DENOM: i32 = 4;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CellLayout {
@@ -57,7 +61,12 @@ pub fn compute_cell_layout(cols: u16, rows: u16, sidebar_width: u16) -> CellLayo
 
     let show_sidebar = cols >= SIDEBAR_SHOW_MIN_COLS && body_rows >= 4;
     let sidebar_cols = if show_sidebar {
+        // Scale with the frame instead of disappearing abruptly: narrow
+        // screens get a slimmer sidebar, wide screens cap it at the
+        // configured width or a quarter of the frame, whichever is smaller.
+        let cap = (cols / SIDEBAR_MAX_FRACTION_DENOM).max(SIDEBAR_MIN_COLS);
         i32::from(sidebar_width)
+            .min(cap)
             .min((cols - MIN_TERMINAL_COLS_WITH_SIDEBAR).max(0))
             .max(0)
     } else {
@@ -93,9 +102,23 @@ mod tests {
 
     #[test]
     fn shows_sidebar_on_wide_grid() {
+        // Sidebar scales with the frame: a quarter of 120 cols.
         let layout = compute_cell_layout(120, 40, SIDEBAR_WIDTH_DEFAULT);
-        assert_eq!(layout.sidebar, CellRect::new(0, 0, 36, 39));
-        assert_eq!(layout.terminal, CellRect::new(36, 0, 84, 39));
+        assert_eq!(layout.sidebar, CellRect::new(0, 0, 30, 39));
+        assert_eq!(layout.terminal, CellRect::new(30, 0, 90, 39));
         assert_eq!(layout.statusbar, CellRect::new(0, 39, 120, 1));
+    }
+
+    #[test]
+    fn sidebar_caps_at_configured_width_on_very_wide_grid() {
+        let layout = compute_cell_layout(200, 40, SIDEBAR_WIDTH_DEFAULT);
+        assert_eq!(layout.sidebar, CellRect::new(0, 0, 36, 39));
+    }
+
+    #[test]
+    fn sidebar_slims_down_instead_of_vanishing_on_medium_grid() {
+        let layout = compute_cell_layout(70, 30, SIDEBAR_WIDTH_DEFAULT);
+        assert_eq!(layout.sidebar.cols, 24);
+        assert!(layout.terminal.cols >= 32);
     }
 }

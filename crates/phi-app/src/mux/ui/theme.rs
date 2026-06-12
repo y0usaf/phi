@@ -46,7 +46,8 @@ pub const BORDER: Color = CHARCOAL;
 pub const SURFACE: Color = PEPPER;
 pub const SURFACE_RAISED: Color = BBQ;
 pub const TERM_FG: Color = TEXT;
-const CURSOR: Color = DOLLY;
+/// Cursor sits in the accent family rather than shouting in pink.
+const CURSOR: Color = BOK;
 const TERM_SELECTION_BG: Color = CHARPLE;
 const TERM_SELECTION_FG: Color = BUTTER;
 

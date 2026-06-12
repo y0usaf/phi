@@ -5,8 +5,8 @@ use phi_tui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use super::ui::cell_surface::display_cell_width;
 use super::ui::layout::CellLayout;
 
-/// Statusline mode-label width ("` NORMAL  `" etc.), kept in sync with scene.rs.
-const MODE_LABEL_WIDTH: i32 = 9;
+/// Statusline mode-label width ("` NOR `" etc.), kept in sync with scene.rs.
+const MODE_LABEL_WIDTH: i32 = 5;
 
 /// What the mux loop should do after the command line consumed a key.
 #[derive(Clone, Debug, PartialEq, Eq)]

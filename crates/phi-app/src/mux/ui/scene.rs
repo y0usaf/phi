@@ -15,7 +15,7 @@ use super::sidebar::{
 use super::terminal_view::for_each_terminal_screen_cell;
 use super::theme;
 
-const STATUSLINE_MODE_LABEL_WIDTH: i32 = 9;
+const STATUSLINE_MODE_LABEL_WIDTH: i32 = 5;
 const SCROLLBAR_TRACK_GLYPH: &str = "│";
 const SCROLLBAR_THUMB_GLYPH: &str = "┃";
 const STATUS_SEPARATOR_GLYPH: &str = "│";
@@ -51,14 +51,17 @@ impl Default for ScenePalette {
     fn default() -> Self {
         Self {
             fg: theme::TEXT,
-            bg: theme::TRANSPARENT,
+            // Grounded canvas: real surfaces instead of floating on whatever
+            // the host terminal happens to show through.
+            bg: theme::SURFACE,
             statusbar_fg: theme::STATUS_FG,
             statusbar_bg: theme::STATUS_BG,
-            sidebar_bg: theme::TRANSPARENT,
+            // Sidebar reads as its own raised pane next to the terminal.
+            sidebar_bg: theme::SURFACE_RAISED,
             border: theme::BORDER,
             muted: theme::MUTED,
             term_fg: theme::TERM_FG,
-            term_bg: theme::TRANSPARENT,
+            term_bg: theme::SURFACE,
             accent: theme::ACCENT,
             accent_2: theme::ACCENT_2,
             ansi: theme::default_ansi_palette(),
@@ -327,13 +330,14 @@ fn render_statusbar_sidebar_segment(
 }
 
 fn statusline_mode_label(state: StatusbarState) -> String {
+    // Compact chips: the bar should orient, not shout.
     let text = match state {
-        StatusbarState::Command => "COMMAND",
-        StatusbarState::Ok => "OKAY!",
-        StatusbarState::Error => "ERROR!",
-        StatusbarState::Normal => "NORMAL",
+        StatusbarState::Command => "CMD",
+        StatusbarState::Ok => "OK",
+        StatusbarState::Error => "ERR",
+        StatusbarState::Normal => "NOR",
     };
-    format!(" {:<7} ", text)
+    format!(" {:<3} ", text)
 }
 
 fn statusline_right_text(chrome: &Chrome, state: StatusbarState) -> String {
@@ -341,8 +345,8 @@ fn statusline_right_text(chrome: &Chrome, state: StatusbarState) -> String {
         return String::new();
     }
     match state {
-        StatusbarState::Ok => format!(" OKAY! {} ", chrome.status),
-        StatusbarState::Error => format!(" ERROR! {} ", chrome.status),
+        StatusbarState::Ok => format!(" ✓ {} ", chrome.status),
+        StatusbarState::Error => format!(" ✗ {} ", chrome.status),
         _ => format!(
             " {} {} ",
             statusline_status_symbol(&chrome.status),
@@ -1063,7 +1067,7 @@ mod tests {
         let row: String = (0..80)
             .map(|col| surface.cell(col, 2).unwrap().text.clone())
             .collect();
-        assert!(row.contains("NORMAL"));
+        assert!(row.contains("NOR"));
         assert!(row.contains("phi"));
         assert!(row.contains("hello world"));
         assert!(row.contains("⋯ thinking"));
