@@ -295,7 +295,7 @@ async fn print_events(
                 );
             }
             RlmEvent::CodeExecStart { code, .. } => {
-                eprintln!("{} exec", dot(color));
+                eprintln!("{} exec", spin(color));
                 eprintln!("{}", indent(&preview(&code, 16, verbose)));
             }
             RlmEvent::CodeExecEnd {
@@ -322,7 +322,7 @@ async fn print_events(
                 model,
                 prompt_preview,
             } => {
-                eprintln!("{} subcall {model}{} {prompt_preview}", dot(color), depth_tag(depth));
+                eprintln!("{} subcall {model}{} {prompt_preview}", spin(color), depth_tag(depth));
             }
             RlmEvent::SubcallEnd {
                 model,
@@ -344,7 +344,7 @@ async fn print_events(
             } => {
                 eprintln!(
                     "{} {name}{} {}",
-                    dot(color),
+                    spin(color),
                     depth_tag(depth),
                     tool_args_preview(&args)
                 );
@@ -407,12 +407,12 @@ const GLYPH_ACTIVE: &str = "\x1b[38;2;130;160;230m";
 const GLYPH_OK: &str = "\x1b[38;2;130;200;140m";
 const GLYPH_ERR: &str = "\x1b[38;2;240;120;120m";
 
-/// Leading dot marking the start of a top-level action.
-fn dot(color: bool) -> String {
+/// Leading braille marker for the start of an in-flight top-level action.
+fn spin(color: bool) -> String {
     if color {
-        format!("{GLYPH_ACTIVE}\u{25cf}{GLYPH_RESET}")
+        format!("{GLYPH_ACTIVE}\u{283f}{GLYPH_RESET}")
     } else {
-        "\u{25cf}".to_owned()
+        "\u{283f}".to_owned()
     }
 }
 
