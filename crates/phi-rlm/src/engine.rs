@@ -273,6 +273,11 @@ fn truncate_preview(text: &str, max: usize) -> String {
     format!("{}…", &text[..end])
 }
 
+fn prompt_preview(text: &str, max: usize) -> String {
+    let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    truncate_preview(&flat, max)
+}
+
 /// Routes subcall frames from the REPL: `llm_query` to the handler's sub
 /// model, `rlm_query` to a child `Rlm` at `depth + 1` (falling back to a
 /// plain completion at max depth, matching upstream), host fns to the
@@ -294,7 +299,7 @@ impl EngineSubcalls {
         self.rlm.events.emit(RlmEvent::SubcallStart {
             depth: self.rlm.depth + 1,
             model: model_name.clone(),
-            prompt_preview: prompt.chars().take(80).collect(),
+            prompt_preview: prompt_preview(&prompt, 80),
         });
         let start = Instant::now();
         let result = self.handler.complete_sub(&prompt, model.as_deref()).await;
@@ -375,7 +380,7 @@ impl EngineSubcalls {
         self.rlm.events.emit(RlmEvent::SubcallStart {
             depth: next_depth,
             model: model_name.clone(),
-            prompt_preview: prompt.chars().take(80).collect(),
+            prompt_preview: prompt_preview(&prompt, 80),
         });
         let start = Instant::now();
 
@@ -1921,6 +1926,80 @@ mod tests {
         assert!(saw_child_run);
         assert!(saw_child_answer);
         assert_eq!(subcall_model.as_deref(), Some("root-model"));
+    }
+
+    #[tokio::test]
+    async fn llm_query_preview_is_single_line() {
+        let root = Arc::new(ScriptedLm::new(
+            "root-model",
+            &[
+                "```repl\nr = llm_query(\"\"\"first line\n\nsecond\tline\"\"\")\n```",
+                "```repl\nanswer['content'] = r\nanswer['ready'] = True\n```",
+            ],
+        ));
+        let sub = Arc::new(ScriptedLm::new("sub-model", &[]).with_default("ok"));
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let engine = rlm(RlmConfig::default(), root, sub).with_events(tx);
+        let result = engine
+            .completion(
+                ContextPayload::Str("ctx".into()),
+                None,
+                &CancellationToken::new(),
+            )
+            .await;
+        assert_eq!(result.stop, StopCause::Answer, "{:?}", result.error);
+
+        let mut preview = None;
+        while let Ok(event) = rx.try_recv() {
+            if let RlmEvent::SubcallStart {
+                depth: 1,
+                prompt_preview,
+                ..
+            } = event
+            {
+                preview = Some(prompt_preview);
+            }
+        }
+        assert_eq!(preview.as_deref(), Some("first line second line"));
+    }
+
+    #[tokio::test]
+    async fn rlm_query_preview_is_single_line() {
+        let root = Arc::new(ScriptedLm::new(
+            "root-model",
+            &[
+                "```repl\nr = rlm_query(\"\"\"first line\n\nsecond\tline\"\"\")\n```",
+                "```repl\nanswer['content'] = 'child ok'\nanswer['ready'] = True\n```",
+                "```repl\nanswer['content'] = r\nanswer['ready'] = True\n```",
+            ],
+        ));
+        let config = RlmConfig {
+            max_depth: 2,
+            ..RlmConfig::default()
+        };
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let engine = rlm(config, root, quiet_sub()).with_events(tx);
+        let result = engine
+            .completion(
+                ContextPayload::Str("ctx".into()),
+                None,
+                &CancellationToken::new(),
+            )
+            .await;
+        assert_eq!(result.stop, StopCause::Answer, "{:?}", result.error);
+
+        let mut preview = None;
+        while let Ok(event) = rx.try_recv() {
+            if let RlmEvent::SubcallStart {
+                depth: 1,
+                prompt_preview,
+                ..
+            } = event
+            {
+                preview = Some(prompt_preview);
+            }
+        }
+        assert_eq!(preview.as_deref(), Some("first line second line"));
     }
 
     #[tokio::test]

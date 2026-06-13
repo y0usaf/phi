@@ -6,12 +6,12 @@ use std::time::SystemTime;
 use phi_tui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::dialog::render_dialog_title_line;
-use crate::mux::ui::cell_surface::{
+use crate::ui::cell_surface::{
     CellSurface, draw_box, render_cell_scrollbar, truncate_to_cells,
 };
-use crate::mux::ui::layout::CellRect as Rect;
-use crate::mux::ui::theme;
-use crate::mux::workspace::{self, ArchivedSession};
+use crate::ui::layout::CellRect as Rect;
+use crate::ui::theme;
+use crate::workspace::{self, ArchivedSession};
 
 /// What the mux loop should do after the archive viewer consumed a key.
 #[derive(Clone, Debug, PartialEq, Eq)]

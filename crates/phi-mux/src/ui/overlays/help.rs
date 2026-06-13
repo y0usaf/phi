@@ -4,12 +4,12 @@
 use phi_tui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::dialog::render_dialog_title_line;
-use crate::mux::keymap::{AppAction, Keymap};
-use crate::mux::ui::cell_surface::{
+use crate::keymap::{AppAction, Keymap};
+use crate::ui::cell_surface::{
     CellSurface, draw_box, render_cell_scrollbar, truncate_to_cells,
 };
-use crate::mux::ui::layout::CellRect as Rect;
-use crate::mux::ui::theme;
+use crate::ui::layout::CellRect as Rect;
+use crate::ui::theme;
 
 #[derive(Clone, Debug, Default)]
 pub struct HelpOverlayState {

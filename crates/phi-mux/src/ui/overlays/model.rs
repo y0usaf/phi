@@ -5,12 +5,12 @@ use phi_tui::fuzzy_filter;
 use tokio::sync::oneshot;
 
 use super::dialog::render_dialog_title_line;
-use crate::mux::driver::SessionKey;
-use crate::mux::ui::cell_surface::{
+use crate::driver::SessionKey;
+use crate::ui::cell_surface::{
     CellSurface, draw_box, render_cell_scrollbar, truncate_to_cells,
 };
-use crate::mux::ui::layout::CellRect as Rect;
-use crate::mux::ui::theme;
+use crate::ui::layout::CellRect as Rect;
+use crate::ui::theme;
 
 #[derive(Debug)]
 pub enum ModelOverlayOutcome {

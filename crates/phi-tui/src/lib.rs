@@ -2,6 +2,7 @@
 //! screen), grapheme-aware input editor, markdown → ANSI rendering, spinner.
 //! This crate knows nothing about the RLM engine; phi-app wires the two.
 
+pub mod cells;
 pub mod editor;
 pub mod fuzzy;
 pub mod markdown;
@@ -9,6 +10,7 @@ pub mod selector;
 pub mod spinner;
 pub mod terminal;
 
+pub use cells::{display_cell_width, truncate_to_cells};
 pub use crossterm;
 pub use editor::{Editor, EditorAction};
 pub use fuzzy::{fuzzy_filter, fuzzy_match};

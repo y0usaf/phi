@@ -25,8 +25,8 @@ use phi_tui::{
 };
 
 use crate::files::{self, FileSearcher};
-use crate::mux::ui::overlays::usage::usage_overlay_lines;
-use crate::mux::usage::load_usage_report;
+use crate::usage::usage_overlay_lines;
+use crate::usage::load_usage_report;
 use crate::session::{self, SessionStore};
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
@@ -150,6 +150,52 @@ fn truncate_for_log(text: &str) -> String {
         end -= 1;
     }
     format!("{}\n[truncated {} bytes]", &text[..end], text.len() - end)
+}
+
+#[derive(Clone)]
+struct OpenToolRow {
+    depth: usize,
+    label: String,
+    start: usize,
+    len: usize,
+}
+
+#[derive(Clone)]
+struct OpenSubcallRow {
+    depth: usize,
+    prompt_preview: String,
+    label: String,
+    start: usize,
+    len: usize,
+}
+
+fn subcall_title(model: &str, prompt_preview: &str) -> String {
+    let prompt_preview = prompt_preview
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!(
+        "{SUBCALL_ACCENT}{model}{RESET} {DIM}←{RESET} {STRING_FG}\"{prompt_preview}\"{RESET}"
+    )
+}
+
+fn running_status_text(label: &str, spinner: &str) -> String {
+    format!("{CYAN}{spinner}{RESET} {label}")
+}
+
+fn success_status_text(label: &str, duration_secs: f64) -> String {
+    format!("{GREEN}✓{RESET} {label} {NUM_FG}{duration_secs:.1}s{RESET}")
+}
+
+fn failed_status_text(label: &str, duration_secs: Option<f64>, detail: Option<&str>) -> String {
+    let duration = duration_secs
+        .map(|secs| format!(" {NUM_FG}{secs:.1}s{RESET}"))
+        .unwrap_or_default();
+    let detail = detail
+        .filter(|d| !d.trim().is_empty())
+        .map(|d| format!(" {DIM}—{RESET} {d}"))
+        .unwrap_or_default();
+    format!("{RED}✗{RESET} {label}{duration}{detail}")
 }
 
 /// Title line for a nested tool block: the tool's defining argument, pi-style
@@ -832,6 +878,7 @@ pub async fn run(setup: TuiSetup, mut io: SessionIo) -> Result<()> {
             }
             _ = ticker.tick(), if ui.running.is_some() => {
                 ui.spinner.tick();
+                ui.refresh_open_activity_rows();
                 false
             }
             _ = tokio::time::sleep_until(last_draw + FRAME), if dirty => false,
@@ -916,7 +963,7 @@ pub async fn run(setup: TuiSetup, mut io: SessionIo) -> Result<()> {
 
 /// Write `text` to a temp file, open it in $VISUAL/$EDITOR, and return the
 /// edited content (None when the editor exits non-zero).
-pub(crate) fn external_editor(text: &str) -> Result<Option<String>, String> {
+pub fn external_editor(text: &str) -> Result<Option<String>, String> {
     let editor = std::env::var("VISUAL")
         .or_else(|_| std::env::var("EDITOR"))
         .map_err(|_| "set $VISUAL or $EDITOR to use ctrl+g".to_owned())?;
@@ -1025,11 +1072,12 @@ struct Ui {
     live_tools: Vec<session::ToolCall>,
     /// Args of depth-0 tools still executing, keyed by engine call_id.
     open_tool_args: std::collections::HashMap<u64, serde_json::Value>,
-    /// Sub-LLM calls observed inside the in-flight depth-0 REPL block;
-    /// prompt previews queue at `SubcallStart` and pair with `SubcallEnd`
-    /// in FIFO order (the engine emits no subcall ids).
+    /// Live tool status rows inside the buffered block.
+    open_tool_rows: std::collections::HashMap<u64, OpenToolRow>,
+    /// Sub-LLM calls observed inside the in-flight depth-0 REPL block.
     live_subcalls: Vec<session::SubcallRecord>,
-    open_subcall_previews: std::collections::VecDeque<String>,
+    /// Live subcall status rows inside the buffered block.
+    open_subcall_rows: std::collections::VecDeque<OpenSubcallRow>,
 
     /// Prose flushed while a block is active; committed after the block so
     /// scrollback stays chronological.
@@ -1150,8 +1198,9 @@ impl Ui {
             live_code: None,
             live_tools: Vec::new(),
             open_tool_args: std::collections::HashMap::new(),
+            open_tool_rows: std::collections::HashMap::new(),
             live_subcalls: Vec::new(),
-            open_subcall_previews: std::collections::VecDeque::new(),
+            open_subcall_rows: std::collections::VecDeque::new(),
             after_block: Vec::new(),
             last_gutter: false,
             stream: String::new(),
@@ -1872,14 +1921,17 @@ impl Ui {
         // block, mirroring the live ToolStart/ToolEnd rendering so a
         // resumed session looks like the one the user actually saw.
         for tool in tools {
-            self.push_dot(1, tool_title(&tool.name, &tool.args));
+            let label = tool_title(&tool.name, &tool.args);
+            let text = match &tool.error {
+                Some(_) => failed_status_text(&label, Some(tool.duration_secs), None),
+                None => success_status_text(&label, tool.duration_secs),
+            };
+            let _ = self.push_status(1, text);
             match &tool.error {
                 Some(error) => {
-                    self.push_bar(1, format!("{RED}failed{RESET} {NUM_FG}{:.1}s{RESET}", tool.duration_secs));
                     self.push_preview(1, error, self.output_limit());
                 }
                 None => {
-                    self.push_bar(1, format!("{GREEN}done{RESET} {NUM_FG}{:.1}s{RESET}", tool.duration_secs));
                     self.push_preview_with_lang(
                         1,
                         &tool.result,
@@ -1890,21 +1942,12 @@ impl Ui {
             }
         }
         for subcall in subcalls {
-            self.push_dot(
-                0,
-                format!(
-                    "{SUBCALL_ACCENT}{}{RESET} {DIM}←{RESET} {STRING_FG}\"{}\"{RESET}",
-                    subcall.model, subcall.prompt_preview
-                ),
-            );
+            let label = subcall_title(&subcall.model, &subcall.prompt_preview);
             let text = match &subcall.error {
-                Some(error) => format!("{RED}{} failed:{RESET} {error}", subcall.model),
-                None => format!(
-                    "{GREEN}{} done{RESET} {NUM_FG}{:.1}s{RESET}",
-                    subcall.model, subcall.duration_secs
-                ),
+                Some(error) => failed_status_text(&label, Some(subcall.duration_secs), Some(error)),
+                None => success_status_text(&label, subcall.duration_secs),
             };
-            self.push_bar(0, text);
+            let _ = self.push_status(0, text);
             if let Some(result_preview) = &subcall.result_preview {
                 self.push_preview(0, result_preview, self.output_limit());
             }
@@ -2557,6 +2600,136 @@ impl Ui {
         }
     }
 
+    fn status_rows(&self, depth: usize, text: &str) -> Vec<String> {
+        let mut rows = wrap_ansi(text, self.gutter_text_width(depth)).into_iter();
+        let first = rows.next().unwrap_or_default();
+        let mut rendered = vec![format!("{}{first}{RESET}", dot_prefix(depth))];
+        for row in rows {
+            rendered.push(format!("{}{row}{RESET}", bar_prefix(depth)));
+        }
+        rendered
+    }
+
+    fn push_status(&mut self, depth: usize, text: String) -> Option<(usize, usize)> {
+        if depth == 0 && !self.last_gutter && !self.block_active {
+            self.pending.push(String::new());
+        }
+        let rows = self.status_rows(depth, &text);
+        let start = if self.block_active {
+            Some(self.block.len())
+        } else {
+            None
+        };
+        let len = rows.len();
+        for row in rows {
+            self.push_row(row);
+        }
+        self.last_gutter = true;
+        start.map(|start| (start, len))
+    }
+
+    fn shift_open_row_starts(&mut self, after: usize, delta: isize) {
+        if delta == 0 {
+            return;
+        }
+        for row in self.open_tool_rows.values_mut() {
+            if row.start >= after {
+                row.start = ((row.start as isize) + delta) as usize;
+            }
+        }
+        for row in self.open_subcall_rows.iter_mut() {
+            if row.start >= after {
+                row.start = ((row.start as isize) + delta) as usize;
+            }
+        }
+    }
+
+    fn replace_block_rows(&mut self, start: usize, len: usize, rows: Vec<String>) -> usize {
+        if !self.block_active || start > self.block.len() {
+            return rows.len();
+        }
+        let end = (start + len).min(self.block.len());
+        let old_len = end.saturating_sub(start);
+        let new_len = rows.len();
+        self.block.splice(start..end, rows);
+        self.shift_open_row_starts(end, new_len as isize - old_len as isize);
+        new_len
+    }
+
+    fn refresh_open_activity_rows(&mut self) {
+        if !self.block_active {
+            return;
+        }
+        let spinner = self.spinner.frame().to_owned();
+
+        let mut tool_ids: Vec<(u64, usize)> = self
+            .open_tool_rows
+            .iter()
+            .map(|(&id, row)| (id, row.start))
+            .collect();
+        tool_ids.sort_by_key(|(_, start)| std::cmp::Reverse(*start));
+        for (id, _) in tool_ids {
+            let Some(row) = self.open_tool_rows.get(&id).cloned() else {
+                continue;
+            };
+            let new_len = self.replace_block_rows(
+                row.start,
+                row.len,
+                self.status_rows(row.depth, &running_status_text(&row.label, &spinner)),
+            );
+            if let Some(open) = self.open_tool_rows.get_mut(&id) {
+                open.len = new_len;
+            }
+        }
+
+        let mut sub_idxs: Vec<(usize, usize)> = self
+            .open_subcall_rows
+            .iter()
+            .enumerate()
+            .map(|(idx, row)| (idx, row.start))
+            .collect();
+        sub_idxs.sort_by_key(|(_, start)| std::cmp::Reverse(*start));
+        for (idx, _) in sub_idxs {
+            let Some(row) = self.open_subcall_rows.get(idx).cloned() else {
+                continue;
+            };
+            let new_len = self.replace_block_rows(
+                row.start,
+                row.len,
+                self.status_rows(row.depth, &running_status_text(&row.label, &spinner)),
+            );
+            if let Some(open) = self.open_subcall_rows.get_mut(idx) {
+                open.len = new_len;
+            }
+        }
+    }
+
+    fn fail_open_activity_rows(&mut self) {
+        let mut tool_ids: Vec<(u64, usize)> = self
+            .open_tool_rows
+            .iter()
+            .map(|(&id, row)| (id, row.start))
+            .collect();
+        tool_ids.sort_by_key(|(_, start)| std::cmp::Reverse(*start));
+        for (id, _) in tool_ids {
+            let Some(row) = self.open_tool_rows.remove(&id) else {
+                continue;
+            };
+            self.replace_block_rows(
+                row.start,
+                row.len,
+                self.status_rows(row.depth, &failed_status_text(&row.label, None, None)),
+            );
+        }
+        while let Some(row) = self.open_subcall_rows.pop_back() {
+            self.replace_block_rows(
+                row.start,
+                row.len,
+                self.status_rows(row.depth, &failed_status_text(&row.label, None, None)),
+            );
+        }
+    }
+
     /// Append an action row to the active block buffer, or straight to
     /// scrollback when no block is in flight.
     fn push_row(&mut self, row: String) {
@@ -2573,6 +2746,8 @@ impl Ui {
         if !self.last_gutter {
             self.pending.push(String::new());
         }
+        self.open_tool_rows.clear();
+        self.open_subcall_rows.clear();
         self.block_active = true;
     }
 
@@ -2584,6 +2759,8 @@ impl Ui {
         }
         self.block_active = false;
         self.pending.extend(std::mem::take(&mut self.block));
+        self.open_tool_rows.clear();
+        self.open_subcall_rows.clear();
         let after = std::mem::take(&mut self.after_block);
         self.pending.extend(after);
     }
@@ -2592,16 +2769,7 @@ impl Ui {
     /// indentation. A depth-0 action that follows prose gets a separating
     /// blank line first.
     fn push_dot(&mut self, depth: usize, text: String) {
-        if depth == 0 && !self.last_gutter && !self.block_active {
-            self.pending.push(String::new());
-        }
-        let mut rows = wrap_ansi(&text, self.gutter_text_width(depth)).into_iter();
-        let first = rows.next().unwrap_or_default();
-        self.push_row(format!("{}{first}{RESET}", dot_prefix(depth)));
-        for row in rows {
-            self.push_row(format!("{}{row}{RESET}", bar_prefix(depth)));
-        }
-        self.last_gutter = true;
+        let _ = self.push_status(depth, text);
     }
 
     /// Continuation/result line inside an action block; wraps to the
@@ -2807,7 +2975,8 @@ impl Ui {
                         );
                     }
                     self.open_tool_args.clear();
-                    self.open_subcall_previews.clear();
+                    self.open_tool_rows.clear();
+                    self.open_subcall_rows.clear();
                 }
             }
             // Prelude tools run inside the REPL block at `depth`, so they
@@ -2821,7 +2990,20 @@ impl Ui {
                 if depth == 0 {
                     self.open_tool_args.insert(call_id, args.clone());
                 }
-                self.push_dot(depth + 1, tool_title(&name, &args));
+                let label = tool_title(&name, &args);
+                if let Some((start, len)) =
+                    self.push_status(depth + 1, running_status_text(&label, self.spinner.frame()))
+                {
+                    self.open_tool_rows.insert(
+                        call_id,
+                        OpenToolRow {
+                            depth: depth + 1,
+                            label,
+                            start,
+                            len,
+                        },
+                    );
+                }
                 if depth == 0 {
                     self.status = format!("{name}...");
                 }
@@ -2851,19 +3033,21 @@ impl Ui {
                         duration_secs: duration.as_secs_f64(),
                     });
                 }
+                let label = tool_title(&name, &args);
+                let text = match error.as_ref() {
+                    Some(_) => failed_status_text(&label, Some(duration.as_secs_f64()), None),
+                    None => success_status_text(&label, duration.as_secs_f64()),
+                };
+                if let Some(row) = self.open_tool_rows.remove(&call_id) {
+                    self.replace_block_rows(row.start, row.len, self.status_rows(row.depth, &text));
+                } else {
+                    let _ = self.push_status(depth + 1, text);
+                }
                 match error {
                     Some(error) => {
-                        self.push_bar(
-                            depth + 1,
-                            format!("{RED}failed{RESET} {NUM_FG}{:.1}s{RESET}", duration.as_secs_f64()),
-                        );
                         self.push_preview(depth + 1, &error, self.output_limit());
                     }
                     None => {
-                        self.push_bar(
-                            depth + 1,
-                            format!("{GREEN}done{RESET} {NUM_FG}{:.1}s{RESET}", duration.as_secs_f64()),
-                        );
                         self.push_preview_with_lang(
                             depth + 1,
                             &result,
@@ -2881,13 +3065,18 @@ impl Ui {
                 model,
                 prompt_preview,
             } => {
-                if depth == 0 {
-                    self.open_subcall_previews.push_back(prompt_preview.clone());
+                let label = subcall_title(&model, &prompt_preview);
+                if let Some((start, len)) =
+                    self.push_status(depth, running_status_text(&label, self.spinner.frame()))
+                {
+                    self.open_subcall_rows.push_back(OpenSubcallRow {
+                        depth,
+                        prompt_preview: prompt_preview.clone(),
+                        label,
+                        start,
+                        len,
+                    });
                 }
-                self.push_dot(
-                    depth,
-                    format!("{SUBCALL_ACCENT}{model}{RESET} {DIM}←{RESET} {STRING_FG}\"{prompt_preview}\"{RESET}"),
-                );
                 if depth == 0 {
                     self.status = format!("waiting on {model}...");
                 }
@@ -2899,8 +3088,12 @@ impl Ui {
                 duration,
                 error,
             } => {
+                let open = self.open_subcall_rows.pop_front();
                 if depth == 0 {
-                    let prompt_preview = self.open_subcall_previews.pop_front().unwrap_or_default();
+                    let prompt_preview = open
+                        .as_ref()
+                        .map(|row| row.prompt_preview.clone())
+                        .unwrap_or_default();
                     self.live_subcalls.push(session::SubcallRecord {
                         model: model.clone(),
                         prompt_preview,
@@ -2909,11 +3102,19 @@ impl Ui {
                         duration_secs: duration.as_secs_f64(),
                     });
                 }
-                let text = match error {
-                    Some(error) => format!("{RED}{model} failed:{RESET} {error}"),
-                    None => format!("{GREEN}{model} done{RESET} {NUM_FG}{:.1}s{RESET}", duration.as_secs_f64()),
+                let label = open
+                    .as_ref()
+                    .map(|row| row.label.clone())
+                    .unwrap_or_else(|| subcall_title(&model, ""));
+                let text = match error.as_ref() {
+                    Some(error) => failed_status_text(&label, Some(duration.as_secs_f64()), Some(error)),
+                    None => success_status_text(&label, duration.as_secs_f64()),
                 };
-                self.push_bar(depth, text);
+                if let Some(row) = open {
+                    self.replace_block_rows(row.start, row.len, self.status_rows(row.depth, &text));
+                } else {
+                    let _ = self.push_status(depth, text);
+                }
                 if let Some(result_preview) = result_preview {
                     self.push_preview(depth, &result_preview, self.output_limit());
                 }
@@ -3034,6 +3235,7 @@ impl Ui {
 
     fn handle_run_done(&mut self, completion: RlmCompletion) {
         // A block still open here never finished (cancel/failure mid-exec).
+        self.fail_open_activity_rows();
         self.commit_block(REPL_ERROR_BG);
         self.live_code = None;
         self.running = None;
@@ -3099,6 +3301,14 @@ mod tests {
             "anthropic/claude-opus-4-7".to_owned(),
             "openai/gpt-5.2".to_owned(),
         ]
+    }
+
+    #[test]
+    fn subcall_title_flattens_multiline_preview() {
+        let title = subcall_title("model-x", "first line\n\nsecond\tline");
+        assert!(title.contains("\"first line second line\"") , "{title}");
+        assert!(!title.contains('\n'), "{title}");
+        assert!(!title.contains('\t'), "{title}");
     }
 
     #[test]

@@ -1607,25 +1607,15 @@ name = "phi-app"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "arboard",
  "directories",
- "futures",
- "ignore",
- "jiff",
- "mlua",
  "phi-ai",
- "phi-builtins",
  "phi-cli",
+ "phi-mux",
  "phi-rlm",
- "phi-tui",
- "serde",
+ "phi-session",
  "serde_json",
- "tempfile",
  "tokio",
  "tokio-util",
- "unicode-width",
- "uuid",
- "vt100",
 ]
 
 [[package]]
@@ -1653,6 +1643,26 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "serde",
+]
+
+[[package]]
+name = "phi-mux"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "arboard",
+ "directories",
+ "futures",
+ "jiff",
+ "phi-rlm",
+ "phi-session",
+ "phi-tui",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "unicode-width",
+ "vt100",
 ]
 
 [[package]]
@@ -1693,6 +1703,29 @@ dependencies = [
  "anyhow",
  "phi-ext",
  "serde",
+]
+
+[[package]]
+name = "phi-session"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "directories",
+ "futures",
+ "ignore",
+ "jiff",
+ "mlua",
+ "phi-ai",
+ "phi-builtins",
+ "phi-cli",
+ "phi-rlm",
+ "phi-tui",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "uuid",
 ]
 
 [[package]]

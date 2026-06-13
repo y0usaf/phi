@@ -10,7 +10,7 @@ use anyhow::{Context as _, Result};
 
 use super::driver::{SessionHandle, SessionKey};
 use super::status::SessionStatus;
-use crate::session::{self, SessionStore};
+use phi_session::session::{self, SessionStore};
 
 pub struct Workspace {
     pub projects: Vec<MuxProject>,
@@ -355,7 +355,7 @@ fn cleanup_archive_in(archive: &Path, max_age: Duration) -> Result<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::Role;
+    use phi_session::session::Role;
 
     /// A real store written under `root/sessions/{flattened}/` to mimic the
     /// production layout.

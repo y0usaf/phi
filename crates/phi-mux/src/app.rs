@@ -38,9 +38,9 @@ use super::ui::sidebar::{
     sidebar_has_spinner, sidebar_viewport_items, sticky_sidebar_anchor_row,
 };
 use super::workspace::{self, Workspace};
-use crate::config::MuxConfig;
-use crate::session_builder::SharedResources;
-use crate::tui::{self, HostModalKind, HostModalRequest};
+use phi_session::config::MuxConfig;
+use phi_session::session_builder::SharedResources;
+use phi_session::tui::{self, HostModalKind, HostModalRequest};
 
 const ANIMATION_TICK: Duration = Duration::from_millis(60);
 const NOTE_TTL: Duration = Duration::from_secs(4);

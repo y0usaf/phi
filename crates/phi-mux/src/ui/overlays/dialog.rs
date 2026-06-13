@@ -1,7 +1,7 @@
 //! Shared dialog chrome (port of pi-harness `overlays/dialog.rs`).
 
-use crate::mux::ui::cell_surface::{CellSurface, display_cell_width};
-use crate::mux::ui::theme;
+use crate::ui::cell_surface::{CellSurface, display_cell_width};
+use crate::ui::theme;
 
 pub fn render_dialog_title_line(
     surface: &mut CellSurface,

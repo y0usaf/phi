@@ -1,0 +1,23 @@
+[package]
+name = "phi-mux"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+arboard.workspace = true
+directories.workspace = true
+futures.workspace = true
+jiff.workspace = true
+phi-rlm.workspace = true
+phi-session.workspace = true
+phi-tui.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+unicode-width.workspace = true
+vt100.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

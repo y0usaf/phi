@@ -47,6 +47,8 @@ phi-builtins = { path = "crates/phi-builtins" }
 phi-cli = { path = "crates/phi-cli" }
 phi-ext = { path = "crates/phi-ext" }
 phi-repl = { path = "crates/phi-repl" }
+phi-mux = { path = "crates/phi-mux" }
 phi-rlm = { path = "crates/phi-rlm" }
+phi-session = { path = "crates/phi-session" }
 phi-runtime = { path = "crates/phi-runtime" }
 phi-tui = { path = "crates/phi-tui" }

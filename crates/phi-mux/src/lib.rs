@@ -11,5 +11,4 @@ pub mod keymap;
 pub mod persisted;
 pub mod status;
 pub mod ui;
-pub mod usage;
 pub mod workspace;

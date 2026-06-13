@@ -196,6 +196,12 @@ fn env_auth(provider: &str) -> Option<Auth> {
         }
         return None;
     }
+    if provider == "vercel-ai-gateway" {
+        return std::env::var("AI_GATEWAY_API_KEY")
+            .ok()
+            .filter(|key| !key.is_empty())
+            .map(Auth::ApiKey);
+    }
     let env_name = format!(
         "{}_API_KEY",
         provider.to_uppercase().replace(['-', '.'], "_")

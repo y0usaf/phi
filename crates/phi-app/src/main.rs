@@ -1,9 +1,3 @@
-mod config;
-mod files;
-mod mux;
-mod session;
-mod session_builder;
-mod tui;
 
 use std::io::{IsTerminal, Read};
 use std::sync::Arc;
@@ -15,6 +9,8 @@ use phi_ai::{
     Usage,
 };
 use phi_cli::Args;
+use phi_mux as mux;
+use phi_session::{config, session_builder, tui};
 use phi_rlm::engine::PythonEnvFactory;
 use phi_rlm::{ContextPayload, LimitKind, ProviderLm, Rlm, RlmConfig, RlmEvent, StopCause};
 use tokio_util::sync::CancellationToken;

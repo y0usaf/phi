@@ -279,7 +279,8 @@ impl SessionStore {
     }
 
     /// Redirect the file path so tests never touch the real data dir.
-    #[cfg(test)]
+    /// Test-only hook (used by phi-mux tests too).
+    #[doc(hidden)]
     pub fn set_test_path(&mut self, path: PathBuf) {
         self.path = path;
     }
