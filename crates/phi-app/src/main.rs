@@ -284,6 +284,7 @@ async fn print_events(
     verbose: bool,
     max_iterations: usize,
 ) {
+    let color = std::io::stderr().is_terminal();
     while let Some(event) = rx.recv().await {
         match event {
             RlmEvent::IterationStart { depth, iteration } => {
@@ -294,6 +295,7 @@ async fn print_events(
                 );
             }
             RlmEvent::CodeExecStart { code, .. } => {
+                eprintln!("{} exec", dot(color));
                 eprintln!("{}", indent(&preview(&code, 16, verbose)));
             }
             RlmEvent::CodeExecEnd {
@@ -302,7 +304,12 @@ async fn print_events(
                 duration,
                 ..
             } => {
-                eprintln!("  [exec {:.1}s]", duration.as_secs_f64());
+                let glyph = if stderr.trim().is_empty() {
+                    check(color)
+                } else {
+                    cross(color)
+                };
+                eprintln!("  {glyph} exec {:.1}s", duration.as_secs_f64());
                 if !stdout.trim().is_empty() {
                     eprintln!("{}", indent(&preview(&stdout, 12, verbose)));
                 }
@@ -315,7 +322,7 @@ async fn print_events(
                 model,
                 prompt_preview,
             } => {
-                eprintln!("  [subcall {model}{}] {prompt_preview}", depth_tag(depth));
+                eprintln!("{} subcall {model}{} {prompt_preview}", dot(color), depth_tag(depth));
             }
             RlmEvent::SubcallEnd {
                 model,
@@ -323,14 +330,21 @@ async fn print_events(
                 error,
                 ..
             } => match error {
-                Some(error) => eprintln!("  [subcall {model} failed: {error}]"),
-                None => eprintln!("  [subcall {model} done {:.1}s]", duration.as_secs_f64()),
+                Some(error) => {
+                    eprintln!("  {} subcall {model} failed: {error}", cross(color))
+                }
+                None => eprintln!(
+                    "  {} subcall {model} {:.1}s",
+                    check(color),
+                    duration.as_secs_f64()
+                ),
             },
             RlmEvent::ToolStart {
                 depth, name, args, ..
             } => {
                 eprintln!(
-                    "  [{name}{}] {}",
+                    "{} {name}{} {}",
+                    dot(color),
                     depth_tag(depth),
                     tool_args_preview(&args)
                 );
@@ -341,12 +355,20 @@ async fn print_events(
                 duration,
                 ..
             } => match error {
-                Some(error) => eprintln!("  [{name} failed: {}]", preview(&error, 4, verbose)),
-                None => eprintln!("  [{name} done {:.1}s]", duration.as_secs_f64()),
+                Some(error) => eprintln!(
+                    "  {} {name} failed: {}",
+                    cross(color),
+                    preview(&error, 4, verbose)
+                ),
+                None => {
+                    eprintln!("  {} {name} {:.1}s", check(color), duration.as_secs_f64())
+                }
             },
-            RlmEvent::AnswerSubmitted { .. } => eprintln!("  [answer submitted]"),
+            RlmEvent::AnswerSubmitted { .. } => {
+                eprintln!("{} answer submitted", check(color))
+            }
             RlmEvent::LimitHit { limit, detail, .. } => {
-                eprintln!("  [limit {}] {detail}", limit_name(limit));
+                eprintln!("{} limit {} {detail}", cross(color), limit_name(limit));
             }
             RlmEvent::RunStart { .. }
             | RlmEvent::RunEnd { .. }
@@ -376,6 +398,40 @@ fn tool_args_preview(args: &serde_json::Value) -> String {
         })
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+
+/// ANSI styling for scrollback event glyphs (gated on a tty in `print_events`).
+const GLYPH_RESET: &str = "\x1b[0m";
+const GLYPH_ACTIVE: &str = "\x1b[38;2;130;160;230m";
+const GLYPH_OK: &str = "\x1b[38;2;130;200;140m";
+const GLYPH_ERR: &str = "\x1b[38;2;240;120;120m";
+
+/// Leading dot marking the start of a top-level action.
+fn dot(color: bool) -> String {
+    if color {
+        format!("{GLYPH_ACTIVE}\u{25cf}{GLYPH_RESET}")
+    } else {
+        "\u{25cf}".to_owned()
+    }
+}
+
+/// Check mark settling a successfully completed action.
+fn check(color: bool) -> String {
+    if color {
+        format!("{GLYPH_OK}\u{2713}{GLYPH_RESET}")
+    } else {
+        "\u{2713}".to_owned()
+    }
+}
+
+/// Cross mark settling a failed action.
+fn cross(color: bool) -> String {
+    if color {
+        format!("{GLYPH_ERR}\u{2717}{GLYPH_RESET}")
+    } else {
+        "\u{2717}".to_owned()
+    }
 }
 
 fn depth_tag(depth: usize) -> String {
