@@ -12,6 +12,7 @@ path = "src/main.rs"
 anyhow.workspace = true
 directories.workspace = true
 phi-ai.workspace = true
+phi-builtins.workspace = true
 phi-cli.workspace = true
 phi-mux.workspace = true
 phi-rlm.workspace = true

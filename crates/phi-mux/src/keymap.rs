@@ -84,7 +84,7 @@ pub const ACTION_SPECS: &[ActionSpec] = &[
         action: AppAction::RemoveProject,
         name: "remove_project",
         defaults: &["ctrl+shift+delete", "ctrl+shift+d"],
-        desc: "remove the focused project (files kept)",
+        desc: "unavailable when sidebar mirrors live session files",
     },
     ActionSpec {
         action: AppAction::CopySelection,

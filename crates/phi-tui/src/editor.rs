@@ -138,6 +138,27 @@ impl Editor {
         self.preferred_col = None;
     }
 
+    /// Add a submitted prompt to the recall history used by Up/Down.
+    /// Consecutive duplicates are ignored; blank/whitespace-only prompts are
+    /// never recorded.
+    pub fn add_history_entry(&mut self, text: &str) {
+        if text.trim().is_empty() {
+            return;
+        }
+        if self.history.last().is_some_and(|prev| prev == text) {
+            return;
+        }
+        self.history.push(text.to_owned());
+    }
+
+    /// Replace the recall history used by Up/Down and leave the editor out of
+    /// history-browsing mode.
+    pub fn clear_history(&mut self) {
+        self.history.clear();
+        self.history_idx = None;
+        self.draft = None;
+    }
+
     /// Logical lines and the cursor as (line index, display column). The
     /// caller prepends its prompt and adjusts the first line's column.
     pub fn render(&self) -> (&[String], (usize, usize)) {
@@ -262,9 +283,7 @@ impl Editor {
                     return EditorAction::None;
                 }
                 self.clear();
-                if self.history.last() != Some(&text) {
-                    self.history.push(text.clone());
-                }
+                self.add_history_entry(&text);
                 return EditorAction::Submit(self.expand_markers(&text));
             }
             KeyCode::Backspace if ctrl || alt => self.delete_word_back(),
@@ -1022,5 +1041,26 @@ mod tests {
         assert_eq!(ed.render().1, (0, 2));
         ed.handle_key(key(KeyCode::Up));
         assert_eq!(ed.text(), "one");
+    }
+
+    #[test]
+    fn explicit_history_entries_recall_latest_first() {
+        let mut ed = Editor::new();
+        ed.add_history_entry("first");
+        ed.add_history_entry("second");
+        ed.handle_key(key(KeyCode::Up));
+        assert_eq!(ed.text(), "second");
+        ed.handle_key(key(KeyCode::Up));
+        assert_eq!(ed.text(), "first");
+    }
+
+    #[test]
+    fn explicit_history_skips_blank_and_consecutive_duplicates() {
+        let mut ed = Editor::new();
+        ed.add_history_entry("   \n");
+        ed.add_history_entry("same");
+        ed.add_history_entry("same");
+        ed.handle_key(key(KeyCode::Up));
+        assert_eq!(ed.text(), "same");
     }
 }

@@ -108,7 +108,14 @@ pub async fn build_session(
         None => SessionStore::new(cwd)?,
     };
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    let rlm = Rlm::new(config, root.clone(), sub.clone(), envs).with_events(tx);
+    let mut rlm = Rlm::new(config, root.clone(), sub.clone(), envs);
+    register_supported_named_models(
+        &mut rlm,
+        registry.clone(),
+        storage.clone(),
+        sub_model_thinking,
+    );
+    let rlm = rlm.with_events(tx);
     Ok(TuiSetup {
         rlm,
         payload,
@@ -130,6 +137,24 @@ pub fn find_model(registry: &Registry, query: &str) -> Result<Model> {
         .find(query)
         .cloned()
         .with_context(|| format!("unknown model '{query}' (see --list-models)"))
+}
+
+pub fn register_supported_named_models(
+    rlm: &mut Rlm,
+    registry: Arc<Registry>,
+    storage: Arc<AuthStorage>,
+    thinking: ThinkingLevel,
+) {
+    for model in registry.supported_models() {
+        let name = format!("{}/{}", model.provider, model.id);
+        let lm = Arc::new(ProviderLm::new(
+            registry.clone(),
+            model.clone(),
+            storage.clone(),
+            thinking,
+        ));
+        rlm.register_model(name, lm);
+    }
 }
 
 pub fn workspace_context(cwd: &Path) -> String {

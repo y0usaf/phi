@@ -25,6 +25,8 @@ pub struct Entry {
     pub role: Role,
     pub text: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<SessionUsage>,
 }
 
@@ -325,12 +327,23 @@ impl SessionStore {
         text: &str,
         usage: Option<SessionUsage>,
     ) -> Result<String> {
+        self.append_with_usage_and_display(role, text, None, usage)
+    }
+
+    pub fn append_with_usage_and_display(
+        &mut self,
+        role: Role,
+        text: &str,
+        display_text: Option<String>,
+        usage: Option<SessionUsage>,
+    ) -> Result<String> {
         let entry = Entry {
             id: new_id(),
             parent_id: self.leaf.clone(),
             timestamp: now(),
             role,
             text: text.to_owned(),
+            display_text,
             usage,
         };
         // Disk first, memory second: an entry becomes a fact only once it
@@ -489,6 +502,68 @@ impl SessionStore {
         items
     }
 
+    /// Active-branch turns reconstructed from the durable message/repl log.
+    ///
+    /// Agent REPL checkpoints may be parented either to the turn's user
+    /// entry (current live checkpointing) or to its assistant entry (older
+    /// tests/manual writes), so replay/restore must group both into one
+    /// exchange instead of trusting flat parent order alone. Shell REPLs
+    /// between turns become `pre_shell` on the following exchange; any
+    /// trailing shell executions are returned separately.
+    pub fn branch_exchanges(&self) -> (Vec<BranchExchange<'_>>, Vec<&ReplEntry>) {
+        let branch = self.branch();
+        if branch.is_empty() {
+            return (Vec::new(), Vec::new());
+        }
+        let mut exchanges = Vec::new();
+        let mut shell_buf = Vec::new();
+        let mut open: Option<BranchExchange<'_>> = None;
+        for entry in branch {
+            let attached: Vec<&ReplEntry> = self
+                .repls
+                .iter()
+                .filter(|repl| repl.parent_id.as_deref() == Some(entry.id.as_str()))
+                .collect();
+            match entry.role {
+                Role::User => {
+                    if let Some(exchange) = open.take() {
+                        exchanges.push(exchange);
+                    }
+                    let mut exchange = BranchExchange {
+                        prompt: entry,
+                        response: None,
+                        pre_shell: std::mem::take(&mut shell_buf),
+                        repls: Vec::new(),
+                    };
+                    exchange.repls.extend(attached);
+                    open = Some(exchange);
+                }
+                Role::Assistant => {
+                    if let Some(mut exchange) = open.take() {
+                        exchange.response = Some(entry);
+                        for repl in attached {
+                            match repl.kind {
+                                ReplKind::Agent => exchange.repls.push(repl),
+                                ReplKind::Shell => shell_buf.push(repl),
+                            }
+                        }
+                        exchanges.push(exchange);
+                    } else {
+                        for repl in attached {
+                            if repl.kind == ReplKind::Shell {
+                                shell_buf.push(repl);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(exchange) = open.take() {
+            exchanges.push(exchange);
+        }
+        (exchanges, shell_buf)
+    }
+
     /// The active branch projected for model-state restore: pi-style, the
     /// canonical stream is resolved into typed exchanges carrying the REPL
     /// executions that ran inside each turn, plus any trailing user shell
@@ -501,40 +576,25 @@ impl SessionStore {
                 stderr: repl.stderr.clone(),
             }
         }
-        let mut exchanges = Vec::new();
-        let mut shell_buf: Vec<phi_rlm::RestoredRepl> = Vec::new();
-        let mut open: Option<phi_rlm::RestoredExchange> = None;
-        for item in self.branch_items() {
-            match item {
-                BranchItem::Message(entry) => match entry.role {
-                    Role::User => {
-                        // A prompt without a recorded response (failed run)
-                        // is skipped, matching the live env.
-                        open = Some(phi_rlm::RestoredExchange {
-                            pre_shell: std::mem::take(&mut shell_buf),
-                            prompt: entry.text.clone(),
-                            repls: Vec::new(),
-                            response: String::new(),
-                        });
-                    }
-                    Role::Assistant => {
-                        if let Some(mut exchange) = open.take() {
-                            exchange.response = entry.text.clone();
-                            exchanges.push(exchange);
-                        }
-                    }
-                },
-                BranchItem::Repl(repl) => match &mut open {
-                    Some(exchange) => exchange.repls.push(restored(repl)),
-                    None => {
-                        if repl.kind == ReplKind::Shell {
-                            shell_buf.push(restored(repl));
-                        }
-                    }
-                },
-            }
-        }
-        (exchanges, shell_buf)
+        let (branch, trailing_shell) = self.branch_exchanges();
+        let exchanges = branch
+            .into_iter()
+            .filter_map(|exchange| {
+                let response = exchange.response?;
+                Some(phi_rlm::RestoredExchange {
+                    pre_shell: exchange.pre_shell.into_iter().map(restored).collect(),
+                    prompt: exchange.prompt.text.clone(),
+                    repls: exchange.repls.into_iter().map(restored).collect(),
+                    response: response.text.clone(),
+                })
+            })
+            .collect();
+        let pending = trailing_shell
+            .into_iter()
+            .filter(|repl| repl.kind == ReplKind::Shell)
+            .map(restored)
+            .collect();
+        (exchanges, pending)
     }
 
     /// All user messages in the session (any branch), chronological — the
@@ -654,6 +714,13 @@ impl SessionStore {
 pub enum BranchItem<'a> {
     Message(&'a Entry),
     Repl(&'a ReplEntry),
+}
+
+pub struct BranchExchange<'a> {
+    pub prompt: &'a Entry,
+    pub response: Option<&'a Entry>,
+    pub pre_shell: Vec<&'a ReplEntry>,
+    pub repls: Vec<&'a ReplEntry>,
 }
 
 /// Coarse relative age for the /resume list ("now", "5m", "3h", "2d").
@@ -822,6 +889,122 @@ mod tests {
             }
             _ => panic!("expected repl after parent assistant"),
         }
+
+        let (turns, trailing) = loaded.branch_exchanges();
+        assert!(trailing.is_empty());
+        assert_eq!(turns.len(), 2);
+        assert_eq!(turns[0].response.unwrap().id, a1);
+        assert_eq!(turns[0].repls.len(), 1);
+        assert_eq!(turns[0].repls[0].parent_id.as_deref(), Some(a1.as_str()));
+    }
+
+    #[test]
+    fn user_parented_agent_repls_group_into_the_following_exchange() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut store = store_in(tmp.path());
+        let q1 = store.append(Role::User, "q1").unwrap();
+        store
+            .append_repl(
+                "print(1)",
+                "1
+",
+                "",
+                0.5,
+                ReplKind::Agent,
+                Vec::new(),
+                Vec::new(),
+            )
+            .unwrap();
+        let a1 = store
+            .append(Role::Assistant, "before\n```repl\nprint(1)\n```\nafter")
+            .unwrap();
+
+        let loaded = SessionStore::load(store.path()).unwrap();
+
+        let items = loaded.branch_items();
+        assert_eq!(items.len(), 3);
+        match items[0] {
+            BranchItem::Message(entry) => assert_eq!(entry.id, q1),
+            _ => panic!("expected user message first"),
+        }
+        match items[1] {
+            BranchItem::Repl(repl) => assert_eq!(repl.parent_id.as_deref(), Some(q1.as_str())),
+            _ => panic!("expected user-parented repl second"),
+        }
+        match items[2] {
+            BranchItem::Message(entry) => assert_eq!(entry.id, a1),
+            _ => panic!("expected assistant message third"),
+        }
+
+        let (turns, trailing) = loaded.branch_exchanges();
+        assert!(trailing.is_empty());
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].prompt.id, q1);
+        assert_eq!(turns[0].response.unwrap().id, a1);
+        assert_eq!(turns[0].repls.len(), 1);
+        assert_eq!(turns[0].repls[0].code, "print(1)");
+        assert_eq!(turns[0].repls[0].parent_id.as_deref(), Some(q1.as_str()));
+
+        let (exchanges, pending) = loaded.branch_restore();
+        assert!(pending.is_empty());
+        assert_eq!(exchanges.len(), 1);
+        assert_eq!(exchanges[0].prompt, "q1");
+        assert_eq!(
+            exchanges[0].response,
+            "before\n```repl\nprint(1)\n```\nafter"
+        );
+        assert_eq!(exchanges[0].repls.len(), 1);
+        assert_eq!(exchanges[0].repls[0].code, "print(1)");
+    }
+
+    #[test]
+    fn assistant_display_text_roundtrips_but_restore_uses_semantic_text() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut store = store_in(tmp.path());
+        let q1 = store.append(Role::User, "q1").unwrap();
+        store
+            .append_repl(
+                "answer['content'] = 'done'\nanswer['ready'] = True",
+                "",
+                "",
+                0.1,
+                ReplKind::Agent,
+                Vec::new(),
+                Vec::new(),
+            )
+            .unwrap();
+        store
+            .append_with_usage_and_display(
+                Role::Assistant,
+                "done",
+                Some(
+                    "Submitting.\n```repl\nanswer['content'] = 'done'\nanswer['ready'] = True\n```done"
+                        .to_owned(),
+                ),
+                None,
+            )
+            .unwrap();
+
+        let loaded = SessionStore::load(store.path()).unwrap();
+        let (turns, trailing) = loaded.branch_exchanges();
+        assert!(trailing.is_empty());
+        assert_eq!(turns.len(), 1);
+        let response = turns[0].response.unwrap();
+        assert_eq!(response.text, "done");
+        assert_eq!(
+            response.display_text.as_deref(),
+            Some(
+                "Submitting.\n```repl\nanswer['content'] = 'done'\nanswer['ready'] = True\n```done"
+            )
+        );
+        assert_eq!(turns[0].repls.len(), 1);
+        assert_eq!(turns[0].repls[0].parent_id.as_deref(), Some(q1.as_str()));
+
+        let (exchanges, pending) = loaded.branch_restore();
+        assert!(pending.is_empty());
+        assert_eq!(exchanges.len(), 1);
+        assert_eq!(exchanges[0].prompt, "q1");
+        assert_eq!(exchanges[0].response, "done");
     }
 
     #[test]

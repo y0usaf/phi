@@ -301,7 +301,6 @@ fn number_as_u64(value: &Value) -> Option<u64> {
         })
 }
 
-
 // --- Usage table lines: pure text formatting shared by the inline TUI's
 // /usage scrollback dump and the mux's usage overlay, so both modes render
 // identical tables. ---
@@ -333,7 +332,6 @@ pub fn usage_overlay_lines(report: &UsageReport) -> Vec<String> {
     }
     lines
 }
-
 
 pub fn usage_header_line() -> String {
     usage_table_line(
@@ -447,7 +445,6 @@ fn format_u64(value: u64) -> String {
 fn format_currency(amount: f64) -> String {
     format!("${amount:.2}")
 }
-
 
 #[cfg(test)]
 mod tests {

@@ -1,4 +1,3 @@
-//! driving a persistent `RlmSession` as a coding agent. Auth is handled
 //! in-TUI via /login, mirroring ref/phi: the OAuth flow runs in the
 //! background, the URL lands in scrollback, and the editor doubles as the
 //! paste-the-redirect-URL input (racing the localhost callback server).
@@ -18,16 +17,16 @@ use phi_rlm::{
 };
 use phi_tui::crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers};
 use phi_tui::{
-    Editor, EditorAction, LiveCursor, RawModeGuard, Selector, SelectorItem,
-    SelectorOutcome, Spinner, Terminal, fill_bg, fuzzy_filter, highlight_code,
-    highlight_diff_line, highlight_output,
-    render_markdown, wrap_ansi,
+    Editor, EditorAction, LiveCursor, RawModeGuard, Selector, SelectorItem, SelectorOutcome,
+    Spinner, Terminal, fill_bg, fuzzy_filter, highlight_code, highlight_diff_line,
+    highlight_output, render_markdown, visible_width, wrap_ansi,
 };
 
 use crate::files::{self, FileSearcher};
-use crate::usage::usage_overlay_lines;
-use crate::usage::load_usage_report;
 use crate::session::{self, SessionStore};
+use crate::transcript::{BlockSpec, Transcript};
+use crate::usage::load_usage_report;
+use crate::usage::usage_overlay_lines;
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
@@ -53,12 +52,13 @@ const STRING_FG: &str = "\x1b[38;2;150;190;150m";
 const NUM_FG: &str = "\x1b[38;2;170;150;230m";
 // User-echo text: legible but not white; white is reserved for model prose.
 const USER_FG: &str = "\x1b[38;2;190;200;215m";
+const PANEL_REPL: &str = "\x1b[38;2;180;140;255m";
 
-// User messages stay as full-width containers; repl/tool rendering is now
-// fence/indent-first with no container backgrounds.
-const USER_BG: &str = "\x1b[48;2;52;53;65m"; // userMessageBg #343541
+// Transcript panels are differentiated by border/title color rather than
+// full-width slab fills, matching the archived User / Agent / REPL boxes.
+const USER_BG: &str = "\x1b[48;2;52;53;65m"; // retained for compatibility with older paths
 const REPL_BG: &str = USER_BG;
-const REPL_ERROR_BG: &str = "\x1b[48;2;70;40;45m"; // retained for interrupted/error commit paths
+const REPL_ERROR_BG: &str = "\x1b[48;2;70;40;45m"; // retained for error compatibility
 
 const CODE_PREVIEW_LINES: usize = 8;
 const OUTPUT_PREVIEW_LINES: usize = 5;
@@ -125,17 +125,6 @@ fn live_block_body(text: &str) -> Option<&str> {
     Some(body.split_once("\n```").map_or(body, |(body, _)| body))
 }
 
-/// Prefix for nested action rows. We keep only visual indentation now:
-/// no tree glyphs, no bullets, just space depth.
-fn dot_prefix(depth: usize) -> String {
-    "  ".repeat(depth + 1)
-}
-
-/// Continuation/result lines stay aligned with the first line.
-fn bar_prefix(depth: usize) -> String {
-    "  ".repeat(depth + 1)
-}
-
 /// Cap persisted tool results at roughly the replay preview budget. The full
 /// output already lives in the repl stdout payload; storing it twice only
 /// bloats the log with bytes nothing ever reads back.
@@ -150,6 +139,68 @@ fn truncate_for_log(text: &str) -> String {
         end -= 1;
     }
     format!("{}\n[truncated {} bytes]", &text[..end], text.len() - end)
+}
+
+fn panel_border(
+    label: &str,
+    label_plain: &str,
+    left: char,
+    right: char,
+    width: usize,
+    color: &str,
+) -> String {
+    let fill = width.saturating_sub(label_plain.chars().count() + 6).max(1);
+    format!(" {color}{left}─ {label} {}{right}{RESET}", "─".repeat(fill))
+}
+
+fn panel_row(text: &str, width: usize) -> String {
+    let inner = width.saturating_sub(4).max(1);
+    let used = visible_width(text);
+    let pad = inner.saturating_sub(used);
+    format!(" │ {text}{} │", " ".repeat(pad))
+}
+
+fn panel_bottom(width: usize, color: &str) -> String {
+    format!(
+        " {color}└{}┘{RESET}",
+        "─".repeat(width.saturating_sub(2).max(1))
+    )
+}
+
+fn render_panel(
+    label: &str,
+    label_plain: &str,
+    width: usize,
+    color: &str,
+    body: &[String],
+) -> Vec<String> {
+    let inner = width.saturating_sub(4).max(1);
+    let mut out = Vec::new();
+    out.push(panel_border(label, label_plain, '┌', '┐', width, color));
+    if body.is_empty() {
+        out.push(panel_row("", width));
+    } else {
+        for line in body {
+            let rows = wrap_ansi(line, inner);
+            if rows.is_empty() {
+                out.push(panel_row("", width));
+            } else {
+                for row in rows {
+                    out.push(panel_row(&row, width));
+                }
+            }
+        }
+    }
+    out.push(panel_bottom(width, color));
+    out
+}
+
+fn dot_prefix(depth: usize) -> String {
+    format!("{}⏺ ", "│ ".repeat(depth))
+}
+
+fn bar_prefix(depth: usize) -> String {
+    format!("{}│ ", "│ ".repeat(depth))
 }
 
 #[derive(Clone)]
@@ -169,14 +220,27 @@ struct OpenSubcallRow {
     len: usize,
 }
 
+#[derive(Clone)]
+struct RetainedTranscriptBlock {
+    key: String,
+    lines: Vec<String>,
+}
+
+#[derive(Clone)]
+struct FrameTranscriptBlock {
+    key: String,
+    lines: Vec<String>,
+    finalized: bool,
+    commit_stable: bool,
+    version: u64,
+}
+
 fn subcall_title(model: &str, prompt_preview: &str) -> String {
     let prompt_preview = prompt_preview
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ");
-    format!(
-        "{SUBCALL_ACCENT}{model}{RESET} {DIM}←{RESET} {STRING_FG}\"{prompt_preview}\"{RESET}"
-    )
+    format!("{SUBCALL_ACCENT}{model}{RESET} {DIM}←{RESET} {STRING_FG}\"{prompt_preview}\"{RESET}")
 }
 
 fn running_status_text(label: &str, spinner: &str) -> String {
@@ -237,10 +301,17 @@ fn tool_title(name: &str, args: &serde_json::Value) -> String {
             }
         }
         "read_file" => format!("{TOOL_ACCENT}read{RESET} {PATH_FG}{}{RESET}", arg("path")),
+        "read_hashline" => format!("{TOOL_ACCENT}hread{RESET} {PATH_FG}{}{RESET}", arg("path")),
         "write_file" => format!("{TOOL_ACCENT}write{RESET} {PATH_FG}{}{RESET}", arg("path")),
         "edit_file" => format!("{TOOL_ACCENT}edit{RESET} {PATH_FG}{}{RESET}", arg("path")),
+        "apply_hashline" => format!("{TOOL_ACCENT}hedit{RESET} {PATH_FG}{}{RESET}", arg("path")),
         "grep" => format!(
             "{TOOL_ACCENT}grep{RESET} {STRING_FG}{}{RESET}{PATH_FG}{}{RESET}",
+            one_line(arg("pattern")),
+            in_path(arg("path"))
+        ),
+        "grep_hashline" => format!(
+            "{TOOL_ACCENT}hgrep{RESET} {STRING_FG}{}{RESET}{PATH_FG}{}{RESET}",
             one_line(arg("pattern")),
             in_path(arg("path"))
         ),
@@ -1057,16 +1128,24 @@ struct Ui {
     queued: Vec<String>,
     /// Time of the last ctrl-c; a second one within 500ms quits.
     last_ctrl_c: Option<std::time::Instant>,
-    /// Lines to flush into scrollback on the next draw.
+    /// Lines staged by event handlers since the last draw; each draw folds
+    /// them into a retained transcript block before rendering.
     pending: Vec<String>,
-    /// Rows of the in-flight depth-0 REPL block (with everything nested in
+    /// Retained transcript renderer/commit seam, restored from the archived
+    /// Phi transcript-block model.
+    transcript: Transcript,
+    /// Finalized transcript blocks retained across frames.
+    transcript_blocks: Vec<RetainedTranscriptBlock>,
+    /// Monotonic key source for finalized transcript blocks.
+    next_transcript_block_id: u64,
+    /// Rows of the in-flight depth-0 ```repl``` block (with everything nested in
     /// it), shown live and then committed to scrollback verbatim.
     block: Vec<String>,
     block_active: bool,
-    /// Code of the in-flight depth-0 agent REPL block, stashed at
+    /// Code of the in-flight depth-0 agent ```repl``` block, stashed at
     /// `CodeExecStart` and persisted to the session store at `CodeExecEnd`.
     live_code: Option<String>,
-    /// Tool calls observed inside the in-flight depth-0 REPL block; args
+    /// Tool calls observed inside the in-flight depth-0 ```repl``` block; args
     /// stashed at `ToolStart`, completed at `ToolEnd`, persisted with the
     /// block at `CodeExecEnd` so resume re-renders the same tool cards.
     live_tools: Vec<session::ToolCall>,
@@ -1074,7 +1153,7 @@ struct Ui {
     open_tool_args: std::collections::HashMap<u64, serde_json::Value>,
     /// Live tool status rows inside the buffered block.
     open_tool_rows: std::collections::HashMap<u64, OpenToolRow>,
-    /// Sub-LLM calls observed inside the in-flight depth-0 REPL block.
+    /// Sub-LLM calls observed inside the in-flight depth-0 ```repl``` block.
     live_subcalls: Vec<session::SubcallRecord>,
     /// Live subcall status rows inside the buffered block.
     open_subcall_rows: std::collections::VecDeque<OpenSubcallRow>,
@@ -1193,6 +1272,9 @@ impl Ui {
             queued: Vec::new(),
             last_ctrl_c: None,
             pending: Vec::new(),
+            transcript: Transcript::new(),
+            transcript_blocks: Vec::new(),
+            next_transcript_block_id: 0,
             block: Vec::new(),
             block_active: false,
             live_code: None,
@@ -1237,57 +1319,145 @@ impl Ui {
     }
 
     fn draw(&mut self) -> std::io::Result<()> {
-        let scrollback = std::mem::take(&mut self.pending);
-        let (live, cursor) = self.live_lines();
-        self.term.render(&scrollback, &live, cursor)
+        self.flush_pending_to_transcript();
+
+        let (chrome, chrome_cursor) = self.chrome_lines();
+        let transcript_height = self.term.height().saturating_sub(chrome.len()).max(1);
+        let live_blocks = self.current_live_transcript_blocks();
+
+        let mut specs = Vec::with_capacity(self.transcript_blocks.len() + live_blocks.len());
+        for block in &self.transcript_blocks {
+            specs.push(BlockSpec {
+                key: &block.key,
+                lines: &block.lines,
+                finalized: true,
+                commit_stable: true,
+                version: 0,
+            });
+        }
+        for block in &live_blocks {
+            specs.push(BlockSpec {
+                key: &block.key,
+                lines: &block.lines,
+                finalized: block.finalized,
+                commit_stable: block.commit_stable,
+                version: block.version,
+            });
+        }
+
+        let frame = self
+            .transcript
+            .render(self.term.width(), transcript_height, &specs);
+
+        let transcript_live_len = frame.live.len();
+        let mut live = frame.live;
+        live.extend(chrome);
+        let cursor = chrome_cursor.map(|mut cursor| {
+            cursor.line += transcript_live_len;
+            cursor
+        });
+        self.term.render(&frame.scrollback, &live, cursor)
     }
 
-    fn live_lines(&mut self) -> (Vec<String>, Option<LiveCursor>) {
+    fn flush_pending_to_transcript(&mut self) {
+        let pending = std::mem::take(&mut self.pending);
+        if pending.is_empty() {
+            return;
+        }
+        self.transcript_blocks.push(RetainedTranscriptBlock {
+            key: format!("tx:{}", self.next_transcript_block_id),
+            lines: pending,
+        });
+        self.next_transcript_block_id += 1;
+    }
+
+    fn clear_transcript(&mut self) {
+        self.transcript.reset();
+        self.transcript_blocks.clear();
+        self.next_transcript_block_id = 0;
+        self.pending.clear();
+        self.block.clear();
+        self.after_block.clear();
+        self.last_gutter = false;
+    }
+
+    fn current_live_transcript_blocks(&self) -> Vec<FrameTranscriptBlock> {
+        let mut blocks = Vec::new();
+
+        if self.running.is_some() {
+            let thinking = self.live_thinking_lines();
+            if !thinking.is_empty() {
+                blocks.push(FrameTranscriptBlock {
+                    key: "live:thinking".to_owned(),
+                    lines: thinking,
+                    finalized: false,
+                    commit_stable: false,
+                    version: 0,
+                });
+            }
+
+            if self.block_active {
+                blocks.push(FrameTranscriptBlock {
+                    key: "live:repl-block".to_owned(),
+                    lines: render_panel(
+                        &format!("{PANEL_REPL}REPL{RESET}"),
+                        "REPL",
+                        self.panel_width(),
+                        PANEL_REPL,
+                        &self.block,
+                    ),
+                    finalized: false,
+                    commit_stable: false,
+                    version: 0,
+                });
+
+                if !self.after_block.is_empty() {
+                    blocks.push(FrameTranscriptBlock {
+                        key: "live:after-block".to_owned(),
+                        lines: self.after_block.clone(),
+                        finalized: true,
+                        commit_stable: true,
+                        version: 0,
+                    });
+                }
+            }
+
+            let visible = &self.stream[..first_block_start(&self.stream)];
+            let prose = render_markdown(visible.trim(), self.markdown_width());
+            if !prose.is_empty() {
+                blocks.push(FrameTranscriptBlock {
+                    key: "live:stream-prose".to_owned(),
+                    lines: prose,
+                    finalized: false,
+                    commit_stable: true,
+                    version: 0,
+                });
+            }
+
+            if let Some(block) = live_block_body(&self.stream) {
+                blocks.push(FrameTranscriptBlock {
+                    key: "live:preview-repl".to_owned(),
+                    lines: render_panel(
+                        &format!("{PANEL_REPL}REPL{RESET}"),
+                        "REPL",
+                        self.panel_width(),
+                        PANEL_REPL,
+                        &self.repl_code_lines(0, block, self.code_limit()),
+                    ),
+                    finalized: false,
+                    commit_stable: false,
+                    version: 0,
+                });
+            }
+        }
+
+        blocks
+    }
+
+    fn chrome_lines(&mut self) -> (Vec<String>, Option<LiveCursor>) {
         let mut lines: Vec<String> = Vec::new();
 
-        // While a turn is in flight, the unflushed stream tail renders as
-        // live markdown above the status footer, capped so the whole live
-        // region (tail + status + editor + queue + hints) fits the viewport.
-        // Anything that is (or could still become) a ```repl fence is kept
-        // out of markdown so it never appears as mangled prose. Once the
-        // opening fence lands, render a provisional tool block immediately;
-        // `CodeExecStart` takes over in scrollback when the block closes.
         if self.running.is_some() {
-            let visible = &self.stream[..first_block_start(&self.stream)];
-            let live_block = live_block_body(&self.stream);
-            let mut tail = self.live_thinking_lines();
-            // The executing block renders live as literal fenced/indented
-            // rows, followed by any prose already flushed behind it.
-            if self.block_active {
-                if !tail.is_empty() {
-                    tail.push(String::new());
-                }
-                tail.extend(self.block.iter().cloned());
-                tail.extend(self.after_block.iter().cloned());
-            }
-            let mut prose = render_markdown(visible.trim(), self.markdown_width());
-            if !tail.is_empty() && (!prose.is_empty() || live_block.is_some()) {
-                tail.push(String::new());
-            }
-            tail.append(&mut prose);
-            if let Some(block) = live_block {
-                if !tail.is_empty() {
-                    tail.push(String::new());
-                }
-                tail.extend(self.repl_code_lines(0, block, self.code_limit()));
-            }
-            let editor_visible = self
-                .editor
-                .render()
-                .0
-                .len()
-                .min((self.term.height() * 3 / 10).max(5));
-            let reserved = 5 + editor_visible + usize::from(!self.queued.is_empty());
-            let budget = self.term.height().saturating_sub(reserved).max(1);
-            if tail.len() > budget {
-                tail.drain(..tail.len() - budget);
-            }
-            lines.extend(tail);
             lines.push(format!(
                 "{CYAN}{}{RESET} {DIM}{} · turn {}/{}{RESET}",
                 self.spinner.frame(),
@@ -1844,6 +2014,7 @@ impl Ui {
     /// first so the replayed transcript replaces the old one instead of
     /// stacking below it.
     fn replay_branch(&mut self) {
+        self.clear_transcript();
         let _ = self.term.clear_all();
         enum ReplayItem {
             Message(session::Role, String),
@@ -2257,6 +2428,8 @@ impl Ui {
             }
             "/new" => {
                 let _ = cmd_tx.send(Cmd::Reset);
+                self.clear_transcript();
+                let _ = self.term.clear_all();
                 match SessionStore::new(&self.cwd) {
                     Ok(store) => self.store = store,
                     Err(e) => self.pending.push(format!("\x1b[31merror:{RESET} {e}")),
@@ -2347,7 +2520,8 @@ impl Ui {
             self.push_repl_block(0, &code, self.code_limit());
         } else {
             self.pending.push(String::new());
-            self.pending.push(format!("{TOOL_ACCENT}${RESET} {DIM}{cmd}{RESET}"));
+            self.pending
+                .push(format!("{TOOL_ACCENT}${RESET} {DIM}{cmd}{RESET}"));
             self.last_gutter = false;
         }
         let _ = cmd_tx.send(Cmd::Shell { code, record });
@@ -2496,6 +2670,10 @@ impl Ui {
         }
     }
 
+    fn panel_width(&self) -> usize {
+        self.term.width().max(8)
+    }
+
     /// Display columns left after the indentation prefix at `depth`.
     fn gutter_text_width(&self, depth: usize) -> usize {
         self.term.width().saturating_sub(2 * (depth + 1)).max(1)
@@ -2547,11 +2725,10 @@ impl Ui {
         let trimmed = body.trim_end();
         if !trimmed.is_empty() {
             let avail = self.gutter_text_width(depth).saturating_sub(2).max(1);
-            let rows: Vec<String> =
-                highlight_code(trimmed, Some("repl"))
-                    .into_iter()
-                    .flat_map(|line| wrap_ansi(&line, avail))
-                    .collect();
+            let rows: Vec<String> = highlight_code(trimmed, Some("repl"))
+                .into_iter()
+                .flat_map(|line| wrap_ansi(&line, avail))
+                .collect();
             let shown = rows.len().min(max);
             for row in &rows[..shown] {
                 lines.push(format!("{}  {row}{RESET}", bar_prefix(depth)));
@@ -2794,14 +2971,10 @@ impl Ui {
         }
         let avail = self.gutter_text_width(depth).saturating_sub(2).max(1);
         let base_rows: Vec<String> = match lang {
-            Some(lang) => {
-                highlight_code(trimmed, Some(lang))
-            }
+            Some(lang) => highlight_code(trimmed, Some(lang)),
             None => trimmed
                 .lines()
-                .map(|line| {
-                    highlight_diff_line(line).unwrap_or_else(|| highlight_output(line))
-                })
+                .map(|line| highlight_diff_line(line).unwrap_or_else(|| highlight_output(line)))
                 .collect(),
         };
         let rows: Vec<String> = base_rows
@@ -2822,11 +2995,10 @@ impl Ui {
         let trimmed = text.trim_end();
         if !trimmed.is_empty() {
             let avail = self.gutter_text_width(depth).saturating_sub(2).max(1);
-            let rows: Vec<String> =
-                highlight_code(trimmed, Some("repl"))
-                    .into_iter()
-                    .flat_map(|line| wrap_ansi(&line, avail))
-                    .collect();
+            let rows: Vec<String> = highlight_code(trimmed, Some("repl"))
+                .into_iter()
+                .flat_map(|line| wrap_ansi(&line, avail))
+                .collect();
             let shown = rows.len().min(max);
             for row in &rows[..shown] {
                 self.push_row(format!("{}  {row}{RESET}", bar_prefix(depth)));
@@ -2948,7 +3120,10 @@ impl Ui {
                 duration,
                 ..
             } => {
-                self.push_bar(depth, format!("exec{RESET} {NUM_FG}{:.1}s", duration.as_secs_f64()));
+                self.push_bar(
+                    depth,
+                    format!("exec{RESET} {NUM_FG}{:.1}s", duration.as_secs_f64()),
+                );
                 self.push_preview(depth, &stdout, self.output_limit());
                 self.push_preview(depth, &stderr, self.output_limit());
                 if depth == 0 {
@@ -3107,7 +3282,9 @@ impl Ui {
                     .map(|row| row.label.clone())
                     .unwrap_or_else(|| subcall_title(&model, ""));
                 let text = match error.as_ref() {
-                    Some(error) => failed_status_text(&label, Some(duration.as_secs_f64()), Some(error)),
+                    Some(error) => {
+                        failed_status_text(&label, Some(duration.as_secs_f64()), Some(error))
+                    }
                     None => success_status_text(&label, duration.as_secs_f64()),
                 };
                 if let Some(row) = open {
@@ -3192,7 +3369,10 @@ impl Ui {
     ) {
         match result {
             Ok(res) if record => {
-                self.push_bar(0, format!("exec{RESET} {NUM_FG}{:.1}s", res.duration.as_secs_f64()));
+                self.push_bar(
+                    0,
+                    format!("exec{RESET} {NUM_FG}{:.1}s", res.duration.as_secs_f64()),
+                );
                 self.push_preview(0, &res.stdout, self.output_limit());
                 self.push_preview(0, &res.stderr, self.output_limit());
                 let bg = if res.stderr.trim().is_empty() {
@@ -3306,7 +3486,7 @@ mod tests {
     #[test]
     fn subcall_title_flattens_multiline_preview() {
         let title = subcall_title("model-x", "first line\n\nsecond\tline");
-        assert!(title.contains("\"first line second line\"") , "{title}");
+        assert!(title.contains("\"first line second line\""), "{title}");
         assert!(!title.contains('\n'), "{title}");
         assert!(!title.contains('\t'), "{title}");
     }

@@ -360,7 +360,6 @@ fn highlight_known_repl_calls(line: impl AsRef<str>) -> String {
     out
 }
 
-
 /// Micro-grammar highlighter for tool/REPL execution output lines (stdout,
 /// stderr, logs). Base text renders as a quiet gray; error/warning/success
 /// keywords, file paths, numbers/durations, quoted spans and URLs get colored
@@ -1087,7 +1086,6 @@ mod tests {
         assert!(lines[0].contains("\x1b[38;2;"), "no highlight: {lines:?}");
     }
 
-
     #[test]
     fn output_error_keyword_colored() {
         let line = highlight_output("compile error: something broke");
@@ -1169,7 +1167,10 @@ mod tests {
         assert!(r.min(g).min(b) < 165, "boost produced near-white");
         // Near-white still softened to gray.
         let (r, g, b) = soften_rgb(192, 197, 206);
-        assert!(r.max(g).max(b) < 165, "near-white not softened: {r},{g},{b}");
+        assert!(
+            r.max(g).max(b) < 165,
+            "near-white not softened: {r},{g},{b}"
+        );
         // Near-gray untouched.
         assert_eq!(soften_rgb(100, 105, 110), (100, 105, 110));
     }

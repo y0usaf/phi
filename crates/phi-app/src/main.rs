@@ -1,4 +1,4 @@
-
+use std::collections::HashMap;
 use std::io::{IsTerminal, Read};
 use std::sync::Arc;
 use std::time::Duration;
@@ -8,11 +8,12 @@ use phi_ai::{
     AuthStorage, LoginMethod, Model, OAuthProviderId, PrintCallbacks, Registry, ThinkingLevel,
     Usage,
 };
+use phi_builtins::prelude::{CODING_PRELUDE, coding_tools_section};
 use phi_cli::Args;
 use phi_mux as mux;
-use phi_session::{config, session_builder, tui};
 use phi_rlm::engine::PythonEnvFactory;
 use phi_rlm::{ContextPayload, LimitKind, ProviderLm, Rlm, RlmConfig, RlmEvent, StopCause};
+use phi_session::{config, session_builder, tui};
 use tokio_util::sync::CancellationToken;
 
 #[tokio::main]
@@ -183,6 +184,13 @@ async fn run(args: Args, storage: Arc<AuthStorage>, registry: Arc<Registry>) -> 
         max_tokens: settings.max_tokens,
         max_errors: settings.max_errors,
         max_concurrent_subcalls: settings.max_concurrent_subcalls,
+        setup_code: Some(CODING_PRELUDE.to_owned()),
+        tools_section: Some(coding_tools_section()),
+        cwd: Some(cwd.display().to_string()),
+        user_prologue: Some(format!(
+            "You are a coding agent operating directly in the user's working directory: {}.              Use the pre-defined helper functions to explore and modify the project.",
+            cwd.display()
+        )),
         ..RlmConfig::default()
     };
 
@@ -193,7 +201,7 @@ async fn run(args: Args, storage: Arc<AuthStorage>, registry: Arc<Registry>) -> 
         thinking,
     ));
     let sub = Arc::new(ProviderLm::new(
-        registry,
+        registry.clone(),
         sub_model,
         storage.clone(),
         sub_model_thinking,
@@ -213,6 +221,12 @@ async fn run(args: Args, storage: Arc<AuthStorage>, registry: Arc<Registry>) -> 
     };
 
     let mut rlm = Rlm::new(config, root, sub, envs);
+    session_builder::register_supported_named_models(
+        &mut rlm,
+        registry.clone(),
+        storage.clone(),
+        sub_model_thinking,
+    );
     let mut printer = None;
     if !args.quiet {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
@@ -285,6 +299,7 @@ async fn print_events(
     max_iterations: usize,
 ) {
     let color = std::io::stderr().is_terminal();
+    let mut open_tool_args: HashMap<u64, serde_json::Value> = HashMap::new();
     while let Some(event) = rx.recv().await {
         match event {
             RlmEvent::IterationStart { depth, iteration } => {
@@ -309,7 +324,11 @@ async fn print_events(
                 } else {
                     cross(color)
                 };
-                eprintln!("  {glyph} exec {:.1}s", duration.as_secs_f64());
+                if (duration.as_secs_f64() * 10.0).round() <= 0.0 {
+                    eprintln!("  {glyph} exec");
+                } else {
+                    eprintln!("  {glyph} exec • {:.1}s", duration.as_secs_f64());
+                }
                 if !stdout.trim().is_empty() {
                     eprintln!("{}", indent(&preview(&stdout, 12, verbose)));
                 }
@@ -322,7 +341,11 @@ async fn print_events(
                 model,
                 prompt_preview,
             } => {
-                eprintln!("{} subcall {model}{} {prompt_preview}", spin(color), depth_tag(depth));
+                eprintln!(
+                    "{} subcall {model}{} {prompt_preview}",
+                    spin(color),
+                    depth_tag(depth)
+                );
             }
             RlmEvent::SubcallEnd {
                 model,
@@ -340,8 +363,12 @@ async fn print_events(
                 ),
             },
             RlmEvent::ToolStart {
-                depth, name, args, ..
+                call_id,
+                depth,
+                name,
+                args,
             } => {
+                open_tool_args.insert(call_id, args.clone());
                 eprintln!(
                     "{} {name}{} {}",
                     spin(color),
@@ -350,20 +377,28 @@ async fn print_events(
                 );
             }
             RlmEvent::ToolEnd {
+                call_id,
                 name,
+                result,
                 error,
-                duration,
+                duration: _duration,
                 ..
-            } => match error {
-                Some(error) => eprintln!(
-                    "  {} {name} failed: {}",
-                    cross(color),
-                    preview(&error, 4, verbose)
-                ),
-                None => {
-                    eprintln!("  {} {name} {:.1}s", check(color), duration.as_secs_f64())
-                }
-            },
+            } => {
+                let args = open_tool_args
+                    .remove(&call_id)
+                    .unwrap_or(serde_json::Value::Null);
+                eprintln!(
+                    "{}",
+                    render_tool_panel(
+                        &name,
+                        &args,
+                        error.as_deref().unwrap_or(&result),
+                        error.is_some(),
+                        verbose,
+                        color
+                    )
+                );
+            }
             RlmEvent::AnswerSubmitted { .. } => {
                 eprintln!("{} answer submitted", check(color))
             }
@@ -399,7 +434,6 @@ fn tool_args_preview(args: &serde_json::Value) -> String {
         .collect::<Vec<_>>()
         .join(" ")
 }
-
 
 /// ANSI styling for scrollback event glyphs (gated on a tty in `print_events`).
 const GLYPH_RESET: &str = "\x1b[0m";
@@ -472,6 +506,282 @@ fn indent(text: &str) -> String {
         .join("\n")
 }
 
+fn bash_timeout_arg(args: &serde_json::Value) -> Option<u64> {
+    args.get("timeout").and_then(|value| match value {
+        serde_json::Value::Number(n) => n.as_u64(),
+        serde_json::Value::String(s) => s.parse().ok(),
+        _ => None,
+    })
+}
+
+fn parse_bash_result(text: &str) -> (Vec<String>, Option<i64>, Option<u64>) {
+    let mut lines = Vec::new();
+    let mut exit_code = None;
+    let mut timed_out = None;
+    for line in text.trim_end().lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed
+            .strip_prefix("[exit code ")
+            .and_then(|rest| rest.strip_suffix(']'))
+        {
+            if let Ok(code) = rest.parse::<i64>() {
+                exit_code = Some(code);
+                continue;
+            }
+        }
+        if let Some(rest) = trimmed
+            .strip_prefix("Error: command timed out after ")
+            .and_then(|rest| rest.strip_suffix('s'))
+        {
+            if let Ok(secs) = rest.parse::<u64>() {
+                timed_out = Some(secs);
+                continue;
+            }
+        }
+        if trimmed != "(no output)" {
+            lines.push(line.to_owned());
+        }
+    }
+    (lines, exit_code, timed_out)
+}
+
+fn tool_display_name(name: &str) -> String {
+    name.split('_')
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let mut chars = part.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn tool_arg<'a>(args: &'a serde_json::Value, key: &str) -> &'a str {
+    args.get(key)
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("")
+}
+
+fn tool_title_suffix(name: &str, args: &serde_json::Value) -> Option<String> {
+    match name {
+        "read_file" | "read_hashline" | "apply_hashline" => {
+            let path = tool_arg(args, "path");
+            (!path.is_empty()).then(|| format!(" — {path}"))
+        }
+        "grep" | "find" | "grep_hashline" => {
+            let pattern = tool_arg(args, "pattern");
+            let path = tool_arg(args, "path");
+            if pattern.is_empty() {
+                None
+            } else if path.is_empty() || path == "." {
+                Some(format!(" — {pattern}"))
+            } else {
+                Some(format!(" — {pattern} in {path}"))
+            }
+        }
+        "ls" => {
+            let path = tool_arg(args, "path");
+            Some(format!(" — {}", if path.is_empty() { "." } else { path }))
+        }
+        _ => None,
+    }
+}
+
+fn tool_shows_args_section(name: &str) -> bool {
+    !matches!(
+        name,
+        "read_file" | "read_hashline" | "grep" | "grep_hashline" | "find" | "ls"
+    )
+}
+
+fn tool_input_lines(name: &str, args: &serde_json::Value) -> Vec<String> {
+    if name == "bash" {
+        let cmd = args
+            .get("cmd")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        if cmd.trim().is_empty() {
+            vec!["$ ".to_owned()]
+        } else {
+            cmd.lines().map(|line| format!("$ {line}")).collect()
+        }
+    } else if !tool_shows_args_section(name) || args.is_null() {
+        Vec::new()
+    } else if let Some(map) = args.as_object() {
+        if map.is_empty() {
+            Vec::new()
+        } else {
+            serde_json::to_string_pretty(args)
+                .unwrap_or_else(|_| args.to_string())
+                .lines()
+                .map(str::to_owned)
+                .collect()
+        }
+    } else {
+        let text = match args {
+            serde_json::Value::String(s) => s.clone(),
+            other => other.to_string(),
+        };
+        if text.trim().is_empty() {
+            Vec::new()
+        } else {
+            text.lines().map(str::to_owned).collect()
+        }
+    }
+}
+
+fn tool_output_lines(
+    name: &str,
+    args: &serde_json::Value,
+    text: &str,
+) -> (Vec<String>, Vec<String>, bool) {
+    if name == "bash" {
+        let timeout = bash_timeout_arg(args);
+        let (lines, exit_code, timed_out) = parse_bash_result(text);
+        let ok = exit_code.unwrap_or(0) == 0 && timed_out.is_none();
+        let mut footer = Vec::new();
+        if let Some(code) = exit_code.filter(|code| *code != 0) {
+            footer.push(format!("Command exited with code {code}"));
+        }
+        if let Some(secs) = timed_out {
+            footer.push(format!("Command timed out after {secs}s"));
+        }
+        if let Some(secs) = timeout.or(timed_out) {
+            footer.push(format!("⟦Timeout: {secs}s⟧"));
+        }
+        (lines, footer, ok)
+    } else {
+        let lines: Vec<String> = if text.trim().is_empty() {
+            Vec::new()
+        } else {
+            text.trim_end().lines().map(str::to_owned).collect()
+        };
+        (lines, Vec::new(), true)
+    }
+}
+
+fn terminal_preview_width() -> usize {
+    std::env::var("COLUMNS")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(120)
+        .clamp(60, 180)
+}
+
+fn plain_width(text: &str) -> usize {
+    text.chars().count()
+}
+
+fn truncate_plain(text: &str, width: usize) -> String {
+    if plain_width(text) <= width {
+        return text.to_owned();
+    }
+    if width == 0 {
+        return String::new();
+    }
+    let keep = width.saturating_sub(1);
+    let mut out: String = text.chars().take(keep).collect();
+    out.push('…');
+    out
+}
+
+fn pad_plain(text: &str, width: usize) -> String {
+    let text = truncate_plain(text, width);
+    let pad = width.saturating_sub(plain_width(&text));
+    format!("{text}{}", " ".repeat(pad))
+}
+
+fn preview_tail_lines(lines: &[String], max_lines: usize, verbose: bool) -> Vec<String> {
+    if verbose || lines.len() <= max_lines {
+        return lines.to_vec();
+    }
+    let hidden = lines.len() - max_lines;
+    let mut out = vec![format!(
+        "… ({} earlier lines, showing {} of {})",
+        hidden,
+        max_lines,
+        lines.len()
+    )];
+    out.extend(lines[lines.len() - max_lines..].iter().cloned());
+    out
+}
+
+fn panel_border(label: &str, label_plain: &str, left: char, right: char, width: usize) -> String {
+    let fill = width.saturating_sub(plain_width(label_plain) + 7).max(1);
+    format!(" {left}─── {label} {}{right}", "─".repeat(fill))
+}
+
+fn panel_row(text: &str, width: usize) -> String {
+    let inner = width.saturating_sub(4).max(1);
+    format!(" │ {} │", pad_plain(text, inner))
+}
+
+fn panel_bottom(width: usize) -> String {
+    format!(" └{}┘", "─".repeat(width.saturating_sub(2).max(1)))
+}
+
+fn render_tool_panel(
+    name: &str,
+    args: &serde_json::Value,
+    text: &str,
+    failed: bool,
+    verbose: bool,
+    color: bool,
+) -> String {
+    let width = terminal_preview_width().saturating_sub(1).max(40);
+    let display = tool_display_name(name);
+    let display = format!(
+        "{display}{}",
+        tool_title_suffix(name, args).unwrap_or_default()
+    );
+    let (parsed_lines, footer_lines, parsed_ok) = tool_output_lines(name, args, text);
+    let ok = !failed && parsed_ok;
+    let title_plain = format!("{} {display}", if ok { "✔" } else { "✘" });
+    let title = if color {
+        if ok {
+            format!("{GLYPH_OK}{title_plain}{GLYPH_RESET}")
+        } else {
+            format!("{GLYPH_ERR}{title_plain}{GLYPH_RESET}")
+        }
+    } else {
+        title_plain.clone()
+    };
+
+    let mut out = Vec::new();
+    out.push(panel_border(&title, &title_plain, '┌', '┐', width));
+
+    let input_lines = tool_input_lines(name, args);
+    if tool_shows_args_section(name) || name == "bash" {
+        let input_label = if name == "bash" { "Command" } else { "Args" };
+        out.push(panel_border(input_label, input_label, '├', '┤', width));
+        if input_lines.is_empty() {
+            out.push(panel_row("(no input)", width));
+        } else {
+            for line in input_lines {
+                out.push(panel_row(&line, width));
+            }
+        }
+    }
+
+    out.push(panel_border("Output", "Output", '├', '┤', width));
+    let output_lines = preview_tail_lines(&parsed_lines, 10, verbose);
+    if output_lines.is_empty() {
+        out.push(panel_row("(no output)", width));
+    } else {
+        for line in output_lines {
+            out.push(panel_row(&line, width));
+        }
+    }
+    for line in footer_lines {
+        out.push(panel_row(&line, width));
+    }
+    out.push(panel_bottom(width));
+    out.join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -524,6 +834,36 @@ mod tests {
         assert_eq!(
             format_usage_summary(&usage),
             "usage: in 1.2k · out 34k · cache+ 7.8k · cache↺ 5.6k · total 48k · $0.1234"
+        );
+    }
+
+    #[test]
+    fn observational_tools_hide_args_and_prettify_names() {
+        assert_eq!(tool_display_name("read_file"), "Read File");
+        assert_eq!(tool_display_name("read_hashline"), "Read Hashline");
+        assert!(!tool_shows_args_section("read_file"));
+        assert!(!tool_shows_args_section("read_hashline"));
+        assert!(
+            tool_input_lines("read_file", &serde_json::json!({"path": "src/main.rs"})).is_empty()
+        );
+        assert!(
+            tool_input_lines("read_hashline", &serde_json::json!({"path": "src/main.rs"}))
+                .is_empty()
+        );
+        assert!(
+            tool_input_lines("write_file", &serde_json::json!({"path": "src/main.rs"})).len() > 0
+        );
+        assert_eq!(
+            tool_title_suffix("read_file", &serde_json::json!({"path": "src/main.rs"})),
+            Some(" — src/main.rs".to_owned())
+        );
+        assert_eq!(
+            tool_title_suffix("read_hashline", &serde_json::json!({"path": "src/main.rs"})),
+            Some(" — src/main.rs".to_owned())
+        );
+        assert!(
+            !tool_shows_args_section("grep_hashline"),
+            "grep_hashline should render as observational"
         );
     }
 }

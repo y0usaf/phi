@@ -169,6 +169,18 @@ fn sgr_styles_survive_round_trip() {
 }
 
 #[test]
+fn scrollback_full_width_rows_do_not_insert_blank_lines() {
+    let mut h = Harness::new(10, 5);
+    let row = phi_tui::fill_bg("12345", "\x1b[48;2;1;2;3m", 10);
+    h.render(&[&row], &["live"], None);
+    assert_eq!(h.non_empty_rows(), vec!["12345", "live"]);
+
+    let row2 = phi_tui::fill_bg("abcdef", "\x1b[48;2;1;2;3m", 10);
+    h.render(&[&row2], &["live2"], None);
+    assert_eq!(h.non_empty_rows(), vec!["12345", "abcdef", "live2"]);
+}
+
+#[test]
 fn resize_then_full_repaint_recovers() {
     let mut h = Harness::new(20, 6);
     h.render(&["old"], &["live"], None);

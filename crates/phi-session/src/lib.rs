@@ -9,5 +9,6 @@ pub mod config;
 pub mod files;
 pub mod session;
 pub mod session_builder;
+pub mod transcript;
 pub mod tui;
 pub mod usage;

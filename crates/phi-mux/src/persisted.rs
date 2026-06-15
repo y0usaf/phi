@@ -1,7 +1,7 @@
-//! Persisted mux workspace state (port of pi-harness's debounced saver):
-//! open projects and the last selection, at `{data dir}/mux-state.json`.
-//! Saves are debounced 250ms on a background thread and written atomically
-//! (tmp + rename); quit flushes synchronously.
+//! Persisted mux workspace restore state (port of pi-harness's debounced
+//! saver): open projects and the last selection, at
+//! `{cache dir}/mux-state.json`. Saves are debounced 250ms on a background
+//! thread and written atomically (tmp + rename); quit flushes synchronously.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -26,7 +26,6 @@ pub struct PersistedState {
 
 impl PersistedState {
     pub fn load_default() -> Result<Self> {
-        flush_save_queue();
         Self::load_from(&default_state_path()?)
     }
 
@@ -111,7 +110,7 @@ pub fn normalize_path(path: &Path) -> String {
 pub fn default_state_path() -> Result<PathBuf> {
     let dirs = directories::ProjectDirs::from("", "", "phi")
         .context("could not determine a home directory")?;
-    Ok(dirs.data_dir().join("mux-state.json"))
+    Ok(dirs.cache_dir().join("mux-state.json"))
 }
 
 enum SaveCommand {
