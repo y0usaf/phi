@@ -19,7 +19,7 @@ use phi_tui::crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, KeyMo
 use phi_tui::{
     Editor, EditorAction, LiveCursor, RawModeGuard, Selector, SelectorItem, SelectorOutcome,
     Spinner, Terminal, fill_bg, fuzzy_filter, highlight_code, highlight_diff_line,
-    highlight_output, render_markdown, visible_width, wrap_ansi,
+    highlight_output, render_markdown, visible_width, wrap_ansi, wrap_ansi_locate,
 };
 
 use crate::files::{self, FileSearcher};
@@ -52,13 +52,21 @@ const STRING_FG: &str = "\x1b[38;2;150;190;150m";
 const NUM_FG: &str = "\x1b[38;2;170;150;230m";
 // User-echo text: legible but not white; white is reserved for model prose.
 const USER_FG: &str = "\x1b[38;2;190;200;215m";
+const MUTED_FG: &str = "\x1b[38;2;120;128;148m";
+const ASSISTANT_FG: &str = "\x1b[38;2;220;224;235m";
 const PANEL_REPL: &str = "\x1b[38;2;180;140;255m";
+const USER_BORDER: &str = "\x1b[38;2;96;122;196m";
+const ASSISTANT_BORDER: &str = "\x1b[38;2;84;91;116m";
+const THINKING_BORDER: &str = "\x1b[38;2;105;110;138m";
+const CHROME_BORDER: &str = "\x1b[38;2;82;88;110m";
 
-// Transcript panels are differentiated by border/title color rather than
-// full-width slab fills, matching the archived User / Agent / REPL boxes.
-const USER_BG: &str = "\x1b[48;2;52;53;65m"; // retained for compatibility with older paths
-const REPL_BG: &str = USER_BG;
-const REPL_ERROR_BG: &str = "\x1b[48;2;70;40;45m"; // retained for error compatibility
+// Card-style transcript surfaces inspired by oh-my-pi: user messages are
+// filled bubbles, assistant prose sits on a calmer surface, and tool / REPL
+// cards get their own accent-colored chrome.
+const USER_BG: &str = "\x1b[48;2;41;47;66m";
+const ASSISTANT_BG: &str = "\x1b[48;2;24;26;34m";
+const REPL_BG: &str = "\x1b[48;2;31;24;43m";
+const REPL_ERROR_BG: &str = "\x1b[48;2;56;26;34m";
 
 const CODE_PREVIEW_LINES: usize = 8;
 const OUTPUT_PREVIEW_LINES: usize = 5;
@@ -141,58 +149,74 @@ fn truncate_for_log(text: &str) -> String {
     format!("{}\n[truncated {} bytes]", &text[..end], text.len() - end)
 }
 
-fn panel_border(
-    label: &str,
-    label_plain: &str,
-    left: char,
-    right: char,
-    width: usize,
-    color: &str,
-) -> String {
-    let fill = width.saturating_sub(label_plain.chars().count() + 6).max(1);
-    format!(" {color}{left}─ {label} {}{right}{RESET}", "─".repeat(fill))
+fn panel_border(label: &str, label_plain: &str, width: usize, color: &str) -> String {
+    let fill = width
+        .saturating_sub(phi_tui::display_cell_width(label_plain) + 5)
+        .max(1);
+    format!("{color}┌─ {label}{color} {}┐{RESET}", "─".repeat(fill))
 }
 
-fn panel_row(text: &str, width: usize) -> String {
-    let inner = width.saturating_sub(4).max(1);
-    let used = visible_width(text);
-    let pad = inner.saturating_sub(used);
-    format!(" │ {text}{} │", " ".repeat(pad))
+fn panel_row(text: &str, width: usize, border: &str, bg: &str) -> String {
+    let body = fill_bg(&format!(" {text}"), bg, width.saturating_sub(2).max(1));
+    format!("{border}│{RESET}{body}{border}│{RESET}")
 }
 
 fn panel_bottom(width: usize, color: &str) -> String {
     format!(
-        " {color}└{}┘{RESET}",
+        "{color}└{}┘{RESET}",
         "─".repeat(width.saturating_sub(2).max(1))
     )
+}
+
+fn fitted_panel_width(label_plain: &str, max_width: usize, body: &[String]) -> usize {
+    let label_width = phi_tui::display_cell_width(label_plain).saturating_add(6);
+    let body_width = body
+        .iter()
+        .map(|line| visible_width(line).saturating_add(4))
+        .max()
+        .unwrap_or(4);
+    label_width.max(body_width).min(max_width.max(1)).max(4)
 }
 
 fn render_panel(
     label: &str,
     label_plain: &str,
-    width: usize,
+    max_width: usize,
     color: &str,
+    bg: &str,
     body: &[String],
 ) -> Vec<String> {
+    let width = fitted_panel_width(label_plain, max_width, body);
     let inner = width.saturating_sub(4).max(1);
     let mut out = Vec::new();
-    out.push(panel_border(label, label_plain, '┌', '┐', width, color));
+    out.push(panel_border(label, label_plain, width, color));
     if body.is_empty() {
-        out.push(panel_row("", width));
+        out.push(panel_row("", width, color, bg));
     } else {
         for line in body {
             let rows = wrap_ansi(line, inner);
             if rows.is_empty() {
-                out.push(panel_row("", width));
+                out.push(panel_row("", width, color, bg));
             } else {
                 for row in rows {
-                    out.push(panel_row(&row, width));
+                    out.push(panel_row(&row, width, color, bg));
                 }
             }
         }
     }
     out.push(panel_bottom(width, color));
     out
+}
+
+fn render_repl_panel(max_width: usize, bg: &str, body: &[String]) -> Vec<String> {
+    render_panel(
+        &format!("{PANEL_REPL}repl{RESET}"),
+        "repl",
+        max_width,
+        PANEL_REPL,
+        bg,
+        body,
+    )
 }
 
 fn dot_prefix(depth: usize) -> String {
@@ -1389,7 +1413,14 @@ impl Ui {
             if !thinking.is_empty() {
                 blocks.push(FrameTranscriptBlock {
                     key: "live:thinking".to_owned(),
-                    lines: thinking,
+                    lines: render_panel(
+                        &format!("{DIM}Thinking{RESET}"),
+                        "Thinking",
+                        self.panel_width(),
+                        THINKING_BORDER,
+                        ASSISTANT_BG,
+                        &thinking,
+                    ),
                     finalized: false,
                     commit_stable: false,
                     version: 0,
@@ -1399,13 +1430,7 @@ impl Ui {
             if self.block_active {
                 blocks.push(FrameTranscriptBlock {
                     key: "live:repl-block".to_owned(),
-                    lines: render_panel(
-                        &format!("{PANEL_REPL}REPL{RESET}"),
-                        "REPL",
-                        self.panel_width(),
-                        PANEL_REPL,
-                        &self.block,
-                    ),
+                    lines: render_repl_panel(self.panel_width(), REPL_BG, &self.block),
                     finalized: false,
                     commit_stable: false,
                     version: 0,
@@ -1422,12 +1447,11 @@ impl Ui {
                 }
             }
 
-            let visible = &self.stream[..first_block_start(&self.stream)];
-            let prose = render_markdown(visible.trim(), self.markdown_width());
-            if !prose.is_empty() {
+            let visible = self.stream[..first_block_start(&self.stream)].trim();
+            if !visible.is_empty() {
                 blocks.push(FrameTranscriptBlock {
                     key: "live:stream-prose".to_owned(),
-                    lines: prose,
+                    lines: self.assistant_card_lines(visible),
                     finalized: false,
                     commit_stable: true,
                     version: 0,
@@ -1437,11 +1461,9 @@ impl Ui {
             if let Some(block) = live_block_body(&self.stream) {
                 blocks.push(FrameTranscriptBlock {
                     key: "live:preview-repl".to_owned(),
-                    lines: render_panel(
-                        &format!("{PANEL_REPL}REPL{RESET}"),
-                        "REPL",
+                    lines: render_repl_panel(
                         self.panel_width(),
-                        PANEL_REPL,
+                        REPL_BG,
                         &self.repl_code_lines(0, block, self.code_limit()),
                     ),
                     finalized: false,
@@ -1456,6 +1478,7 @@ impl Ui {
 
     fn chrome_lines(&mut self) -> (Vec<String>, Option<LiveCursor>) {
         let mut lines: Vec<String> = Vec::new();
+        let width = self.term.width().max(12);
 
         if self.running.is_some() {
             lines.push(format!(
@@ -1467,24 +1490,27 @@ impl Ui {
             ));
         }
 
-        let width = self.term.width();
-
-        // Persistent footer chrome: contrast line first, then cwd/branch.
         if self.branch_at.elapsed() > Duration::from_secs(5) {
             self.branch = git_branch(&self.cwd);
             self.branch_at = std::time::Instant::now();
         }
-        let mut pwd = display_path(&self.cwd);
-        if let Some(branch) = &self.branch {
-            pwd.push_str(&format!(" ({branch})"));
+        let pwd = display_path(&self.cwd);
+
+        let framed = self.selector.is_some();
+        if framed {
+            let header_plain = "φ";
+            let header_fill = width
+                .saturating_sub(header_plain.chars().count() + 5)
+                .max(1);
+            lines.push(format!(
+                "{CHROME_BORDER}┌─ {BOLD}φ{RESET} {}┐{RESET}",
+                "─".repeat(header_fill)
+            ));
         }
-        lines.push(format!("{RESET}{}{RESET}", "─".repeat(width)));
-        lines.push(format!("{DIM}{pwd}{RESET}"));
 
         let cursor;
         if let Some((_, widget)) = &self.selector {
-            // Selector replaces the editor area below the cwd line.
-            let avail = self.term.height().saturating_sub(lines.len() + 1).max(1);
+            let avail = self.term.height().saturating_sub(lines.len() + 2).max(1);
             let (sel_lines, sel_cursor) = widget.render(width, avail);
             let top = lines.len();
             cursor = sel_cursor.map(|(line, col)| LiveCursor {
@@ -1497,12 +1523,8 @@ impl Ui {
             } else {
                 "up/down select · enter confirm · esc cancel"
             };
-            lines.push(format!("{DIM}{hint}{RESET}"));
+            lines.push(format!("{MUTED_FG}{hint}{RESET}"));
         } else {
-            // Editor viewport: at most 30% of the terminal (min 5 lines),
-            // scrolled to keep the cursor visible. No surrounding rails; the
-            // first line keeps the bold prompt marker and continuations stay
-            // minimally indented.
             let (editor_lines, (row, col)) = self.editor.render();
             let max_visible = (self.term.height() * 3 / 10).max(5);
             if row < self.editor_scroll {
@@ -1515,32 +1537,82 @@ impl Ui {
                 .min(editor_lines.len().saturating_sub(max_visible));
             let end = (self.editor_scroll + max_visible).min(editor_lines.len());
 
-            let editor_top = lines.len();
+            let input_label = "Input";
+            let mut input_rows = Vec::new();
+            let mut input_cursor = None;
             for (i, line) in editor_lines[self.editor_scroll..end].iter().enumerate() {
-                if i + self.editor_scroll == 0 {
+                let content = if i + self.editor_scroll == 0 {
                     if line.is_empty() {
-                        lines.push(format!("{BOLD}›{RESET}"));
+                        format!("{TOOL_ACCENT}❯{RESET}")
                     } else {
-                        lines.push(format!("{BOLD}›{RESET} {line}"));
+                        format!("{TOOL_ACCENT}❯{RESET} {line}")
                     }
                 } else {
-                    lines.push(format!("  {line}"));
+                    format!("  {line}")
+                };
+                input_rows.push(content);
+            }
+            let more_row = if end < editor_lines.len() {
+                let below = editor_lines.len() - end;
+                Some(format!("{MUTED_FG}↓ {below} more{RESET}"))
+            } else {
+                None
+            };
+            let mut width = fitted_panel_width(input_label, self.term.width().max(1), &input_rows);
+            if let Some(more) = &more_row {
+                width = width.max(fitted_panel_width(
+                    input_label,
+                    self.term.width().max(1),
+                    std::slice::from_ref(more),
+                ));
+            }
+            lines.push(panel_border(
+                &format!("{BOLD}{input_label}{RESET}"),
+                input_label,
+                width,
+                CHROME_BORDER,
+            ));
+
+            let editor_top = lines.len();
+            let input_inner = width.saturating_sub(4).max(1);
+            let mut rendered_rows_before_cursor = 0usize;
+            for (i, content) in input_rows.iter().enumerate() {
+                let absolute_row = i + self.editor_scroll;
+                if absolute_row == row {
+                    let source_col = if absolute_row == 0 {
+                        if editor_lines.first().is_some_and(|line| line.is_empty()) {
+                            1
+                        } else {
+                            2 + col
+                        }
+                    } else {
+                        2 + col
+                    };
+                    let (wrapped, (cursor_row, cursor_col)) =
+                        wrap_ansi_locate(content, input_inner, source_col);
+                    input_cursor = Some(LiveCursor {
+                        line: editor_top + rendered_rows_before_cursor + cursor_row,
+                        col: 2 + cursor_col,
+                    });
+                    rendered_rows_before_cursor += wrapped.len();
+                    for row in wrapped {
+                        lines.push(panel_row(&row, width, CHROME_BORDER, ""));
+                    }
+                } else {
+                    let wrapped = wrap_ansi(content, input_inner);
+                    rendered_rows_before_cursor += wrapped.len();
+                    for row in wrapped {
+                        lines.push(panel_row(&row, width, CHROME_BORDER, ""));
+                    }
                 }
             }
-            if end < editor_lines.len() {
-                let below = editor_lines.len() - end;
-                lines.push(format!("{DIM}↓ {below} more{RESET}"));
+            if let Some(more) = more_row {
+                for row in wrap_ansi(&more, input_inner) {
+                    lines.push(panel_row(&row, width, CHROME_BORDER, ""));
+                }
             }
-            let prompt_cols =
-                if row == 0 && editor_lines.first().is_some_and(|line| line.is_empty()) {
-                    1
-                } else {
-                    2
-                };
-            cursor = Some(LiveCursor {
-                line: editor_top + (row - self.editor_scroll),
-                col: col + prompt_cols,
-            });
+            lines.push(panel_bottom(width, CHROME_BORDER));
+            cursor = input_cursor;
 
             if let Some(text) = self.queued.first() {
                 let first = text.lines().next().unwrap_or("");
@@ -1550,14 +1622,13 @@ impl Ui {
                 } else {
                     String::new()
                 };
-                lines.push(format!("{DIM}queued{count} › {first}{more}{RESET}"));
+                lines.push(format!("{MUTED_FG}queued{count} › {first}{more}{RESET}"));
             }
 
             if let Some(popup) = &self.popup {
                 lines.extend(render_popup(popup));
             }
 
-            // Contextual hints, shown only when there is a mode to explain.
             let hints: &[&str] = if self.login.is_some() {
                 &[
                     "finish login in the browser, or paste the redirect URL and press enter · esc cancels",
@@ -1572,7 +1643,7 @@ impl Ui {
                 &[]
             };
             for hint in hints {
-                lines.push(format!("{DIM}{hint}{RESET}"));
+                lines.push(format!("{MUTED_FG}{hint}{RESET}"));
             }
         }
 
@@ -1587,7 +1658,7 @@ impl Ui {
             String::new()
         };
         let mut right = format!(
-            "{} · thinking:{}",
+            "phi · {} · thinking:{}",
             self.model_label,
             self.root_lm.thinking().as_str()
         );
@@ -1597,13 +1668,27 @@ impl Ui {
         if self.expand_tools {
             right.push_str(" · tools:full");
         }
+        right.push_str(" · ");
+        right.push_str(&pwd);
+        if let Some(branch) = &self.branch {
+            right.push_str(" · ");
+            right.push_str(branch);
+        }
         let footer = match (left.is_empty(), right.is_empty()) {
             (true, true) => String::new(),
             (true, false) => right,
             (false, true) => left,
             (false, false) => format!("{left} · {right}"),
         };
-        lines.push(format!("{DIM}{footer}{RESET}"));
+        if framed {
+            let footer_fill = width.saturating_sub(footer.chars().count() + 5).max(1);
+            lines.push(format!(
+                "{CHROME_BORDER}└─ {MUTED_FG}{footer}{RESET} {}┘{RESET}",
+                "─".repeat(footer_fill)
+            ));
+        } else if !footer.is_empty() {
+            lines.push(format!("{MUTED_FG}{footer}{RESET}"));
+        }
         (lines, cursor)
     }
 
@@ -2671,12 +2756,44 @@ impl Ui {
     }
 
     fn panel_width(&self) -> usize {
-        self.term.width().max(8)
+        self.term.width().max(1)
     }
 
     /// Display columns left after the indentation prefix at `depth`.
     fn gutter_text_width(&self, depth: usize) -> usize {
         self.term.width().saturating_sub(2 * (depth + 1)).max(1)
+    }
+
+    fn assistant_card_lines(&self, text: &str) -> Vec<String> {
+        let rendered = render_markdown(text, self.markdown_width());
+        let body: Vec<String> = rendered
+            .into_iter()
+            .map(|line| format!("{ASSISTANT_FG}{line}{RESET}"))
+            .collect();
+        render_panel(
+            &format!("{BOLD}Assistant{RESET}"),
+            "Assistant",
+            self.panel_width(),
+            ASSISTANT_BORDER,
+            ASSISTANT_BG,
+            &body,
+        )
+    }
+
+    fn user_card_lines(&self, text: &str) -> Vec<String> {
+        let rendered = render_markdown(text, self.markdown_width());
+        let body: Vec<String> = rendered
+            .into_iter()
+            .map(|line| format!("{USER_FG}{line}{RESET}"))
+            .collect();
+        render_panel(
+            &format!("{BOLD}You{RESET}"),
+            "You",
+            self.panel_width(),
+            USER_BORDER,
+            USER_BG,
+            &body,
+        )
     }
 
     /// Live/scrollback tool block rows using the same indentation formatting
@@ -2928,14 +3045,17 @@ impl Ui {
         self.block_active = true;
     }
 
-    /// Commit the buffered block to scrollback, followed by any prose that
-    /// streamed in behind it.
-    fn commit_block(&mut self, _bg: &str) {
+    /// Commit the buffered block to scrollback, preserving the same boxed REPL
+    /// container used by the live view, followed by any prose that streamed in
+    /// behind it.
+    fn commit_block(&mut self, bg: &str) {
         if !self.block_active {
             return;
         }
         self.block_active = false;
-        self.pending.extend(std::mem::take(&mut self.block));
+        let body = std::mem::take(&mut self.block);
+        self.pending
+            .extend(render_repl_panel(self.panel_width(), bg, &body));
         self.open_tool_rows.clear();
         self.open_subcall_rows.clear();
         let after = std::mem::take(&mut self.after_block);
@@ -3018,17 +3138,8 @@ impl Ui {
     /// Echo a user message into scrollback as a pi-style container: full-width
     /// `userMessageBg` fill with one cell of padding on every side.
     fn push_user_message(&mut self, text: &str) {
-        let width = self.term.width();
-        let inner = width.saturating_sub(2).max(1);
         self.pending.push(String::new());
-        self.pending.push(fill_bg("", USER_BG, width));
-        for line in text.lines() {
-            for row in wrap_ansi(line, inner) {
-                self.pending
-                    .push(fill_bg(&format!(" {USER_FG}{row}"), USER_BG, width));
-            }
-        }
-        self.pending.push(fill_bg("", USER_BG, width));
+        self.pending.extend(self.user_card_lines(text));
         self.last_gutter = false;
     }
 
@@ -3039,14 +3150,14 @@ impl Ui {
         if text.is_empty() {
             return;
         }
-        let rendered = render_markdown(text, self.markdown_width());
+        let card = self.assistant_card_lines(text);
         let sink = if self.block_active {
             &mut self.after_block
         } else {
             &mut self.pending
         };
         sink.push(String::new());
-        sink.extend(rendered);
+        sink.extend(card);
         self.last_gutter = false;
     }
 
@@ -3468,7 +3579,7 @@ impl Ui {
     }
 
     fn markdown_width(&self) -> usize {
-        self.term.width().saturating_sub(2).min(100)
+        self.term.width().saturating_sub(6).min(100)
     }
 }
 
@@ -3483,12 +3594,170 @@ mod tests {
         ]
     }
 
+    fn test_ui(width: u16, height: u16) -> Ui {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().to_path_buf();
+        std::mem::forget(dir);
+
+        let storage = Arc::new(AuthStorage::new(cwd.join("auth.json")));
+        let registry = Arc::new(Registry::builtin());
+        let model = registry
+            .supported_models()
+            .next()
+            .expect("builtin registry has models")
+            .clone();
+        let root_lm = Arc::new(ProviderLm::new(
+            registry.clone(),
+            model.clone(),
+            storage.clone(),
+            ThinkingLevel::Off,
+        ));
+        let sub_lm = Arc::new(ProviderLm::new(
+            registry.clone(),
+            model,
+            storage.clone(),
+            ThinkingLevel::Off,
+        ));
+        let store = SessionStore::new(&cwd).unwrap();
+        let (login_tx, _login_rx) = mpsc::unbounded_channel();
+
+        Ui::new(
+            Terminal::new(
+                Box::new(Vec::<u8>::new()) as Box<dyn std::io::Write + Send>,
+                width,
+                height,
+            ),
+            UiSetup {
+                max_iterations: 8,
+                storage,
+                registry,
+                root_lm,
+                sub_lm,
+                store,
+            },
+            login_tx,
+            cwd,
+            None,
+        )
+    }
+
     #[test]
     fn subcall_title_flattens_multiline_preview() {
         let title = subcall_title("model-x", "first line\n\nsecond\tline");
         assert!(title.contains("\"first line second line\""), "{title}");
         assert!(!title.contains('\n'), "{title}");
         assert!(!title.contains('\t'), "{title}");
+    }
+
+    #[test]
+    fn panel_row_reopens_background_after_embedded_reset() {
+        let row = panel_row("\x1b[31mred\x1b[0m", 12, USER_BORDER, USER_BG);
+        assert!(row.contains(&format!("\x1b[0m{USER_BG}")), "{row:?}");
+    }
+
+    #[test]
+    fn panel_border_reopens_color_after_label_reset() {
+        let border = panel_border(&format!("{BOLD}Input{RESET}"), "Input", 12, USER_BORDER);
+        assert!(
+            border.contains(&format!("{RESET}{USER_BORDER}")),
+            "{border:?}"
+        );
+    }
+
+    #[test]
+    fn render_panel_fits_box_to_rendered_content() {
+        let lines = render_panel(
+            &format!("{BOLD}Assistant{RESET}"),
+            "Assistant",
+            80,
+            ASSISTANT_BORDER,
+            ASSISTANT_BG,
+            &[format!("{ASSISTANT_FG}hi{RESET}")],
+        );
+        let widths: Vec<usize> = lines.iter().map(|line| visible_width(line)).collect();
+        assert!(widths.iter().all(|&w| w == 15), "{widths:?} {lines:?}");
+        assert!(widths[0] < 80, "{widths:?}");
+    }
+
+    #[test]
+    fn render_panel_clamps_to_available_width() {
+        let lines = render_repl_panel(
+            10,
+            REPL_BG,
+            &[format!("{}  print('hello world')", bar_prefix(0))],
+        );
+        for line in &lines {
+            assert!(
+                visible_width(line) <= 10,
+                "{} => {}",
+                visible_width(line),
+                line
+            );
+        }
+    }
+
+    #[test]
+    fn chrome_lines_editor_mode_has_single_scaled_input_box() {
+        let mut ui = test_ui(80, 24);
+        ui.editor.set_text("hi");
+
+        let (lines, cursor) = ui.chrome_lines();
+        let plain: Vec<String> = lines.iter().map(|line| phi_tui::strip_ansi(line)).collect();
+
+        let box_lines: Vec<&String> = plain
+            .iter()
+            .filter(|line| line.starts_with('┌') || line.starts_with('│') || line.starts_with('└'))
+            .collect();
+        assert_eq!(box_lines.len(), 3, "{plain:?}");
+        assert!(box_lines[0].contains("Input"), "{plain:?}");
+
+        let top_count = plain.iter().filter(|line| line.starts_with('┌')).count();
+        let bottom_count = plain.iter().filter(|line| line.starts_with('└')).count();
+        assert_eq!(top_count, 1, "{plain:?}");
+        assert_eq!(bottom_count, 1, "{plain:?}");
+
+        let widths: Vec<usize> = lines
+            .iter()
+            .zip(&plain)
+            .filter(|(_, plain)| {
+                plain.starts_with('┌') || plain.starts_with('│') || plain.starts_with('└')
+            })
+            .map(|(line, _)| visible_width(line))
+            .collect();
+        assert!(
+            widths.iter().all(|&w| w == widths[0]),
+            "{widths:?} {plain:?}"
+        );
+        assert!(widths[0] < 80, "{widths:?} {plain:?}");
+        assert!(cursor.is_some(), "{plain:?}");
+    }
+
+    #[test]
+    fn chrome_lines_editor_mode_moves_path_and_branch_to_footer() {
+        let mut ui = test_ui(80, 24);
+        ui.editor.set_text("hi");
+        ui.cwd = std::path::PathBuf::from("/tmp/phi");
+        ui.branch = Some("main".to_owned());
+        ui.branch_at = std::time::Instant::now();
+
+        let (lines, _cursor) = ui.chrome_lines();
+        let plain: Vec<String> = lines.iter().map(|line| phi_tui::strip_ansi(line)).collect();
+
+        assert!(
+            !plain.iter().any(|line| line.contains("φ  /tmp/phi")),
+            "{plain:?}"
+        );
+        assert!(
+            !plain.iter().any(|line| line.contains("/tmp/phi (main)")),
+            "{plain:?}"
+        );
+
+        let footer = plain
+            .iter()
+            .find(|line| line.contains("phi ·") && line.contains("thinking:"))
+            .expect("footer line");
+        assert!(footer.contains("phi · "), "{footer:?}");
+        assert!(footer.contains(" · /tmp/phi · main"), "{footer:?}");
     }
 
     #[test]

@@ -5,9 +5,7 @@ use phi_tui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::dialog::render_dialog_title_line;
 use crate::keymap::{AppAction, Keymap};
-use crate::ui::cell_surface::{
-    CellSurface, draw_box, render_cell_scrollbar, truncate_to_cells,
-};
+use crate::ui::cell_surface::{CellSurface, draw_box, render_cell_scrollbar, truncate_to_cells};
 use crate::ui::layout::CellRect as Rect;
 use crate::ui::theme;
 

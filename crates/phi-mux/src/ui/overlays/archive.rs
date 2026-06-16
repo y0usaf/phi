@@ -6,9 +6,7 @@ use std::time::SystemTime;
 use phi_tui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::dialog::render_dialog_title_line;
-use crate::ui::cell_surface::{
-    CellSurface, draw_box, render_cell_scrollbar, truncate_to_cells,
-};
+use crate::ui::cell_surface::{CellSurface, draw_box, render_cell_scrollbar, truncate_to_cells};
 use crate::ui::layout::CellRect as Rect;
 use crate::ui::theme;
 use crate::workspace::{self, ArchivedSession};

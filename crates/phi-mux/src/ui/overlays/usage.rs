@@ -9,8 +9,8 @@ use crate::ui::cell_surface::{CellSurface, draw_box, render_cell_scrollbar};
 use crate::ui::layout::CellRect as Rect;
 use crate::ui::theme;
 use phi_session::usage::{
-    self, UsageReport, is_usage_separator_line, is_usage_total_line, usage_overlay_line_count,
-    usage_header_line, usage_overlay_lines, usage_separator_line, usage_total_line,
+    self, UsageReport, is_usage_separator_line, is_usage_total_line, usage_header_line,
+    usage_overlay_line_count, usage_overlay_lines, usage_separator_line, usage_total_line,
 };
 
 const USAGE_FOOTER_HINT: &str = "\u{2191}/\u{2193}/j/k \u{b7} r reload \u{b7} q/Esc";
@@ -210,4 +210,3 @@ pub fn render_usage_overlay(surface: &mut CellSurface, usage: &mut UsageOverlayS
         &truncate_to_cells(USAGE_FOOTER_HINT, inner.cols.max(0) as usize),
     );
 }
-
