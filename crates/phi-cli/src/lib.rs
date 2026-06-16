@@ -32,7 +32,8 @@ pub struct Args {
     #[arg(long, value_name = "LEVEL")]
     pub sub_model_thinking: Option<String>,
 
-    /// [default: 30]
+    /// Maximum turns for each recursive rlm_query child [default: 30].
+    /// The top-level RLM is not capped by this setting.
     #[arg(long)]
     pub max_iterations: Option<usize>,
 

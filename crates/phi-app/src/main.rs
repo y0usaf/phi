@@ -303,11 +303,15 @@ async fn print_events(
     while let Some(event) = rx.recv().await {
         match event {
             RlmEvent::IterationStart { depth, iteration } => {
-                eprintln!(
-                    "\n[turn {}/{max_iterations}]{}",
-                    iteration + 1,
-                    depth_tag(depth)
-                );
+                if depth == 0 {
+                    eprintln!("\n[turn {}]", iteration + 1);
+                } else {
+                    eprintln!(
+                        "\n[turn {}/{max_iterations}]{}",
+                        iteration + 1,
+                        depth_tag(depth)
+                    );
+                }
             }
             RlmEvent::CodeExecStart { code, .. } => {
                 eprintln!("{} exec", spin(color));

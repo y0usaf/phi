@@ -534,6 +534,10 @@ impl Rlm {
         self
     }
 
+    fn iteration_limit(&self) -> Option<usize> {
+        (self.depth > 0).then_some(self.config.max_iterations)
+    }
+
     /// Persistent multi-turn session: the REPL env and sub-call usage
     /// roll over across `send()` calls; prior exchanges are exposed to the
     /// model as `history_N` variables in the env.
@@ -667,7 +671,9 @@ impl Rlm {
         let mut iterations = 0usize;
         let mut prose_nudged = false;
 
-        for i in 0..self.config.max_iterations {
+        let iteration_limit = self.iteration_limit();
+        let mut i = 0usize;
+        while iteration_limit.is_none_or(|limit| i < limit) {
             if cancel.is_cancelled() {
                 return self.cancelled_outcome(best_partial, iterations);
             }
@@ -684,12 +690,7 @@ impl Rlm {
 
             history.push(ChatMessage {
                 role: Role::User,
-                content: build_user_prompt(
-                    i,
-                    self.config.max_iterations,
-                    context_count,
-                    history_count,
-                ),
+                content: build_user_prompt(i, iteration_limit, context_count, history_count),
             });
 
             self.events.emit(RlmEvent::IterationStart {
@@ -854,6 +855,7 @@ impl Rlm {
                     iteration: i,
                     duration: iter_start.elapsed(),
                 });
+                i += 1;
                 continue;
             }
 
@@ -892,6 +894,7 @@ impl Rlm {
                     iteration: i,
                     duration: iter_start.elapsed(),
                 });
+                i += 1;
                 continue;
             }
             if !blocks.is_empty() {
@@ -942,7 +945,15 @@ impl Rlm {
                 iteration: i,
                 duration: iter_start.elapsed(),
             });
+            i += 1;
         }
+
+        let Some(_) = iteration_limit else {
+            return Outcome::failed(
+                "Error: root RLM loop exited unexpectedly despite having no turn limit".to_owned(),
+                iterations,
+            );
+        };
 
         // Iterations exhausted: synthesize a final answer from the trajectory.
         history.push(ChatMessage {
@@ -1766,16 +1777,48 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn default_answer_on_iteration_exhaustion() {
+    async fn root_ignores_iteration_limit() {
+        let root = Arc::new(ScriptedLm::new(
+            "root-model",
+            &[
+                "turn 1\n```repl\nprint('one')\n```",
+                "turn 2\n```repl\nprint('two')\n```",
+                "turn 3\n```repl\nanswer['content'] = 'done'\nanswer['ready'] = True\n```",
+            ],
+        ));
+        let config = RlmConfig {
+            max_iterations: 1,
+            ..RlmConfig::default()
+        };
+        let engine = rlm(config, root.clone(), quiet_sub());
+        let result = engine
+            .completion(
+                ContextPayload::Str("ctx".into()),
+                None,
+                &CancellationToken::new(),
+            )
+            .await;
+        assert_eq!(result.stop, StopCause::Answer, "{:?}", result.error);
+        assert_eq!(result.response, "done");
+        assert_eq!(result.iterations, 3);
+
+        let prompts = root.recorded_prompts();
+        assert!(prompts[0].iter().any(|m| m.content.contains("Turn 1:")));
+        assert!(prompts[1].iter().any(|m| m.content.contains("Turn 2:")));
+    }
+
+    #[tokio::test]
+    async fn recursive_child_default_answer_on_iteration_exhaustion() {
         let root = Arc::new(ScriptedLm::new(
             "root-model",
             &["thinking 1", "thinking 2", "the synthesized final"],
         ));
         let config = RlmConfig {
+            max_depth: 2,
             max_iterations: 2,
             ..RlmConfig::default()
         };
-        let engine = rlm(config, root.clone(), quiet_sub());
+        let engine = rlm(config, root.clone(), quiet_sub()).at_depth(1);
         let result = engine
             .completion(
                 ContextPayload::Str("ctx".into()),
@@ -1787,6 +1830,7 @@ mod tests {
         assert_eq!(result.response, "the synthesized final");
 
         let prompts = root.recorded_prompts();
+        assert!(prompts[0].iter().any(|m| m.content.contains("Turn 1/2:")));
         let last = prompts.last().unwrap().last().unwrap();
         assert_eq!(last.role, Role::Assistant);
         assert_eq!(last.content, DEFAULT_ANSWER_NUDGE);

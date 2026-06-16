@@ -123,11 +123,14 @@ pub fn metadata_user_prompt(metadata: QueryMetadata, root_prompt: Option<&str>) 
 /// Per-turn user prompt. `iteration` is 0-based.
 pub fn build_user_prompt(
     iteration: usize,
-    max_iterations: usize,
+    max_iterations: Option<usize>,
     context_count: usize,
     history_count: usize,
 ) -> String {
-    let body = format!("Turn {}/{}:", iteration + 1, max_iterations);
+    let body = match max_iterations {
+        Some(max_iterations) => format!("Turn {}/{}:", iteration + 1, max_iterations),
+        None => format!("Turn {}:", iteration + 1),
+    };
     let mut prompt = if iteration == 0 && history_count == 0 {
         format!(
             "You have not interacted with the REPL environment or seen your prompt / context yet. Look at the context first; do not provide a final answer yet.\n\n{body}"
@@ -201,17 +204,18 @@ mod tests {
     #[test]
     fn user_prompt_matches_upstream() {
         assert_eq!(
-            build_user_prompt(0, 30, 1, 0),
+            build_user_prompt(0, Some(30), 1, 0),
             "You have not interacted with the REPL environment or seen your prompt / context yet. Look at the context first; do not provide a final answer yet.\n\nTurn 1/30:"
         );
-        assert_eq!(build_user_prompt(4, 30, 1, 0), "Turn 5/30:");
+        assert_eq!(build_user_prompt(4, Some(30), 1, 0), "Turn 5/30:");
+        assert_eq!(build_user_prompt(4, None, 1, 0), "Turn 5:");
         // Warm session: no cold-start preamble even on the first turn.
         assert_eq!(
-            build_user_prompt(0, 30, 1, 2),
+            build_user_prompt(0, Some(30), 1, 2),
             "Turn 1/30:\n\nNote: You have 2 prior conversation histories available (history_0 through history_1)."
         );
         assert_eq!(
-            build_user_prompt(1, 10, 2, 1),
+            build_user_prompt(1, Some(10), 2, 1),
             "Turn 2/10:\n\nNote: You have 2 contexts available (context_0 through context_1).\n\nNote: You have 1 prior conversation history available in the `history` variable."
         );
     }

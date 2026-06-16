@@ -1519,11 +1519,10 @@ impl Ui {
 
         if self.running.is_some() {
             lines.push(format!(
-                "{CYAN}{}{RESET} {DIM}{} · turn {}/{}{RESET}",
+                "{CYAN}{}{RESET} {DIM}{} · turn {}{RESET}",
                 self.spinner.frame(),
                 self.status,
-                self.turn,
-                self.max_iterations
+                self.turn
             ));
         }
 
