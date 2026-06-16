@@ -2874,10 +2874,7 @@ impl Ui {
                 usize::MAX,
             )
         } else {
-            vec![format!(
-                "{}{DIM}thinking hidden · ctrl+t to show{RESET}",
-                dot_prefix(0)
-            )]
+            Vec::new()
         }
     }
 
@@ -2890,7 +2887,6 @@ impl Ui {
             self.push_dot(0, format!("{DIM}thinking{RESET}"));
             self.push_preview(0, &thinking, usize::MAX);
         } else {
-            self.push_dot(0, format!("{DIM}thinking hidden · ctrl+t to show{RESET}"));
         }
     }
 
