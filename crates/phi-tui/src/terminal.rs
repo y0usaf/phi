@@ -373,6 +373,9 @@ pub fn strip_ansi(s: &str) -> String {
 /// since the last reset, plus any open OSC 8 hyperlink. Re-emitted at the
 /// start of wrapped continuation rows so styles survive the break even when
 /// callers interleave their own styled prefixes.
+type WrapMarks = Vec<(usize, usize, usize)>;
+type WrappedAnsi = (Vec<String>, WrapMarks, (usize, usize));
+
 #[derive(Clone, Default)]
 struct AnsiState {
     sgr: Vec<String>,
@@ -504,10 +507,7 @@ pub fn wrap_ansi_locate(line: &str, width: usize, col: usize) -> (Vec<String>, (
     (rows, pos)
 }
 
-fn wrap_ansi_core(
-    line: &str,
-    width: usize,
-) -> (Vec<String>, Vec<(usize, usize, usize)>, (usize, usize)) {
+fn wrap_ansi_core(line: &str, width: usize) -> WrappedAnsi {
     let mut w = Wrapper {
         width: width.max(1),
         rows: Vec::new(),

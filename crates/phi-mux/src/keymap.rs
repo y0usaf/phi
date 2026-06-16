@@ -354,7 +354,8 @@ impl Keymap {
         let mut found: Vec<String> = self
             .bindings
             .iter()
-            .filter_map(|(stroke, bound)| (*bound == action).then(|| stroke.to_string()))
+            .filter(|(_, bound)| **bound == action)
+            .map(|(stroke, _)| stroke.to_string())
             .collect();
         found.sort();
         found

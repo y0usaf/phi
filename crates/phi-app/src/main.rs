@@ -523,20 +523,18 @@ fn parse_bash_result(text: &str) -> (Vec<String>, Option<i64>, Option<u64>) {
         if let Some(rest) = trimmed
             .strip_prefix("[exit code ")
             .and_then(|rest| rest.strip_suffix(']'))
+            && let Ok(code) = rest.parse::<i64>()
         {
-            if let Ok(code) = rest.parse::<i64>() {
-                exit_code = Some(code);
-                continue;
-            }
+            exit_code = Some(code);
+            continue;
         }
         if let Some(rest) = trimmed
             .strip_prefix("Error: command timed out after ")
             .and_then(|rest| rest.strip_suffix('s'))
+            && let Ok(secs) = rest.parse::<u64>()
         {
-            if let Ok(secs) = rest.parse::<u64>() {
-                timed_out = Some(secs);
-                continue;
-            }
+            timed_out = Some(secs);
+            continue;
         }
         if trimmed != "(no output)" {
             lines.push(line.to_owned());
@@ -851,7 +849,7 @@ mod tests {
                 .is_empty()
         );
         assert!(
-            tool_input_lines("write_file", &serde_json::json!({"path": "src/main.rs"})).len() > 0
+            !tool_input_lines("write_file", &serde_json::json!({"path": "src/main.rs"})).is_empty()
         );
         assert_eq!(
             tool_title_suffix("read_file", &serde_json::json!({"path": "src/main.rs"})),

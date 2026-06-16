@@ -56,6 +56,17 @@ pub struct ReplEntry {
     pub subcalls: Vec<SubcallRecord>,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct ReplRecord {
+    pub code: String,
+    pub stdout: String,
+    pub stderr: String,
+    pub duration_secs: f64,
+    pub kind: ReplKind,
+    pub tools: Vec<ToolCall>,
+    pub subcalls: Vec<SubcallRecord>,
+}
+
 /// A prelude tool invocation (bash, edit_file, ...) that ran inside a
 /// REPL execution; persisted so resumed sessions re-render the same tool
 /// cards the user saw live.
@@ -67,6 +78,10 @@ pub struct ToolCall {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
     pub duration_secs: f64,
+    /// RLM event depth where the tool ran. Defaults to root depth for logs
+    /// written before nested activity was depth-preserving.
+    #[serde(default)]
+    pub depth: usize,
 }
 
 /// A sub-LLM call made inside a REPL execution (llm_query and friends).
@@ -79,6 +94,10 @@ pub struct SubcallRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
     pub duration_secs: f64,
+    /// RLM event depth where the subcall was observed. Defaults to root depth
+    /// for older logs whose replay path rendered subcalls at depth 0.
+    #[serde(default)]
+    pub depth: usize,
 }
 
 /// Lifecycle status recorded on `exchange_end` lines.
@@ -243,10 +262,8 @@ impl SessionStore {
                 Ok(Line::Repl(repl)) => repls.push(repl),
                 Ok(Line::Leaf(record)) => leaf_record = Some(record.id),
                 Ok(Line::ExchangeStart(start)) => open_exchange = Some(start.id),
-                Ok(Line::ExchangeEnd(end)) => {
-                    if open_exchange.as_deref() == Some(end.id.as_str()) {
-                        open_exchange = None;
-                    }
+                Ok(Line::ExchangeEnd(end)) if open_exchange.as_deref() == Some(end.id.as_str()) => {
+                    open_exchange = None;
                 }
                 _ => {}
             }
@@ -355,27 +372,18 @@ impl SessionStore {
         Ok(id)
     }
 
-    pub fn append_repl(
-        &mut self,
-        code: &str,
-        stdout: &str,
-        stderr: &str,
-        duration_secs: f64,
-        kind: ReplKind,
-        tools: Vec<ToolCall>,
-        subcalls: Vec<SubcallRecord>,
-    ) -> Result<String> {
+    pub fn append_repl(&mut self, record: ReplRecord) -> Result<String> {
         let entry = ReplEntry {
             id: new_id(),
             parent_id: self.leaf.clone(),
             timestamp: now(),
-            code: code.to_owned(),
-            stdout: stdout.to_owned(),
-            stderr: stderr.to_owned(),
-            duration_secs,
-            kind,
-            tools,
-            subcalls,
+            code: record.code,
+            stdout: record.stdout,
+            stderr: record.stderr,
+            duration_secs: record.duration_secs,
+            kind: record.kind,
+            tools: record.tools,
+            subcalls: record.subcalls,
         };
         let id = self.write_line(&Line::Repl(entry.clone()))?;
         self.repls.push(entry);
@@ -838,28 +846,31 @@ mod tests {
         store.append(Role::User, "q1").unwrap();
         let a1 = store.append(Role::Assistant, "a1").unwrap();
         store
-            .append_repl(
-                "print(1)",
-                "1
-",
-                "",
-                0.5,
-                ReplKind::Agent,
-                vec![ToolCall {
+            .append_repl(ReplRecord {
+                code: "print(1)".to_owned(),
+                stdout: "1
+"
+                .to_owned(),
+                stderr: String::new(),
+                duration_secs: 0.5,
+                kind: ReplKind::Agent,
+                tools: vec![ToolCall {
                     name: "bash".to_owned(),
                     args: serde_json::json!({"cmd": "ls"}),
                     result: "ok".to_owned(),
                     error: None,
                     duration_secs: 0.1,
+                    depth: 0,
                 }],
-                vec![SubcallRecord {
+                subcalls: vec![SubcallRecord {
                     model: "haiku".to_owned(),
                     prompt_preview: "summarize".to_owned(),
                     result_preview: Some("done".to_owned()),
                     error: None,
                     duration_secs: 0.2,
+                    depth: 0,
                 }],
-            )
+            })
             .unwrap();
         store.append(Role::User, "q2").unwrap();
         store.append(Role::Assistant, "a2").unwrap();
@@ -884,8 +895,10 @@ mod tests {
                 assert_eq!(repl.tools.len(), 1);
                 assert_eq!(repl.tools[0].name, "bash");
                 assert_eq!(repl.tools[0].result, "ok");
+                assert_eq!(repl.tools[0].depth, 0);
                 assert_eq!(repl.subcalls.len(), 1);
                 assert_eq!(repl.subcalls[0].model, "haiku");
+                assert_eq!(repl.subcalls[0].depth, 0);
             }
             _ => panic!("expected repl after parent assistant"),
         }
@@ -899,21 +912,88 @@ mod tests {
     }
 
     #[test]
+    fn old_repl_activity_records_default_to_root_depth() {
+        let tool: ToolCall = serde_json::from_value(serde_json::json!({
+            "name": "bash",
+            "args": {"cmd": "echo hi"},
+            "result": "hi\n",
+            "error": null,
+            "duration_secs": 0.1
+        }))
+        .unwrap();
+        assert_eq!(tool.depth, 0);
+
+        let subcall: SubcallRecord = serde_json::from_value(serde_json::json!({
+            "model": "sub",
+            "prompt_preview": "say hi",
+            "result_preview": "hi",
+            "duration_secs": 0.2
+        }))
+        .unwrap();
+        assert_eq!(subcall.depth, 0);
+    }
+
+    #[test]
+    fn repl_activity_depth_roundtrips() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut store = store_in(tmp.path());
+        store.append(Role::User, "q1").unwrap();
+        store
+            .append_repl(ReplRecord {
+                code: "print(llm_query('x'))".to_owned(),
+                stdout: "done\n".to_owned(),
+                stderr: String::new(),
+                duration_secs: 0.5,
+                kind: ReplKind::Agent,
+                tools: vec![ToolCall {
+                    name: "bash".to_owned(),
+                    args: serde_json::json!({"cmd": "echo nested"}),
+                    result: "nested\n".to_owned(),
+                    error: None,
+                    duration_secs: 0.1,
+                    depth: 1,
+                }],
+                subcalls: vec![SubcallRecord {
+                    model: "sub".to_owned(),
+                    prompt_preview: "x".to_owned(),
+                    result_preview: Some("y".to_owned()),
+                    error: None,
+                    duration_secs: 0.2,
+                    depth: 1,
+                }],
+            })
+            .unwrap();
+
+        let loaded = SessionStore::load(store.path()).unwrap();
+        let repl = loaded
+            .branch_items()
+            .into_iter()
+            .find_map(|item| match item {
+                BranchItem::Repl(repl) => Some(repl),
+                BranchItem::Message(_) => None,
+            })
+            .expect("repl item");
+        assert_eq!(repl.tools[0].depth, 1);
+        assert_eq!(repl.subcalls[0].depth, 1);
+    }
+
+    #[test]
     fn user_parented_agent_repls_group_into_the_following_exchange() {
         let tmp = tempfile::tempdir().unwrap();
         let mut store = store_in(tmp.path());
         let q1 = store.append(Role::User, "q1").unwrap();
         store
-            .append_repl(
-                "print(1)",
-                "1
-",
-                "",
-                0.5,
-                ReplKind::Agent,
-                Vec::new(),
-                Vec::new(),
-            )
+            .append_repl(ReplRecord {
+                code: "print(1)".to_owned(),
+                stdout: "1
+"
+                .to_owned(),
+                stderr: String::new(),
+                duration_secs: 0.5,
+                kind: ReplKind::Agent,
+                tools: Vec::new(),
+                subcalls: Vec::new(),
+            })
             .unwrap();
         let a1 = store
             .append(Role::Assistant, "before\n```repl\nprint(1)\n```\nafter")
@@ -963,15 +1043,15 @@ mod tests {
         let mut store = store_in(tmp.path());
         let q1 = store.append(Role::User, "q1").unwrap();
         store
-            .append_repl(
-                "answer['content'] = 'done'\nanswer['ready'] = True",
-                "",
-                "",
-                0.1,
-                ReplKind::Agent,
-                Vec::new(),
-                Vec::new(),
-            )
+            .append_repl(ReplRecord {
+                code: "answer['content'] = 'done'\nanswer['ready'] = True".to_owned(),
+                stdout: String::new(),
+                stderr: String::new(),
+                duration_secs: 0.1,
+                kind: ReplKind::Agent,
+                tools: Vec::new(),
+                subcalls: Vec::new(),
+            })
             .unwrap();
         store
             .append_with_usage_and_display(

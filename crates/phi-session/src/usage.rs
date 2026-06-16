@@ -523,8 +523,6 @@ mod tests {
         );
     }
 
-    use super::*;
-
     #[test]
     fn formats_model_names_like_pi_usage() {
         assert_eq!(format_model_name("claude-opus-4-5"), "opus-4-5");

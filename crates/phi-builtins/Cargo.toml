@@ -6,7 +6,7 @@ license.workspace = true
 
 [dependencies]
 anyhow.workspace = true
-phi-ext = { path = "../phi-ext" }
+phi-ext.workspace = true
 
 [dev-dependencies]
 async-trait.workspace = true

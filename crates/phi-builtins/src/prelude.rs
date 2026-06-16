@@ -367,34 +367,36 @@ print(apply_hashline(header + "\nSWAP 3.=3:\n+C\n"))"#
         repl.exec("print(edit_file('/nonexistent', 'a', 'b'))", EXEC_TIMEOUT)
             .await
             .unwrap();
-        let events = handler.tool_events.lock().unwrap();
-        assert_eq!(events.len(), 4, "events: {events:?}");
-        match &events[0] {
-            ToolEvent::Start { name, args, .. } => {
-                assert_eq!(name, "bash");
-                assert_eq!(args["cmd"], "echo hi");
+        {
+            let events = handler.tool_events.lock().unwrap();
+            assert_eq!(events.len(), 4, "events: {events:?}");
+            match &events[0] {
+                ToolEvent::Start { name, args, .. } => {
+                    assert_eq!(name, "bash");
+                    assert_eq!(args["cmd"], "echo hi");
+                }
+                other => panic!("expected bash start, got {other:?}"),
             }
-            other => panic!("expected bash start, got {other:?}"),
-        }
-        match &events[1] {
-            ToolEvent::End {
-                name,
-                result,
-                error,
-                ..
-            } => {
-                assert_eq!(name, "bash");
-                assert!(result.contains("hi"), "result: {result}");
-                assert!(error.is_none());
+            match &events[1] {
+                ToolEvent::End {
+                    name,
+                    result,
+                    error,
+                    ..
+                } => {
+                    assert_eq!(name, "bash");
+                    assert!(result.contains("hi"), "result: {result}");
+                    assert!(error.is_none());
+                }
+                other => panic!("expected bash end, got {other:?}"),
             }
-            other => panic!("expected bash end, got {other:?}"),
-        }
-        match &events[3] {
-            ToolEvent::End { name, error, .. } => {
-                assert_eq!(name, "edit_file");
-                assert!(error.is_some(), "failures mark the end event: {events:?}");
+            match &events[3] {
+                ToolEvent::End { name, error, .. } => {
+                    assert_eq!(name, "edit_file");
+                    assert!(error.is_some(), "failures mark the end event: {events:?}");
+                }
+                other => panic!("expected edit_file end, got {other:?}"),
             }
-            other => panic!("expected edit_file end, got {other:?}"),
         }
         repl.shutdown().await;
     }
@@ -437,23 +439,25 @@ print(result["synthesis"]["consensus"][0])
             r.stdout
         );
 
-        let seen = handler.seen.lock().unwrap();
-        assert_eq!(seen.len(), 3, "seen: {seen:?}");
-        assert!(
-            seen.iter()
-                .any(|(_, _, m)| m.as_deref() == Some("anthropic/model-a")),
-            "seen: {seen:?}"
-        );
-        assert!(
-            seen.iter()
-                .any(|(_, _, m)| m.as_deref() == Some("openai/model-b")),
-            "seen: {seen:?}"
-        );
-        assert!(
-            seen.iter()
-                .any(|(_, _, m)| m.as_deref() == Some("judge/model-c")),
-            "seen: {seen:?}"
-        );
+        {
+            let seen = handler.seen.lock().unwrap();
+            assert_eq!(seen.len(), 3, "seen: {seen:?}");
+            assert!(
+                seen.iter()
+                    .any(|(_, _, m)| m.as_deref() == Some("anthropic/model-a")),
+                "seen: {seen:?}"
+            );
+            assert!(
+                seen.iter()
+                    .any(|(_, _, m)| m.as_deref() == Some("openai/model-b")),
+                "seen: {seen:?}"
+            );
+            assert!(
+                seen.iter()
+                    .any(|(_, _, m)| m.as_deref() == Some("judge/model-c")),
+                "seen: {seen:?}"
+            );
+        }
         repl.shutdown().await;
     }
 
@@ -488,11 +492,13 @@ print(result["synthesis"]["consensus"][0])
             r.stdout
         );
 
-        let seen = handler.seen.lock().unwrap();
-        assert!(
-            seen.iter().all(|(kind, _, _)| kind == "rlm"),
-            "seen: {seen:?}"
-        );
+        {
+            let seen = handler.seen.lock().unwrap();
+            assert!(
+                seen.iter().all(|(kind, _, _)| kind == "rlm"),
+                "seen: {seen:?}"
+            );
+        }
         repl.shutdown().await;
     }
 

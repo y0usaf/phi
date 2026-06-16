@@ -375,15 +375,15 @@ pub fn highlight_output(line: &str) -> String {
     let mut i = 0;
     while i < line.len() {
         let ch = line[i..].chars().next().unwrap();
-        if ch == '"' || ch == '\'' || ch == '`' {
-            if let Some(off) = line[i + ch.len_utf8()..].find(ch) {
-                let end = i + ch.len_utf8() + off + ch.len_utf8();
-                out.push_str(OUT_STR);
-                out.push_str(&line[i..end]);
-                out.push_str(OUT_BASE);
-                i = end;
-                continue;
-            }
+        if (ch == '"' || ch == '\'' || ch == '`')
+            && let Some(off) = line[i + ch.len_utf8()..].find(ch)
+        {
+            let end = i + ch.len_utf8() + off + ch.len_utf8();
+            out.push_str(OUT_STR);
+            out.push_str(&line[i..end]);
+            out.push_str(OUT_BASE);
+            i = end;
+            continue;
         }
         if ch.is_whitespace() {
             out.push(ch);
@@ -1163,7 +1163,7 @@ mod tests {
         let (r, g, b) = soften_rgb(191, 97, 106);
         let before = 191 - 97;
         let after = r.max(g).max(b) as i32 - r.min(g).min(b) as i32;
-        assert!(after > before as i32, "not more saturated: {r},{g},{b}");
+        assert!(after > before, "not more saturated: {r},{g},{b}");
         assert!(r.min(g).min(b) < 165, "boost produced near-white");
         // Near-white still softened to gray.
         let (r, g, b) = soften_rgb(192, 197, 206);

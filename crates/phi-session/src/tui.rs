@@ -1209,10 +1209,12 @@ struct Ui {
     /// stashed at `ToolStart`, completed at `ToolEnd`, persisted with the
     /// block at `CodeExecEnd` so resume re-renders the same tool cards.
     live_tools: Vec<session::ToolCall>,
-    /// Args of depth-0 tools still executing, keyed by engine call_id.
-    open_tool_args: std::collections::HashMap<u64, serde_json::Value>,
+    /// Args of tools still executing inside the buffered depth-0 REPL block,
+    /// keyed by (RLM event depth, engine call_id). Child REPLs have their own
+    /// call-id spaces, so depth is part of the key.
+    open_tool_args: std::collections::HashMap<(usize, u64), serde_json::Value>,
     /// Live tool status rows inside the buffered block.
-    open_tool_rows: std::collections::HashMap<u64, OpenToolRow>,
+    open_tool_rows: std::collections::HashMap<(usize, u64), OpenToolRow>,
     /// Sub-LLM calls observed inside the in-flight depth-0 ```repl``` block.
     live_subcalls: Vec<session::SubcallRecord>,
     /// Live subcall status rows inside the buffered block.
@@ -2219,19 +2221,20 @@ impl Ui {
         // block, mirroring the live ToolStart/ToolEnd rendering so a
         // resumed session looks like the one the user actually saw.
         for tool in tools {
+            let depth = tool.depth + 1;
             let label = tool_title(&tool.name, &tool.args);
             let text = match &tool.error {
                 Some(_) => failed_status_text(&label, Some(tool.duration_secs), None),
                 None => success_status_text(&label, tool.duration_secs),
             };
-            let _ = self.push_status(1, text);
+            let _ = self.push_status(depth, text);
             match &tool.error {
                 Some(error) => {
-                    self.push_preview(1, error, self.output_limit());
+                    self.push_preview(depth, error, self.output_limit());
                 }
                 None => {
                     self.push_preview_with_lang(
-                        1,
+                        depth,
                         &tool.result,
                         self.output_limit(),
                         tool_preview_lang(&tool.name, &tool.args),
@@ -2240,14 +2243,15 @@ impl Ui {
             }
         }
         for subcall in subcalls {
+            let depth = subcall.depth;
             let label = subcall_title(&subcall.model, &subcall.prompt_preview);
             let text = match &subcall.error {
                 Some(error) => failed_status_text(&label, Some(subcall.duration_secs), Some(error)),
                 None => success_status_text(&label, subcall.duration_secs),
             };
-            let _ = self.push_status(0, text);
+            let _ = self.push_status(depth, text);
             if let Some(result_preview) = &subcall.result_preview {
-                self.push_preview(0, result_preview, self.output_limit());
+                self.push_preview(depth, result_preview, self.output_limit());
             }
         }
         self.push_bar(0, format!("exec{RESET} {NUM_FG}{duration_secs:.1}s"));
@@ -2307,14 +2311,6 @@ impl Ui {
     fn toggle_thinking(&mut self) {
         self.expand_thinking = !self.expand_thinking;
         self.replay_transcript_if_idle();
-        self.pending.push(format!(
-            "{DIM}[thinking {} throughout transcript]{RESET}",
-            if self.expand_thinking {
-                "expanded"
-            } else {
-                "collapsed"
-            }
-        ));
     }
 
     fn toggle_tools(&mut self) {
@@ -3017,7 +3013,7 @@ impl Ui {
         }
         let spinner = self.spinner.frame().to_owned();
 
-        let mut tool_ids: Vec<(u64, usize)> = self
+        let mut tool_ids: Vec<((usize, u64), usize)> = self
             .open_tool_rows
             .iter()
             .map(|(&id, row)| (id, row.start))
@@ -3060,7 +3056,7 @@ impl Ui {
     }
 
     fn fail_open_activity_rows(&mut self) {
-        let mut tool_ids: Vec<(u64, usize)> = self
+        let mut tool_ids: Vec<((usize, u64), usize)> = self
             .open_tool_rows
             .iter()
             .map(|(&id, row)| (id, row.start))
@@ -3266,14 +3262,11 @@ impl Ui {
             } => {
                 self.stream.push_str(&delta);
                 self.streamed = true;
-                // Flush completed paragraphs into scrollback as they stream;
-                // only the unfinished tail stays live.
-                let stable = stable_prefix(&self.stream);
-                if stable > 0 {
-                    let rest = self.stream.split_off(stable);
-                    let para = std::mem::replace(&mut self.stream, rest);
-                    self.push_prose(&para);
-                }
+                // Keep streamed assistant prose live-only. The durable JSONL
+                // assistant message is appended at run completion, so the
+                // retained transcript must also commit prose at that message
+                // boundary instead of turning paragraph-stable deltas into
+                // separate Assistant cards.
             }
             RlmEvent::RootThinkingDelta {
                 depth: 0, delta, ..
@@ -3283,16 +3276,11 @@ impl Ui {
             }
             RlmEvent::RootText { depth: 0, text, .. } => {
                 self.flush_thinking();
-                // Streaming: paragraphs and blocks were flushed as they
-                // arrived; render the leftover tail. Non-streaming: render
-                // the full text's prose (blocks were previewed by
-                // `CodeExecStart`).
-                let remaining = if self.streamed {
-                    std::mem::take(&mut self.stream)
-                } else {
-                    text
-                };
-                for segment in split_prose(&remaining) {
+                // `RootText` is the complete assistant message for this
+                // iteration. Render from it, not from paragraph-sized streamed
+                // deltas, so one durable assistant message becomes one
+                // assistant prose card (apart from explicit REPL/code cards).
+                for segment in split_prose(&text) {
                     self.push_prose(segment);
                 }
                 self.stream.clear();
@@ -3308,6 +3296,11 @@ impl Ui {
                         self.stream = rest;
                     }
                     self.status = "running code...".to_owned();
+                    self.live_tools.clear();
+                    self.live_subcalls.clear();
+                    self.open_tool_args.clear();
+                    self.open_tool_rows.clear();
+                    self.open_subcall_rows.clear();
                     self.begin_block();
                     self.live_code = Some(code.clone());
                 }
@@ -3339,15 +3332,15 @@ impl Ui {
                     // work already paid for. `branch_restore` replays these
                     // to rebuild the REPL env.
                     if let Some(code) = self.live_code.take() {
-                        let _ = self.store.append_repl(
-                            &code,
-                            &stdout,
-                            &stderr,
-                            duration.as_secs_f64(),
-                            session::ReplKind::Agent,
-                            std::mem::take(&mut self.live_tools),
-                            std::mem::take(&mut self.live_subcalls),
-                        );
+                        let _ = self.store.append_repl(session::ReplRecord {
+                            code,
+                            stdout,
+                            stderr,
+                            duration_secs: duration.as_secs_f64(),
+                            kind: session::ReplKind::Agent,
+                            tools: std::mem::take(&mut self.live_tools),
+                            subcalls: std::mem::take(&mut self.live_subcalls),
+                        });
                     }
                     self.open_tool_args.clear();
                     self.open_tool_rows.clear();
@@ -3362,15 +3355,16 @@ impl Ui {
                 name,
                 args,
             } => {
-                if depth == 0 {
-                    self.open_tool_args.insert(call_id, args.clone());
+                let key = (depth, call_id);
+                if self.live_code.is_some() {
+                    self.open_tool_args.insert(key, args.clone());
                 }
                 let label = tool_title(&name, &args);
                 if let Some((start, len)) =
                     self.push_status(depth + 1, running_status_text(&label, self.spinner.frame()))
                 {
                     self.open_tool_rows.insert(
-                        call_id,
+                        key,
                         OpenToolRow {
                             depth: depth + 1,
                             label,
@@ -3391,12 +3385,9 @@ impl Ui {
                 error,
                 duration,
             } => {
-                let args = if depth == 0 {
-                    self.open_tool_args.remove(&call_id).unwrap_or_default()
-                } else {
-                    serde_json::Value::Null
-                };
-                if depth == 0 {
+                let key = (depth, call_id);
+                let args = self.open_tool_args.remove(&key).unwrap_or_default();
+                if self.live_code.is_some() {
                     // Replay only ever renders a short preview, and the full
                     // text already lands in the repl stdout payload, so cap
                     // what gets persisted per tool call.
@@ -3406,6 +3397,7 @@ impl Ui {
                         result: truncate_for_log(&result),
                         error: error.as_deref().map(truncate_for_log),
                         duration_secs: duration.as_secs_f64(),
+                        depth,
                     });
                 }
                 let label = tool_title(&name, &args);
@@ -3413,7 +3405,7 @@ impl Ui {
                     Some(_) => failed_status_text(&label, Some(duration.as_secs_f64()), None),
                     None => success_status_text(&label, duration.as_secs_f64()),
                 };
-                if let Some(row) = self.open_tool_rows.remove(&call_id) {
+                if let Some(row) = self.open_tool_rows.remove(&key) {
                     self.replace_block_rows(row.start, row.len, self.status_rows(row.depth, &text));
                 } else {
                     let _ = self.push_status(depth + 1, text);
@@ -3463,8 +3455,12 @@ impl Ui {
                 duration,
                 error,
             } => {
-                let open = self.open_subcall_rows.pop_front();
-                if depth == 0 {
+                let open = self
+                    .open_subcall_rows
+                    .iter()
+                    .position(|row| row.depth == depth)
+                    .and_then(|idx| self.open_subcall_rows.remove(idx));
+                if self.live_code.is_some() {
                     let prompt_preview = open
                         .as_ref()
                         .map(|row| row.prompt_preview.clone())
@@ -3475,6 +3471,7 @@ impl Ui {
                         result_preview: result_preview.clone(),
                         error: error.clone(),
                         duration_secs: duration.as_secs_f64(),
+                        depth,
                     });
                 }
                 let label = open
@@ -3581,15 +3578,15 @@ impl Ui {
                     REPL_ERROR_BG
                 };
                 self.commit_block(bg);
-                let _ = self.store.append_repl(
-                    &code,
-                    &res.stdout,
-                    &res.stderr,
-                    res.duration.as_secs_f64(),
-                    session::ReplKind::Shell,
-                    Vec::new(),
-                    Vec::new(),
-                );
+                let _ = self.store.append_repl(session::ReplRecord {
+                    code,
+                    stdout: res.stdout,
+                    stderr: res.stderr,
+                    duration_secs: res.duration.as_secs_f64(),
+                    kind: session::ReplKind::Shell,
+                    tools: Vec::new(),
+                    subcalls: Vec::new(),
+                });
             }
             Ok(res) => {
                 let output = format!("{}{}", res.stdout, res.stderr);
@@ -3794,16 +3791,22 @@ mod tests {
         ui.begin_block();
         ui.push_repl_block(0, "print(1)", usize::MAX);
         ui.push_bar(0, "exec 0.1s".to_owned());
-        ui.push_preview(0, "1
-", usize::MAX);
+        ui.push_preview(
+            0,
+            "1
+",
+            usize::MAX,
+        );
 
         let lines = render_repl_panel(ui.panel_width(), REPL_BG, &ui.block);
         let plain = lines
             .iter()
             .map(|line| phi_tui::strip_ansi(line))
             .collect::<Vec<_>>()
-            .join("
-");
+            .join(
+                "
+",
+            );
 
         assert!(plain.contains("Input"), "{plain}");
         assert!(plain.contains("Output"), "{plain}");
@@ -3819,8 +3822,10 @@ mod tests {
             .into_iter()
             .map(|line| phi_tui::strip_ansi(&line))
             .collect::<Vec<_>>()
-            .join("
-");
+            .join(
+                "
+",
+            );
         assert!(plain.contains("Input"), "{plain}");
         assert!(!plain.contains("```"), "{plain}");
     }
@@ -3920,6 +3925,121 @@ mod tests {
     }
 
     #[test]
+    fn streamed_paragraphs_commit_as_one_assistant_message_card() {
+        let mut ui = test_ui(80, 24);
+        ui.running = Some(CancellationToken::new());
+        ui.handle_rlm_event(RlmEvent::IterationStart {
+            depth: 0,
+            iteration: 0,
+        });
+        ui.handle_rlm_event(RlmEvent::RootDelta {
+            depth: 0,
+            iteration: 0,
+            delta: "para one\n\n".to_owned(),
+        });
+
+        // Completed streamed paragraphs are live-only; they must not be
+        // finalized into retained Assistant cards before the JSONL assistant
+        // message exists.
+        assert!(
+            ui.pending.iter().all(|line| !line.contains("Assistant")),
+            "{:?}",
+            ui.pending
+        );
+
+        ui.handle_rlm_event(RlmEvent::RootDelta {
+            depth: 0,
+            iteration: 0,
+            delta: "para two".to_owned(),
+        });
+        ui.handle_rlm_event(RlmEvent::RootText {
+            depth: 0,
+            iteration: 0,
+            text: "para one\n\npara two".to_owned(),
+        });
+
+        let assistant_cards = ui
+            .pending
+            .iter()
+            .filter(|line| line.contains("Assistant"))
+            .count();
+        assert_eq!(assistant_cards, 1, "{:?}", ui.pending);
+    }
+
+    #[test]
+    fn replay_branch_preserves_depth_one_repl_activity() {
+        let mut ui = test_ui(100, 30);
+        ui.store.append(session::Role::User, "q1").unwrap();
+
+        ui.handle_rlm_event(RlmEvent::CodeExecStart {
+            depth: 0,
+            iteration: 0,
+            code: "print(llm_query('hello'))\nprint(bash('echo nested'))".to_owned(),
+        });
+        ui.handle_rlm_event(RlmEvent::SubcallStart {
+            depth: 1,
+            model: "sub-model".to_owned(),
+            prompt_preview: "hello".to_owned(),
+        });
+        ui.handle_rlm_event(RlmEvent::SubcallEnd {
+            depth: 1,
+            model: "sub-model".to_owned(),
+            result_preview: Some("world".to_owned()),
+            duration: Duration::from_millis(200),
+            error: None,
+        });
+        ui.handle_rlm_event(RlmEvent::ToolStart {
+            depth: 1,
+            call_id: 7,
+            name: "bash".to_owned(),
+            args: serde_json::json!({"cmd": "echo nested"}),
+        });
+        ui.handle_rlm_event(RlmEvent::ToolEnd {
+            depth: 1,
+            call_id: 7,
+            name: "bash".to_owned(),
+            result: "nested\n".to_owned(),
+            error: None,
+            duration: Duration::from_millis(100),
+        });
+        ui.handle_rlm_event(RlmEvent::CodeExecEnd {
+            depth: 0,
+            iteration: 0,
+            stdout: "done\n".to_owned(),
+            stderr: String::new(),
+            duration: Duration::from_millis(300),
+        });
+
+        let checkpoint = ui
+            .store
+            .branch_items()
+            .into_iter()
+            .find_map(|item| match item {
+                session::BranchItem::Repl(repl) => Some(repl.clone()),
+                session::BranchItem::Message(_) => None,
+            })
+            .expect("checkpointed repl");
+        assert_eq!(checkpoint.subcalls.len(), 1);
+        assert_eq!(checkpoint.subcalls[0].depth, 1);
+        assert_eq!(checkpoint.tools.len(), 1);
+        assert_eq!(checkpoint.tools[0].depth, 1);
+        assert_eq!(checkpoint.tools[0].args["cmd"], "echo nested");
+
+        ui.replay_branch();
+        let plain = ui
+            .pending
+            .iter()
+            .map(|line| phi_tui::strip_ansi(line))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(plain.contains("sub-model"), "{plain}");
+        assert!(plain.contains("\"hello\""), "{plain}");
+        assert!(plain.contains("world"), "{plain}");
+        assert!(plain.contains("echo nested"), "{plain}");
+        assert!(plain.contains("nested"), "{plain}");
+    }
+
+    #[test]
     fn replay_branch_uses_assistant_display_thinking_for_transcript_toggle() {
         let mut ui = test_ui(80, 24);
         ui.store.append(session::Role::User, "q1").unwrap();
@@ -3939,6 +4059,17 @@ mod tests {
         ui.toggle_thinking();
         let expanded = ui.pending.join("\n");
         assert!(expanded.contains("secret thought"), "{expanded}");
+        assert!(
+            !expanded.contains("thinking expanded throughout transcript"),
+            "{expanded}"
+        );
+
+        ui.toggle_thinking();
+        let recollapsed = ui.pending.join("\n");
+        assert!(
+            !recollapsed.contains("thinking collapsed throughout transcript"),
+            "{recollapsed}"
+        );
     }
 
     #[test]
@@ -3946,15 +4077,15 @@ mod tests {
         let mut ui = test_ui(80, 24);
         ui.store.append(session::Role::User, "q1").unwrap();
         ui.store
-            .append_repl(
-                "print(bash('echo hi'))",
-                "line1\nline2\nline3\nline4\nline5\nline6\n",
-                "",
-                0.1,
-                session::ReplKind::Shell,
-                Vec::new(),
-                Vec::new(),
-            )
+            .append_repl(session::ReplRecord {
+                code: "print(bash('echo hi'))".to_owned(),
+                stdout: "line1\nline2\nline3\nline4\nline5\nline6\n".to_owned(),
+                stderr: String::new(),
+                duration_secs: 0.1,
+                kind: session::ReplKind::Shell,
+                tools: Vec::new(),
+                subcalls: Vec::new(),
+            })
             .unwrap();
 
         ui.replay_branch();

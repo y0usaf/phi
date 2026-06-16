@@ -302,7 +302,9 @@ impl Workspace {
             return false;
         }
 
-        let current = project.selected.min(project.sessions.len().saturating_sub(1));
+        let current = project
+            .selected
+            .min(project.sessions.len().saturating_sub(1));
         let steps = delta.unsigned_abs() as usize;
         let target_visible = match visible.iter().position(|&i| i == current) {
             Some(current_visible) if delta > 0 => (current_visible + steps) % visible.len(),
@@ -396,7 +398,7 @@ fn discover_all_in(sessions_root: Option<&Path>, fallback_cwd: &Path) -> Workspa
     ws.projects = grouped
         .into_iter()
         .map(|(cwd, mut sessions)| {
-            sessions.sort_by(|a, b| b.modified.cmp(&a.modified));
+            sessions.sort_by_key(|session| std::cmp::Reverse(session.modified));
             MuxProject {
                 cwd,
                 sessions,

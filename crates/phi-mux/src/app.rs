@@ -654,7 +654,10 @@ impl MuxApp {
                 } else {
                     -1
                 };
-                if self.workspace.move_selected_visible_session(project_index, delta) {
+                if self
+                    .workspace
+                    .move_selected_visible_session(project_index, delta)
+                {
                     self.on_focus_changed();
                     self.ensure_focused_session().await;
                 }
@@ -874,10 +877,10 @@ impl MuxApp {
                     ));
                     return;
                 }
-                if let Some(mut existing) = self.model_overlay.take() {
-                    if let Some(tx) = existing.response_tx.take() {
-                        let _ = tx.send(Ok(None));
-                    }
+                if let Some(mut existing) = self.model_overlay.take()
+                    && let Some(tx) = existing.response_tx.take()
+                {
+                    let _ = tx.send(Ok(None));
                 }
                 let models = self
                     .shared

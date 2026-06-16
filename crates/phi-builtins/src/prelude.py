@@ -780,31 +780,38 @@ def grep_hashline(pattern, path=".", glob=None, max_results=200):
 
 @_tool
 def apply_hashline(patch):
-    sections = _hashline_parse_patch(patch)
-    planned = []
-    seen_paths = set()
-    for section in sections:
-        canonical = _hashline_canonical_path(section["path"])
-        if canonical in seen_paths:
-            raise ValueError(
-                "multiple hashline sections resolve to the same file (%s); merge their ops under one header"
-                % section["path"]
-            )
-        seen_paths.add(canonical)
-        planned.append(_hashline_prepare_section(section))
+    try:
+        sections = _hashline_parse_patch(patch)
+        planned = []
+        seen_paths = set()
+        for section in sections:
+            canonical = _hashline_canonical_path(section["path"])
+            if canonical in seen_paths:
+                raise ValueError(
+                    "multiple hashline sections resolve to the same file (%s); merge their ops under one header"
+                    % section["path"]
+                )
+            seen_paths.add(canonical)
+            planned.append(_hashline_prepare_section(section))
 
-    rendered = []
-    for item in planned:
-        with open(item["path"], "w") as f:
-            f.write(item["after"])
-        lines = _hashline_lines(item["after"])
-        display_limit = min(len(lines), 2000)
-        seen = range(1, display_limit + 1)
-        tag = _hashline_record_snapshot(item["path"], item["after"], seen)
-        rendered.append(_hashline_format_view(item["path"], item["after"], 1, 2000, tag=tag, seen_lines=seen))
-        for warning in item["warnings"]:
-            rendered.append("[warning] %s" % warning)
-    return "\n\n".join(rendered)
+        rendered = []
+        for item in planned:
+            with open(item["path"], "w") as f:
+                f.write(item["after"])
+            lines = _hashline_lines(item["after"])
+            display_limit = min(len(lines), 2000)
+            seen = range(1, display_limit + 1)
+            tag = _hashline_record_snapshot(item["path"], item["after"], seen)
+            rendered.append(
+                _hashline_format_view(
+                    item["path"], item["after"], 1, 2000, tag=tag, seen_lines=seen
+                )
+            )
+            for warning in item["warnings"]:
+                rendered.append("[warning] %s" % warning)
+        return "\n\n".join(rendered)
+    except Exception as e:
+        return "Error: %s" % e
 
 
 def _fusion_parse_json(text):
