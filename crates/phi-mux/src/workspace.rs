@@ -239,6 +239,95 @@ impl Workspace {
             .unwrap_or_default()
     }
 
+    pub fn normalize_visible_selection(&mut self, project_index: usize) -> bool {
+        let Some(project) = self.projects.get_mut(project_index) else {
+            return false;
+        };
+        if project.sessions.is_empty() {
+            project.selected = 0;
+            return false;
+        }
+        if project.selected >= project.sessions.len() {
+            project.selected = project.sessions.len().saturating_sub(1);
+        }
+        if project
+            .sessions
+            .get(project.selected)
+            .is_some_and(MuxSession::is_sidebar_visible)
+        {
+            return false;
+        }
+
+        let current = project.selected;
+        let replacement = project
+            .sessions
+            .iter()
+            .enumerate()
+            .skip(current)
+            .find_map(|(i, session)| session.is_sidebar_visible().then_some(i))
+            .or_else(|| {
+                project
+                    .sessions
+                    .iter()
+                    .enumerate()
+                    .take(current)
+                    .rev()
+                    .find_map(|(i, session)| session.is_sidebar_visible().then_some(i))
+            });
+
+        match replacement {
+            Some(index) => {
+                let changed = index != project.selected;
+                project.selected = index;
+                changed
+            }
+            None => false,
+        }
+    }
+
+    pub fn move_selected_visible_session(&mut self, project_index: usize, delta: i32) -> bool {
+        if delta == 0 {
+            return false;
+        }
+        let Some(project) = self.projects.get_mut(project_index) else {
+            return false;
+        };
+        let visible = project
+            .sessions
+            .iter()
+            .enumerate()
+            .filter_map(|(i, session)| session.is_sidebar_visible().then_some(i))
+            .collect::<Vec<_>>();
+        if visible.is_empty() {
+            return false;
+        }
+
+        let current = project.selected.min(project.sessions.len().saturating_sub(1));
+        let steps = delta.unsigned_abs() as usize;
+        let target_visible = match visible.iter().position(|&i| i == current) {
+            Some(current_visible) if delta > 0 => (current_visible + steps) % visible.len(),
+            Some(current_visible) => {
+                (current_visible + visible.len() - (steps % visible.len())) % visible.len()
+            }
+            None if delta > 0 => {
+                let base = visible.iter().position(|&i| i > current).unwrap_or(0);
+                (base + steps - 1) % visible.len()
+            }
+            None => {
+                let base = visible
+                    .iter()
+                    .rposition(|&i| i < current)
+                    .unwrap_or(visible.len().saturating_sub(1));
+                (base + visible.len() - ((steps - 1) % visible.len())) % visible.len()
+            }
+        };
+
+        let next = visible[target_visible];
+        let changed = next != project.selected;
+        project.selected = next;
+        changed
+    }
+
     pub fn discard_unmaterialized_draft(&mut self, project_index: usize) -> bool {
         let Some(project) = self.projects.get_mut(project_index) else {
             return false;
@@ -557,6 +646,86 @@ mod tests {
         ws.new_draft(0).unwrap();
         assert!(ws.discard_unmaterialized_draft(0));
         assert!(ws.projects[0].sessions.is_empty());
+    }
+
+    fn test_session(key: SessionKey, path: Option<PathBuf>, first_message: &str) -> MuxSession {
+        MuxSession {
+            key,
+            store_path: path,
+            first_message: first_message.to_owned(),
+            modified: None,
+            status: SessionStatus::Idle,
+            handle: None,
+        }
+    }
+
+    #[test]
+    fn normalize_visible_selection_prefers_next_visible_then_previous() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut ws = Workspace::discover(vec![tmp.path().to_path_buf()]);
+        ws.projects[0].sessions = vec![
+            test_session(1, Some(tmp.path().join("a.jsonl")), "a"),
+            test_session(2, None, ""),
+            test_session(3, Some(tmp.path().join("c.jsonl")), "c"),
+        ];
+
+        ws.projects[0].selected = 1;
+        assert!(ws.normalize_visible_selection(0));
+        assert_eq!(ws.projects[0].selected, 2);
+
+        ws.projects[0].sessions.push(test_session(4, None, ""));
+        ws.projects[0].selected = 3;
+        assert!(ws.normalize_visible_selection(0));
+        assert_eq!(ws.projects[0].selected, 2);
+    }
+
+    #[test]
+    fn move_selected_visible_session_skips_hidden_when_current_is_hidden() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut ws = Workspace::discover(vec![tmp.path().to_path_buf()]);
+        ws.projects[0].sessions = vec![
+            test_session(1, Some(tmp.path().join("a.jsonl")), "a"),
+            test_session(2, None, ""),
+            test_session(3, Some(tmp.path().join("c.jsonl")), "c"),
+        ];
+
+        ws.projects[0].selected = 1;
+        assert!(ws.move_selected_visible_session(0, 1));
+        assert_eq!(ws.projects[0].selected, 2);
+
+        ws.projects[0].selected = 1;
+        assert!(ws.move_selected_visible_session(0, -1));
+        assert_eq!(ws.projects[0].selected, 0);
+    }
+
+    #[test]
+    fn move_selected_visible_session_wraps_across_visible_sessions_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut ws = Workspace::discover(vec![tmp.path().to_path_buf()]);
+        ws.projects[0].sessions = vec![
+            test_session(1, Some(tmp.path().join("a.jsonl")), "a"),
+            test_session(2, None, ""),
+            test_session(3, Some(tmp.path().join("c.jsonl")), "c"),
+        ];
+
+        ws.projects[0].selected = 2;
+        assert!(ws.move_selected_visible_session(0, 1));
+        assert_eq!(ws.projects[0].selected, 0);
+
+        ws.projects[0].selected = 0;
+        assert!(ws.move_selected_visible_session(0, -1));
+        assert_eq!(ws.projects[0].selected, 2);
+    }
+
+    #[test]
+    fn normalize_visible_selection_is_noop_when_no_visible_sessions_exist() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut ws = Workspace::discover(vec![tmp.path().to_path_buf()]);
+        ws.projects[0].sessions = vec![test_session(1, None, "")];
+        ws.projects[0].selected = 0;
+        assert!(!ws.normalize_visible_selection(0));
+        assert_eq!(ws.projects[0].selected, 0);
+        assert!(!ws.move_selected_visible_session(0, 1));
     }
 
     #[test]

@@ -649,22 +649,12 @@ impl MuxApp {
             }
             AppAction::PreviousSession | AppAction::NextSession => {
                 let project_index = self.workspace.selected_project;
-                let visible = self.workspace.visible_session_indices(project_index);
-                if !visible.is_empty()
-                    && let Some(project) = self.workspace.projects.get_mut(project_index)
-                {
-                    let delta: i32 = if action == AppAction::NextSession {
-                        1
-                    } else {
-                        -1
-                    };
-                    let current_visible = visible
-                        .iter()
-                        .position(|&i| i == project.selected)
-                        .unwrap_or(0) as i32;
-                    let next_visible =
-                        (current_visible + delta).rem_euclid(visible.len() as i32) as usize;
-                    project.selected = visible[next_visible];
+                let delta: i32 = if action == AppAction::NextSession {
+                    1
+                } else {
+                    -1
+                };
+                if self.workspace.move_selected_visible_session(project_index, delta) {
                     self.on_focus_changed();
                     self.ensure_focused_session().await;
                 }
@@ -781,6 +771,7 @@ impl MuxApp {
                         .selected
                         .min(project.sessions.len().saturating_sub(1));
                 }
+                self.workspace.normalize_visible_selection(index);
                 drain_pending_terminal_events();
                 self.ensure_focused_session().await;
                 self.set_note("session archived", StatusNoteKind::Ok);

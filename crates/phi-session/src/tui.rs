@@ -37,7 +37,6 @@ const CYAN: &str = "\x1b[36m";
 const YELLOW: &str = "\x1b[33m";
 const GREEN: &str = "\x1b[32m";
 const RED: &str = "\x1b[31m";
-const REPL_FENCE: &str = "\x1b[38;2;180;140;255m";
 // Warm gold for tool verbs: the same accent highlight_known_repl_calls uses
 // for tool calls inside repl code, so "tool" reads as one color everywhere.
 const TOOL_ACCENT: &str = "\x1b[1m\x1b[38;2;255;210;120m";
@@ -57,7 +56,6 @@ const ASSISTANT_FG: &str = "\x1b[38;2;220;224;235m";
 const PANEL_REPL: &str = "\x1b[38;2;180;140;255m";
 const USER_BORDER: &str = "\x1b[38;2;96;122;196m";
 const ASSISTANT_BORDER: &str = "\x1b[38;2;84;91;116m";
-const THINKING_BORDER: &str = "\x1b[38;2;105;110;138m";
 const CHROME_BORDER: &str = "\x1b[38;2;82;88;110m";
 
 // Card-style transcript surfaces inspired by oh-my-pi: user messages are
@@ -70,6 +68,30 @@ const REPL_ERROR_BG: &str = "\x1b[48;2;56;26;34m";
 
 const CODE_PREVIEW_LINES: usize = 8;
 const OUTPUT_PREVIEW_LINES: usize = 5;
+
+const ASSISTANT_THINKING_DISPLAY_OPEN: &str = "<phi-thinking>\n";
+const ASSISTANT_THINKING_DISPLAY_CLOSE: &str = "\n</phi-thinking>\n";
+
+fn assistant_display_text(response: &str, thinking: &str) -> Option<String> {
+    let thinking = thinking.trim();
+    if thinking.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "{ASSISTANT_THINKING_DISPLAY_OPEN}{thinking}{ASSISTANT_THINKING_DISPLAY_CLOSE}{response}"
+        ))
+    }
+}
+
+fn split_assistant_display_text(text: &str) -> (Option<&str>, &str) {
+    if let Some(rest) = text.strip_prefix(ASSISTANT_THINKING_DISPLAY_OPEN)
+        && let Some((thinking, remainder)) = rest.split_once(ASSISTANT_THINKING_DISPLAY_CLOSE)
+    {
+        (Some(thinking), remainder)
+    } else {
+        (None, text)
+    }
+}
 
 /// Byte offset of the first position in `text` that is, or could still grow
 /// into, a ```repl fence. The engine's block regex matches mid-line (the
@@ -1114,6 +1136,21 @@ impl LoginCallbacks for TuiLoginCallbacks {
     }
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum ReplSection {
+    Input,
+    Output,
+}
+
+impl ReplSection {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Input => "Input",
+            Self::Output => "Output",
+        }
+    }
+}
+
 struct Ui {
     term: Terminal<Box<dyn std::io::Write + Send>>,
     editor: Editor,
@@ -1139,13 +1176,11 @@ struct Ui {
     editor_scroll: usize,
     /// Set by ctrl+g; the run loop opens $VISUAL/$EDITOR on the buffer.
     external_edit: bool,
-    /// ctrl+o: show full code/output instead of previews. Scrollback is
-    /// permanent, so the toggle affects output from now on (unlike pi,
-    /// which re-renders retained components).
+    /// ctrl+o: show full code/output instead of previews across the
+    /// transcript by rebuilding retained history, pi-style.
     expand_tools: bool,
-    /// ctrl+t: show thinking blocks from now on. Like tool expansion, old
-    /// scrollback is permanent, so toggling only affects the current live
-    /// block and future output.
+    /// ctrl+t: show provider thinking across the transcript by rebuilding
+    /// retained history, pi-style.
     expand_thinking: bool,
     /// Follow-up prompts queued while a turn is in flight; sent FIFO as
     /// turns complete.
@@ -1166,6 +1201,7 @@ struct Ui {
     /// it), shown live and then committed to scrollback verbatim.
     block: Vec<String>,
     block_active: bool,
+    block_section: Option<ReplSection>,
     /// Code of the in-flight depth-0 agent ```repl``` block, stashed at
     /// `CodeExecStart` and persisted to the session store at `CodeExecEnd`.
     live_code: Option<String>,
@@ -1193,6 +1229,9 @@ struct Ui {
     stream: String,
     /// Streamed provider thinking for the current iteration.
     thinking: String,
+    /// Provider thinking captured across the whole in-flight turn so replay
+    /// can re-render historical thinking blocks under the current toggle.
+    thinking_log: String,
     /// Whether any `RootDelta` arrived this iteration; when false the model
     /// did not stream and `RootText` carries the only copy of the text.
     streamed: bool,
@@ -1301,6 +1340,7 @@ impl Ui {
             next_transcript_block_id: 0,
             block: Vec::new(),
             block_active: false,
+            block_section: None,
             live_code: None,
             live_tools: Vec::new(),
             open_tool_args: std::collections::HashMap::new(),
@@ -1311,6 +1351,7 @@ impl Ui {
             last_gutter: false,
             stream: String::new(),
             thinking: String::new(),
+            thinking_log: String::new(),
             streamed: false,
             status: String::new(),
             turn: 0,
@@ -1401,6 +1442,7 @@ impl Ui {
         self.next_transcript_block_id = 0;
         self.pending.clear();
         self.block.clear();
+        self.block_section = None;
         self.after_block.clear();
         self.last_gutter = false;
     }
@@ -1413,14 +1455,7 @@ impl Ui {
             if !thinking.is_empty() {
                 blocks.push(FrameTranscriptBlock {
                     key: "live:thinking".to_owned(),
-                    lines: render_panel(
-                        &format!("{DIM}Thinking{RESET}"),
-                        "Thinking",
-                        self.panel_width(),
-                        THINKING_BORDER,
-                        ASSISTANT_BG,
-                        &thinking,
-                    ),
+                    lines: thinking,
                     finalized: false,
                     commit_stable: false,
                     version: 0,
@@ -1543,9 +1578,9 @@ impl Ui {
             for (i, line) in editor_lines[self.editor_scroll..end].iter().enumerate() {
                 let content = if i + self.editor_scroll == 0 {
                     if line.is_empty() {
-                        format!("{TOOL_ACCENT}❯{RESET}")
+                        format!("{TOOL_ACCENT}›{RESET}")
                     } else {
-                        format!("{TOOL_ACCENT}❯{RESET} {line}")
+                        format!("{TOOL_ACCENT}›{RESET} {line}")
                     }
                 } else {
                     format!("  {line}")
@@ -2118,7 +2153,14 @@ impl Ui {
             .into_iter()
             .map(|item| match item {
                 session::BranchItem::Message(entry) => {
-                    ReplayItem::Message(entry.role, entry.text.clone())
+                    let text = match entry.role {
+                        session::Role::Assistant => entry
+                            .display_text
+                            .clone()
+                            .unwrap_or_else(|| entry.text.clone()),
+                        session::Role::User => entry.text.clone(),
+                    };
+                    ReplayItem::Message(entry.role, text)
                 }
                 session::BranchItem::Repl(repl) => ReplayItem::Repl {
                     code: repl.code.clone(),
@@ -2219,10 +2261,19 @@ impl Ui {
         self.commit_block(bg);
     }
 
-    /// Render a persisted assistant message the way it looked live: prose as
-    /// markdown, with each ```repl block shown as a committed repl container
-    /// (code preview over the repl background) rather than raw fenced text.
+    /// Render a persisted assistant message the way it looked live: optional
+    /// provider thinking, prose as markdown, and each ```repl block shown as a
+    /// committed repl container (code preview over the repl background)
+    /// rather than raw fenced text.
     fn push_assistant_message(&mut self, text: &str) {
+        let (thinking, text) = split_assistant_display_text(text);
+        if let Some(thinking) = thinking
+            && self.expand_thinking
+        {
+            self.push_dot(0, format!("{DIM}thinking{RESET}"));
+            self.push_preview(0, thinking, usize::MAX);
+        }
+
         let blocks = find_code_blocks(text);
         let segments = split_prose(text);
         for (i, segment) in segments.iter().enumerate() {
@@ -2246,12 +2297,32 @@ impl Ui {
         self.root_lm.set_thinking(next);
     }
 
-    /// ctrl+t: collapse or expand provider thinking blocks from now on.
+    fn replay_transcript_if_idle(&mut self) {
+        if self.running.is_none() && !self.block_active {
+            self.replay_branch();
+        }
+    }
+
+    /// ctrl+t: collapse or expand provider thinking throughout the transcript.
     fn toggle_thinking(&mut self) {
         self.expand_thinking = !self.expand_thinking;
+        self.replay_transcript_if_idle();
         self.pending.push(format!(
-            "{DIM}[thinking {} from here on]{RESET}",
+            "{DIM}[thinking {} throughout transcript]{RESET}",
             if self.expand_thinking {
+                "expanded"
+            } else {
+                "collapsed"
+            }
+        ));
+    }
+
+    fn toggle_tools(&mut self) {
+        self.expand_tools = !self.expand_tools;
+        self.replay_transcript_if_idle();
+        self.pending.push(format!(
+            "{DIM}[tool output {} throughout transcript]{RESET}",
+            if self.expand_tools {
                 "expanded"
             } else {
                 "collapsed"
@@ -2423,15 +2494,7 @@ impl Ui {
                     return false;
                 }
                 if key.code == KeyCode::Char('o') && ctrl {
-                    self.expand_tools = !self.expand_tools;
-                    self.pending.push(format!(
-                        "{DIM}[tool output {} from here on]{RESET}",
-                        if self.expand_tools {
-                            "expanded"
-                        } else {
-                            "collapsed"
-                        }
-                    ));
+                    self.toggle_tools();
                     return false;
                 }
                 if key.code == KeyCode::Enter
@@ -2626,6 +2689,7 @@ impl Ui {
         self.turn = 0;
         self.stream.clear();
         self.thinking.clear();
+        self.thinking_log.clear();
         self.status = "thinking...".to_owned();
         let _ = cmd_tx.send(Cmd::Prompt {
             text: prompt.to_owned(),
@@ -2829,16 +2893,16 @@ impl Ui {
         lines
     }
 
-    fn repl_open_line(&self, depth: usize) -> String {
-        format!("{}{REPL_FENCE}```repl{RESET}", dot_prefix(depth))
-    }
-
-    fn repl_close_line(&self, depth: usize) -> String {
-        format!("{}{REPL_FENCE}```{RESET}", bar_prefix(depth))
+    fn repl_section_line(&self, depth: usize, section: ReplSection) -> String {
+        format!(
+            "{}{PANEL_REPL}{BOLD}{}{RESET}",
+            dot_prefix(depth),
+            section.label()
+        )
     }
 
     fn repl_code_lines(&self, depth: usize, body: &str, max: usize) -> Vec<String> {
-        let mut lines = vec![self.repl_open_line(depth)];
+        let mut lines = vec![self.repl_section_line(depth, ReplSection::Input)];
         let trimmed = body.trim_end();
         if !trimmed.is_empty() {
             let avail = self.gutter_text_width(depth).saturating_sub(2).max(1);
@@ -2858,7 +2922,6 @@ impl Ui {
                 ));
             }
         }
-        lines.push(self.repl_close_line(depth));
         lines
     }
 
@@ -2886,7 +2949,6 @@ impl Ui {
         if self.expand_thinking {
             self.push_dot(0, format!("{DIM}thinking{RESET}"));
             self.push_preview(0, &thinking, usize::MAX);
-        } else {
         }
     }
 
@@ -2903,6 +2965,9 @@ impl Ui {
     fn push_status(&mut self, depth: usize, text: String) -> Option<(usize, usize)> {
         if depth == 0 && !self.last_gutter && !self.block_active {
             self.pending.push(String::new());
+        }
+        if self.block_active {
+            self.ensure_block_section(ReplSection::Output);
         }
         let rows = self.status_rows(depth, &text);
         let start = if self.block_active {
@@ -3030,12 +3095,22 @@ impl Ui {
         }
     }
 
+    fn ensure_block_section(&mut self, section: ReplSection) {
+        if !self.block_active || self.block_section == Some(section) {
+            return;
+        }
+        self.block.push(self.repl_section_line(0, section));
+        self.block_section = Some(section);
+    }
+
     /// Start buffering the depth-0 REPL block that is about to execute. Rows
-    /// pushed until `commit_block` render live as a grouped fenced block.
+    /// pushed until `commit_block` render live as a grouped sectioned panel.
     fn begin_block(&mut self) {
         if !self.last_gutter {
             self.pending.push(String::new());
         }
+        self.block.clear();
+        self.block_section = None;
         self.open_tool_rows.clear();
         self.open_subcall_rows.clear();
         self.block_active = true;
@@ -3049,6 +3124,7 @@ impl Ui {
             return;
         }
         self.block_active = false;
+        self.block_section = None;
         let body = std::mem::take(&mut self.block);
         self.pending
             .extend(render_repl_panel(self.panel_width(), bg, &body));
@@ -3068,6 +3144,9 @@ impl Ui {
     /// Continuation/result line inside an action block; wraps to the
     /// terminal width so every row keeps the indentation.
     fn push_bar(&mut self, depth: usize, text: String) {
+        if self.block_active {
+            self.ensure_block_section(ReplSection::Output);
+        }
         for row in wrap_ansi(&text, self.gutter_text_width(depth)) {
             self.push_row(format!("{}{DIM}{row}{RESET}", bar_prefix(depth)));
         }
@@ -3084,6 +3163,9 @@ impl Ui {
         let trimmed = text.trim_end();
         if trimmed.is_empty() {
             return;
+        }
+        if self.block_active {
+            self.ensure_block_section(ReplSection::Output);
         }
         let avail = self.gutter_text_width(depth).saturating_sub(2).max(1);
         let base_rows: Vec<String> = match lang {
@@ -3107,7 +3189,13 @@ impl Ui {
     }
 
     fn push_repl_block(&mut self, depth: usize, text: &str, max: usize) {
-        self.push_row(self.repl_open_line(depth));
+        if self.block_active {
+            self.ensure_block_section(if depth == 0 {
+                ReplSection::Input
+            } else {
+                ReplSection::Output
+            });
+        }
         let trimmed = text.trim_end();
         if !trimmed.is_empty() {
             let avail = self.gutter_text_width(depth).saturating_sub(2).max(1);
@@ -3127,7 +3215,6 @@ impl Ui {
                 ));
             }
         }
-        self.push_row(self.repl_close_line(depth));
         self.last_gutter = true;
     }
 
@@ -3167,6 +3254,11 @@ impl Ui {
                 self.status = "thinking...".to_owned();
                 self.stream.clear();
                 self.thinking.clear();
+                if iteration == 0 {
+                    self.thinking_log.clear();
+                } else if !self.thinking_log.trim().is_empty() {
+                    self.thinking_log.push_str("\n\n");
+                }
                 self.streamed = false;
             }
             RlmEvent::RootDelta {
@@ -3187,6 +3279,7 @@ impl Ui {
                 depth: 0, delta, ..
             } => {
                 self.thinking.push_str(&delta);
+                self.thinking_log.push_str(&delta);
             }
             RlmEvent::RootText { depth: 0, text, .. } => {
                 self.flush_thinking();
@@ -3528,6 +3621,8 @@ impl Ui {
         self.running = None;
         self.stream.clear();
         self.thinking.clear();
+        let display_text = assistant_display_text(&completion.response, &self.thinking_log);
+        self.thinking_log.clear();
         self.pending.push(String::new());
         if completion.stop == StopCause::Failed {
             let error = completion.error.unwrap_or_else(|| "run failed".to_owned());
@@ -3546,9 +3641,10 @@ impl Ui {
                 cost_total: completion.usage.cost.total,
                 model: self.model_label.clone(),
             };
-            let _ = self.store.append_with_usage(
+            let _ = self.store.append_with_usage_and_display(
                 session::Role::Assistant,
                 &completion.response,
+                display_text,
                 Some(usage),
             );
         }
@@ -3693,6 +3789,43 @@ mod tests {
     }
 
     #[test]
+    fn repl_panel_splits_input_and_output_sections() {
+        let mut ui = test_ui(80, 24);
+        ui.begin_block();
+        ui.push_repl_block(0, "print(1)", usize::MAX);
+        ui.push_bar(0, "exec 0.1s".to_owned());
+        ui.push_preview(0, "1
+", usize::MAX);
+
+        let lines = render_repl_panel(ui.panel_width(), REPL_BG, &ui.block);
+        let plain = lines
+            .iter()
+            .map(|line| phi_tui::strip_ansi(line))
+            .collect::<Vec<_>>()
+            .join("
+");
+
+        assert!(plain.contains("Input"), "{plain}");
+        assert!(plain.contains("Output"), "{plain}");
+        assert!(plain.contains("print(1)"), "{plain}");
+        assert!(plain.contains("exec 0.1s"), "{plain}");
+    }
+
+    #[test]
+    fn repl_code_preview_uses_input_section_not_inner_fence() {
+        let ui = test_ui(80, 24);
+        let plain = ui
+            .repl_code_lines(0, "print(1)", usize::MAX)
+            .into_iter()
+            .map(|line| phi_tui::strip_ansi(&line))
+            .collect::<Vec<_>>()
+            .join("
+");
+        assert!(plain.contains("Input"), "{plain}");
+        assert!(!plain.contains("```"), "{plain}");
+    }
+
+    #[test]
     fn chrome_lines_editor_mode_has_single_scaled_input_box() {
         let mut ui = test_ui(80, 24);
         ui.editor.set_text("hi");
@@ -3784,6 +3917,54 @@ mod tests {
         assert_eq!(stable_prefix(mid_line), "para\n\n".len());
         // A trailing partial fence opening is held back too.
         assert_eq!(stable_prefix("para\n\n```re"), "para\n\n".len());
+    }
+
+    #[test]
+    fn replay_branch_uses_assistant_display_thinking_for_transcript_toggle() {
+        let mut ui = test_ui(80, 24);
+        ui.store.append(session::Role::User, "q1").unwrap();
+        ui.store
+            .append_with_usage_and_display(
+                session::Role::Assistant,
+                "done",
+                assistant_display_text("done", "secret thought"),
+                None,
+            )
+            .unwrap();
+
+        ui.replay_branch();
+        let collapsed = ui.pending.join("\n");
+        assert!(!collapsed.contains("secret thought"), "{collapsed}");
+
+        ui.toggle_thinking();
+        let expanded = ui.pending.join("\n");
+        assert!(expanded.contains("secret thought"), "{expanded}");
+    }
+
+    #[test]
+    fn toggle_tools_replays_existing_transcript_with_expanded_output() {
+        let mut ui = test_ui(80, 24);
+        ui.store.append(session::Role::User, "q1").unwrap();
+        ui.store
+            .append_repl(
+                "print(bash('echo hi'))",
+                "line1\nline2\nline3\nline4\nline5\nline6\n",
+                "",
+                0.1,
+                session::ReplKind::Shell,
+                Vec::new(),
+                Vec::new(),
+            )
+            .unwrap();
+
+        ui.replay_branch();
+        let collapsed = ui.pending.join("\n");
+        assert!(collapsed.contains("… (1 more lines)"), "{collapsed}");
+
+        ui.toggle_tools();
+        let expanded = ui.pending.join("\n");
+        assert!(expanded.contains("line6"), "{expanded}");
+        assert!(!expanded.contains("… (1 more lines)"), "{expanded}");
     }
 
     #[test]
