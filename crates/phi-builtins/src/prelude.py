@@ -836,6 +836,14 @@ def _fusion_parse_json(text):
     return None
 
 
+def __phi_ext_tool__(name, args=None):
+    """Call a Rust extension-registered tool via the subcall protocol."""
+    result = _subcall({"kind": "ext_tool", "name": name, "args": args or {}})
+    if result.get("error") is not None:
+        return "Error: %s" % result["error"]
+    return result.get("text", "")
+
+
 def fusion(
     prompt,
     analysis_models=None,

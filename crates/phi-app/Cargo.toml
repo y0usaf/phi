@@ -16,6 +16,7 @@ phi-builtins.workspace = true
 phi-cli.workspace = true
 phi-mux.workspace = true
 phi-rlm.workspace = true
+phi-harness.workspace = true
 phi-session.workspace = true
 serde_json.workspace = true
 tokio.workspace = true

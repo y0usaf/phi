@@ -118,6 +118,7 @@ mod tests {
                     }
                 }
                 SubcallRequest::HostFn { .. } => Err("unexpected host fn".to_owned()),
+                SubcallRequest::ExtTool { name, .. } => Err(format!("unexpected tool: {name}")),
             }
         }
     }

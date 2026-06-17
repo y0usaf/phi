@@ -65,7 +65,10 @@ impl Transcript {
     }
 
     pub fn new_embedded() -> Self {
-        Self { embedded: true, ..Self::default() }
+        Self {
+            embedded: true,
+            ..Self::default()
+        }
     }
 
     pub fn reset(&mut self) {

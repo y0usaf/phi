@@ -40,10 +40,13 @@ unicode-width = "0.2"
 url = "2.5.4"
 uuid = { version = "1.17.0", features = ["v7"] }
 vt100 = "0.16"
+dirs = "5"
 webbrowser = "1.0.4"
 
 phi-ai = { path = "crates/phi-ai" }
 phi-builtins = { path = "crates/phi-builtins" }
+phi-memory = { path = "crates/phi-memory" }
+rusqlite = { version = "0.32", features = ["bundled"] }
 phi-cli = { path = "crates/phi-cli" }
 phi-ext = { path = "crates/phi-ext" }
 phi-repl = { path = "crates/phi-repl" }
@@ -52,3 +55,5 @@ phi-rlm = { path = "crates/phi-rlm" }
 phi-session = { path = "crates/phi-session" }
 phi-runtime = { path = "crates/phi-runtime" }
 phi-tui = { path = "crates/phi-tui" }
+phi-lua = { path = "crates/phi-lua" }
+phi-harness = { path = "crates/phi-harness" }

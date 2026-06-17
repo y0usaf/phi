@@ -1,0 +1,21 @@
+[package]
+name = "phi-harness"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+phi-rlm.workspace = true
+phi-session.workspace = true
+phi-ext.workspace = true
+phi-runtime.workspace = true
+phi-ai.workspace = true
+async-trait.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+jiff.workspace = true

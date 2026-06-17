@@ -6,6 +6,9 @@ license.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+futures.workspace = true
 phi-ext.workspace = true
 serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
 

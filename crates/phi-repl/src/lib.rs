@@ -94,6 +94,11 @@ pub enum SubcallRequest {
         args: Value,
         kwargs: Value,
     },
+    /// Extension-registered tool call (routes to AppRuntime::invoke_tool)
+    ExtTool {
+        name: String,
+        args: serde_json::Value,
+    },
 }
 
 #[derive(Clone, Debug)]

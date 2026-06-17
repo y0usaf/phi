@@ -11,6 +11,7 @@ use phi_ai::{
 use phi_builtins::prelude::{CODING_PRELUDE, coding_tools_section};
 use phi_cli::Args;
 use phi_mux as mux;
+use phi_harness::PhiHarness;
 use phi_rlm::engine::PythonEnvFactory;
 use phi_rlm::{ContextPayload, LimitKind, ProviderLm, Rlm, RlmConfig, RlmEvent, StopCause};
 use phi_session::{config, session_builder, tui};
@@ -247,10 +248,11 @@ async fn run(args: Args, storage: Arc<AuthStorage>, registry: Arc<Registry>) -> 
         }
     });
 
-    let result = rlm
-        .completion(payload, root_prompt.as_deref(), &cancel)
-        .await;
-    drop(rlm);
+    let harness = PhiHarness::new(rlm);
+    let result = harness
+        .prompt(payload, root_prompt.as_deref(), &cancel)
+        .await?;
+    drop(harness);
     if let Some(printer) = printer {
         let _ = printer.await;
     }

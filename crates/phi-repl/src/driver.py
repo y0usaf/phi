@@ -313,6 +313,7 @@ class Env:
             "job_status": self._job_status,
             "job_output": self._job_output,
             "__phi_tool_event__": _tool_event,
+            "_subcall": _subcall,
         }
         self.locals = {"answer": _AnswerDict(self._capture_answer)}
         for name in setup.get("host_fns") or []:

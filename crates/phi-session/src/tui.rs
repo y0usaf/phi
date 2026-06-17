@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use phi_runtime::AppRuntime;
+
 use anyhow::Result;
 use phi_ai::{
     AuthStorage, LoginCallbacks, LoginMethod, Model, OAuthProviderId, Registry, ThinkingLevel,
@@ -18,8 +20,8 @@ use phi_rlm::{
 use phi_tui::crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers};
 use phi_tui::{
     Editor, EditorAction, LiveCursor, RawModeGuard, Selector, SelectorItem, SelectorOutcome,
-    Spinner, Terminal, fill_bg, fuzzy_filter, highlight_code, highlight_diff_line,
-    highlight_output, render_markdown, visible_width, wrap_ansi, wrap_ansi_locate,
+    Spinner, Terminal, fuzzy_filter, highlight_code, highlight_diff_line, highlight_output,
+    render_markdown, visible_width, wrap_ansi, wrap_ansi_locate,
 };
 
 use crate::files::{self, FileSearcher};
@@ -58,13 +60,8 @@ const USER_BORDER: &str = "\x1b[38;2;96;122;196m";
 const ASSISTANT_BORDER: &str = "\x1b[38;2;84;91;116m";
 const CHROME_BORDER: &str = "\x1b[38;2;82;88;110m";
 
-// Card-style transcript surfaces inspired by oh-my-pi: user messages are
-// filled bubbles, assistant prose sits on a calmer surface, and tool / REPL
-// cards get their own accent-colored chrome.
-const USER_BG: &str = "\x1b[48;2;41;47;66m";
-const ASSISTANT_BG: &str = "\x1b[48;2;24;26;34m";
-const REPL_BG: &str = "\x1b[48;2;31;24;43m";
-const REPL_ERROR_BG: &str = "\x1b[48;2;56;26;34m";
+// Transcript boxes keep their color in the chrome (borders/titles) only; the
+// body stays on the terminal/default background so content styling remains UI-only.
 
 const CODE_PREVIEW_LINES: usize = 8;
 const OUTPUT_PREVIEW_LINES: usize = 5;
@@ -178,9 +175,11 @@ fn panel_border(label: &str, label_plain: &str, width: usize, color: &str) -> St
     format!("{color}┌─ {label}{color} {}┐{RESET}", "─".repeat(fill))
 }
 
-fn panel_row(text: &str, width: usize, border: &str, bg: &str) -> String {
-    let body = fill_bg(&format!(" {text}"), bg, width.saturating_sub(2).max(1));
-    format!("{border}│{RESET}{body}{border}│{RESET}")
+fn panel_row(text: &str, width: usize, border: &str) -> String {
+    let inner = width.saturating_sub(2).max(1);
+    let body = format!(" {text}");
+    let pad = inner.saturating_sub(visible_width(&body));
+    format!("{border}│{RESET}{body}{RESET}{:pad$}{border}│{RESET}", "")
 }
 
 fn panel_bottom(width: usize, color: &str) -> String {
@@ -205,7 +204,6 @@ fn render_panel(
     label_plain: &str,
     max_width: usize,
     color: &str,
-    bg: &str,
     body: &[String],
 ) -> Vec<String> {
     let width = fitted_panel_width(label_plain, max_width, body);
@@ -213,15 +211,15 @@ fn render_panel(
     let mut out = Vec::new();
     out.push(panel_border(label, label_plain, width, color));
     if body.is_empty() {
-        out.push(panel_row("", width, color, bg));
+        out.push(panel_row("", width, color));
     } else {
         for line in body {
             let rows = wrap_ansi(line, inner);
             if rows.is_empty() {
-                out.push(panel_row("", width, color, bg));
+                out.push(panel_row("", width, color));
             } else {
                 for row in rows {
-                    out.push(panel_row(&row, width, color, bg));
+                    out.push(panel_row(&row, width, color));
                 }
             }
         }
@@ -230,13 +228,12 @@ fn render_panel(
     out
 }
 
-fn render_repl_panel(max_width: usize, bg: &str, body: &[String]) -> Vec<String> {
+fn render_repl_panel(max_width: usize, body: &[String]) -> Vec<String> {
     render_panel(
         &format!("{PANEL_REPL}repl{RESET}"),
         "repl",
         max_width,
         PANEL_REPL,
-        bg,
         body,
     )
 }
@@ -267,10 +264,15 @@ fn nested_panel_border(
     )
 }
 
-fn nested_panel_row(text: &str, width: usize, border: &str, bg: &str, depth: usize) -> String {
+fn nested_panel_row(text: &str, width: usize, border: &str, depth: usize) -> String {
     let indent = nested_indent(depth);
-    let body = fill_bg(&format!(" {text}"), bg, width.saturating_sub(2).max(1));
-    format!("{indent}{border}│{RESET}{body}{border}│{RESET}")
+    let inner = width.saturating_sub(2).max(1);
+    let body = format!(" {text}");
+    let pad = inner.saturating_sub(visible_width(&body));
+    format!(
+        "{indent}{border}│{RESET}{body}{RESET}{:pad$}{border}│{RESET}",
+        ""
+    )
 }
 
 fn nested_panel_bottom(width: usize, color: &str, depth: usize) -> String {
@@ -331,7 +333,6 @@ fn render_nested_sectioned_panel(
     section_plain: &str,
     max_width: usize,
     color: &str,
-    bg: &str,
     depth: usize,
     first: &[String],
     second: &[String],
@@ -346,15 +347,15 @@ fn render_nested_sectioned_panel(
 
     let push_body = |out: &mut Vec<String>, body: &[String]| {
         if body.is_empty() {
-            out.push(nested_panel_row("", width, color, bg, depth));
+            out.push(nested_panel_row("", width, color, depth));
         } else {
             for line in body {
                 let rows = wrap_ansi(line, inner);
                 if rows.is_empty() {
-                    out.push(nested_panel_row("", width, color, bg, depth));
+                    out.push(nested_panel_row("", width, color, depth));
                 } else {
                     for row in rows {
-                        out.push(nested_panel_row(&row, width, color, bg, depth));
+                        out.push(nested_panel_row(&row, width, color, depth));
                     }
                 }
             }
@@ -381,7 +382,6 @@ fn render_nested_panel(
     label_plain: &str,
     max_width: usize,
     color: &str,
-    bg: &str,
     depth: usize,
     body: &[String],
 ) -> Vec<String> {
@@ -392,15 +392,15 @@ fn render_nested_panel(
     let mut out = Vec::new();
     out.push(nested_panel_border(label, label_plain, width, color, depth));
     if body.is_empty() {
-        out.push(nested_panel_row("", width, color, bg, depth));
+        out.push(nested_panel_row("", width, color, depth));
     } else {
         for line in body {
             let rows = wrap_ansi(line, inner);
             if rows.is_empty() {
-                out.push(nested_panel_row("", width, color, bg, depth));
+                out.push(nested_panel_row("", width, color, depth));
             } else {
                 for row in rows {
-                    out.push(nested_panel_row(&row, width, color, bg, depth));
+                    out.push(nested_panel_row(&row, width, color, depth));
                 }
             }
         }
@@ -790,6 +790,7 @@ pub struct TuiSetup {
     pub events: mpsc::UnboundedReceiver<RlmEvent>,
     /// Providers that had no credentials at startup.
     pub missing_credentials: Vec<String>,
+    pub runtime: Arc<AppRuntime>,
     pub ui: UiSetup,
 }
 
@@ -1026,10 +1027,10 @@ fn render_popup(popup: &Popup) -> Vec<String> {
 /// Suggestions for the text before the cursor, pi-style: `/prefix` fuzzy
 /// filters command names; `/command arg-prefix` filters that command's
 /// arguments.
-fn complete(before: &str, model_names: &[String]) -> Option<Popup> {
+fn complete(before: &str, model_names: &[String], ext_cmds: &[(String, String)]) -> Option<Popup> {
     let rest = before.strip_prefix('/')?;
     let Some((command, arg)) = rest.split_once(' ') else {
-        let items: Vec<Suggestion> =
+        let mut items: Vec<Suggestion> =
             fuzzy_filter(COMMANDS.iter().collect(), rest, |c| c.name.to_owned())
                 .into_iter()
                 .map(|c| Suggestion {
@@ -1038,6 +1039,22 @@ fn complete(before: &str, model_names: &[String]) -> Option<Popup> {
                     desc: c.desc.to_owned(),
                 })
                 .collect();
+        // Include extension commands in completion
+        let ext_items: Vec<Suggestion> = ext_cmds
+            .iter()
+            .filter(|(name, _)| rest.is_empty() || name.contains(rest) || rest.is_empty())
+            .filter(|(name, _)| {
+                // Simple prefix/substring filter matching fuzzy_filter behaviour
+                name.to_ascii_lowercase()
+                    .contains(&rest.to_ascii_lowercase())
+            })
+            .map(|(name, desc)| Suggestion {
+                value: name.clone(),
+                label: format!("/{name}"),
+                desc: desc.clone(),
+            })
+            .collect();
+        items.extend(ext_items);
         return (!items.is_empty()).then(|| Popup {
             items,
             selected: 0,
@@ -1131,6 +1148,7 @@ pub async fn run(setup: TuiSetup, mut io: SessionIo) -> Result<()> {
         payload,
         mut events,
         missing_credentials,
+        runtime,
         ui: ui_setup,
     } = setup;
 
@@ -1193,6 +1211,7 @@ pub async fn run(setup: TuiSetup, mut io: SessionIo) -> Result<()> {
         io.cwd.clone(),
         io.host_modal_tx.take(),
         io.embedded,
+        runtime,
     );
     let restoring = ui.store.leaf().is_some();
     if restoring {
@@ -1248,7 +1267,7 @@ pub async fn run(setup: TuiSetup, mut io: SessionIo) -> Result<()> {
                 {
                     false
                 }
-                Some(Ok(event)) => ui.handle_input(event, &cmd_tx),
+                Some(Ok(event)) => ui.handle_input(event, &cmd_tx).await,
                 Some(Err(_)) | None => true,
             },
             Some(event) = events.recv() => {
@@ -1266,6 +1285,9 @@ pub async fn run(setup: TuiSetup, mut io: SessionIo) -> Result<()> {
             _ = ticker.tick(), if ui.running.is_some() => {
                 ui.spinner.tick();
                 ui.refresh_open_activity_rows();
+                for msg in ui.runtime.drain_notifications() {
+                    ui.pending.push(msg);
+                }
                 false
             }
             _ = tokio::time::sleep_until(last_draw + FRAME), if dirty => false,
@@ -1339,6 +1361,7 @@ pub async fn run(setup: TuiSetup, mut io: SessionIo) -> Result<()> {
         cancel.cancel();
     }
     let _ = cmd_tx.send(Cmd::Shutdown);
+    let _ = ui.runtime.shutdown_session().await;
     ui.term.finish()?;
     drop(guard);
     let _ = tokio::time::timeout(Duration::from_secs(5), session_task).await;
@@ -1499,6 +1522,7 @@ struct Ui {
     registry: Arc<Registry>,
     root_lm: Arc<ProviderLm>,
     sub_lm: Arc<ProviderLm>,
+    runtime: Arc<AppRuntime>,
     /// Qualified `provider/id` names offered by /model completion.
     model_names: Vec<String>,
     login_tx: mpsc::UnboundedSender<LoginMsg>,
@@ -1563,6 +1587,7 @@ impl Ui {
         cwd: PathBuf,
         host_modal_tx: Option<mpsc::UnboundedSender<HostModalRequest>>,
         embedded: bool,
+        runtime: Arc<AppRuntime>,
     ) -> Self {
         let UiSetup {
             max_iterations,
@@ -1595,7 +1620,11 @@ impl Ui {
             queued: Vec::new(),
             last_ctrl_c: None,
             pending: Vec::new(),
-            transcript: if embedded { Transcript::new_embedded() } else { Transcript::new() },
+            transcript: if embedded {
+                Transcript::new_embedded()
+            } else {
+                Transcript::new()
+            },
             transcript_blocks: Vec::new(),
             next_transcript_block_id: 0,
             block: Vec::new(),
@@ -1620,6 +1649,7 @@ impl Ui {
             registry,
             root_lm,
             sub_lm,
+            runtime,
             model_names,
             login_tx,
             host_modal_tx,
@@ -1724,7 +1754,7 @@ impl Ui {
             if self.block_active {
                 blocks.push(FrameTranscriptBlock {
                     key: "live:repl-block".to_owned(),
-                    lines: render_repl_panel(self.panel_width(), REPL_BG, &self.block),
+                    lines: render_repl_panel(self.panel_width(), &self.block),
                     finalized: false,
                     commit_stable: false,
                     version: 0,
@@ -1757,7 +1787,6 @@ impl Ui {
                     key: "live:preview-repl".to_owned(),
                     lines: render_repl_panel(
                         self.panel_width(),
-                        REPL_BG,
                         &self.repl_code_lines(0, block, self.code_limit()),
                     ),
                     finalized: false,
@@ -1889,19 +1918,19 @@ impl Ui {
                     });
                     rendered_rows_before_cursor += wrapped.len();
                     for row in wrapped {
-                        lines.push(panel_row(&row, width, CHROME_BORDER, ""));
+                        lines.push(panel_row(&row, width, CHROME_BORDER));
                     }
                 } else {
                     let wrapped = wrap_ansi(content, input_inner);
                     rendered_rows_before_cursor += wrapped.len();
                     for row in wrapped {
-                        lines.push(panel_row(&row, width, CHROME_BORDER, ""));
+                        lines.push(panel_row(&row, width, CHROME_BORDER));
                     }
                 }
             }
             if let Some(more) = more_row {
                 for row in wrap_ansi(&more, input_inner) {
-                    lines.push(panel_row(&row, width, CHROME_BORDER, ""));
+                    lines.push(panel_row(&row, width, CHROME_BORDER));
                 }
             }
             lines.push(panel_bottom(width, CHROME_BORDER));
@@ -2505,8 +2534,12 @@ impl Ui {
             let depth = subcall.depth;
             let label = subcall_title(&subcall.model, &subcall.prompt_preview);
             let label_plain = subcall_title_plain(&subcall.model, &subcall.prompt_preview);
-            let content = subcall.error.as_deref().or(subcall.result_preview.as_deref());
-            let rows = self.subcall_result_rows(depth, &label, &label_plain, content, self.output_limit());
+            let content = subcall
+                .error
+                .as_deref()
+                .or(subcall.result_preview.as_deref());
+            let rows =
+                self.subcall_result_rows(depth, &label, &label_plain, content, self.output_limit());
             for row in rows {
                 self.push_row(row);
             }
@@ -2515,12 +2548,7 @@ impl Ui {
         self.push_bar(0, format!("exec{RESET} {NUM_FG}{duration_secs:.1}s"));
         self.push_preview(0, stdout, self.output_limit());
         self.push_preview(0, stderr, self.output_limit());
-        let bg = if stderr.trim().is_empty() {
-            REPL_BG
-        } else {
-            REPL_ERROR_BG
-        };
-        self.commit_block(bg);
+        self.commit_block();
     }
 
     /// Render a persisted assistant message the way it looked live: optional
@@ -2543,7 +2571,7 @@ impl Ui {
             if let Some(code) = blocks.get(i) {
                 self.begin_block();
                 self.push_repl_block(0, code, self.code_limit());
-                self.commit_block(REPL_BG);
+                self.commit_block();
             }
         }
     }
@@ -2613,7 +2641,11 @@ impl Ui {
         }
         let before = self.editor.before_cursor().to_owned();
         if self.editor.cursor_row() == 0
-            && let Some(popup) = complete(&before, &self.model_names)
+            && let Some(popup) = complete(
+                &before,
+                &self.model_names,
+                &self.runtime.list_extension_commands(),
+            )
         {
             self.popup = Some(popup);
             return;
@@ -2658,7 +2690,7 @@ impl Ui {
     }
 
     /// Returns true when the app should quit.
-    fn handle_input(&mut self, event: Event, cmd_tx: &mpsc::UnboundedSender<Cmd>) -> bool {
+    async fn handle_input(&mut self, event: Event, cmd_tx: &mpsc::UnboundedSender<Cmd>) -> bool {
         match event {
             Event::Key(key) if key.kind != KeyEventKind::Release => {
                 if self.selector.is_some() {
@@ -2893,6 +2925,44 @@ impl Ui {
                     self.send_shell(trimmed, cmd_tx);
                 }
             }
+            // Extension slash commands: dispatch to the registered handler
+            // via the runtime (e.g. /recall, /capture, /explore from
+            // builtin.memory). Anything that isn't a built-in or shell
+            // escape and starts with '/' lands here.
+            _ if trimmed.starts_with('/') => {
+                let (cmd_name, args) = match trimmed.split_once(' ') {
+                    Some((name, rest)) => (name, rest),
+                    None => (trimmed, ""),
+                };
+                let cmd_name = cmd_name.to_owned();
+                let args = args.to_owned();
+                let runtime = Arc::clone(&self.runtime);
+                let result = tokio::task::block_in_place(|| {
+                    let rt = runtime;
+                    let cn = cmd_name.clone();
+                    let ar = args.clone();
+                    tokio::runtime::Handle::current().block_on(async move {
+                        rt.invoke_command(&cn, &ar).await
+                    })
+                });
+                match result {
+                    Ok(Some(output)) => {
+                        if let Some(msg) = output.message {
+                            self.pending.push(String::new());
+                            self.pending.push(msg);
+                        }
+                    }
+                    Ok(None) => {
+                        self.pending.push(format!(
+                            "\x1b[33munknown command: {cmd_name}{RESET}"
+                        ));
+                    }
+                    Err(e) => {
+                        self.pending
+                            .push(format!("\x1b[31merror:{RESET} {e}"));
+                    }
+                }
+            }
             prompt => {
                 // Plain prompts submitted mid-run queue as follow-ups (slash
                 // commands above run immediately).
@@ -3101,7 +3171,6 @@ impl Ui {
             "Assistant",
             self.panel_width(),
             ASSISTANT_BORDER,
-            ASSISTANT_BG,
             &body,
         )
     }
@@ -3117,7 +3186,6 @@ impl Ui {
             "You",
             self.panel_width(),
             USER_BORDER,
-            USER_BG,
             &body,
         )
     }
@@ -3149,7 +3217,6 @@ impl Ui {
             "Activity",
             self.repl_body_width(),
             PANEL_REPL,
-            "",
             depth,
             &rows,
         )
@@ -3176,7 +3243,6 @@ impl Ui {
             label,
             self.repl_body_width(),
             PANEL_REPL,
-            "",
             depth,
             &rows,
         )
@@ -3215,7 +3281,6 @@ impl Ui {
             "Activity",
             self.repl_body_width(),
             PANEL_REPL,
-            "",
             depth,
             &[text.to_owned()],
         )
@@ -3366,14 +3431,14 @@ impl Ui {
     /// Commit the buffered block to scrollback, preserving the same boxed REPL
     /// container used by the live view, followed by any prose that streamed in
     /// behind it.
-    fn commit_block(&mut self, bg: &str) {
+    fn commit_block(&mut self) {
         if !self.block_active {
             return;
         }
         self.block_active = false;
         let body = std::mem::take(&mut self.block);
         self.pending
-            .extend(render_repl_panel(self.panel_width(), bg, &body));
+            .extend(render_repl_panel(self.panel_width(), &body));
         self.open_tool_rows.clear();
         self.open_subcall_rows.clear();
         let after = std::mem::take(&mut self.after_block);
@@ -3395,7 +3460,6 @@ impl Ui {
             "Output",
             self.repl_body_width(),
             PANEL_REPL,
-            "",
             depth,
             &[format!("{DIM}{text}{RESET}")],
         );
@@ -3451,7 +3515,6 @@ impl Ui {
             "Output",
             self.repl_body_width(),
             PANEL_REPL,
-            "",
             depth,
             &rows,
         );
@@ -3480,7 +3543,6 @@ impl Ui {
             "Output",
             self.repl_body_width(),
             PANEL_REPL,
-            "",
             depth,
             &activity,
             &output,
@@ -3498,7 +3560,14 @@ impl Ui {
         let body = content
             .map(|text| self.preview_rows_with_lang(depth, text, max, None))
             .unwrap_or_default();
-        render_nested_panel(label, label_plain, self.repl_body_width(), SUBCALL_ACCENT, "", depth, &body)
+        render_nested_panel(
+            label,
+            label_plain,
+            self.repl_body_width(),
+            SUBCALL_ACCENT,
+            depth,
+            &body,
+        )
     }
 
     fn push_tool_result(
@@ -3589,11 +3658,23 @@ impl Ui {
             }
             RlmEvent::RootText { depth: 0, text, .. } => {
                 self.flush_thinking();
-                // `RootText` is the complete assistant message for this
-                // iteration. Render from it, not from paragraph-sized streamed
-                // deltas, so one durable assistant message becomes one
-                // assistant prose card (apart from explicit REPL/code cards).
-                for segment in split_prose(&text) {
+                // Commit the iteration's prose as durable cards, splitting on
+                // fences so each becomes one assistant card (apart from the
+                // explicit REPL/code cards). Prose preceding each executed
+                // block was already committed eagerly by `CodeExecStart`, which
+                // consumed it from `stream` to keep it ordered above the block;
+                // for a streamed message only the uncommitted tail left in
+                // `stream` may be flushed here. Re-splitting the full `text`
+                // would re-render those earlier segments a second time, leaving
+                // duplicated prose trailing each code block. When the model did
+                // not stream, `stream` is empty and `RootText` carries the only
+                // copy, so fall back to `text`.
+                let source = if self.streamed {
+                    std::mem::take(&mut self.stream)
+                } else {
+                    text
+                };
+                for segment in split_prose(&source) {
                     self.push_prose(segment);
                 }
                 self.stream.clear();
@@ -3626,38 +3707,54 @@ impl Ui {
                 duration,
                 ..
             } => {
-                self.push_bar(
-                    depth,
-                    format!("exec{RESET} {NUM_FG}{:.1}s", duration.as_secs_f64()),
-                );
-                self.push_preview(depth, &stdout, self.output_limit());
-                self.push_preview(depth, &stderr, self.output_limit());
                 if depth == 0 {
-                    let bg = if stderr.trim().is_empty() {
-                        REPL_BG
-                    } else {
-                        REPL_ERROR_BG
-                    };
-                    self.commit_block(bg);
-                    self.status = "thinking...".to_owned();
                     // Checkpoint the completed step as it happens (not at
                     // exchange end): a crash later in the turn must not lose
                     // work already paid for. `branch_restore` replays these
                     // to rebuild the REPL env.
-                    if let Some(code) = self.live_code.take() {
-                        let _ = self.store.append_repl(session::ReplRecord {
-                            code,
-                            stdout,
-                            stderr,
-                            duration_secs: duration.as_secs_f64(),
-                            kind: session::ReplKind::Agent,
-                            tools: std::mem::take(&mut self.live_tools),
-                            subcalls: std::mem::take(&mut self.live_subcalls),
-                        });
-                    }
+                    self.status = "thinking...".to_owned();
                     self.open_tool_args.clear();
                     self.open_tool_rows.clear();
                     self.open_subcall_rows.clear();
+                    if let Some(code) = self.live_code.take() {
+                        let duration_secs = duration.as_secs_f64();
+                        let tools = std::mem::take(&mut self.live_tools);
+                        let subcalls = std::mem::take(&mut self.live_subcalls);
+                        let _ = self.store.append_repl(session::ReplRecord {
+                            code: code.clone(),
+                            stdout: stdout.clone(),
+                            stderr: stderr.clone(),
+                            duration_secs,
+                            kind: session::ReplKind::Agent,
+                            tools: tools.clone(),
+                            subcalls: subcalls.clone(),
+                        });
+                        // Discard the incrementally-built live block and rebuild
+                        // from the stored record so live and replay use the same
+                        // rendering path.
+                        self.block.clear();
+                        self.block_active = false;
+                        self.after_block.clear();
+                        self.push_repl_replay(
+                            &code,
+                            &stdout,
+                            &stderr,
+                            duration_secs,
+                            &tools,
+                            &subcalls,
+                        );
+                    } else {
+                        self.live_tools.clear();
+                        self.live_subcalls.clear();
+                        self.commit_block();
+                    }
+                } else {
+                    self.push_bar(
+                        depth,
+                        format!("exec{RESET} {NUM_FG}{:.1}s", duration.as_secs_f64()),
+                    );
+                    self.push_preview(depth, &stdout, self.output_limit());
+                    self.push_preview(depth, &stderr, self.output_limit());
                 }
             }
             // Prelude tools run inside the REPL block at `depth`, so they
@@ -3794,7 +3891,13 @@ impl Ui {
                 let label = subcall_title(&model, prompt_preview);
                 let label_plain = subcall_title_plain(&model, prompt_preview);
                 let content = error.as_deref().or(result_preview.as_deref());
-                let rows = self.subcall_result_rows(depth, &label, &label_plain, content, self.output_limit());
+                let rows = self.subcall_result_rows(
+                    depth,
+                    &label,
+                    &label_plain,
+                    content,
+                    self.output_limit(),
+                );
                 if let Some(row) = open {
                     self.replace_block_rows(row.start, row.len, rows);
                     self.last_activity = true;
@@ -3887,12 +3990,7 @@ impl Ui {
                 );
                 self.push_preview(0, &res.stdout, self.output_limit());
                 self.push_preview(0, &res.stderr, self.output_limit());
-                let bg = if res.stderr.trim().is_empty() {
-                    REPL_BG
-                } else {
-                    REPL_ERROR_BG
-                };
-                self.commit_block(bg);
+                self.commit_block();
                 let _ = self.store.append_repl(session::ReplRecord {
                     code,
                     stdout: res.stdout,
@@ -3916,7 +4014,7 @@ impl Ui {
             Err(e) => {
                 if self.block_active {
                     self.push_bar(0, format!("failed: {e}"));
-                    self.commit_block(REPL_ERROR_BG);
+                    self.commit_block();
                 } else {
                     self.pending.push(format!("\x1b[31merror:{RESET} {e}"));
                     self.last_activity = false;
@@ -3928,22 +4026,16 @@ impl Ui {
     fn handle_run_done(&mut self, completion: RlmCompletion) {
         // A block still open here never finished (cancel/failure mid-exec).
         self.fail_open_activity_rows();
-        self.commit_block(REPL_ERROR_BG);
+        self.commit_block();
         self.live_code = None;
         self.running = None;
         self.stream.clear();
         self.thinking.clear();
         let display_text = assistant_display_text(&completion.response, &self.thinking_log);
         self.thinking_log.clear();
-        self.pending.push(String::new());
-        if completion.stop == StopCause::Failed {
-            let error = completion.error.unwrap_or_else(|| "run failed".to_owned());
-            self.pending.push(format!("\x1b[31merror:{RESET} {error}"));
-        } else if !completion.response.is_empty() {
-            self.push_assistant_message(&completion.response);
-        }
         // Mirror the env's history condition so the store and the REPL's
-        // history_N variables stay aligned.
+        // history_N variables stay aligned. Store before rendering so the
+        // log is durable before the display reflects it.
         if completion.stop != StopCause::Failed && !completion.response.trim().is_empty() {
             let usage = session::SessionUsage {
                 input: completion.usage.input,
@@ -3972,6 +4064,13 @@ impl Ui {
                 Some(usage),
                 usage_by_model,
             );
+        }
+        self.pending.push(String::new());
+        if completion.stop == StopCause::Failed {
+            let error = completion.error.unwrap_or_else(|| "run failed".to_owned());
+            self.pending.push(format!("\x1b[31merror:{RESET} {error}"));
+        } else if !completion.response.is_empty() {
+            self.push_assistant_message(&completion.response);
         }
         // Durably close the turn: completed, failed, or interrupted is a
         // recorded fact, not an inference from a missing assistant message.
@@ -4035,7 +4134,17 @@ mod tests {
             storage.clone(),
             ThinkingLevel::Off,
         ));
-        let store = SessionStore::new(&cwd).unwrap();
+        let mut store = SessionStore::new(&cwd).unwrap();
+        // Redirect under the temp dir so tests never touch the real
+        // ~/.local/share/phi/sessions data dir (mirrors `store_in` and
+        // phi-mux's `write_session`).
+        store.set_test_path(cwd.join(format!("{}.jsonl", store.id())));
+        let runtime = Arc::new(
+            phi_runtime::RuntimeBuilder::new()
+                .with_cwd(&cwd)
+                .build()
+                .unwrap(),
+        );
         let (login_tx, _login_rx) = mpsc::unbounded_channel();
 
         Ui::new(
@@ -4056,6 +4165,7 @@ mod tests {
             cwd,
             None,
             false,
+            runtime,
         )
     }
 
@@ -4068,9 +4178,10 @@ mod tests {
     }
 
     #[test]
-    fn panel_row_reopens_background_after_embedded_reset() {
-        let row = panel_row("\x1b[31mred\x1b[0m", 12, USER_BORDER, USER_BG);
-        assert!(row.contains(&format!("\x1b[0m{USER_BG}")), "{row:?}");
+    fn panel_row_does_not_paint_box_body_background() {
+        let row = panel_row("\x1b[31mred\x1b[0m", 12, USER_BORDER);
+        assert!(!row.contains("\x1b[48;"), "{row:?}");
+        assert_eq!(visible_width(&row), 12, "{row:?}");
     }
 
     #[test]
@@ -4089,7 +4200,6 @@ mod tests {
             "Assistant",
             80,
             ASSISTANT_BORDER,
-            ASSISTANT_BG,
             &[format!("{ASSISTANT_FG}hi{RESET}")],
         );
         let widths: Vec<usize> = lines.iter().map(|line| visible_width(line)).collect();
@@ -4104,11 +4214,10 @@ mod tests {
             "Input",
             6,
             PANEL_REPL,
-            "",
             0,
             &["print('hello world')".to_owned()],
         );
-        let lines = render_repl_panel(10, REPL_BG, &body);
+        let lines = render_repl_panel(10, &body);
         for line in &lines {
             assert!(
                 visible_width(line) <= 10,
@@ -4158,7 +4267,7 @@ mod tests {
             usize::MAX,
         );
 
-        let lines = render_repl_panel(ui.panel_width(), REPL_BG, &ui.block);
+        let lines = render_repl_panel(ui.panel_width(), &ui.block);
         let plain = lines
             .iter()
             .map(|line| phi_tui::strip_ansi(line))
@@ -4324,6 +4433,61 @@ mod tests {
             .filter(|line| line.contains("Assistant"))
             .count();
         assert_eq!(assistant_cards, 1, "{:?}", ui.pending);
+    }
+
+    #[test]
+    fn streamed_prose_around_block_is_not_recommitted_by_root_text() {
+        // Regression: prose before an executed block was committed once by
+        // `CodeExecStart` (to sit above the block) and a second time by
+        // `RootText` re-splitting the full message, leaving the earlier prose
+        // re-rendered after the code block.
+        let mut ui = test_ui(80, 24);
+        ui.running = Some(CancellationToken::new());
+        ui.handle_rlm_event(RlmEvent::IterationStart {
+            depth: 0,
+            iteration: 0,
+        });
+        // The model streams: intro prose, a repl block, then trailing prose.
+        ui.handle_rlm_event(RlmEvent::RootDelta {
+            depth: 0,
+            iteration: 0,
+            delta: "intro line\n\n```repl\nprint(1)\n```".to_owned(),
+        });
+        ui.handle_rlm_event(RlmEvent::CodeExecStart {
+            depth: 0,
+            iteration: 0,
+            code: "print(1)".to_owned(),
+        });
+        ui.handle_rlm_event(RlmEvent::CodeExecEnd {
+            depth: 0,
+            iteration: 0,
+            stdout: "1\n".to_owned(),
+            stderr: String::new(),
+            duration: Duration::from_millis(5),
+        });
+        ui.handle_rlm_event(RlmEvent::RootDelta {
+            depth: 0,
+            iteration: 0,
+            delta: "\n\ntrailing line".to_owned(),
+        });
+        ui.handle_rlm_event(RlmEvent::RootText {
+            depth: 0,
+            iteration: 0,
+            text: "intro line\n\n```repl\nprint(1)\n```\n\ntrailing line".to_owned(),
+        });
+
+        let intro_cards = ui
+            .pending
+            .iter()
+            .filter(|line| line.contains("intro line"))
+            .count();
+        assert_eq!(intro_cards, 1, "intro prose duplicated: {:?}", ui.pending);
+        let trailing_cards = ui
+            .pending
+            .iter()
+            .filter(|line| line.contains("trailing line"))
+            .count();
+        assert_eq!(trailing_cards, 1, "{:?}", ui.pending);
     }
 
     #[test]
@@ -4503,7 +4667,7 @@ mod tests {
 
     #[test]
     fn slash_lists_all_commands() {
-        let popup = complete("/", &models()).unwrap();
+        let popup = complete("/", &models(), &[]).unwrap();
         assert_eq!(popup.items.len(), COMMANDS.len());
         assert!(popup.kind == PopupKind::Command);
         assert_eq!(popup.prefix, "/");
@@ -4512,20 +4676,20 @@ mod tests {
     #[test]
     fn command_prefix_filters() {
         // Fuzzy: "/mo" matches "model" (best) and "submodel".
-        let popup = complete("/mo", &models()).unwrap();
+        let popup = complete("/mo", &models(), &[]).unwrap();
         assert_eq!(popup.items.len(), 2);
         assert_eq!(popup.items[0].value, "model");
         assert_eq!(popup.items[1].value, "submodel");
-        assert!(complete("/zzz", &models()).is_none());
-        assert!(complete("hello", &models()).is_none());
+        assert!(complete("/zzz", &models(), &[]).is_none());
+        assert!(complete("hello", &models(), &[]).is_none());
     }
 
     #[test]
     fn model_argument_completion() {
-        let popup = complete("/model ", &models()).unwrap();
+        let popup = complete("/model ", &models(), &[]).unwrap();
         assert_eq!(popup.items.len(), 2);
         assert!(popup.kind == PopupKind::Argument);
-        let popup = complete("/model opus", &models()).unwrap();
+        let popup = complete("/model opus", &models(), &[]).unwrap();
         assert_eq!(popup.items.len(), 1);
         assert_eq!(popup.items[0].value, "anthropic/claude-opus-4-7");
         assert_eq!(popup.prefix, "opus");
@@ -4533,15 +4697,15 @@ mod tests {
 
     #[test]
     fn provider_argument_completion() {
-        let popup = complete("/login a", &models()).unwrap();
+        let popup = complete("/login a", &models(), &[]).unwrap();
         assert_eq!(popup.items.len(), 2); // both contain 'a'
-        let popup = complete("/login anth", &models()).unwrap();
+        let popup = complete("/login anth", &models(), &[]).unwrap();
         assert_eq!(popup.items[0].value, "anthropic");
     }
 
     #[test]
     fn no_argument_completion_for_other_commands() {
-        assert!(complete("/new ", &models()).is_none());
-        assert!(complete("/model two words", &models()).is_none());
+        assert!(complete("/new ", &models(), &[]).is_none());
+        assert!(complete("/model two words", &models(), &[]).is_none());
     }
 }

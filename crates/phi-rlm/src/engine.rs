@@ -15,15 +15,24 @@ use serde_json::Value;
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 use tokio_util::sync::CancellationToken;
 
+use phi_ext::{EventKind, EventPayload, LifecycleEvent};
+use phi_runtime::AppRuntime;
+
 use crate::handler::{DeltaSink, LanguageModel, LmHandler, ThinkingSink, UsageBreakdown};
 use crate::parsing::{
     ExecutedBlock, could_open_block, find_code_blocks, format_iteration, last_block_end,
 };
 use crate::prompts::{
-    DEFAULT_ANSWER_NUDGE, PROSE_NUDGE, QueryMetadata, build_system_prompt, build_user_prompt,
-    metadata_user_prompt,
+    DEFAULT_ANSWER_NUDGE, PROSE_NUDGE, QueryMetadata, SystemPromptOptions,
+    build_system_prompt, build_user_prompt, metadata_user_prompt,
 };
+use crate::loop_detect::LoopDetector;
 use crate::{ChatMessage, ContextPayload, Role};
+
+/// Save-point callback: invoked after each iteration's REPL execution
+/// completes. Returns messages to inject into the next iteration's history
+/// (e.g. drained steer/follow-up queue messages).
+pub type SavePointFn = dyn Fn(usize) -> Vec<ChatMessage> + Send + Sync;
 
 #[derive(Clone, Debug)]
 pub struct RlmConfig {
@@ -45,6 +54,8 @@ pub struct RlmConfig {
     pub setup_code: Option<String>,
     /// Working directory for REPL code; defaults to a scratch temp dir.
     pub cwd: Option<String>,
+    /// Content appended to the system prompt (e.g. from ~/.config/phi/APPEND_SYSTEM.md).
+    pub append_system_prompt: Option<String>,
     /// Host-registered REPL function names, injected as driver shims.
     pub host_fns: Vec<String>,
 }
@@ -67,6 +78,7 @@ impl Default for RlmConfig {
             tools_section: None,
             setup_code: None,
             cwd: None,
+            append_system_prompt: None,
             host_fns: Vec::new(),
         }
     }
@@ -95,6 +107,8 @@ pub enum StopCause {
     Cancelled,
     /// Root model or environment failure.
     Failed,
+    /// Loop detected: same tool-call signature repeated > max_repeats times.
+    LoopDetected,
 }
 
 #[derive(Clone, Debug)]
@@ -287,6 +301,10 @@ struct EngineSubcalls {
     rlm: Rlm,
     handler: Arc<LmHandler>,
     run: RunState,
+    /// Loop detector shared with `run_loop` so tool calls are observed.
+    loop_detector: Arc<Mutex<LoopDetector>>,
+    /// Set by `notify_tool` when a loop is detected; checked by `run_loop`.
+    loop_detected: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl EngineSubcalls {
@@ -394,6 +412,7 @@ impl EngineSubcalls {
             host_fns: self.rlm.host_fns.clone(),
             events: self.rlm.events.clone(),
             depth: next_depth,
+            runtime: self.rlm.runtime.clone(),
         };
         let cancel = self.run.cancel();
         let completion = child
@@ -420,6 +439,42 @@ impl EngineSubcalls {
 impl SubcallHandler for EngineSubcalls {
     fn notify_tool(&self, event: ToolEvent) {
         let depth = self.rlm.depth;
+        // Observe tool-call signatures for loop detection on ToolEnd.
+        if let ToolEvent::End {
+            call_id,
+            name,
+            result,
+            error,
+            duration,
+        } = &event
+        {
+            // The args aren't available on End; reconstruct a signature from
+            // name + result (args were on the matching Start, but we only
+            // have the result here). Use a synthetic empty args value so the
+            // signature is name + result, which is sufficient for detecting
+            // repeated identical calls.
+            let args_val = serde_json::Value::Null;
+            if let Some(stop) = self
+                .loop_detector
+                .lock()
+                .unwrap()
+                .observe(name, &args_val, result)
+            {
+                if stop == StopCause::LoopDetected {
+                    self.loop_detected
+                        .store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+            self.rlm.events.emit(RlmEvent::ToolEnd {
+                depth,
+                call_id: *call_id,
+                name: name.clone(),
+                result: result.clone(),
+                error: error.clone(),
+                duration: *duration,
+            });
+            return;
+        }
         self.rlm.events.emit(match event {
             ToolEvent::Start {
                 call_id,
@@ -431,20 +486,7 @@ impl SubcallHandler for EngineSubcalls {
                 name,
                 args,
             },
-            ToolEvent::End {
-                call_id,
-                name,
-                result,
-                error,
-                duration,
-            } => RlmEvent::ToolEnd {
-                depth,
-                call_id,
-                name,
-                result,
-                error,
-                duration,
-            },
+            ToolEvent::End { .. } => unreachable!(),
         });
     }
 
@@ -461,6 +503,17 @@ impl SubcallHandler for EngineSubcalls {
                     Err(format!("unknown function: {name}"))
                 }
             },
+            SubcallRequest::ExtTool { name, args } => {
+                let input = serde_json::to_string(&args).unwrap_or_default();
+                match &self.rlm.runtime {
+                    Some(rt) => match rt.invoke_tool_sync(&name, &input) {
+                        Ok(Some(output)) => Ok(SubcallResponse::Text(output.content)),
+                        Ok(None) => Err(format!("no tool named '{name}'")),
+                        Err(e) => Err(format!("tool '{name}' failed: {e}")),
+                    },
+                    None => Err(format!("no runtime for tool '{name}'")),
+                }
+            }
         }
     }
 }
@@ -494,6 +547,7 @@ pub struct Rlm {
     host_fns: Option<Arc<dyn SubcallHandler>>,
     events: Events,
     depth: usize,
+    runtime: Option<Arc<AppRuntime>>,
 }
 
 impl Rlm {
@@ -512,6 +566,7 @@ impl Rlm {
             host_fns: None,
             events: Events::default(),
             depth: 0,
+            runtime: None,
         }
     }
 
@@ -525,8 +580,18 @@ impl Rlm {
         self
     }
 
+    /// Access the root model, sub model, and config (for harness snapshot).
+    pub fn models_and_config(&self) -> (Arc<dyn LanguageModel>, Arc<dyn LanguageModel>, RlmConfig) {
+        (self.root.clone(), self.sub.clone(), self.config.clone())
+    }
+
     pub fn with_events(mut self, sender: UnboundedSender<RlmEvent>) -> Self {
         self.events = Events::new(sender);
+        self
+    }
+
+    pub fn with_runtime(mut self, runtime: Arc<AppRuntime>) -> Self {
+        self.runtime = Some(runtime);
         self
     }
 
@@ -557,6 +622,7 @@ impl Rlm {
             exchanges: 0,
             contexts: 1,
             transcript: Vec::new(),
+            session_summary: None,
             pending_shell: Vec::new(),
         }
     }
@@ -567,27 +633,72 @@ impl Rlm {
         root_prompt: Option<&str>,
         cancel: &CancellationToken,
     ) -> RlmCompletion {
+        self.completion_with(payload, root_prompt, None, cancel).await
+    }
+
+    pub async fn completion_with(
+        &self,
+        payload: ContextPayload,
+        root_prompt: Option<&str>,
+        turn: Option<&crate::TurnState>,
+        cancel: &CancellationToken,
+    ) -> RlmCompletion {
         let start = Instant::now();
         self.events.emit(RlmEvent::RunStart { depth: self.depth });
+        dispatch_event(&self.runtime, LifecycleEvent {
+            kind: EventKind::AgentStart,
+            payload: EventPayload::Empty,
+        });
 
-        if self.depth >= self.config.max_depth {
+        // When a TurnState snapshot is provided, use it to drive the loop.
+        let turn_config = turn.map(|t| &t.config);
+        let effective_config = turn_config.unwrap_or(&self.config);
+
+        if self.depth >= effective_config.max_depth {
             return self.fallback(payload, start).await;
         }
 
-        let handler = Arc::new(LmHandler::new(
-            self.root.clone(),
-            self.sub.clone(),
-            self.named.clone(),
-        ));
+        // Use snapshot models if provided, else fall back to engine models.
+        let root = turn.map(|t| t.root_model.clone()).unwrap_or_else(|| self.root.clone());
+        let sub = turn.map(|t| t.sub_model.clone()).unwrap_or_else(|| self.sub.clone());
+        let handler = Arc::new(LmHandler::new(root, sub, self.named.clone()));
         let run = RunState::new();
         run.begin(cancel.clone());
 
         let metadata = QueryMetadata::from_payload(&payload);
+        let root_prompt_str = root_prompt.unwrap_or("").to_owned();
         let outcome = match self.start_env(&handler, payload, run).await {
             Ok(mut env) => {
-                let mut history = self.initial_history(metadata, root_prompt, 0);
+                // Use snapshot history if provided, else build from config.
+                let mut history = if let Some(turn) = turn {
+                    if !turn.messages.is_empty() {
+                        turn.messages.clone()
+                    } else {
+                        self.initial_history(metadata, root_prompt, 0)
+                    }
+                } else {
+                    self.initial_history(metadata, root_prompt, 0)
+                };
+                if let Some(rt) = &self.runtime {
+                    if let Some(sys_msg) = history.iter_mut().find(|m| m.role == Role::System) {
+                        sys_msg.content = rt
+                            .filter_system_prompt(&root_prompt_str, sys_msg.content.clone())
+                            .await
+                            .unwrap_or_else(|_| sys_msg.content.clone());
+                    }
+                }
                 let outcome = self
-                    .run_loop(&mut env, &handler, &mut history, 1, 0, cancel)
+                    .run_loop(
+                        &mut env,
+                        &handler,
+                        &mut history,
+                        1,
+                        0,
+                        false,
+                        cancel,
+                        None,
+                        None,
+                    )
                     .await;
                 env.shutdown().await;
                 outcome
@@ -607,6 +718,8 @@ impl Rlm {
             rlm: self.clone(),
             handler: handler.clone(),
             run,
+            loop_detector: Arc::new(Mutex::new(LoopDetector::new())),
+            loop_detected: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         });
         let (context, context_str) = match payload {
             ContextPayload::Str(s) => (None, Some(s)),
@@ -637,12 +750,15 @@ impl Rlm {
         let mut history = vec![
             ChatMessage {
                 role: Role::System,
-                content: build_system_prompt(
-                    self.config.custom_system_prompt.as_deref(),
-                    self.config.tools_section.as_deref(),
-                    self.config.orchestrator,
-                    self.iteration_limit(),
-                ),
+                content: build_system_prompt(&SystemPromptOptions {
+                    identity: self.config.custom_system_prompt.as_deref(),
+                    custom_tools: self.config.tools_section.as_deref(),
+                    append: self.config.append_system_prompt.as_deref(),
+                    cwd: self.config.cwd.as_deref(),
+                    orchestrator: self.config.orchestrator,
+                    turn_cap: self.iteration_limit(),
+                    ..Default::default()
+                }),
             },
             ChatMessage {
                 role: Role::User,
@@ -665,7 +781,10 @@ impl Rlm {
         history: &mut Vec<ChatMessage>,
         context_count: usize,
         history_count: usize,
+        warm: bool,
         cancel: &CancellationToken,
+        loop_detected: Option<&std::sync::atomic::AtomicBool>,
+        save_point: Option<&SavePointFn>,
     ) -> Outcome {
         let start = Instant::now();
         let mut best_partial: Option<String> = None;
@@ -692,12 +811,16 @@ impl Rlm {
 
             history.push(ChatMessage {
                 role: Role::User,
-                content: build_user_prompt(i, iteration_limit, context_count, history_count),
+                content: build_user_prompt(i, iteration_limit, context_count, history_count, warm),
             });
 
             self.events.emit(RlmEvent::IterationStart {
                 depth: self.depth,
                 iteration: i,
+            });
+            dispatch_event(&self.runtime, LifecycleEvent {
+                kind: EventKind::TurnStart,
+                payload: EventPayload::TurnStart { turn: i as u32 },
             });
             let iter_start = Instant::now();
 
@@ -852,6 +975,10 @@ impl Rlm {
                     role: Role::User,
                     content: "You must inspect the `context` via the REPL before answering. Write a ```repl``` block that probes the environment (for example, print a small slice, length, or keys) and continue from there.".to_owned(),
                 });
+                dispatch_event(&self.runtime, LifecycleEvent {
+                    kind: EventKind::TurnEnd,
+                    payload: EventPayload::TurnEnd { turn: i as u32, had_code: false },
+                });
                 self.events.emit(RlmEvent::IterationEnd {
                     depth: self.depth,
                     iteration: i,
@@ -870,6 +997,10 @@ impl Rlm {
             if blocks.is_empty() && !response.trim().is_empty() {
                 best_partial = Some(response.clone());
                 if prose_nudged {
+                    dispatch_event(&self.runtime, LifecycleEvent {
+                        kind: EventKind::TurnEnd,
+                        payload: EventPayload::TurnEnd { turn: i as u32, had_code: false },
+                    });
                     self.events.emit(RlmEvent::IterationEnd {
                         depth: self.depth,
                         iteration: i,
@@ -891,6 +1022,10 @@ impl Rlm {
                     role: Role::User,
                     content: PROSE_NUDGE.to_owned(),
                 });
+                dispatch_event(&self.runtime, LifecycleEvent {
+                    kind: EventKind::TurnEnd,
+                    payload: EventPayload::TurnEnd { turn: i as u32, had_code: false },
+                });
                 self.events.emit(RlmEvent::IterationEnd {
                     depth: self.depth,
                     iteration: i,
@@ -910,6 +1045,10 @@ impl Rlm {
                 self.events.emit(RlmEvent::AnswerSubmitted {
                     depth: self.depth,
                     content: answer.clone(),
+                });
+                dispatch_event(&self.runtime, LifecycleEvent {
+                    kind: EventKind::TurnEnd,
+                    payload: EventPayload::TurnEnd { turn: i as u32, had_code: !blocks.is_empty() },
                 });
                 self.events.emit(RlmEvent::IterationEnd {
                     depth: self.depth,
@@ -942,11 +1081,48 @@ impl Rlm {
                     content: outputs,
                 });
             }
+            dispatch_event(&self.runtime, LifecycleEvent {
+                kind: EventKind::TurnEnd,
+                payload: EventPayload::TurnEnd { turn: i as u32, had_code: !blocks.is_empty() },
+            });
             self.events.emit(RlmEvent::IterationEnd {
                 depth: self.depth,
                 iteration: i,
                 duration: iter_start.elapsed(),
             });
+
+            // SAVE POINT: flush pending writes and drain queues (steer,
+            // follow-up) so they land in the next iteration's history.
+            if let Some(sp) = save_point {
+                let queued = sp(i);
+                if !queued.is_empty() {
+                    history.push(ChatMessage {
+                        role: Role::User,
+                        content: queued
+                            .iter()
+                            .map(|m| m.content.clone())
+                            .collect::<Vec<_>>()
+                            .join("
+
+"),
+                    });
+                }
+            }
+
+            // Loop detection: if the shared flag is set, terminate.
+            if let Some(flag) = loop_detected {
+                if flag.load(std::sync::atomic::Ordering::Relaxed) {
+                    return Outcome {
+                        stop: StopCause::LoopDetected,
+                        response: best_partial.unwrap_or_else(|| {
+                            "Error: loop detected — repeated tool-call signature".to_owned()
+                        }),
+                        error: Some("Loop detected: repeated tool-call signature".to_owned()),
+                        iterations,
+                    };
+                }
+            }
+
             i += 1;
         }
 
@@ -1118,6 +1294,12 @@ impl Rlm {
 
     fn complete_run(&self, outcome: Outcome, handler: &LmHandler, start: Instant) -> RlmCompletion {
         let duration = start.elapsed();
+        dispatch_event(&self.runtime, LifecycleEvent {
+            kind: EventKind::AgentEnd,
+            payload: EventPayload::AgentEnd {
+                stop_cause: format!("{:?}", outcome.stop),
+            },
+        });
         self.events.emit(RlmEvent::RunEnd {
             depth: self.depth,
             stop: outcome.stop,
@@ -1144,6 +1326,12 @@ impl Rlm {
         start: Instant,
     ) -> RlmCompletion {
         let duration = start.elapsed();
+        dispatch_event(&self.runtime, LifecycleEvent {
+            kind: EventKind::AgentEnd,
+            payload: EventPayload::AgentEnd {
+                stop_cause: format!("{:?}", outcome.stop),
+            },
+        });
         self.events.emit(RlmEvent::RunEnd {
             depth: self.depth,
             stop: outcome.stop,
@@ -1221,13 +1409,28 @@ pub struct RlmSession {
     /// continuations instead of cold starts. Full per-run trajectories still
     /// land in the env as `history_N` variables (the archive tier).
     transcript: Vec<ChatMessage>,
+    /// Compacted summary of older exchanges that have been evicted from
+    /// `transcript` to keep the in-band context bounded. Injected as a
+    /// user message at the top of the warm replay so the model retains
+    /// continuity without re-reading every prior turn verbatim.
+    session_summary: Option<String>,
     /// User-initiated shell executions to replay to the model on the next
     /// `send`, as (assistant ```repl``` block, REPL-output user message)
     /// pairs — the model sees them as its own prior repl turns.
     pending_shell: Vec<ChatMessage>,
 }
 
+/// Threshold: once the in-band transcript exceeds this many message pairs,
+/// older exchanges are compacted into `session_summary`. Keeps the warm
+/// replay bounded so long sessions don't grow linearly in tokens.
+const TRANSCRIPT_COMPACTION_THRESHOLD: usize = 20;
+
 impl RlmSession {
+    pub fn with_runtime(mut self, runtime: Arc<AppRuntime>) -> Self {
+        self.rlm = self.rlm.with_runtime(runtime);
+        self
+    }
+
     pub fn usage(&self) -> Usage {
         self.handler.usage()
     }
@@ -1245,6 +1448,10 @@ impl RlmSession {
         let usage_before = self.handler.usage();
         let usage_by_model_before = self.handler.usage_by_model();
         self.rlm.events.emit(RlmEvent::RunStart { depth: 0 });
+        dispatch_event(&self.rlm.runtime, LifecycleEvent {
+            kind: EventKind::AgentStart,
+            payload: EventPayload::Empty,
+        });
         self.run.begin(cancel.clone());
 
         let fresh_env = self.env.is_none();
@@ -1274,8 +1481,23 @@ impl RlmSession {
                 .initial_history(metadata, Some(prompt), self.exchanges)
         } else {
             // Warm send: replay the conversation so far in-band, then append
-            // the new prompt as its own user message.
+            // the new prompt as its own user message. If older exchanges were
+            // compacted into `session_summary`, inject that summary first so
+            // the model retains continuity without re-reading every old turn.
             let mut history = self.rlm.initial_history(metadata, None, self.exchanges);
+            if let Some(summary) = &self.session_summary {
+                history.push(ChatMessage {
+                    role: Role::User,
+                    content: format!(
+                        "Session summary (older conversation compacted for context):
+{summary}"
+                    ),
+                });
+                history.push(ChatMessage {
+                    role: Role::Assistant,
+                    content: "Understood — I have the session summary and will build on it.".to_owned(),
+                });
+            }
             history.extend(self.transcript.iter().cloned());
             history.append(&mut self.pending_shell);
             history.push(ChatMessage {
@@ -1284,9 +1506,18 @@ impl RlmSession {
             });
             history
         };
+        if let Some(rt) = &self.rlm.runtime {
+            if let Some(sys_msg) = history.iter_mut().find(|m| m.role == Role::System) {
+                sys_msg.content = rt
+                    .filter_system_prompt(prompt, sys_msg.content.clone())
+                    .await
+                    .unwrap_or_else(|_| sys_msg.content.clone());
+            }
+        }
         // Cold send: replay user shell executions after the prompt (the warm
         // branch drained them above, before the prompt).
         history.append(&mut self.pending_shell);
+        let warm = !self.transcript.is_empty();
         let outcome = self
             .rlm
             .run_loop(
@@ -1295,7 +1526,10 @@ impl RlmSession {
                 &mut history,
                 self.contexts,
                 self.exchanges,
+                warm,
                 cancel,
+                None,
+                None,
             )
             .await;
 
@@ -1311,6 +1545,12 @@ impl RlmSession {
                 role: Role::Assistant,
                 content: outcome.response.clone(),
             });
+            // Compaction: once the in-band transcript exceeds the threshold,
+            // fold the oldest exchange pairs into `session_summary` so the
+            // warm replay stays bounded. The full trajectory is still in
+            // `history_N` (the archive tier) — only the in-band copy is
+            // compacted.
+            self.compact_transcript().await;
         }
         self.rlm.complete_run_since(
             outcome,
@@ -1434,6 +1674,9 @@ impl RlmSession {
                 self.rlm.config.max_output_chars,
             );
         }
+        // Restored sessions may exceed the compaction threshold; compact
+        // so the first warm send after restore has a bounded in-band context.
+        self.compact_transcript().await;
         Ok(())
     }
 
@@ -1446,7 +1689,49 @@ impl RlmSession {
         self.exchanges = 0;
         self.contexts = 1;
         self.transcript.clear();
+        self.session_summary = None;
         self.pending_shell.clear();
+    }
+
+    /// Compact the in-band transcript when it exceeds the threshold. The
+    /// oldest exchange pairs are folded into `session_summary` as a concise
+    /// text recap. The full per-run trajectories remain in `history_N`
+    /// (the archive tier); only the verbatim in-band copy is compacted.
+    ///
+    /// Compaction is synchronous and deterministic — no sub-LLM call — so
+    /// it is cheap and predictable. Each compacted exchange contributes one
+    /// line to the summary. When the summary already exists, new lines are
+    /// appended so older summaries are preserved.
+    async fn compact_transcript(&mut self) {
+        let pairs = self.transcript.len() / 2;
+        if pairs <= TRANSCRIPT_COMPACTION_THRESHOLD {
+            return;
+        }
+        // Keep the most recent threshold/2 pairs in-band; compact the rest.
+        let keep_pairs = TRANSCRIPT_COMPACTION_THRESHOLD / 2;
+        let compact_count = pairs - keep_pairs;
+        let cut = compact_count * 2;
+
+        let mut compacted = self.session_summary.take().unwrap_or_default();
+        for chunk in self.transcript[..cut].chunks(2) {
+            let user_text = chunk.first().map(|m| m.content.as_str()).unwrap_or("");
+            let asst_text = chunk.get(1).map(|m| m.content.as_str()).unwrap_or("");
+            // Extract the prompt after "Answer the following: "
+            let prompt = user_text
+                .strip_prefix("Answer the following: ")
+                .unwrap_or(user_text);
+            // Truncate to keep the summary concise
+            let prompt_preview: String = prompt.chars().take(120).collect();
+            let response_preview: String = asst_text.chars().take(200).collect();
+            compacted.push_str(&format!(
+                "- User: {prompt_preview}
+  Assistant: {response_preview}
+"
+            ));
+        }
+
+        self.transcript.drain(..cut);
+        self.session_summary = Some(compacted);
     }
 
     pub async fn shutdown(&mut self) {
@@ -1529,6 +1814,15 @@ fn context_snippet(index: usize, text: &str) -> String {
     format!(
         "import base64 as _b64\ncontext_{index} = _b64.b64decode(\"{encoded}\").decode(\"utf-8\")\ndel _b64"
     )
+}
+
+fn dispatch_event(runtime: &Option<Arc<AppRuntime>>, event: LifecycleEvent) {
+    if let Some(rt) = runtime {
+        let rt = rt.clone();
+        tokio::spawn(async move {
+            let _ = rt.dispatch(event).await;
+        });
+    }
 }
 
 #[cfg(test)]
@@ -2394,6 +2688,50 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(joined.contains("2 contexts available"), "{joined}");
+
+        session.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn transcript_compaction_folds_old_exchanges_into_summary() {
+        let root = Arc::new(
+            ScriptedLm::new("root-model", &[])
+                .with_default("```repl
+answer['content'] = 'ok'
+answer['ready'] = True
+```"),
+        );
+        let engine = rlm(RlmConfig::default(), root, quiet_sub());
+        let mut session = engine.into_session(ContextPayload::Str("ctx".into()));
+        let cancel = CancellationToken::new();
+
+        // Send enough exchanges to exceed the compaction threshold (20 pairs).
+        for i in 0..25 {
+            let _ = session
+                .send(&format!("question {i}"), &cancel)
+                .await;
+        }
+
+        // After compaction, the in-band transcript should be shorter than
+        // the full 25 pairs, and session_summary should be populated.
+        let pairs = session.transcript.len() / 2;
+        assert!(
+            pairs <= TRANSCRIPT_COMPACTION_THRESHOLD,
+            "transcript has {pairs} pairs, expected <= {TRANSCRIPT_COMPACTION_THRESHOLD}"
+        );
+        assert!(
+            session.session_summary.is_some(),
+            "session_summary should be populated after compaction"
+        );
+        let summary = session.session_summary.as_ref().unwrap();
+        assert!(
+            summary.contains("question 0"),
+            "summary should contain the oldest compacted exchange"
+        );
+        assert!(
+            !summary.contains("question 24"),
+            "summary should not contain the most recent exchange (still in transcript)"
+        );
 
         session.shutdown().await;
     }

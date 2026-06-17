@@ -113,6 +113,10 @@ impl PythonRepl {
                             args: args.unwrap_or_else(|| Value::Array(Vec::new())),
                             kwargs: kwargs.unwrap_or_else(|| json!({})),
                         },
+                        "ext_tool" => SubcallRequest::ExtTool {
+                            name: name.ok_or_else(|| ReplError::Protocol("ext_tool missing name".into()))?,
+                            args: args.unwrap_or_else(|| Value::Object(Default::default())),
+                        },
                         other => {
                             let frame = json!({"type": "subcall_result", "id": id, "error": format!("unknown subcall kind: {other}")});
                             Self::send(&proc.stdin, &frame).await?;
@@ -397,6 +401,9 @@ mod tests {
                     "boom" => Err("host fn exploded".into()),
                     other => Err(format!("unknown fn: {other}")),
                 },
+                SubcallRequest::ExtTool { name, .. } => {
+                    Err(format!("no tool named '{name}'"))
+                }
             }
         }
     }

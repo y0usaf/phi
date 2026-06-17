@@ -28,6 +28,16 @@ pub struct Config {
     pub max_errors: Option<usize>,
     pub max_concurrent_subcalls: Option<usize>,
     pub mux: Option<MuxConfig>,
+    pub memory: Option<MemoryConfig>,
+}
+
+#[derive(Debug, Default, Clone, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct MemoryConfig {
+    pub enabled:      Option<bool>,
+    pub vault:        Option<String>,   // path to the SQLite DB file
+    pub recall_limit: Option<usize>,
+    pub auto_inject:  Option<bool>,
 }
 
 /// Settings for mux mode (the in-process session multiplexer).
@@ -63,6 +73,17 @@ impl Config {
     /// Evaluate a Lua chunk that returns a settings table.
     fn eval(text: &str, name: &str) -> Result<Self> {
         let lua = mlua::Lua::new();
+        // No-op phi global: config.lua may contain phi.* calls (extension entry point).
+        // The real phi global is set up by LuaExtension when loaded as an extension.
+        {
+            let noop = lua.create_function(|_, _: mlua::MultiValue| Ok(()))
+                .expect("noop fn");
+            let phi_table = lua.create_table().expect("phi table");
+            for method in &["on","register_tool","register_command","notify","set_status","clear_status"] {
+                phi_table.set(*method, noop.clone()).expect("set phi method");
+            }
+            lua.globals().set("phi", phi_table).expect("set phi global");
+        }
         let value: mlua::Value = lua.load(text).set_name(format!("@{name}")).eval()?;
         if value.is_nil() {
             anyhow::bail!("chunk must return a settings table");
@@ -99,7 +120,23 @@ impl Config {
             }
             take_mux!(enabled, keybinds, sidebar_width);
         }
+        if let Some(other_mem) = other.memory {
+            let mem = self.memory.get_or_insert_with(MemoryConfig::default);
+            macro_rules! take_mem {
+                ($($field:ident),*) => {
+                    $(if other_mem.$field.is_some() { mem.$field = other_mem.$field; })*
+                };
+            }
+            take_mem!(enabled, vault, recall_limit, auto_inject);
+        }
     }
+}
+
+pub struct MemorySettings {
+    pub enabled:      bool,
+    pub vault_path:   std::path::PathBuf,
+    pub recall_limit: usize,
+    pub auto_inject:  bool,
 }
 
 /// Final values after applying CLI flags over config over built-in defaults.
@@ -116,6 +153,7 @@ pub struct Settings {
     pub timeout: Option<u64>,
     pub max_errors: Option<usize>,
     pub max_concurrent_subcalls: usize,
+    pub memory: MemorySettings,
 }
 
 impl Settings {
@@ -125,6 +163,13 @@ impl Settings {
             .clone()
             .or(config.thinking.clone())
             .unwrap_or_else(|| "off".to_owned());
+        let memory_cfg = config.memory.as_ref();
+        let default_vault = dirs::data_local_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from(
+                std::env::var("HOME").unwrap_or_default() + "/.local/share"
+            ))
+            .join("phi")
+            .join("memory.db");
         Self {
             model: args
                 .model
@@ -156,6 +201,14 @@ impl Settings {
                 .max_concurrent_subcalls
                 .or(config.max_concurrent_subcalls)
                 .unwrap_or(4),
+            memory: MemorySettings {
+                enabled:      memory_cfg.and_then(|m| m.enabled).unwrap_or(true),
+                vault_path:   memory_cfg.and_then(|m| m.vault.as_ref())
+                    .map(|p| std::path::PathBuf::from(p))
+                    .unwrap_or(default_vault),
+                recall_limit: memory_cfg.and_then(|m| m.recall_limit).unwrap_or(5),
+                auto_inject:  memory_cfg.and_then(|m| m.auto_inject).unwrap_or(true),
+            },
         }
     }
 }

@@ -8,10 +8,14 @@ use std::time::Duration;
 
 use anyhow::{Context as _, Result};
 use phi_ai::{AuthStorage, Model, Registry, ThinkingLevel};
+use phi_builtins::bundled_extensions;
 use phi_builtins::prelude::{CODING_PRELUDE, coding_tools_section};
 use phi_cli::Args;
 use phi_rlm::engine::PythonEnvFactory;
 use phi_rlm::{ContextPayload, ProviderLm, Rlm, RlmConfig};
+use phi_runtime::RuntimeBuilder;
+
+use phi_memory::{MemoryConfig, MemoryExtension};
 
 use crate::config::{Config, Settings};
 use crate::session::SessionStore;
@@ -67,6 +71,48 @@ pub async fn build_session(
         }
     }
 
+    // Discover and load Lua extensions
+    let ext_paths = phi_lua::discover_extensions(cwd);
+    let lua_exts = phi_lua::load_extensions(&ext_paths);
+
+    // Load config.lua files as LuaExtensions (phi global active — extension entry point)
+    let config_ext_paths = phi_lua::config_extension_paths(cwd);
+    let config_exts = phi_lua::load_extensions(&config_ext_paths);
+
+    // Build AppRuntime
+    let mut rt_builder = RuntimeBuilder::new().with_cwd(cwd);
+    for ext in bundled_extensions() {
+        rt_builder = rt_builder.register_boxed_extension(ext);
+    }
+    for ext in config_exts {
+        rt_builder = rt_builder.register_boxed_extension(ext);
+    }
+    let memory_cfg = MemoryConfig {
+        enabled:      settings.memory.enabled,
+        vault_path:   settings.memory.vault_path.clone(),
+        recall_limit: settings.memory.recall_limit,
+        auto_inject:  settings.memory.auto_inject,
+    };
+    match MemoryExtension::with_config(memory_cfg) {
+        Ok(ext) => { rt_builder = rt_builder.register_boxed_extension(Box::new(ext)); }
+        Err(e)  => eprintln!("[memory] {e}"),
+    }
+    for ext in lua_exts {
+        rt_builder = rt_builder.register_boxed_extension(ext);
+    }
+    let runtime = Arc::new(rt_builder.build()?);
+    runtime.boot().await?;
+
+    // Augment setup_code with extension stubs
+    let ext_stubs = runtime.extension_prelude_stubs();
+    let setup_code = if ext_stubs.is_empty() {
+        CODING_PRELUDE.to_owned()
+    } else {
+        format!("{CODING_PRELUDE}\n\n# Extension tools\n{ext_stubs}")
+    };
+
+    let (prompt_override, append_prompt) = crate::prompts::discover_prompt_overrides(cwd);
+
     let config = RlmConfig {
         max_depth: settings.max_depth,
         max_iterations: settings.max_iterations,
@@ -75,7 +121,9 @@ pub async fn build_session(
         max_tokens: settings.max_tokens,
         max_errors: settings.max_errors,
         max_concurrent_subcalls: settings.max_concurrent_subcalls,
-        setup_code: Some(CODING_PRELUDE.to_owned()),
+        custom_system_prompt: prompt_override,
+        append_system_prompt: append_prompt,
+        setup_code: Some(setup_code),
         tools_section: Some(coding_tools_section()),
         cwd: Some(cwd.display().to_string()),
         user_prologue: Some(format!(
@@ -116,11 +164,13 @@ pub async fn build_session(
         sub_model_thinking,
     );
     let rlm = rlm.with_events(tx);
+    let rlm = rlm.with_runtime(Arc::clone(&runtime));
     Ok(TuiSetup {
         rlm,
         payload,
         events: rx,
         missing_credentials,
+        runtime,
         ui: UiSetup {
             max_iterations: settings.max_iterations,
             storage: storage.clone(),

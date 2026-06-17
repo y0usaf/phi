@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use serde::Serialize;
+use serde_json::Value;
 
 pub trait Extension: Send + Sync {
     fn manifest(&self) -> ExtensionManifest;
@@ -27,8 +28,16 @@ pub struct ExtensionManifest {
 pub struct ToolSpec {
     pub name: String,
     pub description: String,
+    pub params: Vec<ToolParam>,
     #[serde(skip_serializing)]
     pub handler: ToolHandler,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ToolParam {
+    pub name: String,
+    pub ty: String,
+    pub default: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -39,7 +48,6 @@ pub struct CommandSpec {
     pub handler: CommandHandler,
 }
 
-#[derive(Clone)]
 pub struct EventHandlerRegistration {
     pub event: EventKind,
     pub label: String,
@@ -50,11 +58,17 @@ pub struct EventHandlerRegistration {
 pub enum EventKind {
     RuntimeStart,
     SessionStart,
-    BeforeModel,
-    AfterModel,
-    BeforeTool,
-    AfterTool,
     TuiReady,
+    AgentStart,
+    AgentEnd,
+    TurnStart,
+    TurnEnd,
+    BeforeAgentStart,
+    Context,
+    ToolCall,
+    ToolResult,
+    Input,
+    SessionShutdown,
 }
 
 impl fmt::Display for EventKind {
@@ -62,32 +76,62 @@ impl fmt::Display for EventKind {
         let name = match self {
             Self::RuntimeStart => "runtime_start",
             Self::SessionStart => "session_start",
-            Self::BeforeModel => "before_model",
-            Self::AfterModel => "after_model",
-            Self::BeforeTool => "before_tool",
-            Self::AfterTool => "after_tool",
             Self::TuiReady => "tui_ready",
+            Self::AgentStart => "agent_start",
+            Self::AgentEnd => "agent_end",
+            Self::TurnStart => "turn_start",
+            Self::TurnEnd => "turn_end",
+            Self::BeforeAgentStart => "before_agent_start",
+            Self::Context => "context",
+            Self::ToolCall => "tool_call",
+            Self::ToolResult => "tool_result",
+            Self::Input => "input",
+            Self::SessionShutdown => "session_shutdown",
         };
 
         f.write_str(name)
     }
 }
 
-pub type EventHandler = Arc<dyn Fn(&EventContext, &LifecycleEvent) -> Result<()> + Send + Sync>;
-pub type ToolHandler = Arc<dyn Fn(ToolInvocation) -> Result<ToolOutput> + Send + Sync>;
-pub type CommandHandler = Arc<dyn Fn(CommandInvocation) -> Result<CommandOutput> + Send + Sync>;
-
-#[derive(Clone, Debug)]
-pub struct EventContext {
-    pub cwd: String,
-    pub session_id: String,
+#[derive(Clone, Debug, Serialize)]
+pub enum EventPayload {
+    Empty,
+    SessionStart { cwd: String, session_id: String },
+    BeforeAgentStart { prompt: String, system_prompt: String },
+    Context { turn: u32 },
+    TurnStart { turn: u32 },
+    TurnEnd { turn: u32, had_code: bool },
+    AgentEnd { stop_cause: String },
+    ToolCall { name: String, args: Value },
+    ToolResult { name: String, result: String, error: Option<String> },
+    Input { text: String },
 }
 
 #[derive(Clone, Debug)]
 pub struct LifecycleEvent {
     pub kind: EventKind,
-    pub summary: String,
+    pub payload: EventPayload,
 }
+
+#[derive(Clone, Debug)]
+pub enum EventReturn {
+    SystemPromptMod { append: Option<String>, prepend: Option<String> },
+    MessageInjection { prepend: Vec<(String, String)> },
+    ToolBlock { reason: String },
+    ToolResultOverride { content: String },
+    InputAction { action: InputActionKind, text: Option<String> },
+}
+
+#[derive(Clone, Debug)]
+pub enum InputActionKind {
+    Continue,
+    Transform,
+    Handled,
+}
+
+pub type EventHandler = Arc<dyn Fn(LifecycleEvent) -> Result<Option<EventReturn>> + Send + Sync>;
+pub type ToolHandler = Arc<dyn Fn(ToolInvocation) -> Result<ToolOutput> + Send + Sync>;
+pub type CommandHandler = Arc<dyn Fn(CommandInvocation) -> Result<CommandOutput> + Send + Sync>;
 
 #[derive(Clone, Debug)]
 pub struct ToolInvocation {
