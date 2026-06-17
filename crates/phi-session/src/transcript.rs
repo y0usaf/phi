@@ -51,11 +51,21 @@ const TAIL_VOLATILITY_ROWS: usize = 4;
 pub struct Transcript {
     committed_rows: usize,
     snapshots: HashMap<String, LiveDiffSnapshot>,
+    /// When true (mux/embedded mode), only commit_safe rows may enter scrollback.
+    /// Snapshot-only rows are excluded because the embedded vt100 scrollback is
+    /// irreversible — committing them before finalization causes duplicate rows.
+    /// In standalone mode (false) the real terminal scrollback is separate from
+    /// the live area, so snapshot-safe rows can be committed without duplicates.
+    embedded: bool,
 }
 
 impl Transcript {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn new_embedded() -> Self {
+        Self { embedded: true, ..Self::default() }
     }
 
     pub fn reset(&mut self) {
@@ -185,7 +195,17 @@ impl Transcript {
             self.committed_rows = 0;
         }
 
-        let durable_end = snapshot_safe_end.unwrap_or(commit_safe_end.unwrap_or(full.len()));
+        // In embedded/mux mode only commit_safe rows may enter scrollback: the
+        // embedded vt100 buffer is irreversible, so committing snapshot-only rows
+        // before they finalize causes them to appear twice once the block commits.
+        // In standalone mode the real terminal scrollback is separate from the live
+        // area, so snapshot-safe rows can be committed without producing duplicates;
+        // this is essential for long REPL blocks whose content exceeds the viewport.
+        let durable_end = if self.embedded {
+            commit_safe_end.unwrap_or(live_region_start.unwrap_or(full.len()))
+        } else {
+            snapshot_safe_end.unwrap_or(commit_safe_end.unwrap_or(full.len()))
+        };
         let window_top = std::cmp::max(
             self.committed_rows,
             full.len().saturating_sub(viewport_height),
@@ -483,6 +503,63 @@ mod tests {
             )],
         );
         assert_eq!(second.commit_safe_end, Some(3));
+    }
+
+    #[test]
+    fn snapshot_safe_live_rows_do_not_enter_terminal_scrollback() {
+        let mut tx = Transcript::new_embedded();
+        let frame = render(
+            &mut tx,
+            80,
+            3,
+            &[(
+                "stream",
+                vec![
+                    "one".into(),
+                    "two".into(),
+                    "three".into(),
+                    "four".into(),
+                    "five".into(),
+                ],
+                false,
+                true,
+            )],
+        );
+
+        assert_eq!(frame.commit_safe_end, None);
+        assert_eq!(frame.snapshot_safe_end, Some(5));
+        assert!(frame.scrollback.is_empty());
+        assert_eq!(frame.committed_rows, 0);
+    }
+
+    #[test]
+    fn finalized_history_before_unsafe_live_rows_can_still_scroll() {
+        let mut tx = Transcript::new_embedded();
+        let frame = render(
+            &mut tx,
+            80,
+            3,
+            &[
+                ("history", vec!["history".into()], true, true),
+                (
+                    "stream",
+                    vec![
+                        "one".into(),
+                        "two".into(),
+                        "three".into(),
+                        "four".into(),
+                        "five".into(),
+                    ],
+                    false,
+                    true,
+                ),
+            ],
+        );
+
+        assert_eq!(frame.commit_safe_end, None);
+        assert_eq!(frame.snapshot_safe_end, Some(7));
+        assert_eq!(frame.scrollback, vec!["history", ""]);
+        assert_eq!(frame.committed_rows, 2);
     }
 
     #[test]

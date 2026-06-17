@@ -641,6 +641,7 @@ impl Rlm {
                     self.config.custom_system_prompt.as_deref(),
                     self.config.tools_section.as_deref(),
                     self.config.orchestrator,
+                    self.iteration_limit(),
                 ),
             },
             ChatMessage {

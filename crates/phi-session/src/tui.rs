@@ -281,6 +281,101 @@ fn nested_panel_bottom(width: usize, color: &str, depth: usize) -> String {
     )
 }
 
+fn nested_panel_separator(
+    label: &str,
+    label_plain: &str,
+    width: usize,
+    color: &str,
+    depth: usize,
+) -> String {
+    let indent = nested_indent(depth);
+    let label_width = phi_tui::display_cell_width(label_plain);
+    if width <= label_width.saturating_add(5) {
+        return format!(
+            "{indent}{color}├{}┤{RESET}",
+            "─".repeat(width.saturating_sub(2).max(1))
+        );
+    }
+    let fill = width.saturating_sub(label_width + 5).max(1);
+    format!(
+        "{indent}{color}├─ {label}{color} {}┤{RESET}",
+        "─".repeat(fill)
+    )
+}
+
+fn fitted_sectioned_panel_width(
+    label_plain: &str,
+    section_plain: Option<&str>,
+    max_width: usize,
+    first: &[String],
+    second: &[String],
+) -> usize {
+    let label_width = std::iter::once(label_plain)
+        .chain(section_plain)
+        .map(|label| phi_tui::display_cell_width(label).saturating_add(6))
+        .max()
+        .unwrap_or(6);
+    let body_width = first
+        .iter()
+        .chain(second.iter())
+        .map(|line| visible_width(line).saturating_add(4))
+        .max()
+        .unwrap_or(4);
+    label_width.max(body_width).min(max_width.max(1)).max(4)
+}
+
+fn render_nested_sectioned_panel(
+    label: &str,
+    label_plain: &str,
+    section_label: &str,
+    section_plain: &str,
+    max_width: usize,
+    color: &str,
+    bg: &str,
+    depth: usize,
+    first: &[String],
+    second: &[String],
+) -> Vec<String> {
+    let indent_width = depth.saturating_mul(2);
+    let available = max_width.saturating_sub(indent_width).max(4);
+    let section_plain = (!second.is_empty()).then_some(section_plain);
+    let width = fitted_sectioned_panel_width(label_plain, section_plain, available, first, second);
+    let inner = width.saturating_sub(4).max(1);
+    let mut out = Vec::new();
+    out.push(nested_panel_border(label, label_plain, width, color, depth));
+
+    let push_body = |out: &mut Vec<String>, body: &[String]| {
+        if body.is_empty() {
+            out.push(nested_panel_row("", width, color, bg, depth));
+        } else {
+            for line in body {
+                let rows = wrap_ansi(line, inner);
+                if rows.is_empty() {
+                    out.push(nested_panel_row("", width, color, bg, depth));
+                } else {
+                    for row in rows {
+                        out.push(nested_panel_row(&row, width, color, bg, depth));
+                    }
+                }
+            }
+        }
+    };
+
+    push_body(&mut out, first);
+    if !second.is_empty() {
+        out.push(nested_panel_separator(
+            section_label,
+            section_plain.unwrap_or(""),
+            width,
+            color,
+            depth,
+        ));
+        push_body(&mut out, second);
+    }
+    out.push(nested_panel_bottom(width, color, depth));
+    out
+}
+
 fn render_nested_panel(
     label: &str,
     label_plain: &str,
@@ -352,6 +447,14 @@ fn subcall_title(model: &str, prompt_preview: &str) -> String {
         .collect::<Vec<_>>()
         .join(" ");
     format!("{SUBCALL_ACCENT}{model}{RESET} {DIM}←{RESET} {STRING_FG}\"{prompt_preview}\"{RESET}")
+}
+
+fn subcall_title_plain(model: &str, prompt_preview: &str) -> String {
+    let prompt_preview = prompt_preview
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!("{model} \u{2190} \"{prompt_preview}\"")
 }
 
 fn running_status_text(label: &str, spinner: &str) -> String {
@@ -486,6 +589,107 @@ fn tool_preview_lang(name: &str, args: &serde_json::Value) -> Option<&'static st
             .and_then(serde_json::Value::as_str)
             .and_then(lang_hint_for_path),
         _ => None,
+    }
+}
+
+fn tool_panel_title_plain(name: &str) -> String {
+    match name {
+        "read_file" => "Read".to_owned(),
+        "read_hashline" => "Read Hashline".to_owned(),
+        "write_file" => "Write".to_owned(),
+        "edit_file" => "Edit".to_owned(),
+        "apply_hashline" => "Apply Hashline".to_owned(),
+        "bash" => "Bash".to_owned(),
+        "repl" => "Repl".to_owned(),
+        "grep" => "Grep".to_owned(),
+        "grep_hashline" => "Grep Hashline".to_owned(),
+        "find" => "Find".to_owned(),
+        "ls" => "Ls".to_owned(),
+        _ => name
+            .split('_')
+            .filter(|part| !part.is_empty())
+            .map(|part| {
+                let mut chars = part.chars();
+                match chars.next() {
+                    Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                    None => String::new(),
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" "),
+    }
+}
+
+fn tool_arg<'a>(args: &'a serde_json::Value, key: &str) -> &'a str {
+    args.get(key)
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("")
+}
+
+fn tool_arg_line(text: &str, color: &str) -> Option<String> {
+    (!text.is_empty()).then(|| format!("{color}{text}{RESET}"))
+}
+
+fn tool_activity_lines(name: &str, args: &serde_json::Value) -> Vec<String> {
+    let arg = |key: &str| tool_arg(args, key);
+    match name {
+        "bash" => {
+            let cmd = arg("cmd");
+            if cmd.trim().is_empty() {
+                vec![format!("{TOOL_ACCENT}${RESET}")]
+            } else {
+                highlight_code(cmd, Some("bash"))
+                    .into_iter()
+                    .map(|line| format!("{TOOL_ACCENT}${RESET} {line}"))
+                    .collect()
+            }
+        }
+        "repl" => {
+            let code = args
+                .get("code")
+                .or_else(|| args.get("input"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("");
+            if code.trim().is_empty() {
+                Vec::new()
+            } else {
+                highlight_code(code, Some("repl"))
+            }
+        }
+        "read_file" | "read_hashline" | "write_file" | "edit_file" | "apply_hashline" => {
+            tool_arg_line(arg("path"), PATH_FG).into_iter().collect()
+        }
+        "grep" | "grep_hashline" | "find" => {
+            let pattern = arg("pattern");
+            if pattern.is_empty() {
+                Vec::new()
+            } else {
+                let path = arg("path");
+                let suffix = if path.is_empty() || path == "." {
+                    String::new()
+                } else {
+                    format!(" {DIM}in{RESET} {PATH_FG}{path}{RESET}")
+                };
+                vec![format!("{STRING_FG}{pattern}{RESET}{suffix}")]
+            }
+        }
+        "ls" => tool_arg_line(
+            if arg("path").is_empty() {
+                "."
+            } else {
+                arg("path")
+            },
+            PATH_FG,
+        )
+        .into_iter()
+        .collect(),
+        _ if args.is_null() => Vec::new(),
+        _ if args.as_object().is_some_and(|map| map.is_empty()) => Vec::new(),
+        _ => serde_json::to_string_pretty(args)
+            .unwrap_or_else(|_| args.to_string())
+            .lines()
+            .map(|line| format!("{DIM}{line}{RESET}"))
+            .collect(),
     }
 }
 
@@ -988,6 +1192,7 @@ pub async fn run(setup: TuiSetup, mut io: SessionIo) -> Result<()> {
         login_tx,
         io.cwd.clone(),
         io.host_modal_tx.take(),
+        io.embedded,
     );
     let restoring = ui.store.leaf().is_some();
     if restoring {
@@ -1201,12 +1406,6 @@ impl LoginCallbacks for TuiLoginCallbacks {
     }
 }
 
-#[derive(Clone, Copy, Eq, PartialEq)]
-enum ReplSection {
-    Input,
-    Output,
-}
-
 struct Ui {
     term: Terminal<Box<dyn std::io::Write + Send>>,
     editor: Editor,
@@ -1257,7 +1456,6 @@ struct Ui {
     /// it), shown live and then committed to scrollback verbatim.
     block: Vec<String>,
     block_active: bool,
-    block_section: Option<ReplSection>,
     /// Code of the in-flight depth-0 agent ```repl``` block, stashed at
     /// `CodeExecStart` and persisted to the session store at `CodeExecEnd`.
     live_code: Option<String>,
@@ -1311,6 +1509,9 @@ struct Ui {
     /// Cached git branch for the footer, refreshed on a short TTL.
     branch: Option<String>,
     branch_at: std::time::Instant,
+    /// Whether this session is embedded inside the mux (vs standalone terminal).
+    /// Controls which Transcript scrollback formula is used.
+    embedded: bool,
 }
 
 /// Current git branch of `cwd` (or a short detached-HEAD hash), following a
@@ -1361,6 +1562,7 @@ impl Ui {
         login_tx: mpsc::UnboundedSender<LoginMsg>,
         cwd: PathBuf,
         host_modal_tx: Option<mpsc::UnboundedSender<HostModalRequest>>,
+        embedded: bool,
     ) -> Self {
         let UiSetup {
             max_iterations,
@@ -1393,12 +1595,11 @@ impl Ui {
             queued: Vec::new(),
             last_ctrl_c: None,
             pending: Vec::new(),
-            transcript: Transcript::new(),
+            transcript: if embedded { Transcript::new_embedded() } else { Transcript::new() },
             transcript_blocks: Vec::new(),
             next_transcript_block_id: 0,
             block: Vec::new(),
             block_active: false,
-            block_section: None,
             live_code: None,
             live_tools: Vec::new(),
             open_tool_args: std::collections::HashMap::new(),
@@ -1426,6 +1627,7 @@ impl Ui {
             usage: Usage::default(),
             branch: None,
             branch_at: std::time::Instant::now() - Duration::from_secs(60),
+            embedded,
         }
     }
 
@@ -1500,7 +1702,6 @@ impl Ui {
         self.next_transcript_block_id = 0;
         self.pending.clear();
         self.block.clear();
-        self.block_section = None;
         self.after_block.clear();
         self.last_activity = false;
     }
@@ -2277,19 +2478,22 @@ impl Ui {
         // resumed session looks like the one the user actually saw.
         for tool in tools {
             let depth = tool.depth + 1;
-            let label = tool_title(&tool.name, &tool.args);
-            let text = match &tool.error {
-                Some(_) => failed_status_text(&label, Some(tool.duration_secs), None),
-                None => success_status_text(&label, tool.duration_secs),
-            };
-            let _ = self.push_status(depth, text);
             match &tool.error {
                 Some(error) => {
-                    self.push_preview(depth, error, self.output_limit());
+                    self.push_tool_result(
+                        depth,
+                        &tool.name,
+                        &tool.args,
+                        error,
+                        self.output_limit(),
+                        None,
+                    );
                 }
                 None => {
-                    self.push_preview_with_lang(
+                    self.push_tool_result(
                         depth,
+                        &tool.name,
+                        &tool.args,
                         &tool.result,
                         self.output_limit(),
                         tool_preview_lang(&tool.name, &tool.args),
@@ -2300,14 +2504,13 @@ impl Ui {
         for subcall in subcalls {
             let depth = subcall.depth;
             let label = subcall_title(&subcall.model, &subcall.prompt_preview);
-            let text = match &subcall.error {
-                Some(error) => failed_status_text(&label, Some(subcall.duration_secs), Some(error)),
-                None => success_status_text(&label, subcall.duration_secs),
-            };
-            let _ = self.push_status(depth, text);
-            if let Some(result_preview) = &subcall.result_preview {
-                self.push_preview(depth, result_preview, self.output_limit());
+            let label_plain = subcall_title_plain(&subcall.model, &subcall.prompt_preview);
+            let content = subcall.error.as_deref().or(subcall.result_preview.as_deref());
+            let rows = self.subcall_result_rows(depth, &label, &label_plain, content, self.output_limit());
+            for row in rows {
+                self.push_row(row);
             }
+            self.last_activity = true;
         }
         self.push_bar(0, format!("exec{RESET} {NUM_FG}{duration_secs:.1}s"));
         self.push_preview(0, stdout, self.output_limit());
@@ -3022,9 +3225,6 @@ impl Ui {
         if depth == 0 && !self.last_activity && !self.block_active {
             self.pending.push(String::new());
         }
-        if self.block_active {
-            self.ensure_block_section(ReplSection::Output);
-        }
         let rows = self.status_rows(depth, &text);
         let start = if self.block_active {
             Some(self.block.len())
@@ -3151,12 +3351,6 @@ impl Ui {
         }
     }
 
-    fn ensure_block_section(&mut self, section: ReplSection) {
-        if self.block_active {
-            self.block_section = Some(section);
-        }
-    }
-
     /// Start buffering the depth-0 REPL block that is about to execute. Rows
     /// pushed until `commit_block` render live as a grouped sectioned panel.
     fn begin_block(&mut self) {
@@ -3164,7 +3358,6 @@ impl Ui {
             self.pending.push(String::new());
         }
         self.block.clear();
-        self.block_section = None;
         self.open_tool_rows.clear();
         self.open_subcall_rows.clear();
         self.block_active = true;
@@ -3178,7 +3371,6 @@ impl Ui {
             return;
         }
         self.block_active = false;
-        self.block_section = None;
         let body = std::mem::take(&mut self.block);
         self.pending
             .extend(render_repl_panel(self.panel_width(), bg, &body));
@@ -3198,9 +3390,6 @@ impl Ui {
     /// Continuation/result line inside an action block, rendered as a nested
     /// output box inside the repl panel.
     fn push_bar(&mut self, depth: usize, text: String) {
-        if self.block_active {
-            self.ensure_block_section(ReplSection::Output);
-        }
         let rows = render_nested_panel(
             &format!("{PANEL_REPL}{BOLD}Output{RESET}"),
             "Output",
@@ -3222,13 +3411,16 @@ impl Ui {
         self.push_preview_with_lang(depth, text, max, None);
     }
 
-    fn push_preview_with_lang(&mut self, depth: usize, text: &str, max: usize, lang: Option<&str>) {
+    fn preview_rows_with_lang(
+        &self,
+        depth: usize,
+        text: &str,
+        max: usize,
+        lang: Option<&str>,
+    ) -> Vec<String> {
         let trimmed = text.trim_end();
         if trimmed.is_empty() {
-            return;
-        }
-        if self.block_active {
-            self.ensure_block_section(ReplSection::Output);
+            return Vec::new();
         }
         let base_rows: Vec<String> = match lang {
             Some(lang) => highlight_code(trimmed, Some(lang)),
@@ -3246,6 +3438,14 @@ impl Ui {
             rows.truncate(max);
             rows.push(format!("{DIM}… ({hidden} more lines){RESET}"));
         }
+        rows
+    }
+
+    fn push_preview_with_lang(&mut self, depth: usize, text: &str, max: usize, lang: Option<&str>) {
+        let rows = self.preview_rows_with_lang(depth, text, max, lang);
+        if rows.is_empty() {
+            return;
+        }
         let rows = render_nested_panel(
             &format!("{PANEL_REPL}{BOLD}Output{RESET}"),
             "Output",
@@ -3260,14 +3460,67 @@ impl Ui {
         }
     }
 
-    fn push_repl_block(&mut self, depth: usize, text: &str, max: usize) {
-        if self.block_active {
-            self.ensure_block_section(if depth == 0 {
-                ReplSection::Input
-            } else {
-                ReplSection::Output
-            });
+    fn tool_result_rows(
+        &self,
+        depth: usize,
+        name: &str,
+        args: &serde_json::Value,
+        output: &str,
+        max: usize,
+        lang: Option<&str>,
+    ) -> Vec<String> {
+        let title_plain = tool_panel_title_plain(name);
+        let title = format!("{TOOL_ACCENT}{title_plain}{RESET}");
+        let activity = tool_activity_lines(name, args);
+        let output = self.preview_rows_with_lang(depth, output, max, lang);
+        render_nested_sectioned_panel(
+            &title,
+            &title_plain,
+            &format!("{PANEL_REPL}{BOLD}Output{RESET}"),
+            "Output",
+            self.repl_body_width(),
+            PANEL_REPL,
+            "",
+            depth,
+            &activity,
+            &output,
+        )
+    }
+
+    fn subcall_result_rows(
+        &self,
+        depth: usize,
+        label: &str,
+        label_plain: &str,
+        content: Option<&str>,
+        max: usize,
+    ) -> Vec<String> {
+        let body = content
+            .map(|text| self.preview_rows_with_lang(depth, text, max, None))
+            .unwrap_or_default();
+        render_nested_panel(label, label_plain, self.repl_body_width(), SUBCALL_ACCENT, "", depth, &body)
+    }
+
+    fn push_tool_result(
+        &mut self,
+        depth: usize,
+        name: &str,
+        args: &serde_json::Value,
+        output: &str,
+        max: usize,
+        lang: Option<&str>,
+    ) {
+        if depth == 0 && !self.last_activity && !self.block_active {
+            self.pending.push(String::new());
         }
+        let rows = self.tool_result_rows(depth, name, args, output, max, lang);
+        for row in rows {
+            self.push_row(row);
+        }
+        self.last_activity = true;
+    }
+
+    fn push_repl_block(&mut self, depth: usize, text: &str, max: usize) {
         for row in self.repl_code_lines(depth, text, max) {
             self.push_row(row);
         }
@@ -3460,28 +3713,28 @@ impl Ui {
                         depth,
                     });
                 }
-                let label = tool_title(&name, &args);
-                let text = match error.as_ref() {
-                    Some(_) => failed_status_text(&label, Some(duration.as_secs_f64()), None),
-                    None => success_status_text(&label, duration.as_secs_f64()),
-                };
-                if let Some(row) = self.open_tool_rows.remove(&key) {
-                    self.replace_block_rows(row.start, row.len, self.status_rows(row.depth, &text));
+                let output = error.as_deref().unwrap_or(&result);
+                let lang = if error.is_some() {
+                    None
                 } else {
-                    let _ = self.push_status(depth + 1, text);
-                }
-                match error {
-                    Some(error) => {
-                        self.push_preview(depth + 1, &error, self.output_limit());
+                    tool_preview_lang(&name, &args)
+                };
+                let rows = self.tool_result_rows(
+                    depth + 1,
+                    &name,
+                    &args,
+                    output,
+                    self.output_limit(),
+                    lang,
+                );
+                if let Some(row) = self.open_tool_rows.remove(&key) {
+                    self.replace_block_rows(row.start, row.len, rows);
+                    self.last_activity = true;
+                } else {
+                    for row in rows {
+                        self.push_row(row);
                     }
-                    None => {
-                        self.push_preview_with_lang(
-                            depth + 1,
-                            &result,
-                            self.output_limit(),
-                            tool_preview_lang(&name, &args),
-                        );
-                    }
+                    self.last_activity = true;
                 }
                 if depth == 0 {
                     self.status = "running code...".to_owned();
@@ -3534,23 +3787,25 @@ impl Ui {
                         depth,
                     });
                 }
-                let label = open
+                let prompt_preview = open
                     .as_ref()
-                    .map(|row| row.label.clone())
-                    .unwrap_or_else(|| subcall_title(&model, ""));
-                let text = match error.as_ref() {
-                    Some(error) => {
-                        failed_status_text(&label, Some(duration.as_secs_f64()), Some(error))
-                    }
-                    None => success_status_text(&label, duration.as_secs_f64()),
-                };
+                    .map(|row| row.prompt_preview.as_str())
+                    .unwrap_or("");
+                let label = subcall_title(&model, prompt_preview);
+                let label_plain = subcall_title_plain(&model, prompt_preview);
+                let content = error.as_deref().or(result_preview.as_deref());
+                let rows = self.subcall_result_rows(depth, &label, &label_plain, content, self.output_limit());
                 if let Some(row) = open {
-                    self.replace_block_rows(row.start, row.len, self.status_rows(row.depth, &text));
+                    self.replace_block_rows(row.start, row.len, rows);
+                    self.last_activity = true;
                 } else {
-                    let _ = self.push_status(depth, text);
-                }
-                if let Some(result_preview) = result_preview {
-                    self.push_preview(depth, &result_preview, self.output_limit());
+                    if depth == 0 && !self.last_activity && !self.block_active {
+                        self.pending.push(String::new());
+                    }
+                    for row in rows {
+                        self.push_row(row);
+                    }
+                    self.last_activity = true;
                 }
             }
             RlmEvent::RunStart { depth } if depth > 0 => {
@@ -3800,6 +4055,7 @@ mod tests {
             login_tx,
             cwd,
             None,
+            false,
         )
     }
 
@@ -3861,6 +4117,32 @@ mod tests {
                 line
             );
         }
+    }
+
+    #[test]
+    fn tool_result_merges_activity_and_output_sections() {
+        let ui = test_ui(80, 24);
+        let lines = ui.tool_result_rows(
+            1,
+            "read_file",
+            &serde_json::json!({"path": "crates/phi-session/src/usage.rs"}),
+            "//! usage\n//! details\n",
+            usize::MAX,
+            Some("rust"),
+        );
+        let plain = lines
+            .iter()
+            .map(|line| phi_tui::strip_ansi(line))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(plain.contains("┌─ Read"), "{plain}");
+        assert!(plain.contains("crates/phi-session/src/usage.rs"), "{plain}");
+        assert!(plain.contains("├─ Output"), "{plain}");
+        assert!(plain.contains("//! usage"), "{plain}");
+        assert!(!plain.contains("Activity"), "{plain}");
+        assert_eq!(plain.matches('┌').count(), 1, "{plain}");
+        assert_eq!(plain.matches('└').count(), 1, "{plain}");
     }
 
     #[test]

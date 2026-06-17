@@ -599,6 +599,18 @@ fn tool_shows_args_section(name: &str) -> bool {
     )
 }
 
+fn tool_shows_input_section(name: &str) -> bool {
+    name == "bash" || name == "repl" || tool_shows_args_section(name)
+}
+
+fn tool_input_label(name: &str) -> &'static str {
+    match name {
+        "bash" => "Command",
+        "repl" => "Input",
+        _ => "Args",
+    }
+}
+
 fn tool_input_lines(name: &str, args: &serde_json::Value) -> Vec<String> {
     if name == "bash" {
         let cmd = args
@@ -609,6 +621,17 @@ fn tool_input_lines(name: &str, args: &serde_json::Value) -> Vec<String> {
             vec!["$ ".to_owned()]
         } else {
             cmd.lines().map(|line| format!("$ {line}")).collect()
+        }
+    } else if name == "repl" {
+        let code = args
+            .get("code")
+            .or_else(|| args.get("input"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        if code.trim().is_empty() {
+            Vec::new()
+        } else {
+            code.lines().map(str::to_owned).collect()
         }
     } else if !tool_shows_args_section(name) || args.is_null() {
         Vec::new()
@@ -756,8 +779,9 @@ fn render_tool_panel(
     out.push(panel_border(&title, &title_plain, '┌', '┐', width));
 
     let input_lines = tool_input_lines(name, args);
-    if tool_shows_args_section(name) || name == "bash" {
-        let input_label = if name == "bash" { "Command" } else { "Args" };
+    let show_input = tool_shows_input_section(name);
+    if show_input {
+        let input_label = tool_input_label(name);
         out.push(panel_border(input_label, input_label, '├', '┤', width));
         if input_lines.is_empty() {
             out.push(panel_row("(no input)", width));
@@ -768,7 +792,9 @@ fn render_tool_panel(
         }
     }
 
-    out.push(panel_border("Output", "Output", '├', '┤', width));
+    if show_input {
+        out.push(panel_border("Output", "Output", '├', '┤', width));
+    }
     let output_lines = preview_tail_lines(&parsed_lines, 10, verbose);
     if output_lines.is_empty() {
         out.push(panel_row("(no output)", width));
@@ -867,5 +893,62 @@ mod tests {
             !tool_shows_args_section("grep_hashline"),
             "grep_hashline should render as observational"
         );
+    }
+
+    #[test]
+    fn input_output_tools_render_separators_inside_one_box() {
+        let panel = render_tool_panel(
+            "bash",
+            &serde_json::json!({"cmd": "echo hi"}),
+            "hi\n",
+            false,
+            true,
+            false,
+        );
+
+        assert!(panel.contains("┌─── ✔ Bash"));
+        assert!(panel.contains("├─── Command"));
+        assert!(panel.contains("│ $ echo hi"));
+        assert!(panel.contains("├─── Output"));
+        assert!(panel.contains("│ hi"));
+        assert_eq!(panel.matches('┌').count(), 1);
+        assert_eq!(panel.matches('└').count(), 1);
+    }
+
+    #[test]
+    fn repl_renders_input_output_sections() {
+        let panel = render_tool_panel(
+            "repl",
+            &serde_json::json!({"code": "print(1)"}),
+            "1\n",
+            false,
+            true,
+            false,
+        );
+
+        assert!(panel.contains("┌─── ✔ Repl"));
+        assert!(panel.contains("├─── Input"));
+        assert!(panel.contains("│ print(1)"));
+        assert!(panel.contains("├─── Output"));
+        assert!(panel.contains("│ 1"));
+    }
+
+    #[test]
+    fn observational_tools_render_as_single_output_box() {
+        let panel = render_tool_panel(
+            "read_file",
+            &serde_json::json!({"path": "src/main.rs"}),
+            "fn main() {}\n",
+            false,
+            true,
+            false,
+        );
+
+        assert!(panel.contains("┌─── ✔ Read File — src/main.rs"));
+        assert!(!panel.contains("├─── Args"));
+        assert!(!panel.contains("├─── Output"));
+        assert!(panel.contains("│ fn main() {}"));
+        assert_eq!(panel.matches('┌').count(), 1);
+        assert_eq!(panel.matches('└').count(), 1);
     }
 }
