@@ -15,7 +15,7 @@ use serde_json::Value;
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 use tokio_util::sync::CancellationToken;
 
-use crate::handler::{DeltaSink, LanguageModel, LmHandler, ThinkingSink};
+use crate::handler::{DeltaSink, LanguageModel, LmHandler, ThinkingSink, UsageBreakdown};
 use crate::parsing::{
     ExecutedBlock, could_open_block, find_code_blocks, format_iteration, last_block_end,
 };
@@ -101,6 +101,7 @@ pub enum StopCause {
 pub struct RlmCompletion {
     pub response: String,
     pub usage: Usage,
+    pub usage_by_model: Vec<UsageBreakdown>,
     pub iterations: usize,
     pub duration: Duration,
     pub stop: StopCause,
@@ -398,7 +399,7 @@ impl EngineSubcalls {
         let completion = child
             .completion(ContextPayload::Str(prompt), None, &cancel)
             .await;
-        self.handler.track(&completion.usage);
+        self.handler.track_breakdowns(&completion.usage_by_model);
         let result_preview = if completion.response.trim().is_empty() {
             None
         } else {
@@ -1075,14 +1076,27 @@ impl Rlm {
             role: Role::User,
             content,
         }];
-        let (response, stop, error) = match self.root.complete(&messages).await {
-            Ok(completion) => (completion.text, StopCause::Fallback, None),
-            Err(e) => (
-                format!("Error: LM query failed at max depth - {e}"),
-                StopCause::Failed,
-                Some(e),
-            ),
-        };
+        let (response, usage, usage_by_model, stop, error) =
+            match self.root.complete(&messages).await {
+                Ok(completion) => {
+                    let usage_by_model =
+                        usage_breakdowns_for_model(self.root.name(), completion.usage);
+                    (
+                        completion.text,
+                        completion.usage,
+                        usage_by_model,
+                        StopCause::Fallback,
+                        None,
+                    )
+                }
+                Err(e) => (
+                    format!("Error: LM query failed at max depth - {e}"),
+                    Usage::default(),
+                    Vec::new(),
+                    StopCause::Failed,
+                    Some(e),
+                ),
+            };
         let duration = start.elapsed();
         self.events.emit(RlmEvent::RunEnd {
             depth: self.depth,
@@ -1092,7 +1106,8 @@ impl Rlm {
         });
         RlmCompletion {
             response,
-            usage: Usage::default(),
+            usage,
+            usage_by_model,
             iterations: 0,
             duration,
             stop,
@@ -1111,6 +1126,33 @@ impl Rlm {
         RlmCompletion {
             response: outcome.response,
             usage: handler.usage(),
+            usage_by_model: handler.usage_by_model(),
+            iterations: outcome.iterations,
+            duration,
+            stop: outcome.stop,
+            error: outcome.error,
+        }
+    }
+
+    fn complete_run_since(
+        &self,
+        outcome: Outcome,
+        handler: &LmHandler,
+        usage_before: &Usage,
+        usage_by_model_before: &[UsageBreakdown],
+        start: Instant,
+    ) -> RlmCompletion {
+        let duration = start.elapsed();
+        self.events.emit(RlmEvent::RunEnd {
+            depth: self.depth,
+            stop: outcome.stop,
+            iterations: outcome.iterations,
+            duration,
+        });
+        RlmCompletion {
+            response: outcome.response,
+            usage: handler.usage_since(usage_before),
+            usage_by_model: handler.usage_by_model_since(usage_by_model_before),
             iterations: outcome.iterations,
             duration,
             stop: outcome.stop,
@@ -1145,6 +1187,20 @@ impl Rlm {
             error: Some("Execution cancelled".to_owned()),
             iterations,
         }
+    }
+}
+
+fn usage_breakdowns_for_model(model: String, usage: Usage) -> Vec<UsageBreakdown> {
+    if usage.total_tokens == 0
+        && usage.input == 0
+        && usage.output == 0
+        && usage.cache_read == 0
+        && usage.cache_write == 0
+        && usage.cost.total == 0.0
+    {
+        Vec::new()
+    } else {
+        vec![UsageBreakdown { model, usage }]
     }
 }
 
@@ -1185,14 +1241,20 @@ impl RlmSession {
 
     pub async fn send(&mut self, prompt: &str, cancel: &CancellationToken) -> RlmCompletion {
         let start = Instant::now();
+        let usage_before = self.handler.usage();
+        let usage_by_model_before = self.handler.usage_by_model();
         self.rlm.events.emit(RlmEvent::RunStart { depth: 0 });
         self.run.begin(cancel.clone());
 
         let fresh_env = self.env.is_none();
         if let Err(message) = self.ensure_env().await {
-            return self
-                .rlm
-                .complete_run(Outcome::failed(message, 0), &self.handler, start);
+            return self.rlm.complete_run_since(
+                Outcome::failed(message, 0),
+                &self.handler,
+                &usage_before,
+                &usage_by_model_before,
+                start,
+            );
         }
         if !fresh_env {
             let env = self.env.as_mut().expect("env started above");
@@ -1249,7 +1311,13 @@ impl RlmSession {
                 content: outcome.response.clone(),
             });
         }
-        self.rlm.complete_run(outcome, &self.handler, start)
+        self.rlm.complete_run_since(
+            outcome,
+            &self.handler,
+            &usage_before,
+            &usage_by_model_before,
+            start,
+        )
     }
 
     /// Execute user-initiated code in the session REPL (e.g. a `!command`
@@ -1887,6 +1955,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn persistent_session_returns_per_turn_usage_deltas() {
+        let root = Arc::new(
+            ScriptedLm::new(
+                "root-model",
+                &[
+                    "```repl\nanswer['content'] = 'first'\nanswer['ready'] = True\n```",
+                    "```repl\nanswer['content'] = 'second'\nanswer['ready'] = True\n```",
+                ],
+            )
+            .with_usage(Usage {
+                input: 10,
+                output: 2,
+                total_tokens: 12,
+                ..Usage::default()
+            }),
+        );
+        let engine = rlm(RlmConfig::default(), root, quiet_sub());
+        let mut session = engine.into_session(ContextPayload::Str("ctx".into()));
+
+        let first = session.send("one", &CancellationToken::new()).await;
+        let second = session.send("two", &CancellationToken::new()).await;
+
+        assert_eq!(first.stop, StopCause::Answer, "{:?}", first.error);
+        assert_eq!(second.stop, StopCause::Answer, "{:?}", second.error);
+        assert_eq!(first.usage.input, 10);
+        assert_eq!(second.usage.input, 10);
+        assert_eq!(session.usage().input, 20);
+        assert_eq!(second.usage_by_model.len(), 1);
+        assert_eq!(second.usage_by_model[0].model, "root-model");
+        assert_eq!(second.usage_by_model[0].usage.input, 10);
+    }
+
+    #[tokio::test]
     async fn timeout_checked_before_iteration() {
         let root = Arc::new(ScriptedLm::new("root-model", &[]).with_default("never used"));
         let config = RlmConfig {
@@ -1940,8 +2041,12 @@ mod tests {
             .await;
         assert_eq!(result.stop, StopCause::Answer, "{:?}", result.error);
         assert_eq!(result.response, "child saw: child task");
-        // Child usage (2 calls) rolls up into the parent's (2 calls).
+        // Child usage (2 calls) rolls up into the parent's (2 calls), and
+        // remains attributed to the actual model instead of a single label.
         assert_eq!(result.usage.input, 4);
+        assert_eq!(result.usage_by_model.len(), 1);
+        assert_eq!(result.usage_by_model[0].model, "root-model");
+        assert_eq!(result.usage_by_model[0].usage.input, 4);
 
         // The child gets the rlm_query prompt as its own context.
         let prompts = root.recorded_prompts();

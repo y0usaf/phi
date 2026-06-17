@@ -73,6 +73,7 @@ struct UsageEntry {
     date: String,
     model: String,
     totals: UsageTotals,
+    dedupe_key: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -125,7 +126,7 @@ pub fn load_usage_report_from_path(root: &Path) -> UsageReport {
 
     for file in files {
         for entry in usage_entries_from_file(&file).iter() {
-            if !processed.insert((entry.timestamp_ms, entry.totals.total_tokens())) {
+            if !processed.insert(entry.dedupe_key.clone()) {
                 report.skipped_duplicates = report.skipped_duplicates.saturating_add(1);
                 continue;
             }
@@ -235,26 +236,59 @@ fn parse_usage_entries_from_file(path: &Path) -> Vec<UsageEntry> {
         let Ok(value) = serde_json::from_str::<Value>(line) else {
             continue;
         };
-        if let Some(entry) = usage_entry_from_value(&value, &jiff::tz::TimeZone::system()) {
-            entries.push(entry);
-        }
+        entries.extend(usage_entries_from_value(
+            &value,
+            &jiff::tz::TimeZone::system(),
+        ));
     }
 
     entries
 }
 
-fn usage_entry_from_value(value: &Value, time_zone: &jiff::tz::TimeZone) -> Option<UsageEntry> {
+fn usage_entries_from_value(value: &Value, time_zone: &jiff::tz::TimeZone) -> Vec<UsageEntry> {
     if value.get("type").and_then(Value::as_str) != Some("message") {
-        return None;
+        return Vec::new();
     }
     if value.get("role").and_then(Value::as_str) != Some("assistant") {
-        return None;
+        return Vec::new();
     }
 
-    let timestamp: jiff::Timestamp = value.get("timestamp")?.as_str()?.parse().ok()?;
+    let Some(timestamp) = value
+        .get("timestamp")
+        .and_then(Value::as_str)
+        .and_then(|raw| raw.parse::<jiff::Timestamp>().ok())
+    else {
+        return Vec::new();
+    };
     let date = timestamp.to_zoned(time_zone.clone()).date().to_string();
 
-    let usage = value.get("usage")?;
+    let source_id = value.get("id").and_then(Value::as_str);
+
+    let usage_by_model = value
+        .get("usage_by_model")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|usage| usage_entry_from_usage(timestamp, &date, source_id, usage))
+        .collect::<Vec<_>>();
+
+    if !usage_by_model.is_empty() {
+        return usage_by_model;
+    }
+
+    value
+        .get("usage")
+        .and_then(|usage| usage_entry_from_usage(timestamp, &date, source_id, usage))
+        .into_iter()
+        .collect()
+}
+
+fn usage_entry_from_usage(
+    timestamp: jiff::Timestamp,
+    date: &str,
+    source_id: Option<&str>,
+    usage: &Value,
+) -> Option<UsageEntry> {
     let input_tokens = number_as_u64(usage.get("input")?)?;
     let output_tokens = number_as_u64(usage.get("output")?)?;
     let cache_read_tokens = usage.get("cache_read").and_then(number_as_u64).unwrap_or(0);
@@ -272,9 +306,22 @@ fn usage_entry_from_value(value: &Value, time_zone: &jiff::tz::TimeZone) -> Opti
         .unwrap_or("unknown")
         .to_owned();
 
+    let dedupe_key = match source_id {
+        Some(id) => format!("{id}\0{model}"),
+        None => format!(
+            "{}\0{}\0{}\0{}\0{}\0{}",
+            timestamp.as_millisecond(),
+            model,
+            input_tokens,
+            output_tokens,
+            cache_creation_tokens,
+            cache_read_tokens
+        ),
+    };
+
     Some(UsageEntry {
         timestamp_ms: timestamp.as_millisecond(),
-        date,
+        date: date.to_owned(),
         model,
         totals: UsageTotals {
             input_tokens,
@@ -283,6 +330,7 @@ fn usage_entry_from_value(value: &Value, time_zone: &jiff::tz::TimeZone) -> Opti
             cache_read_tokens,
             total_cost,
         },
+        dedupe_key,
     })
 }
 
@@ -466,7 +514,9 @@ mod tests {
             0.05,
         ))
         .unwrap();
-        let entry = usage_entry_from_value(&value, &jiff::tz::TimeZone::UTC).unwrap();
+        let entry = usage_entries_from_value(&value, &jiff::tz::TimeZone::UTC)
+            .pop()
+            .unwrap();
         assert_eq!(entry.date, "2026-01-01");
         assert_eq!(entry.model, "claude-opus-4-5");
         assert_eq!(entry.totals.input_tokens, 100);
@@ -481,12 +531,68 @@ mod tests {
             r#"{"type":"message","id":"x","timestamp":"2026-01-01T00:00:01Z","role":"user","text":"hi"}"#,
         )
         .unwrap();
-        assert!(usage_entry_from_value(&user, &jiff::tz::TimeZone::UTC).is_none());
+        assert!(usage_entries_from_value(&user, &jiff::tz::TimeZone::UTC).is_empty());
         let no_usage: Value = serde_json::from_str(
             r#"{"type":"message","id":"x","timestamp":"2026-01-01T00:00:01Z","role":"assistant","text":"hi"}"#,
         )
         .unwrap();
-        assert!(usage_entry_from_value(&no_usage, &jiff::tz::TimeZone::UTC).is_none());
+        assert!(usage_entries_from_value(&no_usage, &jiff::tz::TimeZone::UTC).is_empty());
+    }
+
+    #[test]
+    fn usage_entries_expand_per_model_breakdowns() {
+        let value: Value = serde_json::from_str(
+            r#"{"type":"message","id":"x","timestamp":"2026-01-01T00:00:01Z","role":"assistant","text":"hi","usage":{"input":999,"output":999,"cache_read":0,"cache_write":0,"cost_total":9.99,"model":"__total__"},"usage_by_model":[{"input":100,"output":50,"cache_read":1,"cache_write":2,"cost_total":0.05,"model":"anthropic/claude-sonnet-4"},{"input":7,"output":8,"cache_read":0,"cache_write":0,"cost_total":0.01,"model":"openai/gpt-5"}]}"#,
+        )
+        .unwrap();
+
+        let entries = usage_entries_from_value(&value, &jiff::tz::TimeZone::UTC);
+
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].model, "anthropic/claude-sonnet-4");
+        assert_eq!(entries[0].totals.input_tokens, 100);
+        assert_eq!(entries[1].model, "openai/gpt-5");
+        assert_eq!(entries[1].totals.output_tokens, 8);
+    }
+
+    #[test]
+    fn report_keeps_same_model_same_token_calls_with_different_ids() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("--tmp-project--");
+        fs::create_dir_all(&project).unwrap();
+        let lines = [
+            r#"{"type":"session","id":"s1","timestamp":"2026-01-01T00:00:00Z","cwd":"/tmp/project"}"#.to_owned(),
+            r#"{"type":"message","id":"a","timestamp":"2026-01-03T12:00:00Z","role":"assistant","text":"hi","usage":{"input":100,"output":50,"cache_read":10,"cache_write":20,"cost_total":0.05,"model":"model-a"}}"#.to_owned(),
+            r#"{"type":"message","id":"b","timestamp":"2026-01-03T12:00:00Z","role":"assistant","text":"hi","usage":{"input":100,"output":50,"cache_read":10,"cache_write":20,"cost_total":0.05,"model":"model-a"}}"#.to_owned(),
+            r#"{"type":"message","id":"a","timestamp":"2026-01-03T12:00:00Z","role":"assistant","text":"hi","usage":{"input":100,"output":50,"cache_read":10,"cache_write":20,"cost_total":0.05,"model":"model-a"}}"#.to_owned(),
+        ];
+        fs::write(project.join("a.jsonl"), lines.join("\n")).unwrap();
+
+        let report = load_usage_report_from_path(tmp.path());
+
+        assert_eq!(report.entries, 2);
+        assert_eq!(report.skipped_duplicates, 1);
+        assert_eq!(report.totals.input_tokens, 200);
+    }
+
+    #[test]
+    fn report_dedupes_per_model_not_just_timestamp_and_tokens() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("--tmp-project--");
+        fs::create_dir_all(&project).unwrap();
+        let lines = [
+            r#"{"type":"session","id":"s1","timestamp":"2026-01-01T00:00:00Z","cwd":"/tmp/project"}"#.to_owned(),
+            message("2026-01-03T12:00:00Z", "model-a", 100, 50, 0.05),
+            message("2026-01-03T12:00:00Z", "model-b", 100, 50, 0.07),
+        ];
+        fs::write(project.join("a.jsonl"), lines.join("\n")).unwrap();
+
+        let report = load_usage_report_from_path(tmp.path());
+
+        assert_eq!(report.entries, 2);
+        assert_eq!(report.skipped_duplicates, 0);
+        assert_eq!(report.totals.input_tokens, 200);
+        assert_eq!(report.days[0].model_breakdowns.len(), 2);
     }
 
     #[test]

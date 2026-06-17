@@ -241,12 +241,77 @@ fn render_repl_panel(max_width: usize, bg: &str, body: &[String]) -> Vec<String>
     )
 }
 
-fn dot_prefix(depth: usize) -> String {
-    format!("{}⏺ ", "│ ".repeat(depth))
+fn nested_indent(depth: usize) -> String {
+    "  ".repeat(depth)
 }
 
-fn bar_prefix(depth: usize) -> String {
-    format!("{}│ ", "│ ".repeat(depth))
+fn nested_panel_border(
+    label: &str,
+    label_plain: &str,
+    width: usize,
+    color: &str,
+    depth: usize,
+) -> String {
+    let indent = nested_indent(depth);
+    let label_width = phi_tui::display_cell_width(label_plain);
+    if width <= label_width.saturating_add(5) {
+        return format!(
+            "{indent}{color}┌{}┐{RESET}",
+            "─".repeat(width.saturating_sub(2).max(1))
+        );
+    }
+    let fill = width.saturating_sub(label_width + 5).max(1);
+    format!(
+        "{indent}{color}┌─ {label}{color} {}┐{RESET}",
+        "─".repeat(fill)
+    )
+}
+
+fn nested_panel_row(text: &str, width: usize, border: &str, bg: &str, depth: usize) -> String {
+    let indent = nested_indent(depth);
+    let body = fill_bg(&format!(" {text}"), bg, width.saturating_sub(2).max(1));
+    format!("{indent}{border}│{RESET}{body}{border}│{RESET}")
+}
+
+fn nested_panel_bottom(width: usize, color: &str, depth: usize) -> String {
+    let indent = nested_indent(depth);
+    format!(
+        "{indent}{color}└{}┘{RESET}",
+        "─".repeat(width.saturating_sub(2).max(1))
+    )
+}
+
+fn render_nested_panel(
+    label: &str,
+    label_plain: &str,
+    max_width: usize,
+    color: &str,
+    bg: &str,
+    depth: usize,
+    body: &[String],
+) -> Vec<String> {
+    let indent_width = depth.saturating_mul(2);
+    let available = max_width.saturating_sub(indent_width).max(4);
+    let width = fitted_panel_width(label_plain, available, body);
+    let inner = width.saturating_sub(4).max(1);
+    let mut out = Vec::new();
+    out.push(nested_panel_border(label, label_plain, width, color, depth));
+    if body.is_empty() {
+        out.push(nested_panel_row("", width, color, bg, depth));
+    } else {
+        for line in body {
+            let rows = wrap_ansi(line, inner);
+            if rows.is_empty() {
+                out.push(nested_panel_row("", width, color, bg, depth));
+            } else {
+                for row in rows {
+                    out.push(nested_panel_row(&row, width, color, bg, depth));
+                }
+            }
+        }
+    }
+    out.push(nested_panel_bottom(width, color, depth));
+    out
 }
 
 #[derive(Clone)]
@@ -1142,15 +1207,6 @@ enum ReplSection {
     Output,
 }
 
-impl ReplSection {
-    fn label(self) -> &'static str {
-        match self {
-            Self::Input => "Input",
-            Self::Output => "Output",
-        }
-    }
-}
-
 struct Ui {
     term: Terminal<Box<dyn std::io::Write + Send>>,
     editor: Editor,
@@ -1223,9 +1279,9 @@ struct Ui {
     /// Prose flushed while a block is active; committed after the block so
     /// scrollback stays chronological.
     after_block: Vec<String>,
-    /// Whether the last scrollback line was gutter activity; a blank line is
+    /// Whether the last scrollback line was nested activity; a blank line is
     /// inserted before a depth-0 action that follows prose.
-    last_gutter: bool,
+    last_activity: bool,
     /// Streamed root-model text for the current iteration, minus the
     /// paragraphs/fences already flushed to scrollback.
     stream: String,
@@ -1350,7 +1406,7 @@ impl Ui {
             live_subcalls: Vec::new(),
             open_subcall_rows: std::collections::VecDeque::new(),
             after_block: Vec::new(),
-            last_gutter: false,
+            last_activity: false,
             stream: String::new(),
             thinking: String::new(),
             thinking_log: String::new(),
@@ -1446,7 +1502,7 @@ impl Ui {
         self.block.clear();
         self.block_section = None;
         self.after_block.clear();
-        self.last_gutter = false;
+        self.last_activity = false;
     }
 
     fn current_live_transcript_blocks(&self) -> Vec<FrameTranscriptBlock> {
@@ -2200,7 +2256,7 @@ impl Ui {
             self.pending.push(format!(
                 "{YELLOW}previous run was interrupted mid-turn; completed work up to the last checkpoint is shown above{RESET}"
             ));
-            self.last_gutter = false;
+            self.last_activity = false;
             let _ = self.store.acknowledge_interrupted();
         }
     }
@@ -2665,7 +2721,7 @@ impl Ui {
             self.pending.push(String::new());
             self.pending
                 .push(format!("{TOOL_ACCENT}${RESET} {DIM}{cmd}{RESET}"));
-            self.last_gutter = false;
+            self.last_activity = false;
         }
         let _ = cmd_tx.send(Cmd::Shell { code, record });
     }
@@ -2818,9 +2874,17 @@ impl Ui {
         self.term.width().max(1)
     }
 
-    /// Display columns left after the indentation prefix at `depth`.
-    fn gutter_text_width(&self, depth: usize) -> usize {
-        self.term.width().saturating_sub(2 * (depth + 1)).max(1)
+    /// Display columns available to rows inside the outer `repl` panel.
+    fn repl_body_width(&self) -> usize {
+        self.panel_width().saturating_sub(4).max(4)
+    }
+
+    /// Display columns available inside a nested box at `depth`.
+    fn nested_text_width(&self, depth: usize) -> usize {
+        self.repl_body_width()
+            .saturating_sub(depth.saturating_mul(2))
+            .saturating_sub(4)
+            .max(1)
     }
 
     fn assistant_card_lines(&self, text: &str) -> Vec<String> {
@@ -2855,69 +2919,64 @@ impl Ui {
         )
     }
 
-    /// Live/scrollback tool block rows using the same indentation formatting
-    /// as finalized action blocks.
+    /// Live/scrollback activity rows rendered as nested boxes inside the repl panel.
     fn tool_lines(&self, depth: usize, title: &str, body: &str, max: usize) -> Vec<String> {
-        let mut lines = Vec::new();
-        let mut rows = wrap_ansi(title, self.gutter_text_width(depth)).into_iter();
-        let first = rows.next().unwrap_or_default();
-        lines.push(format!("{}{first}{RESET}", dot_prefix(depth)));
-        for row in rows {
-            lines.push(format!("{}{row}{RESET}", bar_prefix(depth)));
-        }
+        let mut rows = vec![title.to_owned()];
 
         let trimmed = body.trim_end();
         if !trimmed.is_empty() {
-            let avail = self.gutter_text_width(depth).saturating_sub(2).max(1);
-            let rows: Vec<String> = trimmed
+            let output_rows: Vec<String> = trimmed
                 .lines()
-                .flat_map(|line| wrap_ansi(line, avail))
+                .flat_map(|line| wrap_ansi(line, self.nested_text_width(depth)))
                 .collect();
-            let shown = rows.len().min(max);
-            for row in &rows[..shown] {
-                lines.push(format!("{}{DIM}  {row}{RESET}", bar_prefix(depth)));
+            let shown = output_rows.len().min(max);
+            for row in &output_rows[..shown] {
+                rows.push(format!("{DIM}{row}{RESET}"));
             }
-            if rows.len() > max {
-                lines.push(format!(
-                    "{}{DIM}  … ({} more lines){RESET}",
-                    bar_prefix(depth),
-                    rows.len() - max
+            if output_rows.len() > max {
+                rows.push(format!(
+                    "{DIM}… ({} more lines){RESET}",
+                    output_rows.len() - max
                 ));
             }
         }
-        lines
-    }
 
-    fn repl_section_line(&self, depth: usize, section: ReplSection) -> String {
-        format!(
-            "{}{PANEL_REPL}{BOLD}{}{RESET}",
-            dot_prefix(depth),
-            section.label()
+        render_nested_panel(
+            &format!("{PANEL_REPL}Activity{RESET}"),
+            "Activity",
+            self.repl_body_width(),
+            PANEL_REPL,
+            "",
+            depth,
+            &rows,
         )
     }
 
     fn repl_code_lines(&self, depth: usize, body: &str, max: usize) -> Vec<String> {
-        let mut lines = vec![self.repl_section_line(depth, ReplSection::Input)];
         let trimmed = body.trim_end();
+        let mut rows = Vec::new();
         if !trimmed.is_empty() {
-            let avail = self.gutter_text_width(depth).saturating_sub(2).max(1);
-            let rows: Vec<String> = highlight_code(trimmed, Some("repl"))
+            rows = highlight_code(trimmed, Some("repl"))
                 .into_iter()
-                .flat_map(|line| wrap_ansi(&line, avail))
+                .flat_map(|line| wrap_ansi(&line, self.nested_text_width(depth)))
                 .collect();
-            let shown = rows.len().min(max);
-            for row in &rows[..shown] {
-                lines.push(format!("{}  {row}{RESET}", bar_prefix(depth)));
-            }
             if rows.len() > max {
-                lines.push(format!(
-                    "{}{DIM}  … ({} more lines){RESET}",
-                    bar_prefix(depth),
-                    rows.len() - max
-                ));
+                let hidden = rows.len() - max;
+                rows.truncate(max);
+                rows.push(format!("{DIM}… ({hidden} more lines){RESET}"));
             }
         }
-        lines
+
+        let label = if depth == 0 { "Input" } else { "repl" };
+        render_nested_panel(
+            &format!("{PANEL_REPL}{BOLD}{label}{RESET}"),
+            label,
+            self.repl_body_width(),
+            PANEL_REPL,
+            "",
+            depth,
+            &rows,
+        )
     }
 
     fn live_thinking_lines(&self) -> Vec<String> {
@@ -2948,17 +3007,19 @@ impl Ui {
     }
 
     fn status_rows(&self, depth: usize, text: &str) -> Vec<String> {
-        let mut rows = wrap_ansi(text, self.gutter_text_width(depth)).into_iter();
-        let first = rows.next().unwrap_or_default();
-        let mut rendered = vec![format!("{}{first}{RESET}", dot_prefix(depth))];
-        for row in rows {
-            rendered.push(format!("{}{row}{RESET}", bar_prefix(depth)));
-        }
-        rendered
+        render_nested_panel(
+            &format!("{PANEL_REPL}Activity{RESET}"),
+            "Activity",
+            self.repl_body_width(),
+            PANEL_REPL,
+            "",
+            depth,
+            &[text.to_owned()],
+        )
     }
 
     fn push_status(&mut self, depth: usize, text: String) -> Option<(usize, usize)> {
-        if depth == 0 && !self.last_gutter && !self.block_active {
+        if depth == 0 && !self.last_activity && !self.block_active {
             self.pending.push(String::new());
         }
         if self.block_active {
@@ -2974,7 +3035,7 @@ impl Ui {
         for row in rows {
             self.push_row(row);
         }
-        self.last_gutter = true;
+        self.last_activity = true;
         start.map(|start| (start, len))
     }
 
@@ -3091,17 +3152,15 @@ impl Ui {
     }
 
     fn ensure_block_section(&mut self, section: ReplSection) {
-        if !self.block_active || self.block_section == Some(section) {
-            return;
+        if self.block_active {
+            self.block_section = Some(section);
         }
-        self.block.push(self.repl_section_line(0, section));
-        self.block_section = Some(section);
     }
 
     /// Start buffering the depth-0 REPL block that is about to execute. Rows
     /// pushed until `commit_block` render live as a grouped sectioned panel.
     fn begin_block(&mut self) {
-        if !self.last_gutter {
+        if !self.last_activity {
             self.pending.push(String::new());
         }
         self.block.clear();
@@ -3136,16 +3195,25 @@ impl Ui {
         let _ = self.push_status(depth, text);
     }
 
-    /// Continuation/result line inside an action block; wraps to the
-    /// terminal width so every row keeps the indentation.
+    /// Continuation/result line inside an action block, rendered as a nested
+    /// output box inside the repl panel.
     fn push_bar(&mut self, depth: usize, text: String) {
         if self.block_active {
             self.ensure_block_section(ReplSection::Output);
         }
-        for row in wrap_ansi(&text, self.gutter_text_width(depth)) {
-            self.push_row(format!("{}{DIM}{row}{RESET}", bar_prefix(depth)));
+        let rows = render_nested_panel(
+            &format!("{PANEL_REPL}{BOLD}Output{RESET}"),
+            "Output",
+            self.repl_body_width(),
+            PANEL_REPL,
+            "",
+            depth,
+            &[format!("{DIM}{text}{RESET}")],
+        );
+        for row in rows {
+            self.push_row(row);
         }
-        self.last_gutter = true;
+        self.last_activity = true;
     }
 
     /// Indented code/output preview inside an action block: at most `max`
@@ -3162,7 +3230,6 @@ impl Ui {
         if self.block_active {
             self.ensure_block_section(ReplSection::Output);
         }
-        let avail = self.gutter_text_width(depth).saturating_sub(2).max(1);
         let base_rows: Vec<String> = match lang {
             Some(lang) => highlight_code(trimmed, Some(lang)),
             None => trimmed
@@ -3170,16 +3237,26 @@ impl Ui {
                 .map(|line| highlight_diff_line(line).unwrap_or_else(|| highlight_output(line)))
                 .collect(),
         };
-        let rows: Vec<String> = base_rows
+        let mut rows: Vec<String> = base_rows
             .into_iter()
-            .flat_map(|line| wrap_ansi(&line, avail))
+            .flat_map(|line| wrap_ansi(&line, self.nested_text_width(depth)))
             .collect();
-        let shown = rows.len().min(max);
-        for row in &rows[..shown] {
-            self.push_row(format!("{}  {row}{RESET}", bar_prefix(depth)));
-        }
         if rows.len() > max {
-            self.push_bar(depth, format!("  … ({} more lines)", rows.len() - max));
+            let hidden = rows.len() - max;
+            rows.truncate(max);
+            rows.push(format!("{DIM}… ({hidden} more lines){RESET}"));
+        }
+        let rows = render_nested_panel(
+            &format!("{PANEL_REPL}{BOLD}Output{RESET}"),
+            "Output",
+            self.repl_body_width(),
+            PANEL_REPL,
+            "",
+            depth,
+            &rows,
+        );
+        for row in rows {
+            self.push_row(row);
         }
     }
 
@@ -3191,26 +3268,10 @@ impl Ui {
                 ReplSection::Output
             });
         }
-        let trimmed = text.trim_end();
-        if !trimmed.is_empty() {
-            let avail = self.gutter_text_width(depth).saturating_sub(2).max(1);
-            let rows: Vec<String> = highlight_code(trimmed, Some("repl"))
-                .into_iter()
-                .flat_map(|line| wrap_ansi(&line, avail))
-                .collect();
-            let shown = rows.len().min(max);
-            for row in &rows[..shown] {
-                self.push_row(format!("{}  {row}{RESET}", bar_prefix(depth)));
-            }
-            if rows.len() > max {
-                self.push_row(format!(
-                    "{}{DIM}  … ({} more lines){RESET}",
-                    bar_prefix(depth),
-                    rows.len() - max
-                ));
-            }
+        for row in self.repl_code_lines(depth, text, max) {
+            self.push_row(row);
         }
-        self.last_gutter = true;
+        self.last_activity = true;
     }
 
     /// Echo a user message into scrollback as a pi-style container: full-width
@@ -3218,7 +3279,7 @@ impl Ui {
     fn push_user_message(&mut self, text: &str) {
         self.pending.push(String::new());
         self.pending.extend(self.user_card_lines(text));
-        self.last_gutter = false;
+        self.last_activity = false;
     }
 
     /// Render finalized prose (markdown) into scrollback. While a block is
@@ -3236,7 +3297,7 @@ impl Ui {
         };
         sink.push(String::new());
         sink.extend(card);
-        self.last_gutter = false;
+        self.last_activity = false;
     }
 
     fn handle_rlm_event(&mut self, event: RlmEvent) {
@@ -3347,7 +3408,7 @@ impl Ui {
                 }
             }
             // Prelude tools run inside the REPL block at `depth`, so they
-            // render one gutter level deeper, nested in that block.
+            // render one nested box level deeper, nested in that block.
             RlmEvent::ToolStart {
                 depth,
                 call_id,
@@ -3595,7 +3656,7 @@ impl Ui {
                     self.pending
                         .extend(output.trim_end().lines().map(str::to_owned));
                 }
-                self.last_gutter = false;
+                self.last_activity = false;
             }
             Err(e) => {
                 if self.block_active {
@@ -3603,7 +3664,7 @@ impl Ui {
                     self.commit_block(REPL_ERROR_BG);
                 } else {
                     self.pending.push(format!("\x1b[31merror:{RESET} {e}"));
-                    self.last_gutter = false;
+                    self.last_activity = false;
                 }
             }
         }
@@ -3635,13 +3696,26 @@ impl Ui {
                 cache_read: completion.usage.cache_read,
                 cache_write: completion.usage.cache_write,
                 cost_total: completion.usage.cost.total,
-                model: self.model_label.clone(),
+                model: "__total__".to_owned(),
             };
-            let _ = self.store.append_with_usage_and_display(
+            let usage_by_model = completion
+                .usage_by_model
+                .iter()
+                .map(|breakdown| session::SessionUsage {
+                    input: breakdown.usage.input,
+                    output: breakdown.usage.output,
+                    cache_read: breakdown.usage.cache_read,
+                    cache_write: breakdown.usage.cache_write,
+                    cost_total: breakdown.usage.cost.total,
+                    model: breakdown.model.clone(),
+                })
+                .collect();
+            let _ = self.store.append_with_usage_breakdown_and_display(
                 session::Role::Assistant,
                 &completion.response,
                 display_text,
                 Some(usage),
+                usage_by_model,
             );
         }
         // Durably close the turn: completed, failed, or interrupted is a
@@ -3663,7 +3737,7 @@ impl Ui {
             format_tokens(self.usage.total_tokens),
             self.usage.cost.total
         ));
-        self.last_gutter = false;
+        self.last_activity = false;
     }
 
     fn markdown_width(&self) -> usize {
@@ -3769,11 +3843,16 @@ mod tests {
 
     #[test]
     fn render_panel_clamps_to_available_width() {
-        let lines = render_repl_panel(
-            10,
-            REPL_BG,
-            &[format!("{}  print('hello world')", bar_prefix(0))],
+        let body = render_nested_panel(
+            &format!("{PANEL_REPL}{BOLD}Input{RESET}"),
+            "Input",
+            6,
+            PANEL_REPL,
+            "",
+            0,
+            &["print('hello world')".to_owned()],
         );
+        let lines = render_repl_panel(10, REPL_BG, &body);
         for line in &lines {
             assert!(
                 visible_width(line) <= 10,

@@ -100,9 +100,10 @@ impl ProviderLm {
 
 #[async_trait]
 impl LanguageModel for ProviderLm {
-    // The id (not the display name) is what `llm_query(model=...)` matches.
+    // Provider-qualified so usage buckets don't collide across providers.
     fn name(&self) -> String {
-        self.model.read().unwrap().id.clone()
+        let model = self.model.read().unwrap();
+        format!("{}/{}", model.provider, model.id)
     }
 
     async fn complete(&self, prompt: &[ChatMessage]) -> Result<Completion, String> {

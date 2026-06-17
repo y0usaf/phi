@@ -1,7 +1,7 @@
 //! The recursion primitive (`LanguageModel`) and the per-completion
 //! `LmHandler` that routes sub-calls and rolls up usage across the tree.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -12,6 +12,12 @@ use crate::{ChatMessage, Role};
 #[derive(Clone, Debug, Default)]
 pub struct Completion {
     pub text: String,
+    pub usage: Usage,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct UsageBreakdown {
+    pub model: String,
     pub usage: Usage,
 }
 
@@ -44,13 +50,19 @@ pub trait LanguageModel: Send + Sync {
     }
 }
 
+#[derive(Clone, Default)]
+struct UsageLedger {
+    total: Usage,
+    by_model: BTreeMap<String, Usage>,
+}
+
 /// Per-completion handler: root model, default sub model, optional named
 /// models (`llm_query(prompt, model="...")`), cumulative usage.
 pub struct LmHandler {
     root: Arc<dyn LanguageModel>,
     sub: Arc<dyn LanguageModel>,
     named: HashMap<String, Arc<dyn LanguageModel>>,
-    usage: Mutex<Usage>,
+    usage: Mutex<UsageLedger>,
 }
 
 impl LmHandler {
@@ -63,7 +75,7 @@ impl LmHandler {
             root,
             sub,
             named,
-            usage: Mutex::new(Usage::default()),
+            usage: Mutex::new(UsageLedger::default()),
         }
     }
 
@@ -72,11 +84,60 @@ impl LmHandler {
     }
 
     pub fn usage(&self) -> Usage {
-        *self.usage.lock().unwrap()
+        self.usage.lock().unwrap().total
     }
 
-    pub fn track(&self, usage: &Usage) {
-        self.usage.lock().unwrap().add(usage);
+    pub fn usage_by_model(&self) -> Vec<UsageBreakdown> {
+        Self::breakdowns_from_ledger(&self.usage.lock().unwrap().by_model)
+    }
+
+    pub fn usage_since(&self, snapshot: &Usage) -> Usage {
+        let usage = self.usage();
+        usage_delta(&usage, snapshot)
+    }
+
+    pub fn usage_by_model_since(&self, snapshot: &[UsageBreakdown]) -> Vec<UsageBreakdown> {
+        let current = self.usage.lock().unwrap().by_model.clone();
+        let mut previous = BTreeMap::<String, Usage>::new();
+        for item in snapshot {
+            previous.insert(item.model.clone(), item.usage);
+        }
+        Self::breakdowns_from_ledger(
+            &current
+                .into_iter()
+                .filter_map(|(model, usage)| {
+                    let delta =
+                        usage_delta(&usage, previous.get(&model).unwrap_or(&Usage::default()));
+                    usage_has_tokens_or_cost(&delta).then_some((model, delta))
+                })
+                .collect(),
+        )
+    }
+
+    fn breakdowns_from_ledger(ledger: &BTreeMap<String, Usage>) -> Vec<UsageBreakdown> {
+        ledger
+            .iter()
+            .filter(|(_, usage)| usage_has_tokens_or_cost(usage))
+            .map(|(model, usage)| UsageBreakdown {
+                model: model.clone(),
+                usage: *usage,
+            })
+            .collect()
+    }
+
+    pub fn track_model(&self, model: impl Into<String>, usage: &Usage) {
+        if !usage_has_tokens_or_cost(usage) {
+            return;
+        }
+        let mut ledger = self.usage.lock().unwrap();
+        ledger.total.add(usage);
+        ledger.by_model.entry(model.into()).or_default().add(usage);
+    }
+
+    pub fn track_breakdowns(&self, breakdowns: &[UsageBreakdown]) {
+        for breakdown in breakdowns {
+            self.track_model(breakdown.model.clone(), &breakdown.usage);
+        }
     }
 
     pub async fn complete_root(
@@ -85,6 +146,7 @@ impl LmHandler {
         on_delta: Option<DeltaSink>,
         on_thinking: Option<ThinkingSink>,
     ) -> Result<Completion, String> {
+        let model = self.root.name();
         let completion = match (on_delta, on_thinking) {
             (Some(sink), thinking) => self.root.complete_streaming(prompt, sink, thinking).await?,
             (None, Some(thinking)) => {
@@ -94,7 +156,7 @@ impl LmHandler {
             }
             (None, None) => self.root.complete(prompt).await?,
         };
-        self.track(&completion.usage);
+        self.track_model(model, &completion.usage);
         Ok(completion)
     }
 
@@ -108,12 +170,13 @@ impl LmHandler {
         let lm = model
             .and_then(|name| self.named.get(name))
             .unwrap_or(&self.sub);
+        let model_name = lm.name();
         let messages = [ChatMessage {
             role: Role::User,
             content: prompt.to_owned(),
         }];
         let completion = lm.complete(&messages).await?;
-        self.track(&completion.usage);
+        self.track_model(model_name, &completion.usage);
         Ok(completion)
     }
 
@@ -123,4 +186,30 @@ impl LmHandler {
             .unwrap_or(&self.sub)
             .name()
     }
+}
+
+fn usage_delta(current: &Usage, previous: &Usage) -> Usage {
+    Usage {
+        input: current.input.saturating_sub(previous.input),
+        output: current.output.saturating_sub(previous.output),
+        cache_read: current.cache_read.saturating_sub(previous.cache_read),
+        cache_write: current.cache_write.saturating_sub(previous.cache_write),
+        total_tokens: current.total_tokens.saturating_sub(previous.total_tokens),
+        cost: phi_ai::Cost {
+            input: current.cost.input - previous.cost.input,
+            output: current.cost.output - previous.cost.output,
+            cache_read: current.cost.cache_read - previous.cost.cache_read,
+            cache_write: current.cost.cache_write - previous.cost.cache_write,
+            total: current.cost.total - previous.cost.total,
+        },
+    }
+}
+
+fn usage_has_tokens_or_cost(usage: &Usage) -> bool {
+    usage.total_tokens > 0
+        || usage.input > 0
+        || usage.output > 0
+        || usage.cache_read > 0
+        || usage.cache_write > 0
+        || usage.cost.total != 0.0
 }

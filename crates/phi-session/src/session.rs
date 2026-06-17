@@ -28,6 +28,8 @@ pub struct Entry {
     pub display_text: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<SessionUsage>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub usage_by_model: Vec<SessionUsage>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Eq, PartialEq, Debug)]
@@ -354,6 +356,24 @@ impl SessionStore {
         display_text: Option<String>,
         usage: Option<SessionUsage>,
     ) -> Result<String> {
+        let usage_by_model = usage.iter().cloned().collect();
+        self.append_with_usage_breakdown_and_display(
+            role,
+            text,
+            display_text,
+            usage,
+            usage_by_model,
+        )
+    }
+
+    pub fn append_with_usage_breakdown_and_display(
+        &mut self,
+        role: Role,
+        text: &str,
+        display_text: Option<String>,
+        usage: Option<SessionUsage>,
+        usage_by_model: Vec<SessionUsage>,
+    ) -> Result<String> {
         let entry = Entry {
             id: new_id(),
             parent_id: self.leaf.clone(),
@@ -362,6 +382,7 @@ impl SessionStore {
             text: text.to_owned(),
             display_text,
             usage,
+            usage_by_model,
         };
         // Disk first, memory second: an entry becomes a fact only once it
         // is durably logged, so a failed write must not leave in-memory
