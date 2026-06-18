@@ -60,6 +60,26 @@ const USER_BORDER: &str = "\x1b[38;2;96;122;196m";
 const ASSISTANT_BORDER: &str = "\x1b[38;2;84;91;116m";
 const CHROME_BORDER: &str = "\x1b[38;2;82;88;110m";
 
+// Thinking-level border colors for the input box, mirroring pi's dark theme.
+const THINKING_BORDER_OFF: &str = "\x1b[90m"; // darkGray
+const THINKING_BORDER_MINIMAL: &str = "\x1b[38;2;110;110;110m"; // #6e6e6e
+const THINKING_BORDER_LOW: &str = "\x1b[38;2;95;135;175m"; // #5f87af
+const THINKING_BORDER_MEDIUM: &str = "\x1b[38;2;129;162;190m"; // #81a2be
+const THINKING_BORDER_HIGH: &str = "\x1b[38;2;178;148;187m"; // #b294bb
+const THINKING_BORDER_XHIGH: &str = "\x1b[38;2;209;131;232m"; // #d183e8
+
+/// Returns the input-box border color for a given thinking level.
+fn thinking_border_color(level: ThinkingLevel) -> &'static str {
+    match level {
+        ThinkingLevel::Off => THINKING_BORDER_OFF,
+        ThinkingLevel::Minimal => THINKING_BORDER_MINIMAL,
+        ThinkingLevel::Low => THINKING_BORDER_LOW,
+        ThinkingLevel::Medium => THINKING_BORDER_MEDIUM,
+        ThinkingLevel::High => THINKING_BORDER_HIGH,
+        ThinkingLevel::XHigh => THINKING_BORDER_XHIGH,
+    }
+}
+
 // Transcript boxes keep their color in the chrome (borders/titles) only; the
 // body stays on the terminal/default background so content styling remains UI-only.
 
@@ -1888,11 +1908,12 @@ impl Ui {
                     std::slice::from_ref(more),
                 ));
             }
+            let input_border = thinking_border_color(self.root_lm.thinking());
             lines.push(panel_border(
                 &format!("{BOLD}{input_label}{RESET}"),
                 input_label,
                 width,
-                CHROME_BORDER,
+                input_border,
             ));
 
             let editor_top = lines.len();
@@ -1918,22 +1939,22 @@ impl Ui {
                     });
                     rendered_rows_before_cursor += wrapped.len();
                     for row in wrapped {
-                        lines.push(panel_row(&row, width, CHROME_BORDER));
+                        lines.push(panel_row(&row, width, input_border));
                     }
                 } else {
                     let wrapped = wrap_ansi(content, input_inner);
                     rendered_rows_before_cursor += wrapped.len();
                     for row in wrapped {
-                        lines.push(panel_row(&row, width, CHROME_BORDER));
+                        lines.push(panel_row(&row, width, input_border));
                     }
                 }
             }
             if let Some(more) = more_row {
                 for row in wrap_ansi(&more, input_inner) {
-                    lines.push(panel_row(&row, width, CHROME_BORDER));
+                    lines.push(panel_row(&row, width, input_border));
                 }
             }
-            lines.push(panel_bottom(width, CHROME_BORDER));
+            lines.push(panel_bottom(width, input_border));
             cursor = input_cursor;
 
             if let Some(text) = self.queued.first() {

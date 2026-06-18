@@ -624,6 +624,7 @@ impl Rlm {
             transcript: Vec::new(),
             session_summary: None,
             pending_shell: Vec::new(),
+            loop_detected: None,
         }
     }
 
@@ -668,7 +669,7 @@ impl Rlm {
         let metadata = QueryMetadata::from_payload(&payload);
         let root_prompt_str = root_prompt.unwrap_or("").to_owned();
         let outcome = match self.start_env(&handler, payload, run).await {
-            Ok(mut env) => {
+            Ok((mut env, loop_detected)) => {
                 // Use snapshot history if provided, else build from config.
                 let mut history = if let Some(turn) = turn {
                     if !turn.messages.is_empty() {
@@ -696,7 +697,7 @@ impl Rlm {
                         0,
                         false,
                         cancel,
-                        None,
+                        Some(&loop_detected),
                         None,
                     )
                     .await;
@@ -713,13 +714,14 @@ impl Rlm {
         handler: &Arc<LmHandler>,
         payload: ContextPayload,
         run: RunState,
-    ) -> Result<Box<dyn ReplEnv>, String> {
+    ) -> Result<(Box<dyn ReplEnv>, Arc<std::sync::atomic::AtomicBool>), String> {
+        let loop_detected = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let subcalls = Arc::new(EngineSubcalls {
             rlm: self.clone(),
             handler: handler.clone(),
             run,
             loop_detector: Arc::new(Mutex::new(LoopDetector::new())),
-            loop_detected: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            loop_detected: loop_detected.clone(),
         });
         let (context, context_str) = match payload {
             ContextPayload::Str(s) => (None, Some(s)),
@@ -738,7 +740,7 @@ impl Rlm {
         env.start(setup)
             .await
             .map_err(|e| format!("Error: failed to start REPL environment - {e}"))?;
-        Ok(env)
+        Ok((env, loop_detected))
     }
 
     fn initial_history(
@@ -1418,6 +1420,11 @@ pub struct RlmSession {
     /// `send`, as (assistant ```repl``` block, REPL-output user message)
     /// pairs — the model sees them as its own prior repl turns.
     pending_shell: Vec<ChatMessage>,
+    /// Loop-detection flag shared between `EngineSubcalls` (which sets it
+    /// when repeated tool calls are observed) and `run_loop` (which checks
+    /// it each iteration to break out of infinite loops). Populated by
+    /// `ensure_env` alongside the env.
+    loop_detected: Option<Arc<std::sync::atomic::AtomicBool>>,
 }
 
 /// Threshold: once the in-band transcript exceeds this many message pairs,
@@ -1518,6 +1525,9 @@ impl RlmSession {
         // branch drained them above, before the prompt).
         history.append(&mut self.pending_shell);
         let warm = !self.transcript.is_empty();
+        if let Some(flag) = &self.loop_detected {
+            flag.store(false, std::sync::atomic::Ordering::Relaxed);
+        }
         let outcome = self
             .rlm
             .run_loop(
@@ -1528,7 +1538,7 @@ impl RlmSession {
                 self.exchanges,
                 warm,
                 cancel,
-                None,
+                self.loop_detected.as_deref(),
                 None,
             )
             .await;
@@ -1612,11 +1622,12 @@ impl RlmSession {
 
     async fn ensure_env(&mut self) -> Result<(), String> {
         if self.env.is_none() {
-            let env = self
+            let (env, loop_detected) = self
                 .rlm
                 .start_env(&self.handler, self.payload.clone(), self.run.clone())
                 .await?;
             self.env = Some(env);
+            self.loop_detected = Some(loop_detected);
         }
         Ok(())
     }
@@ -1691,6 +1702,7 @@ impl RlmSession {
         self.transcript.clear();
         self.session_summary = None;
         self.pending_shell.clear();
+        self.loop_detected = None;
     }
 
     /// Compact the in-band transcript when it exceeds the threshold. The
