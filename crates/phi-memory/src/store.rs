@@ -189,7 +189,7 @@ impl MemoryStore {
                 }
         }
         // Back links: existing memories whose bodies contain [[this title]].
-        let pattern = format!("%[[{}]]%", title);
+        let pattern = format!("%[[{}]]%", escape_like_pattern(title));
         let mut back_stmt =
             tx.prepare("SELECT id FROM memories WHERE id != ?1 AND pruned = 0 AND body LIKE ?2")?;
         let back_ids: Vec<i64> = back_stmt
@@ -242,6 +242,18 @@ impl MemoryStore {
         // (Hebbian learning: neurons that fire together wire together).
         self.strengthen_cooccurrence(&memories)?;
         Ok(memories)
+    }
+
+    /// Async wrapper for [`recall`](Self::recall) that offloads synchronous
+    /// SQLite work to a blocking thread so the async executor is not stalled.
+    pub async fn recall_async(
+        self: std::sync::Arc<Self>,
+        query: String,
+        limit: usize,
+    ) -> Result<Vec<Memory>> {
+        let store = self;
+        tokio::task::spawn_blocking(move || store.recall(&query, limit))
+            .await?
     }
 
     /// Raw FTS5 BM25 candidate fetch. Tokens are OR-joined so a natural-language
@@ -596,6 +608,15 @@ impl MemoryStore {
         Ok(pr)
     }
 
+    /// Async wrapper for [`pagerank_map`](Self::pagerank_map) that offloads
+    /// synchronous SQLite work to a blocking thread.
+    #[allow(dead_code)]
+    async fn pagerank_map_async(self: std::sync::Arc<Self>) -> Result<HashMap<i64, f64>> {
+        let store = self;
+        tokio::task::spawn_blocking(move || store.pagerank_map())
+            .await?
+    }
+
     /// Collect the graph neighborhood up to `depth` hops from `seeds`.
     fn graph_around(
         &self,
@@ -822,10 +843,16 @@ fn unix_now() -> i64 {
 fn escape_fts_or(query: &str) -> String {
     let tokens: Vec<String> = query
         .split_whitespace()
-        .filter(|t| t.chars().any(|c| c.is_alphanumeric()))
-        .map(|t| format!("\"{}\"", t.replace('"', "")))
+        .flat_map(|t| t.split(|c: char| !c.is_alphanumeric()))
+        .filter(|t| !t.is_empty())
+        .map(|t| format!("\"{}\"", t))
         .collect();
     tokens.join(" OR ")
+}
+
+/// Escape `%` and `_` so they are treated as literals in a SQL LIKE pattern.
+fn escape_like_pattern(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
 }
 
 /// Extract `[[Target Title]]` wiki-link destinations from markdown body.

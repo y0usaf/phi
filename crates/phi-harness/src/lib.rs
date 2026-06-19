@@ -306,7 +306,7 @@ impl PhiHarness {
             .await;
         let mut guard = self.session.lock().await;
         if let Some(session) = guard.as_mut() {
-            session.set_leaf(Some(leaf_id.to_owned()));
+            session.set_leaf(Some(leaf_id.to_owned())).map_err(HarnessError::Session)?;
         }
         drop(guard);
         self.write_operation_finish_durable().await;
@@ -397,8 +397,14 @@ impl PhiHarness {
                 operation: kind,
                 session_id: session.id().to_owned(),
             };
-            let line = durable::to_line(&entry);
-            let _ = session.append_durable(&line);
+            match durable::to_line(&entry) {
+                Ok(line) => {
+                    let _ = session.append_durable(&line);
+                }
+                Err(e) => {
+                    eprintln!("durable: serialization failed, skipping entry: {e}");
+                }
+            }
         }
     }
 
@@ -411,8 +417,14 @@ impl PhiHarness {
                 operation_id: uuid::Uuid::now_v7().to_string(),
                 stop_cause: Some(format!("{:?}", completion.stop)),
             };
-            let line = durable::to_line(&entry);
-            let _ = session.append_durable(&line);
+            match durable::to_line(&entry) {
+                Ok(line) => {
+                    let _ = session.append_durable(&line);
+                }
+                Err(e) => {
+                    eprintln!("durable: serialization failed, skipping entry: {e}");
+                }
+            }
         }
     }
 
@@ -425,8 +437,14 @@ impl PhiHarness {
                 operation_id: uuid::Uuid::now_v7().to_string(),
                 stop_cause: None,
             };
-            let line = durable::to_line(&entry);
-            let _ = session.append_durable(&line);
+            match durable::to_line(&entry) {
+                Ok(line) => {
+                    let _ = session.append_durable(&line);
+                }
+                Err(e) => {
+                    eprintln!("durable: serialization failed, skipping entry: {e}");
+                }
+            }
         }
     }
 
@@ -439,8 +457,14 @@ impl PhiHarness {
                 operation_id: uuid::Uuid::now_v7().to_string(),
                 reason: reason.to_owned(),
             };
-            let line = durable::to_line(&entry);
-            let _ = session.append_durable(&line);
+            match durable::to_line(&entry) {
+                Ok(line) => {
+                    let _ = session.append_durable(&line);
+                }
+                Err(e) => {
+                    eprintln!("durable: serialization failed, skipping entry: {e}");
+                }
+            }
         }
     }
 
@@ -453,8 +477,14 @@ impl PhiHarness {
                 queue: queue.to_owned(),
                 text: text.to_owned(),
             };
-            let line = durable::to_line(&entry);
-            let _ = session.append_durable(&line);
+            match durable::to_line(&entry) {
+                Ok(line) => {
+                    let _ = session.append_durable(&line);
+                }
+                Err(e) => {
+                    eprintln!("durable: serialization failed, skipping entry: {e}");
+                }
+            }
         }
     }
 }

@@ -124,17 +124,11 @@ async fn run(args: Args, storage: Arc<AuthStorage>, registry: Arc<Registry>) -> 
         .parse()
         .map_err(|e: String| anyhow::anyhow!(e))?;
 
-    if let Some(key) = &args.api_key {
-        storage.set_runtime_api_key(&root_model.provider, key);
-        if sub_model.provider != root_model.provider {
-            storage.set_runtime_api_key(&sub_model.provider, key);
-        }
-    }
     for provider in [&root_model.provider, &sub_model.provider] {
         if storage.resolve(provider).await?.is_none() {
             bail!(
-                "no credentials for provider '{provider}': run `phi --login {provider}`, \
-                 pass --api-key, or set {}_API_KEY",
+                "no credentials for provider '{provider}': run `phi --login {provider}` \
+                 or set {}_API_KEY",
                 provider.to_uppercase()
             );
         }

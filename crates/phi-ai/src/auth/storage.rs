@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 use std::fs::OpenOptions;
-use std::io::{Read, Seek, Write};
+use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -33,7 +33,7 @@ impl AuthStorage {
         &self.path
     }
 
-    /// Runtime override (CLI `--api-key`), never persisted.
+    /// Runtime override, never persisted.
     pub fn set_runtime_api_key(&self, provider: &str, key: &str) {
         self.runtime
             .lock()
@@ -68,10 +68,28 @@ impl AuthStorage {
         let (result, dirty) = f(&mut data)?;
         if dirty {
             let serialized = serde_json::to_string_pretty(&data)?;
-            guard.set_len(0)?;
-            guard.rewind()?;
-            guard.write_all(serialized.as_bytes())?;
-            guard.flush()?;
+            // Atomic write: write to a temp file then rename over the
+            // original. A crash between truncate and write completion would
+            // otherwise leave auth.json empty (total credential loss).
+            let temp_path = self.path.with_extension("json.tmp");
+            {
+                let mut temp = OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .open(&temp_path)?;
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    temp.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+                }
+                temp.write_all(serialized.as_bytes())?;
+                temp.flush()?;
+            }
+            // Drop the file lock/guard before the rename since the guard
+            // holds the original fd, which rename replaces.
+            drop(guard);
+            std::fs::rename(&temp_path, &self.path)?;
         }
         Ok(result)
     }
@@ -152,17 +170,29 @@ impl AuthStorage {
         let provider = provider.to_owned();
         tokio::task::spawn_blocking(move || {
             let storage = AuthStorage::new(path);
-            storage.with_lock(|data| {
+            // Read current credentials under the lock, then release it
+            // before calling block_on so the refresh future can schedule
+            // work onto the runtime without deadlocking.
+            let current = storage.with_lock(|data| {
                 let Some(AuthCredential::Oauth(current)) = data.get(&provider).cloned() else {
                     return Err(AuthError::Protocol(format!(
                         "no oauth credentials stored for {provider}"
                     )));
                 };
-                if now_ms() < current.expires {
-                    return Ok((current, false));
+                Ok((current, false))
+            })?;
+            if now_ms() < current.expires {
+                return Ok(current);
+            }
+            let refreshed = handle.block_on(crate::auth::refresh(oauth_provider, &current.refresh))?;
+            // Re-acquire the lock to persist the refreshed credentials.
+            // If another process already refreshed, use its credentials.
+            storage.with_lock(|data| {
+                if let Some(AuthCredential::Oauth(existing)) = data.get(&provider).cloned()
+                    && now_ms() < existing.expires
+                {
+                    return Ok((existing, false));
                 }
-                let refreshed =
-                    handle.block_on(crate::auth::refresh(oauth_provider, &current.refresh))?;
                 data.insert(provider.clone(), AuthCredential::Oauth(refreshed.clone()));
                 Ok((refreshed, true))
             })
@@ -194,6 +224,11 @@ fn env_auth(provider: &str) -> Option<Auth> {
         {
             return Some(Auth::ApiKey(key));
         }
+        if let Ok(key) = std::env::var("PHI_API_KEY")
+            && !key.is_empty()
+        {
+            return Some(Auth::ApiKey(key));
+        }
         return None;
     }
     if provider == "vercel-ai-gateway" {
@@ -206,10 +241,18 @@ fn env_auth(provider: &str) -> Option<Auth> {
         "{}_API_KEY",
         provider.to_uppercase().replace(['-', '.'], "_")
     );
-    std::env::var(env_name)
-        .ok()
-        .filter(|key| !key.is_empty())
-        .map(Auth::ApiKey)
+    if let Ok(key) = std::env::var(env_name)
+        && !key.is_empty()
+    {
+        return Some(Auth::ApiKey(key));
+    }
+    // Universal fallback for any provider.
+    if let Ok(key) = std::env::var("PHI_API_KEY")
+        && !key.is_empty()
+    {
+        return Some(Auth::ApiKey(key));
+    }
+    None
 }
 
 #[cfg(test)]

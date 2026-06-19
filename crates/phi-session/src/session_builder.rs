@@ -58,12 +58,6 @@ pub async fn build_session(
         .parse()
         .map_err(|e: String| anyhow::anyhow!(e))?;
 
-    if let Some(key) = &args.api_key {
-        storage.set_runtime_api_key(&root_model.provider, key);
-        if sub_model.provider != root_model.provider {
-            storage.set_runtime_api_key(&sub_model.provider, key);
-        }
-    }
     let mut missing_credentials = Vec::new();
     for provider in [&root_model.provider, &sub_model.provider] {
         if !missing_credentials.contains(provider) && storage.resolve(provider).await?.is_none() {

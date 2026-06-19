@@ -2348,7 +2348,11 @@ impl Ui {
             session::Role::User => (entry.parent_id.clone(), Some(entry.text.clone())),
             session::Role::Assistant => (Some(entry.id.clone()), None),
         };
-        self.store.set_leaf(leaf);
+        if let Err(e) = self.store.set_leaf(leaf) {
+            self.pending
+                .push(format!("{DIM}[error persisting navigation: {e}]{RESET}"));
+            return;
+        }
         self.pending.push(String::new());
         self.pending
             .push(format!("{DIM}[navigated to selected point]{RESET}"));

@@ -265,15 +265,15 @@ impl RunState {
     }
 
     fn begin(&self, cancel: CancellationToken) {
-        *self.0.lock().unwrap() = (cancel, Instant::now());
+        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = (cancel, Instant::now());
     }
 
     fn cancel(&self) -> CancellationToken {
-        self.0.lock().unwrap().0.clone()
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).0.clone()
     }
 
     fn started(&self) -> Instant {
-        self.0.lock().unwrap().1
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).1
     }
 }
 
@@ -451,7 +451,7 @@ impl SubcallHandler for EngineSubcalls {
         {
             self.pending_args
                 .lock()
-                .unwrap()
+                .unwrap_or_else(|e| e.into_inner())
                 .insert(*call_id, args.clone());
             self.rlm.events.emit(RlmEvent::ToolStart {
                 depth,
@@ -474,13 +474,13 @@ impl SubcallHandler for EngineSubcalls {
             let args_val = self
                 .pending_args
                 .lock()
-                .unwrap()
+                .unwrap_or_else(|e| e.into_inner())
                 .remove(call_id)
                 .unwrap_or(serde_json::Value::Null);
             if let Some(stop) = self
                 .loop_detector
                 .lock()
-                .unwrap()
+                .unwrap_or_else(|e| e.into_inner())
                 .observe(name, &args_val, result)
                 && stop == StopCause::LoopDetected {
                     self.loop_detected
@@ -630,6 +630,7 @@ impl Rlm {
             contexts: 1,
             transcript: Vec::new(),
             session_summary: None,
+            compaction_archive: Vec::new(),
             pending_shell: Vec::new(),
             loop_detected: None,
         }
@@ -861,7 +862,7 @@ impl Rlm {
                 if let Ok(completion) = &result {
                     // Catch-up for non-streaming models (no deltas) and any
                     // trailing block: same regex, same order, deduped by count.
-                    let mut sent = sent.lock().unwrap();
+                    let mut sent = sent.lock().unwrap_or_else(|e| e.into_inner());
                     for code in find_code_blocks(&completion.text).into_iter().skip(*sent) {
                         let _ = code_tx.send(Some(code));
                         *sent += 1;
@@ -1276,10 +1277,10 @@ impl Rlm {
                 iteration,
                 delta: delta.to_owned(),
             });
-            let mut buffer = buffer.lock().unwrap();
+            let mut buffer = buffer.lock().unwrap_or_else(|e| e.into_inner());
             buffer.push_str(delta);
             let blocks = find_code_blocks(&buffer);
-            let mut sent = sent.lock().unwrap();
+            let mut sent = sent.lock().unwrap_or_else(|e| e.into_inner());
             for code in blocks.into_iter().skip(*sent) {
                 let _ = code_tx.send(Some(code));
                 *sent += 1;
@@ -1472,6 +1473,12 @@ pub struct RlmSession {
     /// user message at the top of the warm replay so the model retains
     /// continuity without re-reading every prior turn verbatim.
     session_summary: Option<String>,
+    /// Archive of entries that have been compacted out of `transcript` by
+    /// `compact_transcript`. Each entry is a structured record of the
+    /// compacted user/assistant message pair, preserving the full text for
+    /// potential replay or inspection. Unlike `session_summary` (which is a
+    /// lossy text recap), this archive retains the verbatim content.
+    compaction_archive: Vec<String>,
     /// User-initiated shell executions to replay to the model on the next
     /// `send`, as (assistant ```repl``` block, REPL-output user message)
     /// pairs — the model sees them as its own prior repl turns.
@@ -1760,6 +1767,7 @@ impl RlmSession {
         self.contexts = 1;
         self.transcript.clear();
         self.session_summary = None;
+        self.compaction_archive.clear();
         self.pending_shell.clear();
         self.loop_detected = None;
     }
@@ -1787,6 +1795,10 @@ impl RlmSession {
         for chunk in self.transcript[..cut].chunks(2) {
             let user_text = chunk.first().map(|m| m.content.as_str()).unwrap_or("");
             let asst_text = chunk.get(1).map(|m| m.content.as_str()).unwrap_or("");
+            // Archive the verbatim content before producing the lossy summary.
+            self.compaction_archive.push(format!(
+                "User: {user_text}\nAssistant: {asst_text}"
+            ));
             // Extract the prompt after "Answer the following: "
             let prompt = user_text
                 .strip_prefix("Answer the following: ")
@@ -1933,7 +1945,7 @@ mod tests {
         }
 
         fn recorded_prompts(&self) -> Vec<Vec<ChatMessage>> {
-            self.prompts.lock().unwrap().clone()
+            self.prompts.lock().unwrap_or_else(|e| e.into_inner()).clone()
         }
     }
 
@@ -1944,11 +1956,11 @@ mod tests {
         }
 
         async fn complete(&self, prompt: &[ChatMessage]) -> Result<Completion, String> {
-            self.prompts.lock().unwrap().push(prompt.to_vec());
+            self.prompts.lock().unwrap_or_else(|e| e.into_inner()).push(prompt.to_vec());
             let text = self
                 .responses
                 .lock()
-                .unwrap()
+                .unwrap_or_else(|e| e.into_inner())
                 .pop_front()
                 .unwrap_or_else(|| self.default.clone());
             Ok(Completion {
@@ -2799,6 +2811,12 @@ answer['ready'] = True
         assert!(
             !summary.contains("question 24"),
             "summary should not contain the most recent exchange (still in transcript)"
+        );
+
+        // The compaction archive should have captured the verbatim compacted entries.
+        assert!(
+            !session.compaction_archive.is_empty(),
+            "compaction_archive should be populated after compaction"
         );
 
         session.shutdown().await;

@@ -84,11 +84,11 @@ impl LmHandler {
     }
 
     pub fn usage(&self) -> Usage {
-        self.usage.lock().unwrap().total
+        self.usage.lock().unwrap_or_else(|e| e.into_inner()).total
     }
 
     pub fn usage_by_model(&self) -> Vec<UsageBreakdown> {
-        Self::breakdowns_from_ledger(&self.usage.lock().unwrap().by_model)
+        Self::breakdowns_from_ledger(&self.usage.lock().unwrap_or_else(|e| e.into_inner()).by_model)
     }
 
     pub fn usage_since(&self, snapshot: &Usage) -> Usage {
@@ -97,7 +97,7 @@ impl LmHandler {
     }
 
     pub fn usage_by_model_since(&self, snapshot: &[UsageBreakdown]) -> Vec<UsageBreakdown> {
-        let current = self.usage.lock().unwrap().by_model.clone();
+        let current = self.usage.lock().unwrap_or_else(|e| e.into_inner()).by_model.clone();
         let mut previous = BTreeMap::<String, Usage>::new();
         for item in snapshot {
             previous.insert(item.model.clone(), item.usage);
@@ -129,7 +129,7 @@ impl LmHandler {
         if !usage_has_tokens_or_cost(usage) {
             return;
         }
-        let mut ledger = self.usage.lock().unwrap();
+        let mut ledger = self.usage.lock().unwrap_or_else(|e| e.into_inner());
         ledger.total.add(usage);
         ledger.by_model.entry(model.into()).or_default().add(usage);
     }

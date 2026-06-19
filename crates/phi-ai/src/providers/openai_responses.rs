@@ -127,12 +127,23 @@ fn convert_messages(messages: &[Message]) -> Vec<Value> {
                 "content": [{ "type": "input_text", "text": user.content }],
             })),
             Message::Assistant(assistant) => {
+                let mut content = Vec::new();
                 let text = assistant.text();
                 if !text.is_empty() {
-                    out.push(json!({
-                        "role": "assistant",
-                        "content": [{ "type": "output_text", "text": text }],
-                    }));
+                    content.push(json!({ "type": "output_text", "text": text }));
+                }
+                for block in &assistant.content {
+                    if let AssistantContent::ToolCall(call) = block {
+                        content.push(json!({
+                            "type": "function_call",
+                            "call_id": call.id,
+                            "name": call.name,
+                            "arguments": call.arguments,
+                        }));
+                    }
+                }
+                if !content.is_empty() {
+                    out.push(json!({ "role": "assistant", "content": content }));
                 }
             }
         }
@@ -140,13 +151,22 @@ fn convert_messages(messages: &[Message]) -> Vec<Value> {
     out
 }
 
+struct ToolBuffer {
+    id: String,
+    name: String,
+    arguments: String,
+}
+
 struct Parser {
     acc: Accumulator,
     /// Responses item id -> our content index.
     items: HashMap<String, usize>,
+    /// Responses item id -> tool call buffer (function_call items).
+    tools: HashMap<String, ToolBuffer>,
     stop_reason: StopReason,
     usage_seen: bool,
     errored: bool,
+    tool_use_seen: bool,
 }
 
 impl Parser {
@@ -154,17 +174,22 @@ impl Parser {
         Self {
             acc: Accumulator::new(model),
             items: HashMap::new(),
+            tools: HashMap::new(),
             stop_reason: StopReason::Stop,
             usage_seen: false,
             errored: false,
+            tool_use_seen: false,
         }
     }
 
-    fn finish(self, model: &Model, sink: &EventSink) {
+    fn finish(mut self, model: &Model, sink: &EventSink) {
         if self.errored {
             return;
         }
         let mut message = self.acc.into_message();
+        if self.tool_use_seen && self.stop_reason == StopReason::Stop {
+            self.stop_reason = StopReason::ToolUse;
+        }
         message.stop_reason = self.stop_reason;
         message.usage.finalize(&model.cost);
         sink.push(AssistantEvent::Done { message });
@@ -289,6 +314,76 @@ impl SseHandler for Parser {
                     .as_str()
                     .unwrap_or("unknown provider error");
                 self.emit_error(detail, sink);
+            }
+            // Tool call: a new function_call output item is being created.
+            "response.output_item.added" => {
+                let item = &value["item"];
+                if item["type"].as_str() == Some("function_call") {
+                    let item_id = item["call_id"]
+                        .as_str()
+                        .or_else(|| item["id"].as_str())
+                        .unwrap_or_default()
+                        .to_owned();
+                    let name = item["name"].as_str().unwrap_or_default().to_owned();
+                    // Arguments may arrive in full on this event or stream in
+                    // via the `.delta` events below; buffer either way.
+                    let arguments = item["arguments"].as_str().unwrap_or_default().to_owned();
+                    self.tools.insert(
+                        item_id.clone(),
+                        ToolBuffer {
+                            id: item_id,
+                            name,
+                            arguments,
+                        },
+                    );
+                    self.tool_use_seen = true;
+                }
+            }
+            // Tool call: streaming argument deltas.
+            "response.function_call_arguments.delta" => {
+                let item_id = value["item_id"]
+                    .as_str()
+                    .or_else(|| value["call_id"].as_str())
+                    .unwrap_or_default()
+                    .to_owned();
+                let delta = value["delta"].as_str().unwrap_or_default().to_owned();
+                if let Some(tool) = self.tools.get_mut(&item_id) {
+                    tool.arguments.push_str(&delta);
+                }
+            }
+            // Tool call: arguments done — finalize the tool call.
+            "response.function_call_arguments.done" => {
+                let item_id = value["item_id"]
+                    .as_str()
+                    .or_else(|| value["call_id"].as_str())
+                    .unwrap_or_default()
+                    .to_owned();
+                // If the full arguments string is provided, replace the buffer.
+                if let Some(args) = value["arguments"].as_str() {
+                    if let Some(tool) = self.tools.get_mut(&item_id) {
+                        tool.arguments = args.to_owned();
+                    }
+                }
+            }
+            // Tool call: the output item is complete — push it to the message.
+            "response.output_item.done" => {
+                let item = &value["item"];
+                if item["type"].as_str() == Some("function_call") {
+                    let item_id = item["call_id"]
+                        .as_str()
+                        .or_else(|| item["id"].as_str())
+                        .unwrap_or_default()
+                        .to_owned();
+                    if let Some(tool) = self.tools.remove(&item_id) {
+                        let arguments = serde_json::from_str(&tool.arguments)
+                            .unwrap_or(Value::Object(Default::default()));
+                        self.acc.push_tool_call(crate::types::ToolCall {
+                            id: tool.id,
+                            name: tool.name,
+                            arguments,
+                        });
+                    }
+                }
             }
             _ => {}
         }

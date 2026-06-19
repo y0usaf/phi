@@ -3,6 +3,7 @@
 //! tree. Files live under the phi data dir, in a per-cwd folder. Files are
 //! created lazily on the first message, so empty sessions leave no trace.
 
+use std::collections::HashMap;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -175,6 +176,13 @@ pub struct SessionStore {
     open_exchange: Option<String>,
     /// Exchange found open at load time: a previous run died mid-turn.
     interrupted_exchange: Option<String>,
+    /// Child-entry index: parent_id → sorted list of child entry ids.
+    /// Maintained on insert/load to avoid O(N) linear scans in tree
+    /// traversals (tree_rows, branch_items, branch_exchanges).
+    entry_children: HashMap<String, Vec<String>>,
+    /// Child-repl index: parent_id → ordered list of child repl ids.
+    /// Same purpose as `entry_children` for repl lookups.
+    repl_children: HashMap<String, Vec<String>>,
 }
 
 /// Listing metadata for the /resume picker.
@@ -235,6 +243,8 @@ impl SessionStore {
             persisted: false,
             open_exchange: None,
             interrupted_exchange: None,
+            entry_children: HashMap::new(),
+            repl_children: HashMap::new(),
         })
     }
 
@@ -283,6 +293,24 @@ impl SessionStore {
         };
         // An exchange_start without its exchange_end is the durable
         // signature of a crash mid-turn: surface it instead of hiding it.
+        let mut entry_children: HashMap<String, Vec<String>> = HashMap::new();
+        for e in &entries {
+            if let Some(pid) = &e.parent_id {
+                entry_children
+                    .entry(pid.clone())
+                    .or_default()
+                    .push(e.id.clone());
+            }
+        }
+        let mut repl_children: HashMap<String, Vec<String>> = HashMap::new();
+        for r in &repls {
+            if let Some(pid) = &r.parent_id {
+                repl_children
+                    .entry(pid.clone())
+                    .or_default()
+                    .push(r.id.clone());
+            }
+        }
         Ok(Self {
             path: path.to_owned(),
             header,
@@ -292,6 +320,8 @@ impl SessionStore {
             persisted: true,
             open_exchange: None,
             interrupted_exchange: open_exchange,
+            entry_children,
+            repl_children,
         })
     }
 
@@ -321,6 +351,38 @@ impl SessionStore {
 
     pub fn entry(&self, id: &str) -> Option<&Entry> {
         self.entries.iter().find(|e| e.id == id)
+    }
+
+    /// Child entries of `parent_id` in file order, via the child index.
+    fn child_entries(&self, parent_id: &str) -> Vec<&Entry> {
+        self.entry_children
+            .get(parent_id)
+            .map(|ids| {
+                ids.iter()
+                    .filter_map(|id| self.entries.iter().find(|e| e.id == *id))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Root entries (no parent), via the child index keyed on "" sentinel.
+    fn root_entries(&self) -> Vec<&Entry> {
+        self.entries
+            .iter()
+            .filter(|e| e.parent_id.is_none())
+            .collect()
+    }
+
+    /// Child repls of `parent_id` in file order, via the child index.
+    fn child_repls(&self, parent_id: &str) -> Vec<&ReplEntry> {
+        self.repl_children
+            .get(parent_id)
+            .map(|ids| {
+                ids.iter()
+                    .filter_map(|id| self.repls.iter().find(|r| r.id == *id))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// Move the active branch tip (tree navigation). `None` rewinds to the
@@ -354,13 +416,16 @@ impl SessionStore {
         Ok(())
     }
 
-    pub fn set_leaf(&mut self, id: Option<String>) {
+    pub fn set_leaf(&mut self, id: Option<String>) -> Result<()> {
         if self.persisted && id != self.leaf {
-            // Best-effort durability: navigation must still work if the
-            // disk write fails, so don't propagate the error.
-            let _ = self.write_line(&Line::Leaf(LeafRecord { id: id.clone() }));
+            // Propagate the write error: if the disk write fails, the
+            // in-memory tree must NOT be updated, otherwise memory and
+            // disk diverge and a crash would silently resume on the
+            // wrong branch.
+            self.write_line(&Line::Leaf(LeafRecord { id: id.clone() }))?;
         }
         self.leaf = id;
+        Ok(())
     }
 
     /// Append a message on the active branch and persist it.
@@ -417,6 +482,12 @@ impl SessionStore {
         // state ahead of the file.
         let id = self.write_line(&Line::Message(entry.clone()))?;
         self.leaf = Some(entry.id.clone());
+        if let Some(pid) = &entry.parent_id {
+            self.entry_children
+                .entry(pid.clone())
+                .or_default()
+                .push(entry.id.clone());
+        }
         self.entries.push(entry);
         Ok(id)
     }
@@ -435,6 +506,12 @@ impl SessionStore {
             subcalls: record.subcalls,
         };
         let id = self.write_line(&Line::Repl(entry.clone()))?;
+        if let Some(pid) = &entry.parent_id {
+            self.repl_children
+                .entry(pid.clone())
+                .or_default()
+                .push(entry.id.clone());
+        }
         self.repls.push(entry);
         Ok(id)
     }
@@ -550,9 +627,8 @@ impl SessionStore {
                 items.push(BranchItem::Message(entry));
             }
             items.extend(
-                self.repls
-                    .iter()
-                    .filter(|repl| repl.parent_id.as_deref() == Some(entry.id.as_str()))
+                self.child_repls(&entry.id)
+                    .into_iter()
                     .map(BranchItem::Repl),
             );
         }
@@ -576,11 +652,7 @@ impl SessionStore {
         let mut shell_buf = Vec::new();
         let mut open: Option<BranchExchange<'_>> = None;
         for entry in branch {
-            let attached: Vec<&ReplEntry> = self
-                .repls
-                .iter()
-                .filter(|repl| repl.parent_id.as_deref() == Some(entry.id.as_str()))
-                .collect();
+            let attached: Vec<&ReplEntry> = self.child_repls(&entry.id);
             match entry.role {
                 Role::User => {
                     if let Some(exchange) = open.take() {
@@ -667,19 +739,11 @@ impl SessionStore {
     /// file order within each sibling group — the /tree view.
     pub fn tree_rows(&self) -> Vec<(usize, &Entry)> {
         let mut rows = Vec::new();
-        let roots: Vec<&Entry> = self
-            .entries
-            .iter()
-            .filter(|e| e.parent_id.is_none())
-            .collect();
+        let roots: Vec<&Entry> = self.root_entries();
         let mut stack: Vec<(usize, &Entry)> = roots.into_iter().rev().map(|e| (0, e)).collect();
         while let Some((depth, entry)) = stack.pop() {
             rows.push((depth, entry));
-            let children: Vec<&Entry> = self
-                .entries
-                .iter()
-                .filter(|e| e.parent_id.as_deref() == Some(&entry.id))
-                .collect();
+            let children: Vec<&Entry> = self.child_entries(&entry.id);
             stack.extend(children.into_iter().rev().map(|e| (depth + 1, e)));
         }
         rows
@@ -717,8 +781,17 @@ impl SessionStore {
             persisted: false,
             open_exchange: None,
             interrupted_exchange: None,
+            entry_children: HashMap::new(),
+            repl_children: HashMap::new(),
         };
         for entry in kept {
+            if let Some(pid) = &entry.parent_id {
+                store
+                    .entry_children
+                    .entry(pid.clone())
+                    .or_default()
+                    .push(entry.id.clone());
+            }
             store.entries.push(entry.clone());
             store.write_line(&Line::Message(entry))?;
         }
@@ -839,7 +912,7 @@ mod tests {
         store.append(Role::Assistant, "a2").unwrap();
 
         // Rewind to a1 and take a different second turn.
-        store.set_leaf(Some(a1.clone()));
+        store.set_leaf(Some(a1.clone())).unwrap();
         store.append(Role::User, "q2-alt").unwrap();
         store.append(Role::Assistant, "a2-alt").unwrap();
 
@@ -859,7 +932,7 @@ mod tests {
             .filter(|(_, e)| e.parent_id.as_deref() == Some(a1.as_str()));
         assert_eq!(a1_children.count(), 2);
         // Unpaired user prompts are skipped in exchanges.
-        store.set_leaf(store.user_messages().first().map(|e| e.id.clone()));
+        store.set_leaf(store.user_messages().first().map(|e| e.id.clone())).unwrap();
         assert!(store.branch_restore().0.is_empty());
     }
 
@@ -1174,7 +1247,7 @@ mod tests {
         store.append(Role::Assistant, "a2").unwrap();
 
         // Rewind to a1: resume must return here, not to the newest entry.
-        store.set_leaf(Some(a1.clone()));
+        store.set_leaf(Some(a1.clone())).unwrap();
         let loaded = SessionStore::load(store.path()).unwrap();
         assert_eq!(loaded.leaf(), Some(a1.as_str()));
         assert_eq!(loaded.branch().len(), 2);

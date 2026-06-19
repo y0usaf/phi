@@ -1,15 +1,13 @@
-//! Python subprocess backend: embedded driver script, ndjson over stdio.
-
-use std::io::Write as _;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use serde_json::{Value, json};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
-use tokio::process::{Child, ChildStdin, ChildStdout, Command};
-use tokio::sync::{Mutex, Semaphore};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::process::{Child, ChildStdin, Command};
+use tokio::sync::{Mutex, Semaphore, oneshot};
+use tokio::task::JoinHandle;
 
 use crate::protocol::DriverFrame;
 use crate::{
@@ -27,6 +25,8 @@ const ANSWER_STATE_TIMEOUT: Duration = Duration::from_secs(10);
 const EXEC_GRACE: Duration = Duration::from_secs(15);
 const STDERR_CAP: usize = 64 * 1024;
 
+type PendingMap = Arc<Mutex<std::collections::HashMap<u64, oneshot::Sender<DriverFrame>>>>;
+
 pub struct PythonRepl {
     python: String,
     handler: Arc<dyn SubcallHandler>,
@@ -38,9 +38,10 @@ pub struct PythonRepl {
 struct Proc {
     child: Child,
     stdin: Arc<Mutex<ChildStdin>>,
-    lines: Lines<BufReader<ChildStdout>>,
+    pending: PendingMap,
     stderr: Arc<std::sync::Mutex<String>>,
-    semaphore: Arc<Semaphore>,
+    _semaphore: Arc<Semaphore>,
+    _reader: JoinHandle<()>,
     _driver: tempfile::TempPath,
 }
 
@@ -67,121 +68,6 @@ impl PythonRepl {
         guard.flush().await
     }
 
-    /// Read frames until `stop` matches, serving subcall frames in between.
-    async fn pump(
-        proc: &mut Proc,
-        handler: &Arc<dyn SubcallHandler>,
-        mut stop: impl FnMut(&DriverFrame) -> bool,
-    ) -> Result<DriverFrame, ReplError> {
-        loop {
-            let Some(line) = proc.lines.next_line().await? else {
-                let stderr = proc.stderr.lock().unwrap().clone();
-                return Err(ReplError::Protocol(format!(
-                    "driver exited unexpectedly: {}",
-                    stderr.trim()
-                )));
-            };
-            if line.trim().is_empty() {
-                continue;
-            }
-            let frame: DriverFrame = serde_json::from_str(&line)
-                .map_err(|e| ReplError::Protocol(format!("bad driver frame ({e}): {line}")))?;
-            if stop(&frame) {
-                return Ok(frame);
-            }
-            match frame {
-                DriverFrame::Subcall {
-                    id,
-                    kind,
-                    prompt,
-                    model,
-                    name,
-                    args,
-                    kwargs,
-                } => {
-                    let request = match kind.as_str() {
-                        "llm" => SubcallRequest::Llm {
-                            prompt: prompt.unwrap_or_default(),
-                            model,
-                        },
-                        "rlm" => SubcallRequest::Rlm {
-                            prompt: prompt.unwrap_or_default(),
-                            model,
-                        },
-                        "fn" => SubcallRequest::HostFn {
-                            name: name.unwrap_or_default(),
-                            args: args.unwrap_or_else(|| Value::Array(Vec::new())),
-                            kwargs: kwargs.unwrap_or_else(|| json!({})),
-                        },
-                        "ext_tool" => SubcallRequest::ExtTool {
-                            name: name.ok_or_else(|| {
-                                ReplError::Protocol("ext_tool missing name".into())
-                            })?,
-                            args: args.unwrap_or_else(|| Value::Object(Default::default())),
-                        },
-                        other => {
-                            let frame = json!({"type": "subcall_result", "id": id, "error": format!("unknown subcall kind: {other}")});
-                            Self::send(&proc.stdin, &frame).await?;
-                            continue;
-                        }
-                    };
-                    let handler = handler.clone();
-                    let stdin = proc.stdin.clone();
-                    let semaphore = proc.semaphore.clone();
-                    tokio::spawn(async move {
-                        let _permit = semaphore.acquire_owned().await;
-                        let frame = match handler.handle(request).await {
-                            Ok(SubcallResponse::Text(text)) => {
-                                json!({"type": "subcall_result", "id": id, "text": text})
-                            }
-                            Ok(SubcallResponse::Value(value)) => {
-                                json!({"type": "subcall_result", "id": id, "value": value})
-                            }
-                            Err(error) => {
-                                json!({"type": "subcall_result", "id": id, "error": error})
-                            }
-                        };
-                        let _ = Self::send(&stdin, &frame).await;
-                    });
-                }
-                DriverFrame::ToolEvent {
-                    phase,
-                    name,
-                    call_id,
-                    args,
-                    result,
-                    error,
-                    duration,
-                } => {
-                    let event = match phase.as_str() {
-                        "start" => ToolEvent::Start {
-                            call_id,
-                            name,
-                            args: args.unwrap_or_else(|| json!({})),
-                        },
-                        "end" => ToolEvent::End {
-                            call_id,
-                            name,
-                            result: result.unwrap_or_default(),
-                            error,
-                            duration: Duration::from_secs_f64(duration.unwrap_or(0.0)),
-                        },
-                        _ => continue,
-                    };
-                    handler.notify_tool(event);
-                }
-                DriverFrame::Fatal { error } => {
-                    return Err(ReplError::Protocol(format!("driver error: {error}")));
-                }
-                other => {
-                    return Err(ReplError::Protocol(format!(
-                        "unexpected driver frame: {other:?}"
-                    )));
-                }
-            }
-        }
-    }
-
     async fn spawn(&mut self) -> Result<(), ReplError> {
         let setup = self.setup.clone().ok_or(ReplError::NotStarted)?;
 
@@ -189,6 +75,7 @@ impl PythonRepl {
             .prefix("phi-repl-driver-")
             .suffix(".py")
             .tempfile()?;
+        use std::io::Write;
         driver.write_all(DRIVER.as_bytes())?;
         driver.flush()?;
         let driver = driver.into_temp_path();
@@ -219,12 +106,146 @@ impl PythonRepl {
             });
         }
 
-        let mut proc = Proc {
+        let pending: PendingMap = Arc::new(Mutex::new(std::collections::HashMap::new()));
+        let semaphore = Arc::new(Semaphore::new(setup.max_concurrent_subcalls.max(1)));
+        let handler = self.handler.clone();
+        let stdin_for_reader = stdin.clone();
+        let pending_for_reader = pending.clone();
+        let semaphore_for_reader = semaphore.clone();
+
+        let reader = tokio::spawn(async move {
+            let mut lines = BufReader::new(stdout).lines();
+            loop {
+                match lines.next_line().await {
+                    Ok(Some(line)) => {
+                        if line.trim().is_empty() {
+                            continue;
+                        }
+                        let frame = match serde_json::from_str::<DriverFrame>(&line) {
+                            Ok(f) => f,
+                            Err(_) => continue,
+                        };
+                        match frame {
+                            DriverFrame::Subcall {
+                                id,
+                                kind,
+                                prompt,
+                                model,
+                                name,
+                                args,
+                                kwargs,
+                            } => {
+                                let request = match kind.as_str() {
+                                    "llm" => SubcallRequest::Llm {
+                                        prompt: prompt.unwrap_or_default(),
+                                        model,
+                                    },
+                                    "rlm" => SubcallRequest::Rlm {
+                                        prompt: prompt.unwrap_or_default(),
+                                        model,
+                                    },
+                                    "fn" => SubcallRequest::HostFn {
+                                        name: name.unwrap_or_default(),
+                                        args: args.unwrap_or_else(|| Value::Array(Vec::new())),
+                                        kwargs: kwargs.unwrap_or_else(|| json!({})),
+                                    },
+                                    "ext_tool" => SubcallRequest::ExtTool {
+                                        name: match name {
+                                            Some(n) => n,
+                                            None => {
+                                                let frame = json!({"type": "subcall_result", "id": id, "error": "ext_tool missing name"});
+                                                let _ = Self::send(&stdin_for_reader, &frame).await;
+                                                continue;
+                                            }
+                                        },
+                                        args: args.unwrap_or_else(|| Value::Object(Default::default())),
+                                    },
+                                    other => {
+                                        let frame = json!({"type": "subcall_result", "id": id, "error": format!("unknown subcall kind: {other}")});
+                                        let _ = Self::send(&stdin_for_reader, &frame).await;
+                                        continue;
+                                    }
+                                };
+                                let handler = handler.clone();
+                                let stdin = stdin_for_reader.clone();
+                                let semaphore = semaphore_for_reader.clone();
+                                tokio::spawn(async move {
+                                    let _permit = semaphore.acquire_owned().await;
+                                    let frame = match handler.handle(request).await {
+                                        Ok(SubcallResponse::Text(text)) => {
+                                            json!({"type": "subcall_result", "id": id, "text": text})
+                                        }
+                                        Ok(SubcallResponse::Value(value)) => {
+                                            json!({"type": "subcall_result", "id": id, "value": value})
+                                        }
+                                        Err(error) => {
+                                            json!({"type": "subcall_result", "id": id, "error": error})
+                                        }
+                                    };
+                                    let _ = Self::send(&stdin, &frame).await;
+                                });
+                            }
+                            DriverFrame::ToolEvent {
+                                phase,
+                                name,
+                                call_id,
+                                args,
+                                result,
+                                error,
+                                duration,
+                            } => {
+                                let event = match phase.as_str() {
+                                    "start" => ToolEvent::Start {
+                                        call_id,
+                                        name,
+                                        args: args.unwrap_or_else(|| json!({})),
+                                    },
+                                    "end" => ToolEvent::End {
+                                        call_id,
+                                        name,
+                                        result: result.unwrap_or_default(),
+                                        error,
+                                        duration: Duration::from_secs_f64(duration.unwrap_or(0.0)),
+                                    },
+                                    _ => continue,
+                                };
+                                handler.notify_tool(event);
+                            }
+                            DriverFrame::ExecResult { id, .. } | DriverFrame::AnswerState { id, .. } => {
+                                let mut p = pending_for_reader.lock().await;
+                                if let Some(tx) = p.remove(&id) {
+                                    let _ = tx.send(frame);
+                                }
+                            }
+                            DriverFrame::Ready { .. } => {
+                                let mut p = pending_for_reader.lock().await;
+                                // Ready frame: deliver to the startup waiter (id=0)
+                                if let Some(tx) = p.remove(&0u64) {
+                                    let _ = tx.send(frame);
+                                }
+                            }
+                            // Fatal handled silently in reader to avoid double-respawn panics
+                            DriverFrame::Fatal { .. } => {}
+                        }
+                    }
+                    Ok(None) => break,
+                    Err(_) => break,
+                }
+            }
+            // Drain any pending waiters on EOF/Error
+            let mut p = pending_for_reader.lock().await;
+            for (_, tx) in p.drain() {
+                let _ = tx.send(DriverFrame::Fatal { error: "driver exited".into() });
+            }
+        });
+
+        let proc = Proc {
             child,
             stdin,
-            lines: BufReader::new(stdout).lines(),
+            pending,
             stderr,
-            semaphore: Arc::new(Semaphore::new(setup.max_concurrent_subcalls.max(1))),
+            _semaphore: semaphore,
+            _reader: reader,
             _driver: driver,
         };
 
@@ -240,15 +261,14 @@ impl PythonRepl {
         });
         Self::send(&proc.stdin, &frame).await?;
 
-        let handler = self.handler.clone();
-        let ready = tokio::time::timeout(
-            SETUP_TIMEOUT,
-            Self::pump(&mut proc, &handler, |f| {
-                matches!(f, DriverFrame::Ready { .. })
-            }),
-        )
-        .await
-        .map_err(|_| ReplError::Timeout(SETUP_TIMEOUT))??;
+        let (tx, rx) = oneshot::channel::<DriverFrame>();
+        proc.pending.lock().await.insert(0, tx);
+        
+        let ready = tokio::time::timeout(SETUP_TIMEOUT, rx).await;
+        let ready = ready
+            .map_err(|_| ReplError::Timeout(SETUP_TIMEOUT))?
+            .map_err(|_| ReplError::Protocol("driver dropped ready sender".into()))?;
+
         if let DriverFrame::Ready { error: Some(error) } = ready {
             return Err(ReplError::Protocol(format!("setup failed: {error}")));
         }
@@ -264,11 +284,43 @@ impl PythonRepl {
         }
     }
 
-    /// Best-effort kill + fresh spawn with the stored setup.
     async fn respawn(&mut self) {
         self.kill_current().await;
         if self.spawn().await.is_err() {
             self.proc = None;
+        }
+    }
+
+    async fn wait_frame(&mut self, id: u64, timeout: Duration, frame_kind: &str) -> Result<DriverFrame, ReplError> {
+        let proc = self.proc.as_mut().ok_or(ReplError::NotStarted)?;
+        let (tx, rx) = oneshot::channel::<DriverFrame>();
+        proc.pending.lock().await.insert(id, tx);
+
+        let result = tokio::time::timeout(timeout, rx).await;
+        match result {
+            Ok(Ok(frame)) => {
+                if frame_kind == "exec" {
+                    if let DriverFrame::Fatal { error } = &frame {
+                        let stderr = proc.stderr.lock().unwrap().clone();
+                        self.respawn().await;
+                        return Err(ReplError::Crashed(format!("{}: {}", error, stderr.trim())));
+                    }
+                }
+                Ok(frame)
+            }
+            Ok(Err(_)) => {
+                let stderr = self.proc.as_ref().map(|p| p.stderr.lock().unwrap().clone()).unwrap_or_default();
+                self.respawn().await;
+                Err(ReplError::Protocol(format!("driver exited unexpectedly: {}", stderr.trim())))
+            }
+            Err(_) => {
+                // Remove the pending entry on timeout to avoid leaks
+                if let Some(proc) = self.proc.as_ref() {
+                    proc.pending.lock().await.remove(&id);
+                }
+                self.respawn().await;
+                Err(ReplError::Timeout(timeout))
+            }
         }
     }
 }
@@ -285,7 +337,6 @@ impl ReplEnv for PythonRepl {
         let start = Instant::now();
         self.next_id += 1;
         let id = self.next_id;
-        let handler = self.handler.clone();
         let proc = self.proc.as_mut().ok_or(ReplError::NotStarted)?;
 
         if let Err(e) = Self::send(
@@ -299,25 +350,18 @@ impl ReplEnv for PythonRepl {
             return Err(ReplError::Crashed(format!("{e}: {}", stderr.trim())));
         }
 
-        let outcome = tokio::time::timeout(
-            timeout + EXEC_GRACE,
-            Self::pump(
-                proc,
-                &handler,
-                |f| matches!(f, DriverFrame::ExecResult { id: rid, .. } if *rid == id),
-            ),
-        )
-        .await;
+        let wait_timeout = timeout + EXEC_GRACE;
+        let frame = self.wait_frame(id, wait_timeout, "exec").await?;
 
-        match outcome {
-            Ok(Ok(DriverFrame::ExecResult {
+        match frame {
+            DriverFrame::ExecResult {
                 stdout,
                 stderr,
                 vars,
                 final_answer,
                 truncated,
                 ..
-            })) => Ok(ReplResult {
+            } => Ok(ReplResult {
                 stdout,
                 stderr,
                 vars,
@@ -325,40 +369,19 @@ impl ReplEnv for PythonRepl {
                 duration: start.elapsed(),
                 truncated,
             }),
-            Ok(Ok(_)) => unreachable!("pump stop predicate guarantees ExecResult"),
-            Ok(Err(e)) => {
-                self.respawn().await;
-                Err(match e {
-                    ReplError::Protocol(msg) => ReplError::Crashed(msg),
-                    other => other,
-                })
-            }
-            Err(_) => {
-                self.respawn().await;
-                Err(ReplError::Timeout(timeout))
-            }
+            _ => Err(ReplError::Protocol("unexpected frame for exec".into())),
         }
     }
 
     async fn answer_state(&mut self) -> Result<AnswerState, ReplError> {
         self.next_id += 1;
         let id = self.next_id;
-        let handler = self.handler.clone();
         let proc = self.proc.as_mut().ok_or(ReplError::NotStarted)?;
         Self::send(&proc.stdin, &json!({"type": "answer_state", "id": id})).await?;
-        let frame = tokio::time::timeout(
-            ANSWER_STATE_TIMEOUT,
-            Self::pump(
-                proc,
-                &handler,
-                |f| matches!(f, DriverFrame::AnswerState { id: rid, .. } if *rid == id),
-            ),
-        )
-        .await
-        .map_err(|_| ReplError::Timeout(ANSWER_STATE_TIMEOUT))??;
+        let frame = self.wait_frame(id, ANSWER_STATE_TIMEOUT, "answer").await?;
         match frame {
             DriverFrame::AnswerState { content, ready, .. } => Ok(AnswerState { content, ready }),
-            _ => unreachable!("pump stop predicate guarantees AnswerState"),
+            _ => Err(ReplError::Protocol("unexpected frame for answer_state".into())),
         }
     }
 

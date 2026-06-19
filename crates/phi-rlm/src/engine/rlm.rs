@@ -335,7 +335,7 @@ impl Rlm {
                 if let Ok(completion) = &result {
                     // Catch-up for non-streaming models (no deltas) and any
                     // trailing block: same regex, same order, deduped by count.
-                    let mut sent = sent.lock().unwrap();
+                    let mut sent = sent.lock().unwrap_or_else(|e| e.into_inner());
                     for code in find_code_blocks(&completion.text).into_iter().skip(*sent) {
                         let _ = code_tx.send(Some(code));
                         *sent += 1;
@@ -719,10 +719,10 @@ impl Rlm {
                 iteration,
                 delta: delta.to_owned(),
             });
-            let mut buffer = buffer.lock().unwrap();
+            let mut buffer = buffer.lock().unwrap_or_else(|e| e.into_inner());
             buffer.push_str(delta);
             let blocks = find_code_blocks(&buffer);
-            let mut sent = sent.lock().unwrap();
+            let mut sent = sent.lock().unwrap_or_else(|e| e.into_inner());
             for code in blocks.into_iter().skip(*sent) {
                 let _ = code_tx.send(Some(code));
                 *sent += 1;

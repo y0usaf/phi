@@ -2,6 +2,8 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
+use tokio::sync::Mutex as TokioMutex;
+
 use anyhow::{Result, anyhow};
 use phi_ext::{
     CommandInvocation, CommandOutput, CommandSpec, EventHandlerRegistration, EventKind,
@@ -18,7 +20,7 @@ pub struct AppRuntime {
     pub(crate) commands: BTreeMap<String, CommandSpec>,
     pub(crate) event_handlers: Vec<EventHandlerRegistration>,
     notifications: Mutex<Vec<String>>,
-    status: Mutex<BTreeMap<String, String>>,
+    status: TokioMutex<BTreeMap<String, String>>,
 }
 
 impl AppRuntime {
@@ -38,7 +40,7 @@ impl AppRuntime {
             commands,
             event_handlers,
             notifications: Mutex::new(Vec::new()),
-            status: Mutex::new(BTreeMap::new()),
+            status: TokioMutex::new(BTreeMap::new()),
         }
     }
 
@@ -155,18 +157,18 @@ impl AppRuntime {
 
     // ── Status ────────────────────────────────────────────────────────────────
 
-    pub fn set_status(&self, key: impl Into<String>, text: impl Into<String>) {
-        self.status.lock().unwrap().insert(key.into(), text.into());
+    pub async fn set_status(&self, key: impl Into<String>, text: impl Into<String>) {
+        self.status.lock().await.insert(key.into(), text.into());
     }
 
-    pub fn clear_status(&self, key: impl Into<String>) {
-        self.status.lock().unwrap().remove(&key.into());
+    pub async fn clear_status(&self, key: impl Into<String>) {
+        self.status.lock().await.remove(&key.into());
     }
 
-    pub fn status_snapshot(&self) -> Vec<(String, String)> {
+    pub async fn status_snapshot(&self) -> Vec<(String, String)> {
         self.status
             .lock()
-            .unwrap()
+            .await
             .iter()
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect()

@@ -120,16 +120,16 @@ struct CleanupEntry {
 
 /// The hook registry.
 pub struct PhiHooks {
-    observers: Mutex<Vec<(SourceInfo, HookObserver)>>,
-    handlers: RwLock<BTreeMap<TypeId, Vec<HandlerEntry>>>,
+    observers: Arc<Mutex<Vec<(SourceInfo, HookObserver)>>>,
+    handlers: Arc<RwLock<BTreeMap<TypeId, Vec<HandlerEntry>>>>,
     cleanups: StdMutex<Vec<CleanupEntry>>,
 }
 
 impl PhiHooks {
     pub fn new() -> Self {
         Self {
-            observers: Mutex::new(Vec::new()),
-            handlers: RwLock::new(BTreeMap::new()),
+            observers: Arc::new(Mutex::new(Vec::new())),
+            handlers: Arc::new(RwLock::new(BTreeMap::new())),
             cleanups: StdMutex::new(Vec::new()),
         }
     }
@@ -140,13 +140,19 @@ impl PhiHooks {
         let mut guard = self.observers.lock().await;
         let idx = guard.len();
         guard.push((SourceInfo::default(), observer));
-        let observers: *const Mutex<Vec<(SourceInfo, HookObserver)>> = &self.observers as *const _;
+        // Hold a Weak reference so the closure can detect if `PhiHooks` has
+        // been dropped before attempting to access the observers list.
+        let observers = Arc::downgrade(&self.observers);
         drop(guard);
         move || {
-            if let Ok(mut g) = unsafe { &*observers }.try_lock()
-                && let Some(entry) = g.get_mut(idx) {
-                    entry.1 = Arc::new(|_| Ok(()));
-                }
+            if let Some(observers) = observers.upgrade() {
+                if let Ok(mut g) = observers.try_lock()
+                    && let Some(entry) = g.get_mut(idx) {
+                        entry.1 = Arc::new(|_| Ok(()));
+                    }
+            }
+            // If upgrade returns None, the PhiHooks has been dropped already;
+            // nothing to clean up.
         }
     }
 
@@ -164,16 +170,20 @@ impl PhiHooks {
             source,
             handler: Arc::new(handler),
         });
-        let handlers: *const RwLock<BTreeMap<TypeId, Vec<HandlerEntry>>> =
-            &self.handlers as *const _;
+        // Hold a weak reference similar to observe.
+        let handlers = Arc::downgrade(&self.handlers);
         drop(guard);
         move || {
-            if let Ok(mut g) = unsafe { &*handlers }.try_write()
-                && let Some(vec) = g.get_mut(&type_id)
-                    && let Some(entry) = vec.get_mut(idx) {
-                        let noop: HookHandler<E> = Arc::new(|_: &E| Ok(None));
-                        entry.handler = Arc::new(noop) as Arc<dyn Any + Send + Sync>;
-                    }
+            if let Some(handlers) = handlers.upgrade() {
+                if let Ok(mut g) = handlers.try_write()
+                    && let Some(vec) = g.get_mut(&type_id)
+                        && let Some(entry) = vec.get_mut(idx) {
+                            let noop: HookHandler<E> = Arc::new(|_: &E| Ok(None));
+                            entry.handler = Arc::new(noop) as Arc<dyn Any + Send + Sync>;
+                        }
+            }
+            // If upgrade returns None, the PhiHooks has been dropped already;
+            // nothing to clean up.
         }
     }
 

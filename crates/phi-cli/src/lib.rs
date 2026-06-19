@@ -64,10 +64,6 @@ pub struct Args {
     #[arg(long)]
     pub python: Option<String>,
 
-    /// API key for the root model's provider (this run only, not persisted).
-    #[arg(long, value_name = "KEY")]
-    pub api_key: Option<String>,
-
     /// OAuth login and exit: anthropic | openai.
     #[arg(long, value_name = "PROVIDER")]
     pub login: Option<String>,

@@ -2,10 +2,10 @@ use std::fmt;
 use std::sync::Arc;
 
 use anyhow::Result;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum EventKind {
     RuntimeStart,
     SessionStart,
@@ -44,7 +44,7 @@ impl fmt::Display for EventKind {
     }
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum EventPayload {
     Empty,
     SessionStart {
@@ -82,7 +82,7 @@ pub enum EventPayload {
     },
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LifecycleEvent {
     pub kind: EventKind,
     pub payload: EventPayload,
@@ -109,16 +109,22 @@ pub enum EventReturn {
     },
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum InputActionKind {
     Continue,
     Transform,
     Handled,
 }
 
+fn default_handler() -> EventHandler {
+    Arc::new(|_event| Ok(None))
+}
+
+#[derive(Deserialize)]
 pub struct EventHandlerRegistration {
     pub event: EventKind,
     pub label: String,
+    #[serde(skip, default = "default_handler")]
     pub handler: EventHandler,
 }
 

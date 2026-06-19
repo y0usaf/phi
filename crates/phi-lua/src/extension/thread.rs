@@ -2,6 +2,20 @@ use anyhow::Result;
 
 use super::bridge::{call_lua_command, call_lua_event};
 
+// ---------------------------------------------------------------------------
+// Watchdog & Timeout Configuration
+// ---------------------------------------------------------------------------
+
+/// Check the deadline every N VM instructions.
+const NTH_INSTRUCTION: u32 = 1000;
+
+/// Default timeout in milliseconds.
+const DEFAULT_TIMEOUT_MS: i64 = 5000;
+
+// ---------------------------------------------------------------------------
+// Lua global setup
+// ---------------------------------------------------------------------------
+
 pub enum LuaMsg {
     CallEvent {
         event_name: String,
@@ -15,22 +29,81 @@ pub enum LuaMsg {
     },
 }
 
-// ---------------------------------------------------------------------------
-// Lua global setup
-// ---------------------------------------------------------------------------
+struct SendableLua {
+    lua: mlua::Lua,
+    /// The thread that owns this Lua VM. All access must come from this
+    /// thread; checked at runtime in [`SendableLua::get`].
+    /// Set to `None` until the owning thread initialises it via
+    /// [`SendableLua::init_thread_id`].
+    thread_id: std::sync::OnceLock<std::thread::ThreadId>,
+}
 
-struct SendableLua(mlua::Lua);
-
-// SAFETY: See the invariant above. The Rc inside mlua::Lua is never shared
-// across thread boundaries; `SendableLua` enforces single-threaded ownership
-// by construction — it is created once, immediately moved into the spawned
-// thread, and never cloned.
+// # Safety
+//
+// `mlua::Lua` (without the `send` feature) is `!Send` because it internally
+// uses `Rc` and other non-thread-safe types.  `SendableLua` asserts `Send`
+// so that the value can be moved across thread boundaries **exactly once**:
+// from the thread that creates it into the dedicated Lua owner thread.
+//
+// The contract is:
+//
+// 1. `SendableLua::new` must be called **after** the `thread::spawn` call
+//    (or from within the spawned thread), so that `thread_id` records the
+//    owning thread.
+// 2. The VM must never be cloned or shared; there is exactly one owner.
+// 3. All subsequent access to the Lua VM must come from the same thread
+//    recorded in `thread_id`.  `SendableLua::get` enforces this with a
+//    runtime `assert!`.
+// 4. Communication with the owning thread is exclusively through the
+//    `mpsc` channel (serialised), so no two threads ever access the VM
+//    concurrently.
+//
+// Violating any of these invariants is undefined behaviour.
 unsafe impl Send for SendableLua {}
 
+impl SendableLua {
+    /// Create a `SendableLua` wrapping the given Lua VM.  The thread id
+    /// is not yet set; call [`SendableLua::init_thread_id`] from the
+    /// dedicated owner thread before any access.
+    fn new(lua: mlua::Lua) -> Self {
+        Self {
+            lua,
+            thread_id: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// Record the **current** thread as the exclusive owner.  Must be
+    /// called once, from the dedicated Lua thread, before any `get()`.
+    fn init_thread_id(&self) {
+        self.thread_id
+            .set(std::thread::current().id())
+            .expect("init_thread_id called more than once");
+    }
+
+    /// Access the inner `Lua` VM, asserting that the caller is on the
+    /// owning thread.
+    fn get(&self) -> &mlua::Lua {
+        let id = self
+            .thread_id
+            .get()
+            .expect("SendableLua accessed before init_thread_id was called");
+        assert!(
+            std::thread::current().id() == *id,
+            "SendableLua accessed from a thread other than its dedicated owner;              this is undefined behaviour for the !Send Rc-based mlua::Lua"
+        );
+        &self.lua
+    }
+}
+
 pub(super) fn spawn_lua_thread(lua: mlua::Lua, rx: std::sync::mpsc::Receiver<LuaMsg>) {
-    let sendable = SendableLua(lua);
+    // Wrap in SendableLua *before* the spawn so the unsafe Send impl
+    // applies; the raw !Send mlua::Lua is never moved across the
+    // boundary alone.
+    let sendable = SendableLua::new(lua);
     std::thread::spawn(move || {
-        lua_thread_loop(sendable, rx);
+        // Record this thread as the exclusive owner before any VM access.
+        sendable.init_thread_id();
+        lua_thread_loop(&sendable, rx);
     });
 }
 
@@ -38,8 +111,13 @@ pub(super) fn spawn_lua_thread(lua: mlua::Lua, rx: std::sync::mpsc::Receiver<Lua
 // Lua thread loop
 // ---------------------------------------------------------------------------
 
-fn lua_thread_loop(lua: SendableLua, rx: std::sync::mpsc::Receiver<LuaMsg>) {
-    let lua = &lua.0;
+fn lua_thread_loop(lua: &SendableLua, rx: std::sync::mpsc::Receiver<LuaMsg>) {
+    let lua = lua.get();
+
+    // Allocate an atomic deadline variable for the watchdog hook.
+    // A value of 0 implies no deadline or cleared timeout.
+    let deadline = std::sync::Arc::new(std::sync::atomic::AtomicI64::new(0));
+
     loop {
         match rx.recv() {
             Ok(LuaMsg::CallEvent {
@@ -47,10 +125,16 @@ fn lua_thread_loop(lua: SendableLua, rx: std::sync::mpsc::Receiver<LuaMsg>) {
                 payload_json,
                 reply,
             }) => {
-                let _ = reply.send(call_lua_event(lua, &event_name, &payload_json));
+                let res = run_with_timeout(lua, &deadline, DEFAULT_TIMEOUT_MS, || {
+                    call_lua_event(lua, &event_name, &payload_json)
+                });
+                let _ = reply.send(res);
             }
             Ok(LuaMsg::InvokeCommand { name, args, reply }) => {
-                let _ = reply.send(call_lua_command(lua, &name, &args));
+                let res = run_with_timeout(lua, &deadline, DEFAULT_TIMEOUT_MS, || {
+                    call_lua_command(lua, &name, &args)
+                });
+                let _ = reply.send(res);
             }
             Err(_) => break,
         }
@@ -60,3 +144,67 @@ fn lua_thread_loop(lua: SendableLua, rx: std::sync::mpsc::Receiver<LuaMsg>) {
 // ---------------------------------------------------------------------------
 // Call helpers
 // ---------------------------------------------------------------------------
+
+/// Executes a Lua call with a watchdog timeout.
+///
+/// This sets a shared deadline, installs an instruction-counting hook to check
+/// the deadline, runs the call, and then guarantees the hook is removed and
+/// deadline cleared, even if a timeout or error occurs.
+fn run_with_timeout<F>(
+    lua: &mlua::Lua,
+    deadline: &std::sync::Arc<std::sync::atomic::AtomicI64>,
+    timeout_ms: i64,
+    f: F,
+) -> Result<Option<String>>
+where
+    F: FnOnce() -> Result<Option<String>>,
+{
+    // Calculate and set the new deadline
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    let new_deadline = now_ms.saturating_add(timeout_ms);
+    deadline.store(new_deadline, std::sync::atomic::Ordering::Relaxed);
+
+    // Install the instruction hook
+    let hook_triggers = mlua::HookTriggers::new().every_nth_instruction(NTH_INSTRUCTION);
+    let deadline_clone = std::sync::Arc::clone(deadline);
+
+    lua.set_hook(hook_triggers, move |_lua, _debug| {
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+
+        if current_time >= deadline_clone.load(std::sync::atomic::Ordering::Relaxed) {
+            // Returning an error from the hook aborts the Lua execution and
+            // causes the `f()` call to return an `mlua::Error`.
+            return Err(mlua::Error::external(anyhow::anyhow!(
+                "Lua execution timed out"
+            )));
+        }
+        Ok(mlua::VmState::Continue)
+    })?;
+
+    // Execute the closure containing the Lua call.
+    // Ensure hook removal and deadline clearing regardless of the outcome.
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+
+    // Remove hook and clear deadline whether the call succeeded, errored, or panicked.
+    lua.remove_hook();
+    deadline.store(0, std::sync::atomic::Ordering::Relaxed);
+
+    // Propagate panic if it occurred, otherwise process the result.
+    let res = res.unwrap_or_else(|p| std::panic::resume_unwind(p));
+
+    // Bubble up timeout or execution errors as anyhow::Error
+    res.map_err(|e| {
+        let msg = e.to_string();
+        if msg.contains("Lua execution timed out") {
+            anyhow::anyhow!("Lua timeout watchdog triggered")
+        } else {
+            e
+        }
+    })
+}
