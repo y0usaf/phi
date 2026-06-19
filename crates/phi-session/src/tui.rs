@@ -62,6 +62,13 @@ const USER_BORDER: &str = "\x1b[38;2;96;122;196m";
 const ASSISTANT_BORDER: &str = "\x1b[38;2;84;91;116m";
 const CHROME_BORDER: &str = "\x1b[38;2;82;88;110m";
 
+// Additional ANSI colors for the forgecode-style chrome.
+const LIGHT_GREEN: &str = "\x1b[92m";
+const LIGHT_GRAY: &str = "\x1b[37m";
+const DARK_GRAY: &str = "\x1b[90m";
+const LIGHT_MAGENTA: &str = "\x1b[95m";
+
+#[allow(dead_code)]
 // Thinking-level border colors for the input box, mirroring pi's dark theme.
 const THINKING_BORDER_OFF: &str = "\x1b[90m"; // darkGray
 const THINKING_BORDER_MINIMAL: &str = "\x1b[38;2;110;110;110m"; // #6e6e6e
@@ -71,6 +78,7 @@ const THINKING_BORDER_HIGH: &str = "\x1b[38;2;178;148;187m"; // #b294bb
 const THINKING_BORDER_XHIGH: &str = "\x1b[38;2;209;131;232m"; // #d183e8
 
 /// Returns the input-box border color for a given thinking level.
+#[allow(dead_code)]
 fn thinking_border_color(level: ThinkingLevel) -> &'static str {
     match level {
         ThinkingLevel::Off => THINKING_BORDER_OFF,
@@ -79,6 +87,85 @@ fn thinking_border_color(level: ThinkingLevel) -> &'static str {
         ThinkingLevel::Medium => THINKING_BORDER_MEDIUM,
         ThinkingLevel::High => THINKING_BORDER_HIGH,
         ThinkingLevel::XHigh => THINKING_BORDER_XHIGH,
+    }
+}
+
+
+// ── Forgecode-style chrome symbols ──────────────────────────────────────
+//
+// The chrome prompt uses Nerd Font glyphs (folder, branch, chevron, etc.)
+// to match the reference forgecode prompt.  Terminal capability queries
+// cannot detect whether a Nerd Font is installed, so detection is manual:
+// set `PHI_NO_NERD_FONTS=1` to fall back to plain ASCII equivalents.
+//
+// Nerd Font symbols — left prompt
+const NERD_DIR_SYMBOL: &str = "\u{ea83}";      // folder icon
+const NERD_BRANCH_SYMBOL: &str = "\u{f418}"; //  branch icon
+const NERD_SUCCESS_SYMBOL: &str = "\u{f013e}"; //  chevron
+
+// Nerd Font symbols — right prompt
+const NERD_AGENT_SYMBOL: &str = "\u{f167a}";
+const NERD_MODEL_SYMBOL: &str = "\u{ec19}";
+const NERD_COST_SYMBOL: &str = "\u{f155}"; // dollar sign
+
+// ASCII fallbacks
+const ASCII_DIR_SYMBOL: &str = "./";
+const ASCII_BRANCH_SYMBOL: &str = "#";
+const ASCII_SUCCESS_SYMBOL: &str = ">";
+const ASCII_AGENT_SYMBOL: &str = "@";
+const ASCII_MODEL_SYMBOL: &str = "m";
+const ASCII_COST_SYMBOL: &str = "$";
+
+/// Width at which effort collapses from full label to 3-letter abbreviation.
+const WIDE_TERMINAL_THRESHOLD: usize = 100;
+
+/// Whether Nerd Font glyphs are enabled.  Detection is manual: terminals
+/// don't expose font coverage, and cursor-position probing can't distinguish
+/// a real glyph from a fallback box.  Set `PHI_NO_NERD_FONTS=1` for ASCII.
+fn nerd_fonts_enabled() -> bool {
+    !matches!(
+        std::env::var("PHI_NO_NERD_FONTS").as_deref(),
+        Ok("1") | Ok("true")
+    )
+}
+
+fn dir_symbol() -> &'static str {
+    if nerd_fonts_enabled() { NERD_DIR_SYMBOL } else { ASCII_DIR_SYMBOL }
+}
+fn branch_symbol() -> &'static str {
+    if nerd_fonts_enabled() { NERD_BRANCH_SYMBOL } else { ASCII_BRANCH_SYMBOL }
+}
+fn success_symbol() -> &'static str {
+    if nerd_fonts_enabled() { NERD_SUCCESS_SYMBOL } else { ASCII_SUCCESS_SYMBOL }
+}
+fn agent_symbol() -> &'static str {
+    if nerd_fonts_enabled() { NERD_AGENT_SYMBOL } else { ASCII_AGENT_SYMBOL }
+}
+fn model_symbol() -> &'static str {
+    if nerd_fonts_enabled() { NERD_MODEL_SYMBOL } else { ASCII_MODEL_SYMBOL }
+}
+fn cost_symbol() -> &'static str {
+    if nerd_fonts_enabled() { NERD_COST_SYMBOL } else { ASCII_COST_SYMBOL }
+}
+
+/// Formats a [`ThinkingLevel`] as an uppercase effort label, collapsing to
+/// the first 3 characters on narrow terminals (< 100 cols).  `Off` -> `None`.
+fn effort_label(level: ThinkingLevel, width: usize) -> Option<String> {
+    if level == ThinkingLevel::Off {
+        return None;
+    }
+    let full = match level {
+        ThinkingLevel::Off => "OFF",
+        ThinkingLevel::Minimal => "MINIMAL",
+        ThinkingLevel::Low => "LOW",
+        ThinkingLevel::Medium => "MEDIUM",
+        ThinkingLevel::High => "HIGH",
+        ThinkingLevel::XHigh => "XHIGH",
+    };
+    if width >= WIDE_TERMINAL_THRESHOLD {
+        Some(full.to_string())
+    } else {
+        Some(full.chars().take(3).collect())
     }
 }
 
@@ -218,6 +305,7 @@ fn strip_tool_echoes(stdout: &str, tools: &[session::ToolCall], exec_depth: usiz
         .join("\n")
 }
 
+#[allow(dead_code)]
 fn panel_border(label: &str, label_plain: &str, width: usize, color: &str) -> String {
     let fill = width
         .saturating_sub(phi_tui::display_cell_width(label_plain) + 5)
@@ -225,6 +313,7 @@ fn panel_border(label: &str, label_plain: &str, width: usize, color: &str) -> St
     format!("{color}┌─ {label}{color} {}┐{RESET}", "─".repeat(fill))
 }
 
+#[allow(dead_code)]
 fn panel_row(text: &str, width: usize, border: &str) -> String {
     let inner = width.saturating_sub(2).max(1);
     let body = format!(" {text}");
@@ -232,6 +321,7 @@ fn panel_row(text: &str, width: usize, border: &str) -> String {
     format!("{border}│{RESET}{body}{RESET}{:pad$}{border}│{RESET}", "")
 }
 
+#[allow(dead_code)]
 fn panel_bottom(width: usize, color: &str) -> String {
     format!(
         "{color}└{}┘{RESET}",
@@ -239,6 +329,7 @@ fn panel_bottom(width: usize, color: &str) -> String {
     )
 }
 
+#[allow(dead_code)]
 fn fitted_panel_width(label_plain: &str, max_width: usize, body: &[String]) -> usize {
     let label_width = phi_tui::display_cell_width(label_plain).saturating_add(6);
     let body_width = body
@@ -249,95 +340,127 @@ fn fitted_panel_width(label_plain: &str, max_width: usize, body: &[String]) -> u
     label_width.max(body_width).min(max_width.max(1)).max(4)
 }
 
-fn render_panel(
-    label: &str,
-    label_plain: &str,
-    max_width: usize,
-    color: &str,
-    body: &[String],
-) -> Vec<String> {
-    let width = fitted_panel_width(label_plain, max_width, body);
-    let inner = width.saturating_sub(4).max(1);
-    let mut out = Vec::new();
-    out.push(panel_border(label, label_plain, width, color));
-    if body.is_empty() {
-        out.push(panel_row("", width, color));
-    } else {
-        for line in body {
-            let rows = wrap_ansi(line, inner);
-            if rows.is_empty() {
-                out.push(panel_row("", width, color));
-            } else {
-                for row in rows {
-                    out.push(panel_row(&row, width, color));
-                }
-            }
-        }
-    }
-    out.push(panel_bottom(width, color));
-    out
-}
-
-/// Label (colored, plain) for the outer `repl` panel. With a turn number the
-/// committed/live block reads `repl · turn N` (the depth-0 `IterationStart`
-/// handler's count); `None` (e.g. an unevaluated streamed preview) stays plain
-/// `repl`. The colored and plain forms share the same visible text so the panel
-/// border widths line up.
-fn repl_panel_label(turn: Option<usize>) -> (String, String) {
+/// Plain title for the `repl` block. With a turn number the committed/live
+/// block reads `repl · turn N` (the depth-0 `IterationStart` handler's count);
+/// `None` (e.g. an unevaluated streamed preview) stays plain `repl`.
+fn repl_block_title(turn: Option<usize>) -> String {
     match turn {
-        Some(n) => (
-            format!("{PANEL_REPL}repl{RESET} {PANEL_REPL}· turn {n}{RESET}"),
-            format!("repl · turn {n}"),
-        ),
-        None => (format!("{PANEL_REPL}repl{RESET}"), "repl".to_owned()),
+        Some(n) => format!("repl · turn {n}"),
+        None => "repl".to_owned(),
     }
 }
 
-fn render_repl_panel(max_width: usize, body: &[String], turn: Option<usize>) -> Vec<String> {
-    let (label, label_plain) = repl_panel_label(turn);
-    render_panel(&label, &label_plain, max_width, PANEL_REPL, body)
+/// Per-level nesting indent: two spaces per `depth`. Used to inset a flat
+/// header line under its enclosing unit (a repl block or an RLM subcall). This
+/// is the claude-code model — nesting is shown by indentation, and the `⎿`
+/// marker (see `result_prefix`) marks *result* lines, never headers. Two cells
+/// per level keeps `card_body_width(depth)` arithmetic stable across depths.
+fn indent(depth: usize) -> String {
+    " ".repeat(depth.saturating_mul(2))
 }
 
-/// Depth gutter for cards: `│ ` repeated `depth` times, rendered dim so it
-/// reads as a structural guide (the indent-tree) rather than content. Each
-/// level occupies two display cells, so the card header + body sit under the
-/// guides of every enclosing card without stealing extra width beyond the
-/// gutter itself.
-fn gutter_prefix(depth: usize) -> String {
-    format!("{DIM}{}{RESET}", "│ ".repeat(depth))
-}
-
-/// Visible width a `gutter_prefix(depth)` occupies: `depth` guide columns of
-/// two cells each. ANSI is stripped from this count.
-fn gutter_width(depth: usize) -> usize {
+/// Visible width of `indent(depth)`: `depth * 2` cells. (Equals the old
+/// `gutter_width`/`nest_width`, so depth math is unchanged.)
+fn indent_width(depth: usize) -> usize {
     depth.saturating_mul(2)
 }
 
-/// Single-header card: one titled rule (`─ {header}`) carrying the canonical
-/// anchor, then indented body lines. Replaces the four-wall Activity/Output
-/// sectioned box for tool calls, subcalls, and status rows — so the run tree
-/// reads as nested indented cards inside the outer `repl` panel, and each
-/// call's path/command appears once (in the header or the body, never both).
-/// `body` lines must already be wrapped to `card_body_width(depth)`; the card
-/// only indents them under the rule. The header and body are inset by
-/// `gutter_prefix(depth)` so nested cards read as an indent-tree of guides.
-fn render_card(header: &str, max_width: usize, depth: usize, body: &[String]) -> Vec<String> {
-    let gutter = gutter_prefix(depth);
-    let card_w = max_width.saturating_sub(gutter_width(depth)).max(1);
-    let fill = card_w
-        .saturating_sub(visible_width(header).saturating_add(3))
-        .max(1);
+/// claude-code result-line gutter: `{indent(depth)}{DIM}  ⎿  {RESET}` — a dim
+/// `⎿` (5 display cells: 2 spaces, `⎿`, 2 spaces) marking the output/result of
+/// the header above it, inset by the nesting indent. `⎿` is reserved for result
+/// lines; headers carry the `●`, not `⎿`, so the two never collide on one line.
+///
+/// Only the *first* row of a result block carries `⎿` (see `render_flat`):
+/// claude-code renders `⎿` as a single-row left flex column, so continuation
+/// rows get `result_continuation` (5 blank cells) instead — one `⎿` per result,
+/// not one per line.
+fn result_prefix(depth: usize) -> String {
+    format!("{}{DIM}  ⎿  {RESET}", indent(depth))
+}
+
+/// Continuation gutter for rows after the first in a result block: `indent(depth)`
+/// plus 5 spaces (the `  ⎿  ` width), with no `⎿` glyph. Matches claude-code's
+/// left-column layout where `⎿` only appears on row 0.
+fn result_continuation(depth: usize) -> String {
+    format!("{}     ", indent(depth))
+}
+
+/// Width of `result_prefix(depth)`'s visible cells: `indent_width(depth) + 5`
+/// (the `  ⎿  ` gutter is 5 cells). Body content is wrapped to fit after it.
+fn result_prefix_width(depth: usize) -> usize {
+    indent_width(depth) + 5
+}
+
+/// Local wall-clock `HH:MM:SS`, for the `[time]` segment of live-committed
+/// `forge_title` headers. Replay/restored rows pass `None` instead (see
+/// `forge_title`) so re-rendered transcripts don't stamp a false replay-time
+/// clock. Uses `jiff` (already a workspace dep) — not `chrono`.
+fn now_hms() -> String {
+    jiff::Zoned::now().strftime("%H:%M:%S").to_string()
+}
+
+/// forgecode-style flat header line:
+/// `{indent(depth)}{dot_color}●{RESET} {DIM}[{timestamp}] {RESET}{title}`.
+/// `timestamp == None` omits the `[time]` segment (replay/restored rows). There
+/// is no trailing `─…─` fill and no `⎿` on the header — the `●` is the left
+/// marker and the title follows it, exactly like claude-code's tool-use line
+/// (`●` gutter + command). The colored `●` carries status (success/failure/
+/// tool/subcall) instead of a separate ✓/✗ glyph.
+fn forge_title(depth: usize, dot_color: &str, timestamp: Option<&str>, title: &str) -> String {
+    let stamp = match timestamp {
+        Some(t) => format!("{DIM}[{t}] {RESET}"),
+        None => String::new(),
+    };
+    format!("{}{dot_color}●{RESET} {stamp}{title}", indent(depth))
+}
+
+/// Flat header line + `⎿`-guttered result body. The single replacement for
+/// `render_card`. `body` lines must already be wrapped to
+/// `card_body_width(depth)`. Only the first non-empty body row carries the `⎿`
+/// gutter (`result_prefix`); subsequent rows use `result_continuation` (same
+/// 5-cell width, no glyph) so a result block shows exactly one `⎿`, matching
+/// claude-code's single-row left flex column. Empty body lines collapse to the
+/// indent. If `body` is empty the header stands alone (no `⎿`).
+fn render_flat(
+    dot_color: &str,
+    timestamp: Option<&str>,
+    title: &str,
+    depth: usize,
+    body: &[String],
+) -> Vec<String> {
+    let header = forge_title(depth, dot_color, timestamp, title);
+    let blank = indent(depth);
+    let result = result_prefix(depth);
+    let cont = result_continuation(depth);
     let mut out = Vec::with_capacity(body.len().saturating_add(1));
-    out.push(format!(
-        "{gutter}{DIM}─ {RESET}{header}{RESET}{DIM} {}{RESET}",
-        "─".repeat(fill)
-    ));
-    let body_indent = format!("{gutter}  ");
+    out.push(header);
+    let mut seen_first = false;
+    for line in body {
+        if line.is_empty() {
+            out.push(blank.clone());
+        } else if !seen_first {
+            out.push(format!("{result}{line}"));
+            seen_first = true;
+        } else {
+            out.push(format!("{cont}{line}"));
+        }
+    }
+    out
+}
+
+/// REPL block: a flat `● repl · turn N` header (violet ●) + its activity rows
+/// inset by one nesting level. Unlike `render_flat`, the body rows here are
+/// *child headers* (tool/subcall `●` lines and their own `⎿` results), not
+/// results of the repl header — so they get a plain 2-space indent, not the `⎿`
+/// gutter (which would wrongly mark them as the repl block's own output).
+fn render_repl_block(body: &[String], turn: Option<usize>) -> Vec<String> {
+    let mut out = vec![forge_title(0, PANEL_REPL, None, &repl_block_title(turn))];
+    let prefix = indent(1);
     for line in body {
         out.push(if line.is_empty() {
-            body_indent.clone()
+            prefix.clone()
         } else {
-            format!("{body_indent}{line}")
+            format!("{prefix}{line}")
         });
     }
     out
@@ -1703,7 +1826,7 @@ impl Ui {
             if self.block_active {
                 blocks.push(FrameTranscriptBlock {
                     key: "live:repl-block".to_owned(),
-                    lines: render_repl_panel(self.panel_width(), &self.block, Some(self.turn)),
+                    lines: render_repl_block(&self.block, Some(self.turn)),
                     finalized: false,
                     commit_stable: false,
                     version: 0,
@@ -1734,8 +1857,7 @@ impl Ui {
             if let Some(block) = live_block_body(&self.stream) {
                 blocks.push(FrameTranscriptBlock {
                     key: "live:preview-repl".to_owned(),
-                    lines: render_repl_panel(
-                        self.panel_width(),
+                    lines: render_repl_block(
                         &self.repl_code_lines(0, block, self.code_limit()),
                         None,
                     ),
@@ -1747,6 +1869,51 @@ impl Ui {
         }
 
         blocks
+    }
+
+
+    /// Right-prompt for the forgecode-style chrome header: agent, tokens,
+    /// cost, model, and effort — right-aligned on the header line.
+    fn render_chrome_rprompt(&self) -> String {
+        let active = self.usage.total_tokens > 0;
+        let mut result = String::with_capacity(64);
+
+        // Agent
+        let agent_color = if active { LIGHT_GRAY } else { DARK_GRAY };
+        let agent_str = format!("{} PHI", agent_symbol());
+        result.push_str(&format!("{BOLD}{agent_color}{agent_str}{RESET}"));
+
+        // Tokens (only when active)
+        if active {
+            let tokens = format_tokens(self.usage.total_tokens);
+            result.push_str(&format!(" {BOLD}{LIGHT_GRAY}{tokens}{RESET}"));
+        }
+
+        // Cost (only when active)
+        if active && self.usage.cost.total > 0.0 {
+            result.push_str(&format!(
+                " {BOLD}{GREEN}{}{:.2}{RESET}",
+                cost_symbol(),
+                self.usage.cost.total
+            ));
+        }
+
+        // Model — strip provider prefix if present
+        let model_id = &self.root_lm.model().id;
+        let short_model = model_id.rsplit('/').next().unwrap_or(model_id);
+        let model_color = if active { LIGHT_MAGENTA } else { DARK_GRAY };
+        result.push_str(&format!(
+            " {model_color}{} {short_model}{RESET}",
+            model_symbol()
+        ));
+
+        // Effort (thinking level)
+        if let Some(effort) = effort_label(self.root_lm.thinking(), self.term.width()) {
+            let effort_color = if active { YELLOW } else { DARK_GRAY };
+            result.push_str(&format!(" {effort_color}{effort}{RESET}"));
+        }
+
+        result
     }
 
     fn chrome_lines(&mut self) -> (Vec<String>, Option<LiveCursor>) {
@@ -1809,93 +1976,89 @@ impl Ui {
                 .min(editor_lines.len().saturating_sub(max_visible));
             let end = (self.editor_scroll + max_visible).min(editor_lines.len());
 
-            let input_label = "Input";
-            let mut input_rows = Vec::new();
+            // Forgecode-style header:  dir   branch  <rprompt right-aligned>
+            let current_dir = self
+                .cwd
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(String::from)
+                .unwrap_or_else(|| ".".to_string());
+            let mut header =
+                format!("{BOLD}{LIGHT_GREEN}{} {current_dir}{RESET}", dir_symbol());
+            if let Some(branch) = &self.branch
+                && branch != &current_dir
+            {
+                header.push_str(&format!(
+                    "  {BOLD}{LIGHT_GREEN}{} {branch}{RESET}",
+                    branch_symbol()
+                ));
+            }
+            let rprompt = self.render_chrome_rprompt();
+            let left_w = visible_width(&header);
+            let right_w = visible_width(&rprompt);
+            let pad = width.saturating_sub(left_w + right_w);
+            if pad > 0 {
+                header.push_str(&" ".repeat(pad));
+            }
+            header.push_str(&rprompt);
+            lines.push(header);
+
+            // Editor prompt: chevron on row 0, 2-space indent on continuation.
+            let editor_top = lines.len();
+            let input_inner = width.saturating_sub(2).max(1);
             let mut input_cursor = None;
+            let mut rendered_rows_before_cursor = 0usize;
             for (i, line) in editor_lines[self.editor_scroll..end].iter().enumerate() {
-                let content = if i + self.editor_scroll == 0 {
+                let absolute_row = i + self.editor_scroll;
+                let content = if absolute_row == 0 {
                     if line.is_empty() {
-                        format!("{TOOL_ACCENT}›{RESET}")
+                        format!("{LIGHT_GREEN}{}{RESET} ", success_symbol())
                     } else {
-                        format!("{TOOL_ACCENT}›{RESET} {line}")
+                        format!("{LIGHT_GREEN}{}{RESET} {line}", success_symbol())
                     }
                 } else {
                     format!("  {line}")
                 };
-                input_rows.push(content);
-            }
-            let more_row = if end < editor_lines.len() {
-                let below = editor_lines.len() - end;
-                Some(format!("{MUTED_FG}↓ {below} more{RESET}"))
-            } else {
-                None
-            };
-            let mut width = fitted_panel_width(input_label, self.term.width().max(1), &input_rows);
-            if let Some(more) = &more_row {
-                width = width.max(fitted_panel_width(
-                    input_label,
-                    self.term.width().max(1),
-                    std::slice::from_ref(more),
-                ));
-            }
-            let input_border = thinking_border_color(self.root_lm.thinking());
-            lines.push(panel_border(
-                &format!("{BOLD}{input_label}{RESET}"),
-                input_label,
-                width,
-                input_border,
-            ));
-
-            let editor_top = lines.len();
-            let input_inner = width.saturating_sub(4).max(1);
-            let mut rendered_rows_before_cursor = 0usize;
-            for (i, content) in input_rows.iter().enumerate() {
-                let absolute_row = i + self.editor_scroll;
+                let avail_inner = if absolute_row == 0 { input_inner } else { width };
                 if absolute_row == row {
                     let source_col = if absolute_row == 0 {
-                        if editor_lines.first().is_some_and(|line| line.is_empty()) {
-                            1
-                        } else {
-                            2 + col
-                        }
+                        if line.is_empty() { 2 } else { 2 + col }
                     } else {
                         2 + col
                     };
                     let (wrapped, (cursor_row, cursor_col)) =
-                        wrap_ansi_locate(content, input_inner, source_col);
+                        wrap_ansi_locate(&content, avail_inner, source_col);
                     input_cursor = Some(LiveCursor {
                         line: editor_top + rendered_rows_before_cursor + cursor_row,
-                        col: 2 + cursor_col,
+                        col: cursor_col,
                     });
                     rendered_rows_before_cursor += wrapped.len();
-                    for row in wrapped {
-                        lines.push(panel_row(&row, width, input_border));
+                    for r in wrapped {
+                        lines.push(r);
                     }
                 } else {
-                    let wrapped = wrap_ansi(content, input_inner);
+                    let wrapped = wrap_ansi(&content, avail_inner);
                     rendered_rows_before_cursor += wrapped.len();
-                    for row in wrapped {
-                        lines.push(panel_row(&row, width, input_border));
+                    for r in wrapped {
+                        lines.push(r);
                     }
                 }
             }
-            if let Some(more) = more_row {
-                for row in wrap_ansi(&more, input_inner) {
-                    lines.push(panel_row(&row, width, input_border));
-                }
+            if end < editor_lines.len() {
+                let below = editor_lines.len() - end;
+                lines.push(format!("{MUTED_FG}  \u{2193} {below} more{RESET}"));
             }
-            lines.push(panel_bottom(width, input_border));
             cursor = input_cursor;
 
             if let Some(text) = self.queued.first() {
                 let first = text.lines().next().unwrap_or("");
-                let more = if text.lines().count() > 1 { " …" } else { "" };
+                let more = if text.lines().count() > 1 { " \u{2026}" } else { "" };
                 let count = if self.queued.len() > 1 {
-                    format!(" ×{}", self.queued.len())
+                    format!(" \u{00d7}{}", self.queued.len())
                 } else {
                     String::new()
                 };
-                lines.push(format!("{MUTED_FG}queued{count} › {first}{more}{RESET}"));
+                lines.push(format!("{MUTED_FG}queued{count} > {first}{more}{RESET}"));
             }
 
             if let Some(popup) = &self.popup {
@@ -1904,14 +2067,14 @@ impl Ui {
 
             let hints: &[&str] = if self.login.is_some() {
                 &[
-                    "finish login in the browser, or paste the redirect URL and press enter · esc cancels",
+                    "finish login in the browser, or paste the redirect URL and press enter \u{00b7} esc cancels",
                 ]
             } else if self.popup.is_some() {
-                &["tab complete · up/down select · enter accept · esc dismiss"]
+                &["tab complete \u{00b7} up/down select \u{00b7} enter accept \u{00b7} esc dismiss"]
             } else if self.running.is_some() && self.queued.is_empty() {
-                &["enter queue follow-up · esc cancel"]
+                &["enter queue follow-up \u{00b7} esc cancel"]
             } else if self.running.is_some() {
-                &["enter queue follow-up", "alt+up edit queued · esc cancel"]
+                &["enter queue follow-up", "alt+up edit queued \u{00b7} esc cancel"]
             } else {
                 &[]
             };
@@ -1920,47 +2083,46 @@ impl Ui {
             }
         }
 
-        let left = if self.usage.total_tokens > 0 {
-            format!(
-                "↑{} ↓{} ${:.4}",
-                format_tokens(self.usage.input),
-                format_tokens(self.usage.output),
-                self.usage.cost.total
-            )
-        } else {
+
+        // Footer: only rendered in framed (selector) mode.  The non-framed
+        // REPL path puts all metadata in the forgecode-style header above.
+        let footer = if !framed {
             String::new()
-        };
-        let mut right = format!(
-            "phi · {} · thinking:{}",
-            self.model_label,
-            self.root_lm.thinking().as_str()
-        );
-        if self.expand_thinking {
-            right.push_str(" · thoughts:show");
-        }
-        if self.expand_tools {
-            right.push_str(" · tools:full");
-        }
-        right.push_str(" · ");
-        right.push_str(&pwd);
-        if let Some(branch) = &self.branch {
-            right.push_str(" · ");
-            right.push_str(branch);
-        }
-        let footer = match (left.is_empty(), right.is_empty()) {
-            (true, true) => String::new(),
-            (true, false) => right,
-            (false, true) => left,
-            (false, false) => format!("{left} · {right}"),
+        } else {
+            let left = if self.usage.total_tokens > 0 {
+                format!(
+                    "\u{2191}{} \u{2193}{} ${:.4}",
+                    format_tokens(self.usage.input),
+                    format_tokens(self.usage.output),
+                    self.usage.cost.total
+                )
+            } else {
+                String::new()
+            };
+            let mut right = format!(
+                "phi \u{00b7} {} \u{00b7} thinking:{}",
+                self.model_label,
+                self.root_lm.thinking().as_str()
+            );
+            right.push_str(" \u{00b7} ");
+            right.push_str(&pwd);
+            if let Some(branch) = &self.branch {
+                right.push_str(" \u{00b7} ");
+                right.push_str(branch);
+            }
+            match (left.is_empty(), right.is_empty()) {
+                (true, true) => String::new(),
+                (true, false) => right,
+                (false, true) => left,
+                (false, false) => format!("{left} \u{00b7} {right}"),
+            }
         };
         if framed {
             let footer_fill = width.saturating_sub(footer.chars().count() + 5).max(1);
             lines.push(format!(
-                "{CHROME_BORDER}└─ {MUTED_FG}{footer}{RESET} {}┘{RESET}",
-                "─".repeat(footer_fill)
+                "{CHROME_BORDER}\u{2514}\u{2500} {MUTED_FG}{footer}{RESET} {}\u{2518}{RESET}",
+                "\u{2500}".repeat(footer_fill)
             ));
-        } else if !footer.is_empty() {
-            lines.push(format!("{MUTED_FG}{footer}{RESET}"));
         }
         (lines, cursor)
     }
@@ -2348,11 +2510,7 @@ impl Ui {
             session::Role::User => (entry.parent_id.clone(), Some(entry.text.clone())),
             session::Role::Assistant => (Some(entry.id.clone()), None),
         };
-        if let Err(e) = self.store.set_leaf(leaf) {
-            self.pending
-                .push(format!("{DIM}[error persisting navigation: {e}]{RESET}"));
-            return;
-        }
+        self.store.set_leaf(leaf);
         self.pending.push(String::new());
         self.pending
             .push(format!("{DIM}[navigated to selected point]{RESET}"));
@@ -2494,8 +2652,14 @@ impl Ui {
                 .error
                 .as_deref()
                 .or(subcall.result_preview.as_deref());
-            let rows =
-                self.subcall_result_rows(depth, &label, content, self.output_limit(), subcall.error.is_some());
+            let rows = self.subcall_result_rows(
+                depth,
+                &label,
+                content,
+                self.output_limit(),
+                subcall.error.is_some(),
+                None,
+            );
             for row in rows {
                 self.push_row(row);
             }
@@ -2517,7 +2681,7 @@ impl Ui {
         if let Some(thinking) = thinking
             && self.expand_thinking
         {
-            self.push_dot(0, format!("{DIM}thinking{RESET}"));
+            self.push_dot(0, DIM, "thinking".to_owned());
             self.push_preview(0, thinking, usize::MAX);
         }
 
@@ -3112,47 +3276,48 @@ impl Ui {
         self.panel_width().saturating_sub(4).max(4)
     }
 
-    /// Display columns available to a card body at `depth`: the repl body minus
-    /// the gutter width (`gutter_prefix`) and the 2-space body indent under the
-    /// rule. Cards have no side walls, so this is ~4 columns wider per depth
-    /// than the old boxed panel path would have allowed.
+    /// Display columns available to a flat row's result body at `depth`: the
+    /// repl body minus the `⎿` result-gutter width (`result_prefix_width` =
+    /// `indent_width(depth) + 5`). Body content is wrapped to this so each
+    /// `⎿ <content>` line fits within the repl body.
     fn card_body_width(&self, depth: usize) -> usize {
         self.repl_body_width()
-            .saturating_sub(gutter_width(depth) + 2)
+            .saturating_sub(result_prefix_width(depth))
             .max(1)
     }
 
+    /// Assistant prose: a flat `● Assistant` header + plain markdown body. No
+    /// box, no `⎿` indent — prose is the model's primary output, not nested
+    /// secondary content (matches forgecode's flat speaker line).
     fn assistant_card_lines(&self, text: &str) -> Vec<String> {
         let rendered = render_markdown(text, self.markdown_width());
-        let body: Vec<String> = rendered
-            .into_iter()
-            .map(|line| format!("{ASSISTANT_FG}{line}{RESET}"))
-            .collect();
-        render_panel(
-            &format!("{BOLD}Assistant{RESET}"),
-            "Assistant",
-            self.panel_width(),
-            ASSISTANT_BORDER,
-            &body,
-        )
+        let mut out = vec![forge_title(0, ASSISTANT_BORDER, None, "Assistant")];
+        for line in rendered {
+            out.push(if line.is_empty() {
+                String::new()
+            } else {
+                format!("{ASSISTANT_FG}{line}{RESET}")
+            });
+        }
+        out
     }
 
+    /// User echo: a flat `● You` header + plain body.
     fn user_card_lines(&self, text: &str) -> Vec<String> {
         let rendered = render_markdown(text, self.markdown_width());
-        let body: Vec<String> = rendered
-            .into_iter()
-            .map(|line| format!("{USER_FG}{line}{RESET}"))
-            .collect();
-        render_panel(
-            &format!("{BOLD}You{RESET}"),
-            "You",
-            self.panel_width(),
-            USER_BORDER,
-            &body,
-        )
+        let mut out = vec![forge_title(0, USER_BORDER, None, "You")];
+        for line in rendered {
+            out.push(if line.is_empty() {
+                String::new()
+            } else {
+                format!("{USER_FG}{line}{RESET}")
+            });
+        }
+        out
     }
 
-    /// Live/scrollback activity rows rendered as a card inside the repl panel.
+    /// Live/scrollback activity rows rendered as a flat `●`-titled unit
+    /// nested under the repl block.
     fn tool_lines(&self, depth: usize, title: &str, body: &str, max: usize) -> Vec<String> {
         let mut rows = Vec::new();
         let trimmed = body.trim_end();
@@ -3173,7 +3338,7 @@ impl Ui {
             }
         }
 
-        render_card(title, self.repl_body_width(), depth, &rows)
+        render_flat(TOOL_ACCENT, None, title, depth, &rows)
     }
 
     fn repl_code_lines(&self, depth: usize, body: &str, max: usize) -> Vec<String> {
@@ -3192,9 +3357,10 @@ impl Ui {
         }
 
         let label = if depth == 0 { "Input" } else { "repl" };
-        render_card(
-            &format!("{BOLD}▶ {label}{RESET}"),
-            self.repl_body_width(),
+        render_flat(
+            PANEL_REPL,
+            None,
+            &format!("{BOLD}{label}{RESET}"),
             depth,
             &rows,
         )
@@ -3222,13 +3388,16 @@ impl Ui {
             return;
         }
         if self.expand_thinking {
-            self.push_dot(0, format!("{DIM}thinking{RESET}"));
+            self.push_dot(0, DIM, "thinking".to_owned());
             self.push_preview(0, &thinking, usize::MAX);
         }
     }
 
+    /// In-flight activity row: a single flat line prefixed by the nesting
+    /// gutter, carrying the animated spinner + label (no `●` — the spinner is
+    /// the live indicator; `●` is reserved for committed headers).
     fn status_rows(&self, depth: usize, text: &str) -> Vec<String> {
-        render_card(text, self.repl_body_width(), depth, &[])
+        vec![format!("{}{text}", indent(depth))]
     }
 
     fn push_status(&mut self, depth: usize, text: String) -> Option<(usize, usize)> {
@@ -3362,7 +3531,7 @@ impl Ui {
     }
 
     /// Start buffering the depth-0 REPL block that is about to execute. Rows
-    /// pushed until `commit_block` render live as a grouped sectioned panel.
+    /// pushed until `commit_block` render live as a grouped flat `● repl` unit.
     fn begin_block(&mut self) {
         if !self.last_activity {
             self.pending.push(String::new());
@@ -3373,9 +3542,8 @@ impl Ui {
         self.block_active = true;
     }
 
-    /// Commit the buffered block to scrollback, preserving the same boxed REPL
-    /// container used by the live view, followed by any prose that streamed in
-    /// behind it.
+    /// Commit the buffered block to scrollback as a flat `● repl` unit, followed
+    /// by any prose that streamed in behind it.
     fn commit_block(&mut self) {
         if !self.block_active {
             return;
@@ -3388,29 +3556,34 @@ impl Ui {
         // restore or after a run completes) are a different artifact with no
         // meaningful per-block turn, so they stay at a plain `repl` label.
         let turn = self.running.is_some().then_some(self.turn);
-        self.pending
-            .extend(render_repl_panel(self.panel_width(), &body, turn));
+        self.pending.extend(render_repl_block(&body, turn));
         self.open_tool_rows.clear();
         self.open_subcall_rows.clear();
         let after = std::mem::take(&mut self.after_block);
         self.pending.extend(after);
     }
 
-    /// First line of an action block. Wrapped continuations keep the same
-    /// indentation. A depth-0 action that follows prose gets a separating
-    /// blank line first.
-    fn push_dot(&mut self, depth: usize, text: String) {
-        let _ = self.push_status(depth, text);
+    /// First line of an action block — a flat `● [time] title` header, the
+    /// forgecode-style anchor for a tool/thinking unit. A depth-0 action that
+    /// follows prose gets a separating blank line first. `dot_color` carries
+    /// the category; `title` is the already-styled text.
+    fn push_dot(&mut self, depth: usize, dot_color: &str, text: String) {
+        if depth == 0 && !self.last_activity && !self.block_active {
+            self.pending.push(String::new());
+        }
+        self.push_row(forge_title(
+            depth,
+            dot_color,
+            self.committed_ts().as_deref(),
+            &text,
+        ));
+        self.last_activity = true;
     }
 
-    /// Continuation/result line inside an action block, rendered as a card.
+    /// Continuation/result line inside an action block, rendered as a flat
+    /// `●`-prefixed line under the nesting gutter.
     fn push_bar(&mut self, depth: usize, text: String) {
-        let rows = render_card(
-            &format!("{DIM}{text}{RESET}"),
-            self.repl_body_width(),
-            depth,
-            &[],
-        );
+        let rows = render_flat(DIM, None, &format!("{DIM}{text}{RESET}"), depth, &[]);
         for row in rows {
             self.push_row(row);
         }
@@ -3458,17 +3631,19 @@ impl Ui {
         if rows.is_empty() {
             return;
         }
-        let rows = render_card(
-            &format!("{DIM}output{RESET}"),
-            self.repl_body_width(),
-            depth,
-            &rows,
-        );
+        let rows = render_flat(DIM, None, "output", depth, &rows);
         for row in rows {
             self.push_row(row);
         }
     }
 
+    /// `Some` while a turn is live (so committed headers stamp a `[HH:MM:SS]`),
+    /// `None` on replay/restore (no false replay-time clock). See `forge_title`.
+    fn committed_ts(&self) -> Option<String> {
+        self.running.is_some().then(now_hms)
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn tool_result_rows(
         &self,
         depth: usize,
@@ -3478,20 +3653,17 @@ impl Ui {
         max: usize,
         lang: Option<&str>,
         failed: bool,
+        ts: Option<&str>,
     ) -> Vec<String> {
         let identity = tool_identity(name, args);
-        let glyph = if failed {
-            format!("{RED}✗{RESET}")
-        } else {
-            format!("{GREEN}✓{RESET}")
-        };
-        // Header carries the canonical identity (path/command/pattern) once.
-        // The in-flight spinner label uses the same anchor via `tool_title`, so
-        // running and committed render the same identity (no flicker on done).
-        // The body folds multi-line detail (full bash command / repl code) under
-        // it; for tools whose identity IS the anchor, the body is empty and only
-        // the output preview shows.
-        let header = format!("{glyph} {}", identity.anchor);
+        // The colored `●` carries success/failure (green/red); the in-flight
+        // spinner label uses the same anchor via `tool_title`, so running and
+        // committed render the same identity (no flicker on done). The header
+        // carries the canonical identity (path/command/pattern) once; the body
+        // folds multi-line detail (full bash command / repl code) under it. For
+        // tools whose identity IS the anchor, the body is empty and only the
+        // output preview shows.
+        let dot = if failed { RED } else { GREEN };
         let width = self.card_body_width(depth);
         let mut body: Vec<String> = identity
             .body
@@ -3499,9 +3671,10 @@ impl Ui {
             .flat_map(|line| wrap_ansi(&line, width))
             .collect();
         body.extend(self.preview_rows_with_lang(depth, output, max, lang));
-        render_card(&header, self.repl_body_width(), depth, &body)
+        render_flat(dot, ts, &identity.anchor, depth, &body)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn subcall_result_rows(
         &self,
         depth: usize,
@@ -3509,19 +3682,16 @@ impl Ui {
         content: Option<&str>,
         max: usize,
         failed: bool,
+        ts: Option<&str>,
     ) -> Vec<String> {
-        let glyph = if failed {
-            format!("{RED}✗{RESET}")
-        } else {
-            format!("{GREEN}✓{RESET}")
-        };
-        let header = format!("{glyph} {label}");
+        let dot = if failed { RED } else { SUBCALL_ACCENT };
         let body = content
             .map(|text| self.preview_rows_with_lang(depth, text, max, None))
             .unwrap_or_default();
-        render_card(&header, self.repl_body_width(), depth, &body)
+        render_flat(dot, ts, label, depth, &body)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn push_tool_result(
         &mut self,
         depth: usize,
@@ -3535,7 +3705,16 @@ impl Ui {
         if depth == 0 && !self.last_activity && !self.block_active {
             self.pending.push(String::new());
         }
-        let rows = self.tool_result_rows(depth, name, args, output, max, lang, failed);
+        let rows = self.tool_result_rows(
+            depth,
+            name,
+            args,
+            output,
+            max,
+            lang,
+            failed,
+            self.committed_ts().as_deref(),
+        );
         for row in rows {
             self.push_row(row);
         }
@@ -3775,6 +3954,7 @@ impl Ui {
                     self.output_limit(),
                     lang,
                     error.is_some(),
+                    self.committed_ts().as_deref(),
                 );
                 if let Some(row) = self.open_tool_rows.remove(&key) {
                     self.replace_block_rows(row.start, row.len, rows);
@@ -3849,6 +4029,7 @@ impl Ui {
                     content,
                     self.output_limit(),
                     error.is_some(),
+                    self.committed_ts().as_deref(),
                 );
                 if let Some(row) = open {
                     self.replace_block_rows(row.start, row.len, rows);
@@ -4142,46 +4323,125 @@ mod tests {
         );
     }
 
+    // Flat form: a `● title` header line (no trailing `─…─` rule) plus a body    // indented under the nesting gutter. Confirms the header carries no box
+    // claude-code-style: the header carries `●` (no `⎿`), and the body/result
+    // line carries `⎿` indented under it. `⎿` and `●` never share a line.
     #[test]
-    fn render_panel_fits_box_to_rendered_content() {
-        let lines = render_panel(
-            &format!("{BOLD}Assistant{RESET}"),
-            "Assistant",
-            80,
-            ASSISTANT_BORDER,
-            &[format!("{ASSISTANT_FG}hi{RESET}")],
+    fn render_flat_is_a_bare_header_with_indented_body() {
+        let lines = render_flat(GREEN, None, "read foo.rs", 1, &["body one".to_owned()]);
+        let plain: Vec<String> = lines.iter().map(|l| phi_tui::strip_ansi(l)).collect();
+        // Header at depth 1: 2-space indent, then `●`, then the title.
+        assert_eq!(plain[0], "  ● read foo.rs", "{plain:?}");
+        assert!(!plain[0].contains('⎿'), "header must not carry ⎿: {plain:?}");
+        assert!(!plain[0].contains('─'), "no trailing rule fill: {plain:?}");
+        // Result body: `⎿` gutter (2 sp + ⎿ + 2 sp) under the depth-1 indent.
+        assert_eq!(plain[1], "    ⎿  body one", "{plain:?}");
+    }
+
+    // claude-code shows `⎿` once per result block — on the first non-empty
+    // row only. Continuation rows are blank-aligned (5-cell gutter, no glyph)
+    // so a multi-line result doesn't paint a wall of `⎿`. Regression guard
+    // for the "tons of ⎿" bug.
+    #[test]
+    fn render_flat_shows_single_crop_for_multiline_body() {
+        let lines = render_flat(
+            GREEN,
+            None,
+            "read foo.rs",
+            1,
+            &[
+                "line one".to_owned(),
+                "line two".to_owned(),
+                String::new(),
+                "line four".to_owned(),
+            ],
         );
-        let widths: Vec<usize> = lines.iter().map(|line| visible_width(line)).collect();
-        assert!(widths.iter().all(|&w| w == 15), "{widths:?} {lines:?}");
-        assert!(widths[0] < 80, "{widths:?}");
+        let plain: Vec<String> = lines.iter().map(|l| phi_tui::strip_ansi(l)).collect();
+        // Exactly one `⎿` across the whole block.
+        assert_eq!(plain.iter().map(|l| l.matches('⎿').count()).sum::<usize>(), 1, "{plain:?}");
+        // First non-empty body row carries it.
+        assert_eq!(plain[1], "    ⎿  line one", "{plain:?}");
+        // Continuation rows: indent + 5-cell blank gutter (7 at depth 1), no glyph.
+        assert_eq!(plain[2], "       line two", "{plain:?}");
+        // Empty body line collapses to the depth indent (2 at depth 1).
+        assert_eq!(plain[3], "  ", "{plain:?}");
+        // A non-empty row after a blank is still a continuation (no `⎿`).
+        assert_eq!(plain[4], "       line four", "{plain:?}");
+    }
+
+    // forge_title stamps `[HH:MM:SS]` only when given a timestamp; without one
+    // (replay/restored rows) the header is bare so re-renders don't show a
+    // false replay-time clock.
+    #[test]
+    fn forge_title_omits_timestamp_when_none() {
+        let with_ts = phi_tui::strip_ansi(&forge_title(0, GREEN, Some("12:00:01"), "read x"));
+        let no_ts = phi_tui::strip_ansi(&forge_title(0, GREEN, None, "read x"));
+        assert!(with_ts.contains("[12:00:01]"), "{with_ts}");
+        assert!(!no_ts.contains('['), "{no_ts}");
+        assert!(no_ts.contains("●"), "{no_ts}");
+    }
+
+    // `indent` keeps the 2-cells-per-depth nesting budget, and the `⎿` result
+    // gutter is a fixed 5 cells (2 sp + `⎿` + 2 sp). `card_body_width` subtracts
+    // `result_prefix_width = indent_width(depth) + 5`, so result bodies fit
+    // under their `⎿` gutter and the math is stable across depths.
+    #[test]
+    fn indent_and_result_gutter_widths() {
+        assert_eq!(indent_width(0), 0);
+        assert_eq!(indent_width(1), 2);
+        assert_eq!(indent_width(3), 6);
+        assert_eq!(visible_width(&indent(3)), 6);
+        // `⎿` gutter is 5 cells at every depth (indent + 5).
+        for depth in 0..=4 {
+            assert_eq!(result_prefix_width(depth), indent_width(depth) + 5, "depth {depth}");
+            assert_eq!(visible_width(&result_prefix(depth)), result_prefix_width(depth), "depth {depth}");
+        }
+        // card_body_width == repl_body_width - result_prefix_width.
+        let ui = test_ui(80, 24);
+        for depth in 0..=4 {
+            assert_eq!(
+                ui.card_body_width(depth),
+                ui.repl_body_width().saturating_sub(result_prefix_width(depth)).max(1),
+                "depth {depth}"
+            );
+        }
     }
 
     #[test]
-    fn render_panel_clamps_to_available_width() {
-        // A card at depth 0 inside a 10-wide repl panel must not exceed its
-        // width: every rendered line stays within the available columns.
-        let body = render_card(
-            &format!("{BOLD}▶ Input{RESET}"),
-            6,
+    fn render_flat_clamps_to_available_width() {
+        // A tool result committed through a narrow UI: callers wrap the body to
+        // card_body_width and the renderer prefixes it under the nesting gutter,
+        // so every committed line must fit within the panel width. The header
+        // (anchor) is bare content — if the anchor itself overflows that's a
+        // caller concern, not a clamp the renderer applies.
+        let ui = test_ui(20, 24);
+        let lines = ui.tool_result_rows(
             0,
-            &["print('hello world')".to_owned()],
+            "read_file",
+            &serde_json::json!({"path": "x.rs"}),
+            "hello world line that must wrap to fit\n",
+            usize::MAX,
+            Some("rust"),
+            false,
+            None,
         );
-        let lines = render_repl_panel(10, &body, None);
+        let panel = ui.panel_width();
         for line in &lines {
             assert!(
-                visible_width(line) <= 10,
-                "{} => {}",
+                visible_width(line) <= panel,
+                "{} > {} => {}",
                 visible_width(line),
+                panel,
                 line
             );
         }
     }
 
-    // Card form: one `─ ✓ read <path>` header rule with the path shown once
-    // (the read tool's identity IS the anchor, so the body holds only the
-    // output preview), no four-wall Activity/Output box. Confirms the anchor
+    // Flat form: one `● read <path>` header (green ● = success, no ✓ glyph,
+    // no `─` rule) with the path shown once (the read tool's identity IS the
+    // anchor, so the body holds only the output preview). Confirms the anchor
     // is not duplicated as a body line and that no box chrome (┌/├/└) or
-    // `Activity`/`Output` section labels appear at the card level.
+    // `Activity`/`Output` section labels appear.
     #[test]
     fn tool_result_merges_activity_and_output_sections() {
         let ui = test_ui(80, 24);
@@ -4193,6 +4453,7 @@ mod tests {
             usize::MAX,
             Some("rust"),
             false,
+            None,
         );
         let plain = lines
             .iter()
@@ -4200,8 +4461,11 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
 
-        // Header rule carries the success glyph and the anchor (path) once.
-        assert!(plain.contains("─ ✓ read"), "{plain}");
+        // Header carries the green ● (no ✓ glyph, no `─` rule) and the anchor
+        // (path) once.
+        assert!(plain.contains("● read"), "{plain}");
+        assert!(!plain.contains("✓"), "{plain}");
+        assert!(!plain.contains('─'), "{plain}");
         assert!(plain.contains("crates/phi-session/src/usage.rs"), "{plain}");
         // Output preview folds under the header as plain body lines.
         assert!(plain.contains("//! usage"), "{plain}");
@@ -4212,20 +4476,23 @@ mod tests {
             1,
             "{plain}"
         );
-        // No four-wall box chrome or section labels at the card level.
+        // No four-wall box chrome or section labels.
         assert!(!plain.contains('┌'), "{plain}");
         assert!(!plain.contains('├'), "{plain}");
         assert!(!plain.contains('└'), "{plain}");
         assert!(!plain.contains("Activity"), "{plain}");
         assert!(!plain.contains("Output"), "{plain}");
-        // The depth-1 gutter guide prefixes every row.
-        assert!(plain.lines().all(|l| l.starts_with("│ ")), "{plain}");
+        // Depth-1 header is inset 2 spaces under the repl block; the `⎿` result
+        // gutter sits under it. `⎿` and `●` never share a line.
+        assert!(plain.lines().any(|l| l.starts_with("  ● ")), "{plain}");
+        assert!(plain.lines().any(|l| l.contains('⎿')), "{plain}");
+        assert!(!plain.lines().any(|l| l.starts_with('⎿')), "{plain}");
     }
 
-    // Card form for a repl block: code folds under a `▶ Input` header, the
-    // exec bar is its own flat card, and stdout folds under a lowercase
-    // `output` card (no capital `Output` section box, no `├` separator). The
-    // outer `repl` panel stays boxed (it owns the live/commit split).
+    // Flat form for a repl block: a `● repl · turn N` header (violet ●, no box),
+    // code folds under an `Input` flat card, the exec bar is its own flat
+    // line, and stdout folds under a lowercase `output` card (no capital
+    // `Output` section box, no `├` separator).
     #[test]
     fn repl_panel_splits_input_and_output_sections() {
         let mut ui = test_ui(80, 24);
@@ -4234,23 +4501,26 @@ mod tests {
         ui.push_bar(0, "exec 0.1s".to_owned());
         ui.push_preview(0, "1\n", usize::MAX);
 
-        let lines = render_repl_panel(ui.panel_width(), &ui.block, Some(1));
+        let lines = render_repl_block(&ui.block, Some(1));
         let plain = lines
             .iter()
             .map(|line| phi_tui::strip_ansi(line))
             .collect::<Vec<_>>()
             .join("\n");
 
-        // The repl panel is labelled with the turn; the inner cards are flat.
+        // The repl block is a flat `●` header labelled with the turn.
+        assert!(plain.contains("●"), "{plain}");
         assert!(plain.contains("repl · turn 1"), "{plain}");
-        assert!(plain.contains("▶ Input"), "{plain}");
+        assert!(plain.contains("Input"), "{plain}");
         assert!(plain.contains("print(1)"), "{plain}");
         assert!(plain.contains("exec 0.1s"), "{plain}");
         // Output is a lowercase card header, never a capital `Output` section.
         assert!(plain.contains("output"), "{plain}");
         assert!(!plain.contains("Output"), "{plain}");
-        // No section separator inside the block (the old `├─ Output` rule).
+        // No box chrome or section separator.
+        assert!(!plain.contains('┌'), "{plain}");
         assert!(!plain.contains('├'), "{plain}");
+        assert!(!plain.contains('└'), "{plain}");
     }
 
     // The canonical argument for each tool is shown exactly once across the
@@ -4334,6 +4604,7 @@ mod tests {
             usize::MAX,
             Some("rust"),
             false,
+            None,
         );
         let plain: String = rows
             .iter()
@@ -4359,6 +4630,7 @@ mod tests {
             usize::MAX,
             None,
             false,
+            None,
         );
         let plain: String = rows
             .iter()
@@ -4387,6 +4659,7 @@ mod tests {
             usize::MAX,
             None,
             false,
+            None,
         );
         let plain: String = rows
             .iter()
@@ -4443,10 +4716,7 @@ mod tests {
         ui.pending.clear();
         ui.push_assistant_message("Here is code:\n\n```repl\nprint(1)\n```\n");
         let replay_plain = pending_plain(&ui);
-        assert!(
-            replay_plain.contains("┌─ repl "),
-            "{replay_plain}"
-        );
+        assert!(replay_plain.contains("● repl"), "{replay_plain}");
         assert!(!replay_plain.contains("turn"), "{replay_plain}");
     }
 
@@ -4602,43 +4872,35 @@ match1
     }
 
     #[test]
-    fn chrome_lines_editor_mode_has_single_scaled_input_box() {
+    fn chrome_lines_editor_mode_has_no_panel_box() {
         let mut ui = test_ui(80, 24);
         ui.editor.set_text("hi");
 
         let (lines, cursor) = ui.chrome_lines();
         let plain: Vec<String> = lines.iter().map(|line| phi_tui::strip_ansi(line)).collect();
 
+        // No box-drawing characters: the forgecode-style chrome has no
+        // ┌/│/└ panel borders.
         let box_lines: Vec<&String> = plain
             .iter()
-            .filter(|line| line.starts_with('┌') || line.starts_with('│') || line.starts_with('└'))
+            .filter(|line| line.starts_with('\u{250c}') || line.starts_with('\u{2502}') || line.starts_with('\u{2514}'))
             .collect();
-        assert_eq!(box_lines.len(), 3, "{plain:?}");
-        assert!(box_lines[0].contains("Input"), "{plain:?}");
+        assert!(box_lines.is_empty(), "box lines should be gone: {plain:?}");
 
-        let top_count = plain.iter().filter(|line| line.starts_with('┌')).count();
-        let bottom_count = plain.iter().filter(|line| line.starts_with('└')).count();
-        assert_eq!(top_count, 1, "{plain:?}");
-        assert_eq!(bottom_count, 1, "{plain:?}");
+        // First line is the header (dir + rprompt); second line is the
+        // chevron prompt with "hi".
+        assert!(plain.len() >= 2, "{plain:?}");
+        // Header contains the agent symbol text "PHI"
+        assert!(plain[0].contains("PHI"), "header should contain agent: {plain:?}");
+        // Input line contains the editor text
+        assert!(plain[1].contains("hi"), "input line should contain 'hi': {plain:?}");
 
-        let widths: Vec<usize> = lines
-            .iter()
-            .zip(&plain)
-            .filter(|(_, plain)| {
-                plain.starts_with('┌') || plain.starts_with('│') || plain.starts_with('└')
-            })
-            .map(|(line, _)| visible_width(line))
-            .collect();
-        assert!(
-            widths.iter().all(|&w| w == widths[0]),
-            "{widths:?} {plain:?}"
-        );
-        assert!(widths[0] < 80, "{widths:?} {plain:?}");
+        // Cursor is present (the editor has text).
         assert!(cursor.is_some(), "{plain:?}");
     }
 
     #[test]
-    fn chrome_lines_editor_mode_moves_path_and_branch_to_footer() {
+    fn chrome_lines_editor_mode_header_shows_dir_and_rprompt() {
         let mut ui = test_ui(80, 24);
         ui.editor.set_text("hi");
         ui.cwd = std::path::PathBuf::from("/tmp/phi");
@@ -4648,21 +4910,47 @@ match1
         let (lines, _cursor) = ui.chrome_lines();
         let plain: Vec<String> = lines.iter().map(|line| phi_tui::strip_ansi(line)).collect();
 
-        assert!(
-            !plain.iter().any(|line| line.contains("φ  /tmp/phi")),
-            "{plain:?}"
-        );
-        assert!(
-            !plain.iter().any(|line| line.contains("/tmp/phi (main)")),
-            "{plain:?}"
-        );
+        // The header line (line 0) should contain:
+        //  - the directory name "phi" (last path component, not full path)
+        //  - the branch "main"
+        //  - the agent label "PHI"
+        //  - the model id (stripped of provider prefix)
+        let header = &plain[0];
+        assert!(header.contains("phi"), "header should contain dir name: {header:?}");
+        assert!(header.contains("main"), "header should contain branch: {header:?}");
+        assert!(header.contains("PHI"), "header should contain agent: {header:?}");
+        assert!(!header.contains("/tmp/phi"), "header should not contain full path: {header:?}");
 
-        let footer = plain
-            .iter()
-            .find(|line| line.contains("phi ·") && line.contains("thinking:"))
-            .expect("footer line");
-        assert!(footer.contains("phi · "), "{footer:?}");
-        assert!(footer.contains(" · /tmp/phi · main"), "{footer:?}");
+        // No footer line in non-framed mode.
+        assert!(
+            !plain.iter().any(|line| line.contains("thinking:")),
+            "no footer in non-framed mode: {plain:?}"
+        );
+    }
+
+    #[test]
+    fn chrome_lines_ascii_fallback_when_nerd_fonts_disabled() {
+        unsafe { std::env::set_var("PHI_NO_NERD_FONTS", "1"); };
+        let mut ui = test_ui(80, 24);
+        ui.editor.set_text("hi");
+
+        let (lines, _cursor) = ui.chrome_lines();
+        let plain: Vec<String> = lines.iter().map(|line| phi_tui::strip_ansi(line)).collect();
+
+        // In ASCII fallback mode the chevron is ">" and there are no Nerd
+        // Font PUA codepoints in the output.
+        assert!(plain[1].starts_with(">"), "ASCII chevron: {plain:?}");
+        assert!(!plain.iter().any(|l| l.contains('\u{ea83}')), "no nerd folder icon: {plain:?}");
+        assert!(!plain.iter().any(|l| l.contains('\u{f013e}')), "no nerd chevron: {plain:?}");
+        unsafe { std::env::remove_var("PHI_NO_NERD_FONTS"); };
+    }
+
+    #[test]
+    fn chrome_lines_effort_label_width_thresholds() {
+        assert_eq!(effort_label(ThinkingLevel::Medium, 80), Some("MED".to_string()));
+        assert_eq!(effort_label(ThinkingLevel::Medium, 100), Some("MEDIUM".to_string()));
+        assert_eq!(effort_label(ThinkingLevel::Off, 80), None);
+        assert_eq!(effort_label(ThinkingLevel::High, 50), Some("HIG".to_string()));
     }
 
     #[test]

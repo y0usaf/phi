@@ -118,7 +118,7 @@ split and the prose containers).
   - `status_rows`/`push_status` (`tui.rs:3316/3327`) — in-flight card = single
     header row (`{spinner} {anchor}`); `OpenToolRow.len` becomes ~1 for the
     header (output appended on `ToolEnd`).
-  - `repl_code_lines` (`tui.rs:3263`) — `▶ {label}` header + folded code body.
+  - `repl_code_lines` (`tui.rs:3263`) — `{label}` header (● from forge_title) + folded code body.
   - `push_bar` (`tui.rs:3495`) — header rule + one body line.
   - `push_preview_with_lang` (`tui.rs:3546`) — fold body under the current
     card's gutter (no separate Output box).
@@ -178,7 +178,7 @@ are untouched — only how they render). Reversible per-phase.
    inset by the gutter. `nested_indent` was removed (it had no remaining
    callers once the boxed nested-panel cluster was deleted).
 2. **Repl output stays a separate flat `output` card (not folded under the
-   `▶ Input` card).** Rationale: `push_preview` has no parent-card handle, the
+   `Input` card).** Rationale: `push_preview` has no parent-card handle, the
    live/commit split (a hard-protected scrollback model) rejects an inline
    expand, and the `output`/`exec` cards are *flat* (no `┌─ Output ─┐` box) —
    so the hardened "no separate Output box" constraint is already met. The

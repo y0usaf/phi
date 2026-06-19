@@ -364,7 +364,7 @@ fn statusline_status_symbol(status: &str) -> &'static str {
         "error" | "interrupted" | "crashed" => "×",
         "exited" => "◌",
         _ if status.starts_with("tool") => "⚙",
-        _ if status.contains("queued") => "▶",
+        _ if status.contains("queued") => "○",
         _ => "•",
     }
 }

@@ -39,3 +39,20 @@ pub fn truncate_to_cells(value: &str, max_cols: usize) -> String {
     out.push_str(ellipsis);
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Lock `⎿` (U+23BF, "bottom-left crop") to width 1. It's the nesting gutter
+    // char used by the flat TUI (`nest_prefix`), and the body-wrap width math
+    // assumes `"⎿ "` is exactly 2 cells. U+23BF is in the "ambiguous" East Asian
+    // Width category, so `unicode_width` returns `Some(1)` (never 2); this test
+    // fails loudly if a future unicode-width upgrade ever reclassifies it.
+    #[test]
+    fn crop_mark_is_width_one() {
+        assert_eq!(display_cell_width("⎿"), 1);
+        assert_eq!(display_cell_width("⎿ "), 2);
+        assert_eq!(display_cell_width("⎿ ⎿ "), 4);
+    }
+}
