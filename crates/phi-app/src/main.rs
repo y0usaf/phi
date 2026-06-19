@@ -70,7 +70,7 @@ mod tests;
 
 use format::{format_model_pricing, format_usage_summary};
 use render::render_tool_panel;
-use tool_view::{check, cross, depth_tag, indent, limit_name, preview, spin, tool_args_preview};
+use tool_view::{call_anchor, check, cross, depth_tag, indent, limit_name, preview, spin};
 
 async fn run(args: Args, storage: Arc<AuthStorage>, registry: Arc<Registry>) -> Result<()> {
     let cwd = std::env::current_dir().context("could not determine working directory")?;
@@ -237,8 +237,10 @@ async fn run(args: Args, storage: Arc<AuthStorage>, registry: Arc<Registry>) -> 
 }
 
 /// Remove stdout lines that are verbatim echoes of tool-call results already
-/// rendered as panels above (e.g. `print(grep(...))`).  Returns the residual
-/// stdout; when empty, the caller skips printing the duplicate output.
+/// rendered as panels above (e.g. `print(grep(...))`). This is a **data-level**
+/// coalescing of the stdout stream — applied before printing — never a layout
+/// deletion. Returns the residual stdout; when empty, the caller skips
+/// printing the duplicate output.
 fn cli_strip_tool_echoes(stdout: &str, tool_results: &[String]) -> String {
     let mut result_lines: HashSet<&str> = HashSet::new();
     for r in tool_results {
@@ -361,12 +363,7 @@ async fn print_events(
                 args,
             } => {
                 open_tool_args.insert(call_id, args.clone());
-                eprintln!(
-                    "{} {name}{} {}",
-                    spin(color),
-                    depth_tag(depth),
-                    tool_args_preview(&args)
-                );
+                eprintln!("{} {}{}", spin(color), call_anchor(&name, &args), depth_tag(depth));
             }
             RlmEvent::ToolEnd {
                 call_id,

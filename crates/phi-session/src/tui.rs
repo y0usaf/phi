@@ -192,10 +192,13 @@ fn truncate_for_log(text: &str) -> String {
 }
 
 /// Remove stdout lines that are verbatim echoes of tool-call results already
-/// rendered as nested panels in the same block (e.g. `print(grep(...))`).
-/// Returns the residual stdout; when empty, the caller's `push_preview`
-/// naturally skips rendering (no-op on empty), so the duplicate panel
-/// disappears entirely.
+/// rendered as cards in the same block (e.g. `print(grep(...))` literally
+/// writes the grep output into stdout). This is a **data-level** coalescing of
+/// the stdout stream — it trims echo lines *before* any rendering — never a
+/// layout-level deletion of committed rows (scrollback is immutable; see
+/// `replace_block_rows`, which only mutates the live block). Returns the
+/// residual stdout; when empty, the caller's `push_preview` naturally skips
+/// rendering (no-op on empty), so the duplicate card disappears entirely.
 fn strip_tool_echoes(stdout: &str, tools: &[session::ToolCall], exec_depth: usize) -> String {
     let mut result_lines: HashSet<&str> = HashSet::new();
     for t in tools {
@@ -275,185 +278,68 @@ fn render_panel(
     out
 }
 
-fn render_repl_panel(max_width: usize, body: &[String]) -> Vec<String> {
-    render_panel(
-        &format!("{PANEL_REPL}repl{RESET}"),
-        "repl",
-        max_width,
-        PANEL_REPL,
-        body,
-    )
-}
-
-fn nested_indent(depth: usize) -> String {
-    "  ".repeat(depth)
-}
-
-fn nested_panel_border(
-    label: &str,
-    label_plain: &str,
-    width: usize,
-    color: &str,
-    depth: usize,
-) -> String {
-    let indent = nested_indent(depth);
-    let label_width = phi_tui::display_cell_width(label_plain);
-    if width <= label_width.saturating_add(5) {
-        return format!(
-            "{indent}{color}┌{}┐{RESET}",
-            "─".repeat(width.saturating_sub(2).max(1))
-        );
+/// Label (colored, plain) for the outer `repl` panel. With a turn number the
+/// committed/live block reads `repl · turn N` (the depth-0 `IterationStart`
+/// handler's count); `None` (e.g. an unevaluated streamed preview) stays plain
+/// `repl`. The colored and plain forms share the same visible text so the panel
+/// border widths line up.
+fn repl_panel_label(turn: Option<usize>) -> (String, String) {
+    match turn {
+        Some(n) => (
+            format!("{PANEL_REPL}repl{RESET} {PANEL_REPL}· turn {n}{RESET}"),
+            format!("repl · turn {n}"),
+        ),
+        None => (format!("{PANEL_REPL}repl{RESET}"), "repl".to_owned()),
     }
-    let fill = width.saturating_sub(label_width + 5).max(1);
-    format!(
-        "{indent}{color}┌─ {label}{color} {}┐{RESET}",
+}
+
+fn render_repl_panel(max_width: usize, body: &[String], turn: Option<usize>) -> Vec<String> {
+    let (label, label_plain) = repl_panel_label(turn);
+    render_panel(&label, &label_plain, max_width, PANEL_REPL, body)
+}
+
+/// Depth gutter for cards: `│ ` repeated `depth` times, rendered dim so it
+/// reads as a structural guide (the indent-tree) rather than content. Each
+/// level occupies two display cells, so the card header + body sit under the
+/// guides of every enclosing card without stealing extra width beyond the
+/// gutter itself.
+fn gutter_prefix(depth: usize) -> String {
+    format!("{DIM}{}{RESET}", "│ ".repeat(depth))
+}
+
+/// Visible width a `gutter_prefix(depth)` occupies: `depth` guide columns of
+/// two cells each. ANSI is stripped from this count.
+fn gutter_width(depth: usize) -> usize {
+    depth.saturating_mul(2)
+}
+
+/// Single-header card: one titled rule (`─ {header}`) carrying the canonical
+/// anchor, then indented body lines. Replaces the four-wall Activity/Output
+/// sectioned box for tool calls, subcalls, and status rows — so the run tree
+/// reads as nested indented cards inside the outer `repl` panel, and each
+/// call's path/command appears once (in the header or the body, never both).
+/// `body` lines must already be wrapped to `card_body_width(depth)`; the card
+/// only indents them under the rule. The header and body are inset by
+/// `gutter_prefix(depth)` so nested cards read as an indent-tree of guides.
+fn render_card(header: &str, max_width: usize, depth: usize, body: &[String]) -> Vec<String> {
+    let gutter = gutter_prefix(depth);
+    let card_w = max_width.saturating_sub(gutter_width(depth)).max(1);
+    let fill = card_w
+        .saturating_sub(visible_width(header).saturating_add(3))
+        .max(1);
+    let mut out = Vec::with_capacity(body.len().saturating_add(1));
+    out.push(format!(
+        "{gutter}{DIM}─ {RESET}{header}{RESET}{DIM} {}{RESET}",
         "─".repeat(fill)
-    )
-}
-
-fn nested_panel_row(text: &str, width: usize, border: &str, depth: usize) -> String {
-    let indent = nested_indent(depth);
-    let inner = width.saturating_sub(2).max(1);
-    let body = format!(" {text}");
-    let pad = inner.saturating_sub(visible_width(&body));
-    format!(
-        "{indent}{border}│{RESET}{body}{RESET}{:pad$}{border}│{RESET}",
-        ""
-    )
-}
-
-fn nested_panel_bottom(width: usize, color: &str, depth: usize) -> String {
-    let indent = nested_indent(depth);
-    format!(
-        "{indent}{color}└{}┘{RESET}",
-        "─".repeat(width.saturating_sub(2).max(1))
-    )
-}
-
-fn nested_panel_separator(
-    label: &str,
-    label_plain: &str,
-    width: usize,
-    color: &str,
-    depth: usize,
-) -> String {
-    let indent = nested_indent(depth);
-    let label_width = phi_tui::display_cell_width(label_plain);
-    if width <= label_width.saturating_add(5) {
-        return format!(
-            "{indent}{color}├{}┤{RESET}",
-            "─".repeat(width.saturating_sub(2).max(1))
-        );
-    }
-    let fill = width.saturating_sub(label_width + 5).max(1);
-    format!(
-        "{indent}{color}├─ {label}{color} {}┤{RESET}",
-        "─".repeat(fill)
-    )
-}
-
-fn fitted_sectioned_panel_width(
-    label_plain: &str,
-    section_plain: Option<&str>,
-    max_width: usize,
-    first: &[String],
-    second: &[String],
-) -> usize {
-    let label_width = std::iter::once(label_plain)
-        .chain(section_plain)
-        .map(|label| phi_tui::display_cell_width(label).saturating_add(6))
-        .max()
-        .unwrap_or(6);
-    let body_width = first
-        .iter()
-        .chain(second.iter())
-        .map(|line| visible_width(line).saturating_add(4))
-        .max()
-        .unwrap_or(4);
-    label_width.max(body_width).min(max_width.max(1)).max(4)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn render_nested_sectioned_panel(
-    label: &str,
-    label_plain: &str,
-    section_label: &str,
-    section_plain: &str,
-    max_width: usize,
-    color: &str,
-    depth: usize,
-    first: &[String],
-    second: &[String],
-) -> Vec<String> {
-    let indent_width = depth.saturating_mul(2);
-    let available = max_width.saturating_sub(indent_width).max(4);
-    let section_plain = (!second.is_empty()).then_some(section_plain);
-    let width = fitted_sectioned_panel_width(label_plain, section_plain, available, first, second);
-    let inner = width.saturating_sub(4).max(1);
-    let mut out = Vec::new();
-    out.push(nested_panel_border(label, label_plain, width, color, depth));
-
-    let push_body = |out: &mut Vec<String>, body: &[String]| {
-        if body.is_empty() {
-            out.push(nested_panel_row("", width, color, depth));
+    ));
+    let body_indent = format!("{gutter}  ");
+    for line in body {
+        out.push(if line.is_empty() {
+            body_indent.clone()
         } else {
-            for line in body {
-                let rows = wrap_ansi(line, inner);
-                if rows.is_empty() {
-                    out.push(nested_panel_row("", width, color, depth));
-                } else {
-                    for row in rows {
-                        out.push(nested_panel_row(&row, width, color, depth));
-                    }
-                }
-            }
-        }
-    };
-
-    push_body(&mut out, first);
-    if !second.is_empty() {
-        out.push(nested_panel_separator(
-            section_label,
-            section_plain.unwrap_or(""),
-            width,
-            color,
-            depth,
-        ));
-        push_body(&mut out, second);
+            format!("{body_indent}{line}")
+        });
     }
-    out.push(nested_panel_bottom(width, color, depth));
-    out
-}
-
-fn render_nested_panel(
-    label: &str,
-    label_plain: &str,
-    max_width: usize,
-    color: &str,
-    depth: usize,
-    body: &[String],
-) -> Vec<String> {
-    let indent_width = depth.saturating_mul(2);
-    let available = max_width.saturating_sub(indent_width).max(4);
-    let width = fitted_panel_width(label_plain, available, body);
-    let inner = width.saturating_sub(4).max(1);
-    let mut out = Vec::new();
-    out.push(nested_panel_border(label, label_plain, width, color, depth));
-    if body.is_empty() {
-        out.push(nested_panel_row("", width, color, depth));
-    } else {
-        for line in body {
-            let rows = wrap_ansi(line, inner);
-            if rows.is_empty() {
-                out.push(nested_panel_row("", width, color, depth));
-            } else {
-                for row in rows {
-                    out.push(nested_panel_row(&row, width, color, depth));
-                }
-            }
-        }
-    }
-    out.push(nested_panel_bottom(width, color, depth));
     out
 }
 
@@ -497,14 +383,6 @@ fn subcall_title(model: &str, prompt_preview: &str) -> String {
     format!("{SUBCALL_ACCENT}{model}{RESET} {DIM}←{RESET} {STRING_FG}\"{prompt_preview}\"{RESET}")
 }
 
-fn subcall_title_plain(model: &str, prompt_preview: &str) -> String {
-    let prompt_preview = prompt_preview
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
-    format!("{model} \u{2190} \"{prompt_preview}\"")
-}
-
 fn running_status_text(label: &str, spinner: &str) -> String {
     format!("{CYAN}{spinner}{RESET} {label}")
 }
@@ -525,14 +403,29 @@ fn failed_status_text(label: &str, duration_secs: Option<f64>, detail: Option<&s
     format!("{RED}✗{RESET} {label}{duration}{detail}")
 }
 
-/// Title line for a nested tool block: the tool's defining argument, pi-style
-/// (`$ cmd` for bash, `read path`, ...), falling back to `name key=value`.
-fn tool_title(name: &str, args: &serde_json::Value) -> String {
-    let arg = |key: &str| {
-        args.get(key)
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("")
-    };
+/// Canonical identity for a tool call — the single source of truth shared by
+/// the in-flight status line and the committed card header. `anchor` is the
+/// one-line form (verb + defining argument, e.g. `read src/parser.rs`,
+/// `$ cargo check`); `body` is the multi-line detail folded under it (full
+/// highlighted bash command, repl code, a long/nested unknown-tool arg).
+/// `tool_title` below is a thin projection over this — never duplicate the
+/// per-tool match.
+///
+/// Anchor-once invariant: the canonical argument (path/command/pattern/value)
+/// is shown **once** across the card — in the anchor when it fits, in the body
+/// when it's richer than a one-line anchor can carry. So bash/repl keep a body
+/// only for multi-line command/code (the anchor is the truncated first line);
+/// single-line bash/repl have an empty body (the anchor already shows them).
+/// read/write/edit/grep/find/ls have an empty body — the identity IS the
+/// anchor. Unknown tools keep a pretty-printed body only when a value is
+/// multi-line, long, or nested; otherwise the `key=value` anchor carries it.
+struct Identity {
+    anchor: String,
+    body: Vec<String>,
+}
+
+fn tool_identity(name: &str, args: &serde_json::Value) -> Identity {
+    let arg = |key: &str| tool_arg(args, key);
     let one_line = |text: &str| {
         let flat = text.lines().next().unwrap_or("").trim().to_owned();
         let short: String = flat.chars().take(80).collect();
@@ -549,10 +442,56 @@ fn tool_title(name: &str, args: &serde_json::Value) -> String {
             format!(" in {path}")
         }
     };
-    match name {
+    // Fallback anchor (unknown tools, and `repl` which has no dedicated one):
+    // `name key=value …` or bare `name` — exactly what `tool_title` produced.
+    let fallback_anchor = || match args.as_object() {
+        Some(map) if !map.is_empty() => {
+            let pairs: Vec<String> = map
+                .iter()
+                .map(|(key, value)| match value {
+                    serde_json::Value::String(s) => format!("{key}={}", one_line(s)),
+                    other => format!("{key}={other}"),
+                })
+                .collect();
+            format!("{TOOL_ACCENT}{name}{RESET} {DIM}{}{RESET}", pairs.join(" "))
+        }
+        _ => format!("{TOOL_ACCENT}{name}{RESET}"),
+    };
+    // Fallback body: a pretty-print of the args shown only when it carries
+    // detail the one-line anchor can't — a value that is multi-line, longer
+    // than one line can fit, or nested (object/array). When every value fits
+    // the `key=value` anchor un-truncated, the body is empty (anchor-once —
+    // the same invariant read/grep/ls/bash honor: the canonical arg appears
+    // once total, the full text shown once when it's richer than the anchor).
+    let fallback_body = || {
+        if args.is_null() || args.as_object().is_some_and(|m| m.is_empty()) {
+            return Vec::new();
+        }
+        // For an object, the anchor already shows every `key=value`, so the
+        // body earns a row only when some value is richer than one line. For a
+        // bare (non-object) arg the anchor is just the tool name — the value is
+        // not shown there — so the body carries it whenever it's non-empty.
+        let needs_body = match args {
+            serde_json::Value::Object(map) => map.values().any(value_richer_than_one_line),
+            other => !is_empty_value(other),
+        };
+        if needs_body {
+            serde_json::to_string_pretty(args)
+                .unwrap_or_else(|_| args.to_string())
+                .lines()
+                .map(|line| format!("{DIM}{line}{RESET}"))
+                .collect()
+        } else {
+            Vec::new()
+        }
+    };
+    let (anchor, body): (String, Vec<String>) = match name {
         "bash" => {
             let cmd = arg("cmd");
-            if cmd.lines().count() > 1 {
+            let multiline = cmd.lines().count() > 1;
+            let anchor = if multiline {
+                // Multi-line: anchor is the truncated first line; the full
+                // command is the body, so the canonical content is shown once.
                 format!("{TOOL_ACCENT}${RESET} {DIM}{}{RESET}", one_line(cmd))
             } else {
                 let echoed = one_line(cmd);
@@ -561,38 +500,79 @@ fn tool_title(name: &str, args: &serde_json::Value) -> String {
                     .next()
                     .unwrap_or(echoed);
                 format!("{TOOL_ACCENT}${RESET} {lit}{RESET}")
-            }
+            };
+            // The body carries the full multi-line command. For a single-line
+            // command the anchor already shows it — emitting a body line
+            // would duplicate the canonical content (anchor-once), so the
+            // body is reserved for the multi-line case (and empty cmd).
+            let body = if cmd.trim().is_empty() {
+                vec![format!("{TOOL_ACCENT}${RESET}")]
+            } else if multiline {
+                highlight_code(cmd, Some("bash"))
+                    .into_iter()
+                    .map(|line| format!("{TOOL_ACCENT}${RESET} {line}"))
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            (anchor, body)
         }
-        "read_file" => format!("{TOOL_ACCENT}read{RESET} {PATH_FG}{}{RESET}", arg("path")),
-        "write_file" => format!("{TOOL_ACCENT}write{RESET} {PATH_FG}{}{RESET}", arg("path")),
-        "edit_file" => format!("{TOOL_ACCENT}edit{RESET} {PATH_FG}{}{RESET}", arg("path")),
-        "grep" => format!(
-            "{TOOL_ACCENT}grep{RESET} {STRING_FG}{}{RESET}{PATH_FG}{}{RESET}",
-            one_line(arg("pattern")),
-            in_path(arg("path"))
-        ),
-        "find" => format!(
-            "{TOOL_ACCENT}find{RESET} {STRING_FG}{}{RESET}{PATH_FG}{}{RESET}",
-            one_line(arg("pattern")),
-            in_path(arg("path"))
-        ),
-        "ls" => format!("{TOOL_ACCENT}ls{RESET} {PATH_FG}{}{RESET}", arg("path"))
-            .trim_end()
-            .to_owned(),
-        _ => match args.as_object() {
-            Some(map) if !map.is_empty() => {
-                let pairs: Vec<String> = map
-                    .iter()
-                    .map(|(key, value)| match value {
-                        serde_json::Value::String(s) => format!("{key}={}", one_line(s)),
-                        other => format!("{key}={other}"),
-                    })
-                    .collect();
-                format!("{TOOL_ACCENT}{name}{RESET} {DIM}{}{RESET}", pairs.join(" "))
-            }
-            _ => format!("{TOOL_ACCENT}{name}{RESET}"),
-        },
-    }
+        "read_file" | "write_file" | "edit_file" => {
+            let verb = match name {
+                "read_file" => "read",
+                "write_file" => "write",
+                _ => "edit",
+            };
+            let path = arg("path");
+            (
+                format!("{TOOL_ACCENT}{verb}{RESET} {PATH_FG}{}{RESET}", path),
+                Vec::new(),
+            )
+        }
+        "grep" | "find" => {
+            let verb = if name == "grep" { "grep" } else { "find" };
+            let pattern = arg("pattern");
+            let path = arg("path");
+            let anchor = format!(
+                "{TOOL_ACCENT}{verb}{RESET} {STRING_FG}{}{RESET}{PATH_FG}{}{RESET}",
+                one_line(pattern),
+                in_path(path)
+            );
+            (anchor, Vec::new())
+        }
+        "ls" => {
+            let path = arg("path");
+            let anchor = format!("{TOOL_ACCENT}ls{RESET} {PATH_FG}{}{RESET}", path)
+                .trim_end()
+                .to_owned();
+            (anchor, Vec::new())
+        }
+        "repl" => {
+            // No dedicated one-line anchor (keeps the fallback form `repl
+            // code=<first line>…`); the body carries the full repl code. A
+            // single-line code value is already in the anchor, so the body is
+            // reserved for the multi-line case (anchor-once — the canonical
+            // code is shown once, not in both the anchor and a body line).
+            let code = args
+                .get("code")
+                .or_else(|| args.get("input"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("");
+            let body = if code.trim().is_empty() || code.lines().count() <= 1 {
+                Vec::new()
+            } else {
+                highlight_code(code, Some("repl"))
+            };
+            (fallback_anchor(), body)
+        }
+        _ => (fallback_anchor(), fallback_body()),
+    };
+    Identity { anchor, body }
+}
+
+/// One-line title for a tool block. Thin projection over [`tool_identity`].
+fn tool_title(name: &str, args: &serde_json::Value) -> String {
+    tool_identity(name, args).anchor
 }
 
 fn lang_hint_for_path(path: &str) -> Option<&'static str> {
@@ -634,101 +614,37 @@ fn tool_preview_lang(name: &str, args: &serde_json::Value) -> Option<&'static st
     }
 }
 
-fn tool_panel_title_plain(name: &str) -> String {
-    match name {
-        "read_file" => "Read".to_owned(),
-        "write_file" => "Write".to_owned(),
-        "edit_file" => "Edit".to_owned(),
-        "bash" => "Bash".to_owned(),
-        "repl" => "Repl".to_owned(),
-        "grep" => "Grep".to_owned(),
-        "find" => "Find".to_owned(),
-        "ls" => "Ls".to_owned(),
-        _ => name
-            .split('_')
-            .filter(|part| !part.is_empty())
-            .map(|part| {
-                let mut chars = part.chars();
-                match chars.next() {
-                    Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
-                    None => String::new(),
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(" "),
-    }
-}
-
 fn tool_arg<'a>(args: &'a serde_json::Value, key: &str) -> &'a str {
     args.get(key)
         .and_then(serde_json::Value::as_str)
         .unwrap_or("")
 }
 
-fn tool_arg_line(text: &str, color: &str) -> Option<String> {
-    (!text.is_empty()).then(|| format!("{color}{text}{RESET}"))
+/// Whether a value carries detail the one-line `key=value` anchor cannot show:
+/// a multi-line string, a >80-char string, or any nested object/array. Used to
+/// decide whether the fallback body (full pretty-printed arg) earns a row, so
+/// the canonical value is shown once at full fidelity only when the anchor
+/// truncates it (anchor-once).
+fn value_richer_than_one_line(v: &serde_json::Value) -> bool {
+    match v {
+        serde_json::Value::String(s) => {
+            let flat = s.lines().next().unwrap_or("");
+            flat.chars().take(80).collect::<String>().chars().count() < flat.chars().count()
+                || s.lines().count() > 1
+        }
+        serde_json::Value::Object(_) | serde_json::Value::Array(_) => true,
+        _ => false,
+    }
 }
 
-fn tool_activity_lines(name: &str, args: &serde_json::Value) -> Vec<String> {
-    let arg = |key: &str| tool_arg(args, key);
-    match name {
-        "bash" => {
-            let cmd = arg("cmd");
-            if cmd.trim().is_empty() {
-                vec![format!("{TOOL_ACCENT}${RESET}")]
-            } else {
-                highlight_code(cmd, Some("bash"))
-                    .into_iter()
-                    .map(|line| format!("{TOOL_ACCENT}${RESET} {line}"))
-                    .collect()
-            }
-        }
-        "repl" => {
-            let code = args
-                .get("code")
-                .or_else(|| args.get("input"))
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("");
-            if code.trim().is_empty() {
-                Vec::new()
-            } else {
-                highlight_code(code, Some("repl"))
-            }
-        }
-        "read_file" | "write_file" | "edit_file" => {
-            tool_arg_line(arg("path"), PATH_FG).into_iter().collect()
-        }
-        "grep" | "find" => {
-            let pattern = arg("pattern");
-            if pattern.is_empty() {
-                Vec::new()
-            } else {
-                let path = arg("path");
-                let suffix = if path.is_empty() || path == "." {
-                    String::new()
-                } else {
-                    format!(" {DIM}in{RESET} {PATH_FG}{path}{RESET}")
-                };
-                vec![format!("{STRING_FG}{pattern}{RESET}{suffix}")]
-            }
-        }
-        "ls" => tool_arg_line(
-            if arg("path").is_empty() {
-                "."
-            } else {
-                arg("path")
-            },
-            PATH_FG,
-        )
-        .into_iter()
-        .collect(),
-        _ if args.is_null() => Vec::new(),
-        _ if args.as_object().is_some_and(|map| map.is_empty()) => Vec::new(),
-        _ => serde_json::to_string_pretty(args)
-            .unwrap_or_else(|_| args.to_string())
-            .lines()
-            .map(|line| format!("{DIM}{line}{RESET}"))
-            .collect(),
+/// Trivially-empty value: null, empty string, empty array/object.
+fn is_empty_value(v: &serde_json::Value) -> bool {
+    match v {
+        serde_json::Value::Null => true,
+        serde_json::Value::String(s) => s.is_empty(),
+        serde_json::Value::Array(a) => a.is_empty(),
+        serde_json::Value::Object(m) => m.is_empty(),
+        _ => false,
     }
 }
 
@@ -1787,7 +1703,7 @@ impl Ui {
             if self.block_active {
                 blocks.push(FrameTranscriptBlock {
                     key: "live:repl-block".to_owned(),
-                    lines: render_repl_panel(self.panel_width(), &self.block),
+                    lines: render_repl_panel(self.panel_width(), &self.block, Some(self.turn)),
                     finalized: false,
                     commit_stable: false,
                     version: 0,
@@ -1821,6 +1737,7 @@ impl Ui {
                     lines: render_repl_panel(
                         self.panel_width(),
                         &self.repl_code_lines(0, block, self.code_limit()),
+                        None,
                     ),
                     finalized: false,
                     commit_stable: false,
@@ -2550,6 +2467,7 @@ impl Ui {
                         error,
                         self.output_limit(),
                         None,
+                        true,
                     );
                 }
                 None => {
@@ -2560,6 +2478,7 @@ impl Ui {
                         &tool.result,
                         self.output_limit(),
                         tool_preview_lang(&tool.name, &tool.args),
+                        false,
                     );
                 }
             }
@@ -2567,13 +2486,12 @@ impl Ui {
         for subcall in subcalls {
             let depth = subcall.depth;
             let label = subcall_title(&subcall.model, &subcall.prompt_preview);
-            let label_plain = subcall_title_plain(&subcall.model, &subcall.prompt_preview);
             let content = subcall
                 .error
                 .as_deref()
                 .or(subcall.result_preview.as_deref());
             let rows =
-                self.subcall_result_rows(depth, &label, &label_plain, content, self.output_limit());
+                self.subcall_result_rows(depth, &label, content, self.output_limit(), subcall.error.is_some());
             for row in rows {
                 self.push_row(row);
             }
@@ -3190,11 +3108,13 @@ impl Ui {
         self.panel_width().saturating_sub(4).max(4)
     }
 
-    /// Display columns available inside a nested box at `depth`.
-    fn nested_text_width(&self, depth: usize) -> usize {
+    /// Display columns available to a card body at `depth`: the repl body minus
+    /// the gutter width (`gutter_prefix`) and the 2-space body indent under the
+    /// rule. Cards have no side walls, so this is ~4 columns wider per depth
+    /// than the old boxed panel path would have allowed.
+    fn card_body_width(&self, depth: usize) -> usize {
         self.repl_body_width()
-            .saturating_sub(depth.saturating_mul(2))
-            .saturating_sub(4)
+            .saturating_sub(gutter_width(depth) + 2)
             .max(1)
     }
 
@@ -3228,15 +3148,14 @@ impl Ui {
         )
     }
 
-    /// Live/scrollback activity rows rendered as nested boxes inside the repl panel.
+    /// Live/scrollback activity rows rendered as a card inside the repl panel.
     fn tool_lines(&self, depth: usize, title: &str, body: &str, max: usize) -> Vec<String> {
-        let mut rows = vec![title.to_owned()];
-
+        let mut rows = Vec::new();
         let trimmed = body.trim_end();
         if !trimmed.is_empty() {
             let output_rows: Vec<String> = trimmed
                 .lines()
-                .flat_map(|line| wrap_ansi(line, self.nested_text_width(depth)))
+                .flat_map(|line| wrap_ansi(line, self.card_body_width(depth)))
                 .collect();
             let shown = output_rows.len().min(max);
             for row in &output_rows[..shown] {
@@ -3250,14 +3169,7 @@ impl Ui {
             }
         }
 
-        render_nested_panel(
-            &format!("{PANEL_REPL}Activity{RESET}"),
-            "Activity",
-            self.repl_body_width(),
-            PANEL_REPL,
-            depth,
-            &rows,
-        )
+        render_card(title, self.repl_body_width(), depth, &rows)
     }
 
     fn repl_code_lines(&self, depth: usize, body: &str, max: usize) -> Vec<String> {
@@ -3266,7 +3178,7 @@ impl Ui {
         if !trimmed.is_empty() {
             rows = highlight_code(trimmed, Some("repl"))
                 .into_iter()
-                .flat_map(|line| wrap_ansi(&line, self.nested_text_width(depth)))
+                .flat_map(|line| wrap_ansi(&line, self.card_body_width(depth)))
                 .collect();
             if rows.len() > max {
                 let hidden = rows.len() - max;
@@ -3276,11 +3188,9 @@ impl Ui {
         }
 
         let label = if depth == 0 { "Input" } else { "repl" };
-        render_nested_panel(
-            &format!("{PANEL_REPL}{BOLD}{label}{RESET}"),
-            label,
+        render_card(
+            &format!("{BOLD}▶ {label}{RESET}"),
             self.repl_body_width(),
-            PANEL_REPL,
             depth,
             &rows,
         )
@@ -3314,14 +3224,7 @@ impl Ui {
     }
 
     fn status_rows(&self, depth: usize, text: &str) -> Vec<String> {
-        render_nested_panel(
-            &format!("{PANEL_REPL}Activity{RESET}"),
-            "Activity",
-            self.repl_body_width(),
-            PANEL_REPL,
-            depth,
-            &[text.to_owned()],
-        )
+        render_card(text, self.repl_body_width(), depth, &[])
     }
 
     fn push_status(&mut self, depth: usize, text: String) -> Option<(usize, usize)> {
@@ -3475,8 +3378,14 @@ impl Ui {
         }
         self.block_active = false;
         let body = std::mem::take(&mut self.block);
+        // The `repl · turn N` label belongs to the *live* action block built
+        // during an iteration (running is Some). Persisted assistant messages
+        // re-rendered as prose containers (`push_assistant_message`, during
+        // restore or after a run completes) are a different artifact with no
+        // meaningful per-block turn, so they stay at a plain `repl` label.
+        let turn = self.running.is_some().then_some(self.turn);
         self.pending
-            .extend(render_repl_panel(self.panel_width(), &body));
+            .extend(render_repl_panel(self.panel_width(), &body, turn));
         self.open_tool_rows.clear();
         self.open_subcall_rows.clear();
         let after = std::mem::take(&mut self.after_block);
@@ -3490,16 +3399,13 @@ impl Ui {
         let _ = self.push_status(depth, text);
     }
 
-    /// Continuation/result line inside an action block, rendered as a nested
-    /// output box inside the repl panel.
+    /// Continuation/result line inside an action block, rendered as a card.
     fn push_bar(&mut self, depth: usize, text: String) {
-        let rows = render_nested_panel(
-            &format!("{PANEL_REPL}{BOLD}Output{RESET}"),
-            "Output",
+        let rows = render_card(
+            &format!("{DIM}{text}{RESET}"),
             self.repl_body_width(),
-            PANEL_REPL,
             depth,
-            &[format!("{DIM}{text}{RESET}")],
+            &[],
         );
         for row in rows {
             self.push_row(row);
@@ -3533,7 +3439,7 @@ impl Ui {
         };
         let mut rows: Vec<String> = base_rows
             .into_iter()
-            .flat_map(|line| wrap_ansi(&line, self.nested_text_width(depth)))
+            .flat_map(|line| wrap_ansi(&line, self.card_body_width(depth)))
             .collect();
         if rows.len() > max {
             let hidden = rows.len() - max;
@@ -3548,11 +3454,9 @@ impl Ui {
         if rows.is_empty() {
             return;
         }
-        let rows = render_nested_panel(
-            &format!("{PANEL_REPL}{BOLD}Output{RESET}"),
-            "Output",
+        let rows = render_card(
+            &format!("{DIM}output{RESET}"),
             self.repl_body_width(),
-            PANEL_REPL,
             depth,
             &rows,
         );
@@ -3569,43 +3473,49 @@ impl Ui {
         output: &str,
         max: usize,
         lang: Option<&str>,
+        failed: bool,
     ) -> Vec<String> {
-        let title_plain = tool_panel_title_plain(name);
-        let title = format!("{TOOL_ACCENT}{title_plain}{RESET}");
-        let activity = tool_activity_lines(name, args);
-        let output = self.preview_rows_with_lang(depth, output, max, lang);
-        render_nested_sectioned_panel(
-            &title,
-            &title_plain,
-            &format!("{PANEL_REPL}{BOLD}Output{RESET}"),
-            "Output",
-            self.repl_body_width(),
-            PANEL_REPL,
-            depth,
-            &activity,
-            &output,
-        )
+        let identity = tool_identity(name, args);
+        let glyph = if failed {
+            format!("{RED}✗{RESET}")
+        } else {
+            format!("{GREEN}✓{RESET}")
+        };
+        // Header carries the canonical identity (path/command/pattern) once.
+        // The in-flight spinner label uses the same anchor via `tool_title`, so
+        // running and committed render the same identity (no flicker on done).
+        // The body folds multi-line detail (full bash command / repl code) under
+        // it; for tools whose identity IS the anchor, the body is empty and only
+        // the output preview shows.
+        let header = format!("{glyph} {}", identity.anchor);
+        let width = self.card_body_width(depth);
+        let mut body: Vec<String> = identity
+            .body
+            .into_iter()
+            .flat_map(|line| wrap_ansi(&line, width))
+            .collect();
+        body.extend(self.preview_rows_with_lang(depth, output, max, lang));
+        render_card(&header, self.repl_body_width(), depth, &body)
     }
 
     fn subcall_result_rows(
         &self,
         depth: usize,
         label: &str,
-        label_plain: &str,
         content: Option<&str>,
         max: usize,
+        failed: bool,
     ) -> Vec<String> {
+        let glyph = if failed {
+            format!("{RED}✗{RESET}")
+        } else {
+            format!("{GREEN}✓{RESET}")
+        };
+        let header = format!("{glyph} {label}");
         let body = content
             .map(|text| self.preview_rows_with_lang(depth, text, max, None))
             .unwrap_or_default();
-        render_nested_panel(
-            label,
-            label_plain,
-            self.repl_body_width(),
-            SUBCALL_ACCENT,
-            depth,
-            &body,
-        )
+        render_card(&header, self.repl_body_width(), depth, &body)
     }
 
     fn push_tool_result(
@@ -3616,11 +3526,12 @@ impl Ui {
         output: &str,
         max: usize,
         lang: Option<&str>,
+        failed: bool,
     ) {
         if depth == 0 && !self.last_activity && !self.block_active {
             self.pending.push(String::new());
         }
-        let rows = self.tool_result_rows(depth, name, args, output, max, lang);
+        let rows = self.tool_result_rows(depth, name, args, output, max, lang, failed);
         for row in rows {
             self.push_row(row);
         }
@@ -3859,6 +3770,7 @@ impl Ui {
                     output,
                     self.output_limit(),
                     lang,
+                    error.is_some(),
                 );
                 if let Some(row) = self.open_tool_rows.remove(&key) {
                     self.replace_block_rows(row.start, row.len, rows);
@@ -3920,19 +3832,19 @@ impl Ui {
                         depth,
                     });
                 }
-                let prompt_preview = open
+                // Reuse the label formatted once at `SubcallStart` (stored on
+                // the open row) instead of recomputing it for the border.
+                let label = open
                     .as_ref()
-                    .map(|row| row.prompt_preview.as_str())
-                    .unwrap_or("");
-                let label = subcall_title(&model, prompt_preview);
-                let label_plain = subcall_title_plain(&model, prompt_preview);
+                    .map(|row| row.label.clone())
+                    .unwrap_or_else(|| subcall_title(&model, ""));
                 let content = error.as_deref().or(result_preview.as_deref());
                 let rows = self.subcall_result_rows(
                     depth,
                     &label,
-                    &label_plain,
                     content,
                     self.output_limit(),
+                    error.is_some(),
                 );
                 if let Some(row) = open {
                     self.replace_block_rows(row.start, row.len, rows);
@@ -3947,15 +3859,15 @@ impl Ui {
                     self.last_activity = true;
                 }
             }
-            RlmEvent::RunStart { depth } if depth > 0 => {
-                self.push_dot(depth, format!("{SUBCALL_ACCENT}rlm{RESET}"));
-            }
             RlmEvent::RunEnd {
                 depth,
                 stop,
                 iterations,
                 duration,
             } if depth > 0 => {
+                // A recursive subcall's header is the `SubcallStart` card; skip
+                // the redundant `RunStart` "rlm" card (it would double-mark the
+                // same nesting level). The run's outcome is summarized below.
                 self.push_bar(
                     depth,
                     format!(
@@ -4242,15 +4154,15 @@ mod tests {
 
     #[test]
     fn render_panel_clamps_to_available_width() {
-        let body = render_nested_panel(
-            &format!("{PANEL_REPL}{BOLD}Input{RESET}"),
-            "Input",
+        // A card at depth 0 inside a 10-wide repl panel must not exceed its
+        // width: every rendered line stays within the available columns.
+        let body = render_card(
+            &format!("{BOLD}▶ Input{RESET}"),
             6,
-            PANEL_REPL,
             0,
             &["print('hello world')".to_owned()],
         );
-        let lines = render_repl_panel(10, &body);
+        let lines = render_repl_panel(10, &body, None);
         for line in &lines {
             assert!(
                 visible_width(line) <= 10,
@@ -4261,6 +4173,11 @@ mod tests {
         }
     }
 
+    // Card form: one `─ ✓ read <path>` header rule with the path shown once
+    // (the read tool's identity IS the anchor, so the body holds only the
+    // output preview), no four-wall Activity/Output box. Confirms the anchor
+    // is not duplicated as a body line and that no box chrome (┌/├/└) or
+    // `Activity`/`Output` section labels appear at the card level.
     #[test]
     fn tool_result_merges_activity_and_output_sections() {
         let ui = test_ui(80, 24);
@@ -4271,6 +4188,7 @@ mod tests {
             "//! usage\n//! details\n",
             usize::MAX,
             Some("rust"),
+            false,
         );
         let plain = lines
             .iter()
@@ -4278,42 +4196,254 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
 
-        assert!(plain.contains("┌─ Read"), "{plain}");
+        // Header rule carries the success glyph and the anchor (path) once.
+        assert!(plain.contains("─ ✓ read"), "{plain}");
         assert!(plain.contains("crates/phi-session/src/usage.rs"), "{plain}");
-        assert!(plain.contains("├─ Output"), "{plain}");
+        // Output preview folds under the header as plain body lines.
         assert!(plain.contains("//! usage"), "{plain}");
+        assert!(plain.contains("//! details"), "{plain}");
+        // The canonical path appears once — never re-shown as a body line.
+        assert_eq!(
+            plain.matches("crates/phi-session/src/usage.rs").count(),
+            1,
+            "{plain}"
+        );
+        // No four-wall box chrome or section labels at the card level.
+        assert!(!plain.contains('┌'), "{plain}");
+        assert!(!plain.contains('├'), "{plain}");
+        assert!(!plain.contains('└'), "{plain}");
         assert!(!plain.contains("Activity"), "{plain}");
-        assert_eq!(plain.matches('┌').count(), 1, "{plain}");
-        assert_eq!(plain.matches('└').count(), 1, "{plain}");
+        assert!(!plain.contains("Output"), "{plain}");
+        // The depth-1 gutter guide prefixes every row.
+        assert!(plain.lines().all(|l| l.starts_with("│ ")), "{plain}");
     }
 
+    // Card form for a repl block: code folds under a `▶ Input` header, the
+    // exec bar is its own flat card, and stdout folds under a lowercase
+    // `output` card (no capital `Output` section box, no `├` separator). The
+    // outer `repl` panel stays boxed (it owns the live/commit split).
     #[test]
     fn repl_panel_splits_input_and_output_sections() {
         let mut ui = test_ui(80, 24);
         ui.begin_block();
         ui.push_repl_block(0, "print(1)", usize::MAX);
         ui.push_bar(0, "exec 0.1s".to_owned());
-        ui.push_preview(
-            0,
-            "1
-",
-            usize::MAX,
-        );
+        ui.push_preview(0, "1\n", usize::MAX);
 
-        let lines = render_repl_panel(ui.panel_width(), &ui.block);
+        let lines = render_repl_panel(ui.panel_width(), &ui.block, Some(1));
         let plain = lines
             .iter()
             .map(|line| phi_tui::strip_ansi(line))
             .collect::<Vec<_>>()
-            .join(
-                "
-",
-            );
+            .join("\n");
 
-        assert!(plain.contains("Input"), "{plain}");
-        assert!(plain.contains("Output"), "{plain}");
+        // The repl panel is labelled with the turn; the inner cards are flat.
+        assert!(plain.contains("repl · turn 1"), "{plain}");
+        assert!(plain.contains("▶ Input"), "{plain}");
         assert!(plain.contains("print(1)"), "{plain}");
         assert!(plain.contains("exec 0.1s"), "{plain}");
+        // Output is a lowercase card header, never a capital `Output` section.
+        assert!(plain.contains("output"), "{plain}");
+        assert!(!plain.contains("Output"), "{plain}");
+        // No section separator inside the block (the old `├─ Output` rule).
+        assert!(!plain.contains('├'), "{plain}");
+    }
+
+    // The canonical argument for each tool is shown exactly once across the
+    // whole card (header or body, never both), and tools whose identity IS
+    // the anchor (read/edit/grep/ls) carry no body — so the path/pattern never
+    // re-appears as a body line. `tool_identity` is the single source of truth
+    // the in-flight label and the committed card header share.
+    #[test]
+    fn tool_identity_anchor_shown_once() {
+        let read = tool_identity(
+            "read_file",
+            &serde_json::json!({"path": "src/parser.rs"}),
+        );
+        assert!(phi_tui::strip_ansi(&read.anchor).contains("read src/parser.rs"));
+        assert!(read.body.is_empty());
+        let grep = tool_identity(
+            "grep",
+            &serde_json::json!({"pattern": "parse", "path": "src/"}),
+        );
+        let grep_plain = phi_tui::strip_ansi(&grep.anchor);
+        assert!(grep_plain.contains("grep parse in src/"));
+        assert!(grep.body.is_empty());
+        let ls = tool_identity("ls", &serde_json::json!({"path": "src"}));
+        assert!(phi_tui::strip_ansi(&ls.anchor) == "ls src");
+        assert!(ls.body.is_empty());
+        // bash: single-line command lives in the anchor only (empty body); a
+        // multi-line command's truncated first line is the anchor and its full
+        // text is the body — the canonical command is shown once either way.
+        let bash1 = tool_identity("bash", &serde_json::json!({"cmd": "cargo check"}));
+        assert!(phi_tui::strip_ansi(&bash1.anchor).contains("$ cargo check"));
+        assert!(bash1.body.is_empty(), "single-line bash must not duplicate the command in the body");
+        let bash2 = tool_identity(
+            "bash",
+            &serde_json::json!({"cmd": "cargo test\ncargo build"}),
+        );
+        assert!(phi_tui::strip_ansi(&bash2.anchor).contains("$ cargo test…"));
+        assert!(!bash2.body.is_empty(), "multi-line bash must carry the full command in the body");
+        assert_eq!(bash2.body.len(), 2, "{:?}", bash2.body);
+        // Unknown (e.g. MCP/extension) tools: small `key=value` args live in the
+        // anchor only (empty body — no dup); a long value earns a body row with
+        // the full text (anchor keeps the truncated one).
+        let small = tool_identity("mcp__x", &serde_json::json!({"q": "hi"}));
+        assert_eq!(
+            phi_tui::strip_ansi(&small.anchor),
+            "mcp__x q=hi",
+            "{:?}",
+            small.anchor
+        );
+        assert!(small.body.is_empty(), "small unknown-tool arg must not duplicate in the body");
+        let big_cmd = "x".repeat(120);
+        let big = tool_identity("mcp__x", &serde_json::json!({"q": big_cmd}));
+        assert!(!big.body.is_empty(), "long unknown-tool arg should carry full text in body");
+        let joined = big
+            .body
+            .iter()
+            .map(|l| phi_tui::strip_ansi(l))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(joined.contains(&big_cmd), "{joined}");
+        // A bare (non-object) arg is never in the anchor (anchor is just the
+        // name), so a non-empty value lives in the body once.
+        let bare = tool_identity("mcp__x", &serde_json::json!("hello"));
+        assert_eq!(phi_tui::strip_ansi(&bare.anchor), "mcp__x", "{:?}", bare.anchor);
+        assert!(!bare.body.is_empty(), "bare-string arg must show its value in the body");
+        assert!(
+            bare.body
+                .iter()
+                .any(|l| phi_tui::strip_ansi(l).contains("hello")),
+            "{:?}",
+            bare.body
+        );
+
+        // End-to-end through the card: a read call shows the path once total —
+        // in the header rule only — never duplicated by an output body line.
+        let ui = test_ui(80, 24);
+        let rows = ui.tool_result_rows(
+            0,
+            "read_file",
+            &serde_json::json!({"path": "src/parser.rs"}),
+            "// file\n",
+            usize::MAX,
+            Some("rust"),
+            false,
+        );
+        let plain: String = rows
+            .iter()
+            .map(|l| phi_tui::strip_ansi(l))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(plain.matches("src/parser.rs").count(), 1, "{plain}");
+        // The output content (here just the file's first line) shows once too.
+        assert_eq!(plain.matches("// file").count(), 1, "{plain}");
+    }
+
+    // A multi-line bash command is preserved in full under the card header —
+    // one body line per command line, none truncated away — while the anchor
+    // is the single-line truncation (`…`), so the header stays compact.
+    #[test]
+    fn bash_body_preserved_multiline() {
+        let ui = test_ui(80, 24);
+        let rows = ui.tool_result_rows(
+            1,
+            "bash",
+            &serde_json::json!({"cmd": "cargo test\ncargo build --release"}),
+            "running 12 tests\n",
+            usize::MAX,
+            None,
+            false,
+        );
+        let plain: String = rows
+            .iter()
+            .map(|l| phi_tui::strip_ansi(l))
+            .collect::<Vec<_>>()
+            .join("\n");
+        // Both command lines survive in the body, not just the first.
+        assert!(plain.contains("cargo test"), "{plain}");
+        assert!(plain.contains("cargo build --release"), "{plain}");
+        // The header anchor is the one-line truncation of the command.
+        assert!(plain.contains("$ cargo test…"), "{plain}");
+        // Each `$ …` command line appears exactly once (no duplication).
+        assert_eq!(plain.matches("cargo test").count(), 2, "{plain}"); // anchor + body line
+        // Output preview is folded under the same card, below the command body.
+        assert!(plain.contains("running 12 tests"), "{plain}");
+
+        // Single-line bash: the anchor already carries the command, so the body
+        // must NOT re-state it (anchor-once — the canonical command appears
+        // once total, in the header rule only).
+        let ui = test_ui(80, 24);
+        let rows = ui.tool_result_rows(
+            0,
+            "bash",
+            &serde_json::json!({"cmd": "cargo check"}),
+            "Compiling\n",
+            usize::MAX,
+            None,
+            false,
+        );
+        let plain: String = rows
+            .iter()
+            .map(|l| phi_tui::strip_ansi(l))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(plain.contains("$ cargo check"), "{plain}");
+        assert_eq!(plain.matches("cargo check").count(), 1, "{plain}");
+        // The output preview still folds under the card.
+        assert!(plain.contains("Compiling"), "{plain}");
+    }
+
+    // The outer `repl` panel is labelled `repl · turn N` for a *live* action
+    // block (built during an iteration), but a persisted assistant message
+    // re-rendered as prose after the run completes has no per-block turn, so
+    // its repl container stays at a plain `repl` label — never `turn 0`.
+    #[test]
+    fn repl_panel_label_carries_turn_only_for_live_blocks() {
+        use tokio_util::sync::CancellationToken;
+        let pending_plain = |ui: &Ui| -> String {
+            ui.pending
+                .iter()
+                .map(|l| phi_tui::strip_ansi(l))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        // Live block: IterationStart (iteration 0 -> turn 1), then a code exec
+        // whose replay commit happens while the run is active.
+        let mut ui = test_ui(80, 24);
+        ui.running = Some(CancellationToken::new());
+        ui.handle_rlm_event(RlmEvent::IterationStart {
+            depth: 0,
+            iteration: 0,
+        });
+        ui.handle_rlm_event(RlmEvent::CodeExecStart {
+            depth: 0,
+            iteration: 0,
+            code: "print(1)".to_owned(),
+        });
+        ui.handle_rlm_event(RlmEvent::CodeExecEnd {
+            depth: 0,
+            iteration: 0,
+            stdout: "1\n".to_owned(),
+            stderr: String::new(),
+            duration: Duration::from_millis(5),
+        });
+        let live_plain = pending_plain(&ui);
+        assert!(live_plain.contains("repl · turn 1"), "{live_plain}");
+
+        // Persisted assistant message rendered after the run completes (run
+        // no longer active): the repl container is plain `repl`, no turn.
+        ui.running = None;
+        ui.pending.clear();
+        ui.push_assistant_message("Here is code:\n\n```repl\nprint(1)\n```\n");
+        let replay_plain = pending_plain(&ui);
+        assert!(
+            replay_plain.contains("┌─ repl "),
+            "{replay_plain}"
+        );
+        assert!(!replay_plain.contains("turn"), "{replay_plain}");
     }
 
     #[test]

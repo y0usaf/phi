@@ -1,23 +1,66 @@
 use phi_rlm::LimitKind;
 
-/// Compact one-line `key=value` summary of a tool call's arguments.
-pub(crate) fn tool_args_preview(args: &serde_json::Value) -> String {
-    let Some(map) = args.as_object() else {
-        return String::new();
+/// First non-empty line of `text`, trimmed and truncated to `max` chars with a
+/// trailing `…` when either the line or the whole text was cut.
+fn first_line_trunc(text: &str, max: usize) -> String {
+    let first = text.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
+    let short: String = first.chars().take(max).collect();
+    if short.len() < first.len() || text.lines().filter(|l| !l.trim().is_empty()).count() > 1 {
+        format!("{short}…")
+    } else {
+        short
+    }
+}
+
+/// Single-line canonical identity for a tool call, used by the in-flight start
+/// line AND the panel title so the load-bearing argument (path / command /
+/// pattern) is rendered exactly once. Mirrors the interactive `tool_title`.
+pub(crate) fn call_anchor(name: &str, args: &serde_json::Value) -> String {
+    let display = tool_display_name(name);
+    match name {
+        "bash" => {
+            let cmd = tool_arg(args, "cmd");
+            if cmd.trim().is_empty() {
+                display
+            } else {
+                format!("{display}: $ {}", first_line_trunc(cmd, 60))
+            }
+        }
+        "repl" => {
+            let code = args
+                .get("code")
+                .or_else(|| args.get("input"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("");
+            if code.trim().is_empty() {
+                display
+            } else {
+                format!("{display}: {}", first_line_trunc(code, 60))
+            }
+        }
+        _ => format!(
+            "{display}{}",
+            tool_title_suffix(name, args).unwrap_or_default()
+        ),
+    }
+}
+
+/// `args` with the canonical key(s) already shown in the anchor/title removed,
+/// so the Args section never re-states the path/pattern. Bash/repl/unknown are
+/// untouched (their body IS the command/code, not a residual).
+pub(crate) fn residual_args(name: &str, args: &serde_json::Value) -> serde_json::Value {
+    let strip: &[&str] = match name {
+        "read_file" | "write_file" | "edit_file" | "ls" => &["path"],
+        "grep" | "find" => &["pattern", "path"],
+        _ => return args.clone(),
     };
-    map.iter()
-        .map(|(key, value)| {
-            let text = match value {
-                serde_json::Value::String(s) => s.clone(),
-                other => other.to_string(),
-            };
-            let flat = text.replace('\n', "\\n");
-            let short: String = flat.chars().take(60).collect();
-            let ellipsis = if short.len() < flat.len() { "…" } else { "" };
-            format!("{key}={short}{ellipsis}")
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
+    let Some(mut map) = args.as_object().map(|m| m.clone()) else {
+        return args.clone();
+    };
+    for key in strip {
+        map.remove(*key);
+    }
+    serde_json::Value::Object(map)
 }
 
 /// ANSI styling for scrollback event glyphs (gated on a tty in `print_events`).
@@ -213,12 +256,15 @@ pub(crate) fn tool_input_lines(name: &str, args: &serde_json::Value) -> Vec<Stri
         }
     } else if !tool_shows_args_section(name) || args.is_null() {
         Vec::new()
-    } else if let Some(map) = args.as_object() {
-        if map.is_empty() {
+    } else if args.as_object().is_some() {
+        // Strip the canonical key(s) already shown in the panel title suffix so
+        // the Args section never re-states the path/pattern (anchor-once).
+        let residual = residual_args(name, args);
+        if residual.as_object().is_some_and(|m| m.is_empty()) {
             Vec::new()
         } else {
-            serde_json::to_string_pretty(args)
-                .unwrap_or_else(|_| args.to_string())
+            serde_json::to_string_pretty(&residual)
+                .unwrap_or_else(|_| residual.to_string())
                 .lines()
                 .map(str::to_owned)
                 .collect()

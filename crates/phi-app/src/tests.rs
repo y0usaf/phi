@@ -60,8 +60,18 @@ fn observational_tools_hide_args_and_prettify_names() {
     assert!(
         tool_input_lines("read_file", &serde_json::json!({"path": "src/main.rs"})).is_empty()
     );
+    // write_file's path is the canonical key (shown in the title suffix), so the
+    // Args section strips it and keeps only the residual (content).
+    let write_args = tool_input_lines(
+        "write_file",
+        &serde_json::json!({"path": "src/main.rs", "content": "fn main() {}\n"}),
+    );
+    let joined = write_args.join("\n");
+    assert!(!joined.is_empty(), "write_file should keep residual args");
+    assert!(joined.contains("content"), "residual should keep content: {joined}");
     assert!(
-        !tool_input_lines("write_file", &serde_json::json!({"path": "src/main.rs"})).is_empty()
+        !joined.contains("src/main.rs"),
+        "residual should drop the path already in the title: {joined}"
     );
     assert_eq!(
         tool_title_suffix("read_file", &serde_json::json!({"path": "src/main.rs"})),
@@ -71,6 +81,53 @@ fn observational_tools_hide_args_and_prettify_names() {
         tool_shows_args_section("edit_file"),
         "edit_file should render args section"
     );
+}
+
+#[test]
+fn call_anchor_shows_identity_once() {
+    // Path-bearing tools: anchor carries the path (no key=value dump).
+    assert_eq!(
+        call_anchor("read_file", &serde_json::json!({"path": "src/main.rs"})),
+        "Read File — src/main.rs"
+    );
+    assert_eq!(
+        call_anchor("edit_file", &serde_json::json!({"path": "a.rs", "content": "x"})),
+        "Edit File — a.rs"
+    );
+    // bash: first command line inlined; multi-line truncated.
+    assert_eq!(
+        call_anchor("bash", &serde_json::json!({"cmd": "echo hi"})),
+        "Bash: $ echo hi"
+    );
+    assert!(
+        call_anchor("bash", &serde_json::json!({"cmd": "echo one\necho two"})).ends_with('…'),
+        "multi-line bash anchor truncates"
+    );
+    // grep: pattern (and path) inlined.
+    assert_eq!(
+        call_anchor("grep", &serde_json::json!({"pattern": "foo", "path": "src"})),
+        "Grep — foo in src"
+    );
+}
+
+#[test]
+fn residual_args_strips_canonical_key_only() {
+    // edit_file: path stripped, content/old_string kept.
+    let r = residual_args(
+        "edit_file",
+        &serde_json::json!({"path": "a.rs", "old_string": "x", "new_string": "y"}),
+    );
+    let map = r.as_object().unwrap();
+    assert!(!map.contains_key("path"));
+    assert!(map.contains_key("old_string") && map.contains_key("new_string"));
+    // unknown tool: nothing stripped (no canonical key in any title).
+    let u = residual_args("custom_tool", &serde_json::json!({"a": 1, "b": 2}));
+    assert_eq!(u.as_object().unwrap().len(), 2);
+    // edit_file with only a path -> empty residual (no Args section).
+    assert!(residual_args("edit_file", &serde_json::json!({"path": "a.rs"}))
+        .as_object()
+        .unwrap()
+        .is_empty());
 }
 
 #[test]
@@ -126,6 +183,35 @@ fn observational_tools_render_as_single_output_box() {
     assert!(!panel.contains("├─── Args"));
     assert!(!panel.contains("├─── Output"));
     assert!(panel.contains("│ fn main() {}"));
+    assert_eq!(panel.matches('┌').count(), 1);
+    assert_eq!(panel.matches('└').count(), 1);
+}
+
+#[test]
+fn bash_body_preserved_multiline() {
+    // The Command section preserves every line of a multi-line bash cmd (one
+    // `$ <line>` row each), not just the first line. The panel title carries no
+    // command text (the bash title suffix is empty); the full command is shown
+    // only here, once, not truncated. `call_anchor` separately truncates the
+    // start line — tested in `call_anchor_shows_identity_once`.
+    let panel = render_tool_panel(
+        "bash",
+        &serde_json::json!({"cmd": "cargo test\ncargo build --release"}),
+        "running 12 tests\n",
+        false,
+        true,
+        false,
+    );
+
+    assert!(panel.contains("┌─── ✔ Bash"));
+    assert!(panel.contains("├─── Command"));
+    assert!(panel.contains("│ $ cargo test"));
+    assert!(panel.contains("│ $ cargo build --release"));
+    // No Args section re-stating the command (anchor-once, data-level).
+    assert!(!panel.contains("├─── Args"));
+    // Output section still renders, separate from the command body.
+    assert!(panel.contains("├─── Output"));
+    assert!(panel.contains("│ running 12 tests"));
     assert_eq!(panel.matches('┌').count(), 1);
     assert_eq!(panel.matches('└').count(), 1);
 }
