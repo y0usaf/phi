@@ -19,14 +19,14 @@ use phi_ext::{EventKind, EventPayload, LifecycleEvent};
 use phi_runtime::AppRuntime;
 
 use crate::handler::{DeltaSink, LanguageModel, LmHandler, ThinkingSink, UsageBreakdown};
+use crate::loop_detect::LoopDetector;
 use crate::parsing::{
     ExecutedBlock, could_open_block, find_code_blocks, format_iteration, last_block_end,
 };
 use crate::prompts::{
-    DEFAULT_ANSWER_NUDGE, PROSE_NUDGE, QueryMetadata, SystemPromptOptions,
-    build_system_prompt, build_user_prompt, metadata_user_prompt,
+    DEFAULT_ANSWER_NUDGE, PROSE_NUDGE, QueryMetadata, SystemPromptOptions, build_system_prompt,
+    build_user_prompt, metadata_user_prompt,
 };
-use crate::loop_detect::LoopDetector;
 use crate::{ChatMessage, ContextPayload, Role};
 
 /// Save-point callback: invoked after each iteration's REPL execution
@@ -305,6 +305,9 @@ struct EngineSubcalls {
     loop_detector: Arc<Mutex<LoopDetector>>,
     /// Set by `notify_tool` when a loop is detected; checked by `run_loop`.
     loop_detected: Arc<std::sync::atomic::AtomicBool>,
+    /// Pending tool-call args keyed by `call_id`, captured from
+    /// `ToolEvent::Start` and consumed by `ToolEvent::End` for signatures.
+    pending_args: Arc<Mutex<HashMap<u64, Value>>>,
 }
 
 impl EngineSubcalls {
@@ -439,6 +442,25 @@ impl EngineSubcalls {
 impl SubcallHandler for EngineSubcalls {
     fn notify_tool(&self, event: ToolEvent) {
         let depth = self.rlm.depth;
+        // Capture args from ToolEvent::Start for loop-detection signatures.
+        if let ToolEvent::Start {
+            call_id,
+            name,
+            args,
+        } = &event
+        {
+            self.pending_args
+                .lock()
+                .unwrap()
+                .insert(*call_id, args.clone());
+            self.rlm.events.emit(RlmEvent::ToolStart {
+                depth,
+                call_id: *call_id,
+                name: name.clone(),
+                args: args.clone(),
+            });
+            return;
+        }
         // Observe tool-call signatures for loop detection on ToolEnd.
         if let ToolEvent::End {
             call_id,
@@ -448,23 +470,22 @@ impl SubcallHandler for EngineSubcalls {
             duration,
         } = &event
         {
-            // The args aren't available on End; reconstruct a signature from
-            // name + result (args were on the matching Start, but we only
-            // have the result here). Use a synthetic empty args value so the
-            // signature is name + result, which is sufficient for detecting
-            // repeated identical calls.
-            let args_val = serde_json::Value::Null;
+            // Retrieve args captured from the matching ToolEvent::Start.
+            let args_val = self
+                .pending_args
+                .lock()
+                .unwrap()
+                .remove(call_id)
+                .unwrap_or(serde_json::Value::Null);
             if let Some(stop) = self
                 .loop_detector
                 .lock()
                 .unwrap()
                 .observe(name, &args_val, result)
-            {
-                if stop == StopCause::LoopDetected {
+                && stop == StopCause::LoopDetected {
                     self.loop_detected
                         .store(true, std::sync::atomic::Ordering::Relaxed);
                 }
-            }
             self.rlm.events.emit(RlmEvent::ToolEnd {
                 depth,
                 call_id: *call_id,
@@ -473,21 +494,7 @@ impl SubcallHandler for EngineSubcalls {
                 error: error.clone(),
                 duration: *duration,
             });
-            return;
         }
-        self.rlm.events.emit(match event {
-            ToolEvent::Start {
-                call_id,
-                name,
-                args,
-            } => RlmEvent::ToolStart {
-                depth,
-                call_id,
-                name,
-                args,
-            },
-            ToolEvent::End { .. } => unreachable!(),
-        });
     }
 
     async fn handle(&self, request: SubcallRequest) -> Result<SubcallResponse, String> {
@@ -634,7 +641,8 @@ impl Rlm {
         root_prompt: Option<&str>,
         cancel: &CancellationToken,
     ) -> RlmCompletion {
-        self.completion_with(payload, root_prompt, None, cancel).await
+        self.completion_with(payload, root_prompt, None, cancel)
+            .await
     }
 
     pub async fn completion_with(
@@ -646,10 +654,13 @@ impl Rlm {
     ) -> RlmCompletion {
         let start = Instant::now();
         self.events.emit(RlmEvent::RunStart { depth: self.depth });
-        dispatch_event(&self.runtime, LifecycleEvent {
-            kind: EventKind::AgentStart,
-            payload: EventPayload::Empty,
-        });
+        dispatch_event(
+            &self.runtime,
+            LifecycleEvent {
+                kind: EventKind::AgentStart,
+                payload: EventPayload::Empty,
+            },
+        );
 
         // When a TurnState snapshot is provided, use it to drive the loop.
         let turn_config = turn.map(|t| &t.config);
@@ -660,8 +671,12 @@ impl Rlm {
         }
 
         // Use snapshot models if provided, else fall back to engine models.
-        let root = turn.map(|t| t.root_model.clone()).unwrap_or_else(|| self.root.clone());
-        let sub = turn.map(|t| t.sub_model.clone()).unwrap_or_else(|| self.sub.clone());
+        let root = turn
+            .map(|t| t.root_model.clone())
+            .unwrap_or_else(|| self.root.clone());
+        let sub = turn
+            .map(|t| t.sub_model.clone())
+            .unwrap_or_else(|| self.sub.clone());
         let handler = Arc::new(LmHandler::new(root, sub, self.named.clone()));
         let run = RunState::new();
         run.begin(cancel.clone());
@@ -680,14 +695,13 @@ impl Rlm {
                 } else {
                     self.initial_history(metadata, root_prompt, 0)
                 };
-                if let Some(rt) = &self.runtime {
-                    if let Some(sys_msg) = history.iter_mut().find(|m| m.role == Role::System) {
+                if let Some(rt) = &self.runtime
+                    && let Some(sys_msg) = history.iter_mut().find(|m| m.role == Role::System) {
                         sys_msg.content = rt
                             .filter_system_prompt(&root_prompt_str, sys_msg.content.clone())
                             .await
                             .unwrap_or_else(|_| sys_msg.content.clone());
                     }
-                }
                 let outcome = self
                     .run_loop(
                         &mut env,
@@ -722,6 +736,7 @@ impl Rlm {
             run,
             loop_detector: Arc::new(Mutex::new(LoopDetector::new())),
             loop_detected: loop_detected.clone(),
+            pending_args: Arc::new(Mutex::new(HashMap::new())),
         });
         let (context, context_str) = match payload {
             ContextPayload::Str(s) => (None, Some(s)),
@@ -776,6 +791,7 @@ impl Rlm {
         history
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn run_loop(
         &self,
         env: &mut Box<dyn ReplEnv>,
@@ -820,10 +836,13 @@ impl Rlm {
                 depth: self.depth,
                 iteration: i,
             });
-            dispatch_event(&self.runtime, LifecycleEvent {
-                kind: EventKind::TurnStart,
-                payload: EventPayload::TurnStart { turn: i as u32 },
-            });
+            dispatch_event(
+                &self.runtime,
+                LifecycleEvent {
+                    kind: EventKind::TurnStart,
+                    payload: EventPayload::TurnStart { turn: i as u32 },
+                },
+            );
             let iter_start = Instant::now();
 
             // Stream the completion and execute ```repl blocks eagerly: the
@@ -977,10 +996,16 @@ impl Rlm {
                     role: Role::User,
                     content: "You must inspect the `context` via the REPL before answering. Write a ```repl``` block that probes the environment (for example, print a small slice, length, or keys) and continue from there.".to_owned(),
                 });
-                dispatch_event(&self.runtime, LifecycleEvent {
-                    kind: EventKind::TurnEnd,
-                    payload: EventPayload::TurnEnd { turn: i as u32, had_code: false },
-                });
+                dispatch_event(
+                    &self.runtime,
+                    LifecycleEvent {
+                        kind: EventKind::TurnEnd,
+                        payload: EventPayload::TurnEnd {
+                            turn: i as u32,
+                            had_code: false,
+                        },
+                    },
+                );
                 self.events.emit(RlmEvent::IterationEnd {
                     depth: self.depth,
                     iteration: i,
@@ -999,10 +1024,16 @@ impl Rlm {
             if blocks.is_empty() && !response.trim().is_empty() {
                 best_partial = Some(response.clone());
                 if prose_nudged {
-                    dispatch_event(&self.runtime, LifecycleEvent {
-                        kind: EventKind::TurnEnd,
-                        payload: EventPayload::TurnEnd { turn: i as u32, had_code: false },
-                    });
+                    dispatch_event(
+                        &self.runtime,
+                        LifecycleEvent {
+                            kind: EventKind::TurnEnd,
+                            payload: EventPayload::TurnEnd {
+                                turn: i as u32,
+                                had_code: false,
+                            },
+                        },
+                    );
                     self.events.emit(RlmEvent::IterationEnd {
                         depth: self.depth,
                         iteration: i,
@@ -1024,10 +1055,16 @@ impl Rlm {
                     role: Role::User,
                     content: PROSE_NUDGE.to_owned(),
                 });
-                dispatch_event(&self.runtime, LifecycleEvent {
-                    kind: EventKind::TurnEnd,
-                    payload: EventPayload::TurnEnd { turn: i as u32, had_code: false },
-                });
+                dispatch_event(
+                    &self.runtime,
+                    LifecycleEvent {
+                        kind: EventKind::TurnEnd,
+                        payload: EventPayload::TurnEnd {
+                            turn: i as u32,
+                            had_code: false,
+                        },
+                    },
+                );
                 self.events.emit(RlmEvent::IterationEnd {
                     depth: self.depth,
                     iteration: i,
@@ -1048,10 +1085,16 @@ impl Rlm {
                     depth: self.depth,
                     content: answer.clone(),
                 });
-                dispatch_event(&self.runtime, LifecycleEvent {
-                    kind: EventKind::TurnEnd,
-                    payload: EventPayload::TurnEnd { turn: i as u32, had_code: !blocks.is_empty() },
-                });
+                dispatch_event(
+                    &self.runtime,
+                    LifecycleEvent {
+                        kind: EventKind::TurnEnd,
+                        payload: EventPayload::TurnEnd {
+                            turn: i as u32,
+                            had_code: !blocks.is_empty(),
+                        },
+                    },
+                );
                 self.events.emit(RlmEvent::IterationEnd {
                     depth: self.depth,
                     iteration: i,
@@ -1083,10 +1126,16 @@ impl Rlm {
                     content: outputs,
                 });
             }
-            dispatch_event(&self.runtime, LifecycleEvent {
-                kind: EventKind::TurnEnd,
-                payload: EventPayload::TurnEnd { turn: i as u32, had_code: !blocks.is_empty() },
-            });
+            dispatch_event(
+                &self.runtime,
+                LifecycleEvent {
+                    kind: EventKind::TurnEnd,
+                    payload: EventPayload::TurnEnd {
+                        turn: i as u32,
+                        had_code: !blocks.is_empty(),
+                    },
+                },
+            );
             self.events.emit(RlmEvent::IterationEnd {
                 depth: self.depth,
                 iteration: i,
@@ -1104,16 +1153,18 @@ impl Rlm {
                             .iter()
                             .map(|m| m.content.clone())
                             .collect::<Vec<_>>()
-                            .join("
+                            .join(
+                                "
 
-"),
+",
+                            ),
                     });
                 }
             }
 
             // Loop detection: if the shared flag is set, terminate.
-            if let Some(flag) = loop_detected {
-                if flag.load(std::sync::atomic::Ordering::Relaxed) {
+            if let Some(flag) = loop_detected
+                && flag.load(std::sync::atomic::Ordering::Relaxed) {
                     return Outcome {
                         stop: StopCause::LoopDetected,
                         response: best_partial.unwrap_or_else(|| {
@@ -1123,7 +1174,6 @@ impl Rlm {
                         iterations,
                     };
                 }
-            }
 
             i += 1;
         }
@@ -1296,12 +1346,15 @@ impl Rlm {
 
     fn complete_run(&self, outcome: Outcome, handler: &LmHandler, start: Instant) -> RlmCompletion {
         let duration = start.elapsed();
-        dispatch_event(&self.runtime, LifecycleEvent {
-            kind: EventKind::AgentEnd,
-            payload: EventPayload::AgentEnd {
-                stop_cause: format!("{:?}", outcome.stop),
+        dispatch_event(
+            &self.runtime,
+            LifecycleEvent {
+                kind: EventKind::AgentEnd,
+                payload: EventPayload::AgentEnd {
+                    stop_cause: format!("{:?}", outcome.stop),
+                },
             },
-        });
+        );
         self.events.emit(RlmEvent::RunEnd {
             depth: self.depth,
             stop: outcome.stop,
@@ -1328,12 +1381,15 @@ impl Rlm {
         start: Instant,
     ) -> RlmCompletion {
         let duration = start.elapsed();
-        dispatch_event(&self.runtime, LifecycleEvent {
-            kind: EventKind::AgentEnd,
-            payload: EventPayload::AgentEnd {
-                stop_cause: format!("{:?}", outcome.stop),
+        dispatch_event(
+            &self.runtime,
+            LifecycleEvent {
+                kind: EventKind::AgentEnd,
+                payload: EventPayload::AgentEnd {
+                    stop_cause: format!("{:?}", outcome.stop),
+                },
             },
-        });
+        );
         self.events.emit(RlmEvent::RunEnd {
             depth: self.depth,
             stop: outcome.stop,
@@ -1455,10 +1511,13 @@ impl RlmSession {
         let usage_before = self.handler.usage();
         let usage_by_model_before = self.handler.usage_by_model();
         self.rlm.events.emit(RlmEvent::RunStart { depth: 0 });
-        dispatch_event(&self.rlm.runtime, LifecycleEvent {
-            kind: EventKind::AgentStart,
-            payload: EventPayload::Empty,
-        });
+        dispatch_event(
+            &self.rlm.runtime,
+            LifecycleEvent {
+                kind: EventKind::AgentStart,
+                payload: EventPayload::Empty,
+            },
+        );
         self.run.begin(cancel.clone());
 
         let fresh_env = self.env.is_none();
@@ -1502,7 +1561,8 @@ impl RlmSession {
                 });
                 history.push(ChatMessage {
                     role: Role::Assistant,
-                    content: "Understood — I have the session summary and will build on it.".to_owned(),
+                    content: "Understood — I have the session summary and will build on it."
+                        .to_owned(),
                 });
             }
             history.extend(self.transcript.iter().cloned());
@@ -1513,14 +1573,13 @@ impl RlmSession {
             });
             history
         };
-        if let Some(rt) = &self.rlm.runtime {
-            if let Some(sys_msg) = history.iter_mut().find(|m| m.role == Role::System) {
+        if let Some(rt) = &self.rlm.runtime
+            && let Some(sys_msg) = history.iter_mut().find(|m| m.role == Role::System) {
                 sys_msg.content = rt
                     .filter_system_prompt(prompt, sys_msg.content.clone())
                     .await
                     .unwrap_or_else(|_| sys_msg.content.clone());
             }
-        }
         // Cold send: replay user shell executions after the prompt (the warm
         // branch drained them above, before the prompt).
         history.append(&mut self.pending_shell);
@@ -2706,22 +2765,19 @@ mod tests {
 
     #[tokio::test]
     async fn transcript_compaction_folds_old_exchanges_into_summary() {
-        let root = Arc::new(
-            ScriptedLm::new("root-model", &[])
-                .with_default("```repl
+        let root = Arc::new(ScriptedLm::new("root-model", &[]).with_default(
+            "```repl
 answer['content'] = 'ok'
 answer['ready'] = True
-```"),
-        );
+```",
+        ));
         let engine = rlm(RlmConfig::default(), root, quiet_sub());
         let mut session = engine.into_session(ContextPayload::Str("ctx".into()));
         let cancel = CancellationToken::new();
 
         // Send enough exchanges to exceed the compaction threshold (20 pairs).
         for i in 0..25 {
-            let _ = session
-                .send(&format!("question {i}"), &cancel)
-                .await;
+            let _ = session.send(&format!("question {i}"), &cancel).await;
         }
 
         // After compaction, the in-band transcript should be shorter than

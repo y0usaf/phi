@@ -19,7 +19,6 @@ pub enum LuaMsg {
 // Lua global setup
 // ---------------------------------------------------------------------------
 
-
 struct SendableLua(mlua::Lua);
 
 // SAFETY: See the invariant above. The Rc inside mlua::Lua is never shared

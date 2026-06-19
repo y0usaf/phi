@@ -36,7 +36,12 @@ impl LoopDetector {
     }
 
     /// Record a tool call + result. Returns `Some(StopCause::LoopDetected)`
-    /// if the signature exceeded the repeat threshold.
+    /// if the signature exceeded the repeat threshold within the window.
+    ///
+    /// Mirrors Crush's `hasRepeatedToolCalls`: the signature (SHA-256 of
+    /// name + args + result) is pushed onto a sliding window; if its count
+    /// in the window exceeds `max_repeats` (exclusive, matching Crush's
+    /// `> maxRepeats`), a loop is detected.
     pub fn observe(
         &mut self,
         name: &str,
@@ -44,16 +49,21 @@ impl LoopDetector {
         result: &str,
     ) -> Option<StopCause> {
         let sig = Self::signature(name, args, result);
-        let repeats = self.window.iter().filter(|s| **s == sig).count();
         self.window.push(sig.clone());
+
+        // Trim to window size (sliding window).
         if self.window.len() > self.window_size {
             self.window.remove(0);
         }
-        if repeats + 1 > self.max_repeats {
-            Some(StopCause::LoopDetected)
-        } else {
-            None
+
+        // Count occurrences of the latest signature in the window.
+        let count = self.window.iter().filter(|s| **s == sig).count();
+
+        if count > self.max_repeats {
+            return Some(StopCause::LoopDetected);
         }
+
+        None
     }
 
     /// Clear the window (e.g. on run start).

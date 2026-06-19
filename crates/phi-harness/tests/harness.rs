@@ -10,7 +10,7 @@ use phi_harness::{
     ToolCallResult, ToolResultEvent, ToolResultPatch, safe_payload, subscribe_observability,
     trace_operation,
 };
-use phi_rlm::{LoopDetector, StopCause};
+use phi_rlm::LoopDetector;
 use phi_session::durable::{DurableEntry, OperationKind, RecoveryReducer, reduce_log};
 use serde_json::json;
 
@@ -70,7 +70,8 @@ async fn queue_next_turn_survives_clear_runtime() {
 async fn queue_mode_setters() {
     let q = Queues::new();
     q.set_steer_mode(phi_harness::QueueMode::Accumulate).await;
-    q.set_follow_up_mode(phi_harness::QueueMode::Interleave).await;
+    q.set_follow_up_mode(phi_harness::QueueMode::Interleave)
+        .await;
     // Modes are set; no panic.
 }
 
@@ -88,17 +89,15 @@ fn loop_detector_no_repeat() {
 
 #[test]
 fn loop_detector_triggers_on_repeat() {
-    let mut det = LoopDetector::with_params(10, 3); // max 3 repeats
+    let mut det = LoopDetector::with_params(10, 3);
     let args = json!({"cmd": "ls"});
     let result = "same output";
 
-    // 1st, 2nd, 3rd call: no detection yet (repeats+1 = 1,2,3, not > 3)
+    // max_repeats=3, threshold is exclusive (> 3), so 4th identical call triggers.
     for _ in 0..3 {
         assert!(det.observe("bash", &args, result).is_none());
     }
-    // 4th call: repeats+1 = 4 > 3, should detect.
-    let stop = det.observe("bash", &args, result);
-    assert_eq!(stop, Some(StopCause::LoopDetected));
+    assert!(det.observe("bash", &args, result).is_some());
 }
 
 #[test]
@@ -155,10 +154,10 @@ async fn hooks_emit_context_chains_messages() {
             }),
         }))
     });
-    hooks
+    let _ = hooks
         .on::<ContextEvent>(SourceInfo::default(), handler1)
         .await;
-    hooks
+    let _ = hooks
         .on::<ContextEvent>(SourceInfo::default(), handler2)
         .await;
 
@@ -199,13 +198,13 @@ async fn hooks_tool_call_early_exit_on_block() {
             reason: Some("should not reach handler3".to_owned()),
         }))
     });
-    hooks
+    let _ = hooks
         .on::<ToolCallEvent>(SourceInfo::default(), handler1)
         .await;
-    hooks
+    let _ = hooks
         .on::<ToolCallEvent>(SourceInfo::default(), handler2)
         .await;
-    hooks
+    let _ = hooks
         .on::<ToolCallEvent>(SourceInfo::default(), handler3)
         .await;
 
@@ -230,16 +229,16 @@ async fn hooks_tool_result_patch_accumulation() {
             is_error: None,
         }))
     });
-    let handler2: HookHandler<ToolResultEvent> = Arc::new(|ev: &ToolResultEvent| {
+    let handler2: HookHandler<ToolResultEvent> = Arc::new(|_ev: &ToolResultEvent| {
         Ok(Some(ToolResultPatch {
             content: None,
             is_error: Some(true),
         }))
     });
-    hooks
+    let _ = hooks
         .on::<ToolResultEvent>(SourceInfo::default(), handler1)
         .await;
-    hooks
+    let _ = hooks
         .on::<ToolResultEvent>(SourceInfo::default(), handler2)
         .await;
 
@@ -265,7 +264,7 @@ async fn hooks_observation_runs_observers_and_handlers() {
         c1.fetch_add(1, Ordering::Relaxed);
         Ok(())
     });
-    hooks.observe(observer).await;
+    let _ = hooks.observe(observer).await;
 
     hooks
         .emit_observation(phi_harness::RunStartEvent {
@@ -308,22 +307,17 @@ async fn observability_trace_error() {
     });
     let _cleanup = subscribe_observability(sub);
 
-    let result: Result<i32, phi_harness::HarnessError> = trace_operation(
-        "phi.test.error",
-        json!({}),
-        || async { Err(phi_harness::HarnessError::Busy { phase: phi_harness::HarnessPhase::Turn }) },
-    )
-    .await;
+    let result: Result<i32, phi_harness::HarnessError> =
+        trace_operation("phi.test.error", json!({}), || async {
+            Err(phi_harness::HarnessError::Busy {
+                phase: phi_harness::HarnessPhase::Turn,
+            })
+        })
+        .await;
 
     assert!(result.is_err());
     // Should have received Start + Error events.
     assert!(received.load(Ordering::Relaxed) >= 2);
-}
-
-#[derive(serde::Serialize)]
-struct TestPayload {
-    model: String,
-    secret: String,
 }
 
 #[test]

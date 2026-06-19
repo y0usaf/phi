@@ -1,5 +1,5 @@
-use serde::Serialize;
 use phi_ext::{CommandSpec, EventKind, ExtensionManifest, ToolSpec};
+use serde::Serialize;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct RuntimeSnapshot {

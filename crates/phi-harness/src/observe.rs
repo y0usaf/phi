@@ -99,19 +99,12 @@ async fn emit_observability(event: ObservabilityEvent) {
 /// Trace an operation: emit a `Start` event, run `f`, then emit `End` or
 /// `Error`. The parent context is read from the task-local; a child context
 /// is scoped to `f`.
-pub async fn trace_operation<T, F, Fut>(
-    name: &str,
-    payload: Value,
-    f: F,
-) -> Result<T, HarnessError>
+pub async fn trace_operation<T, F, Fut>(name: &str, payload: Value, f: F) -> Result<T, HarnessError>
 where
     F: FnOnce() -> Fut,
     Fut: std::future::Future<Output = Result<T, HarnessError>>,
 {
-    let parent = OBS_CONTEXT
-        .try_get()
-        .map(|c| c.clone())
-        .unwrap_or_default();
+    let parent = OBS_CONTEXT.try_get().unwrap_or_default();
     let trace_id = parent
         .trace_id
         .clone()
@@ -210,15 +203,11 @@ pub fn safe_payload(name: &str, payload: &Value) -> Value {
             .collect();
         Value::Object(filtered)
     } else {
-        // For non-object payloads, only pass through if the name itself is
-        // a safe scalar (e.g. a model name). Otherwise null.
-        if matches!(
-            name,
-            "phi.ai.provider.request" | "phi.agent.tool_call" | "phi.agent.subcall"
-        ) {
-            Value::Null
-        } else {
-            Value::Null
-        }
+        // Non-object payloads carry no safe key/value structure to filter, so
+        // redact them to null regardless of event name. (Safe by over-redaction:
+        // a raw scalar payload could be a prompt or completion, which must never
+        // pass through. `name` is retained for future structured allow-listing.)
+        let _ = name;
+        Value::Null
     }
 }

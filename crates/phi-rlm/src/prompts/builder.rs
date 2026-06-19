@@ -1,5 +1,4 @@
 use super::constants::*;
-use super::metadata::{QueryMetadata, metadata_user_prompt};
 
 /// Per-turn user prompt. `iteration` is 0-based.
 pub fn build_user_prompt(
@@ -104,34 +103,21 @@ pub fn build_system_prompt(opts: &SystemPromptOptions) -> String {
     let mut sections: Vec<String> = Vec::new();
 
     // identity
-    sections.push(
-        opts.identity
-            .unwrap_or(DEFAULT_IDENTITY)
-            .to_owned(),
-    );
+    sections.push(opts.identity.unwrap_or(DEFAULT_IDENTITY).to_owned());
 
     // core_tools
-    sections.push(
-        opts.core_tools
-            .unwrap_or(DEFAULT_REPL_TOOLS)
-            .to_owned(),
-    );
+    sections.push(opts.core_tools.unwrap_or(DEFAULT_REPL_TOOLS).to_owned());
 
     // custom_tools (optional, wrapped in a header)
-    if let Some(tools) = opts.custom_tools {
-        if !tools.is_empty() {
+    if let Some(tools) = opts.custom_tools
+        && !tools.is_empty() {
             sections.push(format!(
                 "Custom tools and data available in the REPL:\n{tools}"
             ));
         }
-    }
 
     // mechanics
-    sections.push(
-        opts.mechanics
-            .unwrap_or(DEFAULT_MECHANICS)
-            .to_owned(),
-    );
+    sections.push(opts.mechanics.unwrap_or(DEFAULT_MECHANICS).to_owned());
 
     // extra_guidelines (optional, bulleted)
     if !opts.extra_guidelines.is_empty() {
@@ -158,12 +144,7 @@ pub fn build_system_prompt(opts: &SystemPromptOptions) -> String {
         let blocks: Vec<String> = opts
             .context_files
             .iter()
-            .map(|f| {
-                format!(
-                    "<file name=\"{}\">\n{}\n</file>",
-                    f.name, f.content
-                )
-            })
+            .map(|f| format!("<file name=\"{}\">\n{}\n</file>", f.name, f.content))
             .collect();
         sections.push(format!(
             "<project_context>\n{}\n</project_context>",
@@ -200,11 +181,10 @@ pub fn build_system_prompt(opts: &SystemPromptOptions) -> String {
     }
 
     // append (extension hook)
-    if let Some(append) = opts.append {
-        if !append.is_empty() {
+    if let Some(append) = opts.append
+        && !append.is_empty() {
             sections.push(append.to_owned());
         }
-    }
 
     sections.join("\n\n")
 }

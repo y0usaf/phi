@@ -318,7 +318,7 @@ def _hashline_require_seen(snapshot, touched_lines, path):
     if len(missing) > 8:
         sample += ", ..."
     raise ValueError(
-        "hunk touches unseen line(s) in %s: %s. Re-read those exact lines with read_hashline first."
+        "hunk touches unseen line(s) in %s: %s. Re-read those exact lines with read_file first."
         % (path, sample)
     )
 
@@ -494,7 +494,7 @@ def _hashline_prepare_section(section):
     else:
         if snapshot is None:
             raise ValueError(
-                "stale or unknown hash tag %s for %s; re-read with read_hashline before editing"
+                "stale or unknown hash tag %s for %s; re-read with read_file before editing"
                 % (expected_tag, path)
             )
         base_lines = _hashline_lines(snapshot["text"])
@@ -513,94 +513,3 @@ def _hashline_prepare_section(section):
         "after": after_text,
         "warnings": warnings,
     }
-
-
-@_tool
-def read_hashline(path, start_line=1, limit=2000):
-    with open(path, errors="replace") as f:
-        full_text = f.read()
-    lines = _hashline_lines(full_text)
-    start_line = int(start_line)
-    limit = int(limit)
-    seen_lines = range(start_line, min(len(lines), start_line + limit - 1) + 1)
-    return _hashline_format_view(path, full_text, start_line, limit, seen_lines=seen_lines)
-
-
-@_tool
-def grep_hashline(pattern, path=".", glob=None, max_results=200):
-    rx = _re.compile(pattern)
-    grouped = []
-    total = 0
-    for root, dirs, files in _os.walk(path):
-        dirs[:] = [d for d in dirs if d not in _PRELUDE_SKIP_DIRS]
-        for name in sorted(files):
-            if glob and not _fnmatch.fnmatch(name, glob):
-                continue
-            fp = _os.path.join(root, name)
-            matches = []
-            try:
-                with open(fp, errors="replace") as f:
-                    full_text = f.read()
-            except OSError:
-                continue
-            for i, line in enumerate(_hashline_lines(full_text), 1):
-                if rx.search(line):
-                    matches.append(i)
-                    total += 1
-                    if total >= max_results:
-                        break
-            if matches:
-                tag = _hashline_record_snapshot(fp, full_text, matches)
-                grouped.append((fp, tag, full_text, matches))
-            if total >= max_results:
-                break
-        if total >= max_results:
-            break
-    if not grouped:
-        return "(no matches)"
-    out = []
-    for fp, tag, full_text, matches in grouped:
-        out.append("[%s#%s]" % (fp, tag))
-        lines = _hashline_lines(full_text)
-        for line_no in matches:
-            out.append("%d:%s" % (line_no, lines[line_no - 1]))
-    if total >= max_results:
-        out.append("[truncated at %d matches]" % max_results)
-    return _prelude_truncate("\n".join(out))
-
-
-@_tool
-def apply_hashline(patch):
-    try:
-        sections = _hashline_parse_patch(patch)
-        planned = []
-        seen_paths = set()
-        for section in sections:
-            canonical = _hashline_canonical_path(section["path"])
-            if canonical in seen_paths:
-                raise ValueError(
-                    "multiple hashline sections resolve to the same file (%s); merge their ops under one header"
-                    % section["path"]
-                )
-            seen_paths.add(canonical)
-            planned.append(_hashline_prepare_section(section))
-
-        rendered = []
-        for item in planned:
-            with open(item["path"], "w") as f:
-                f.write(item["after"])
-            lines = _hashline_lines(item["after"])
-            display_limit = min(len(lines), 2000)
-            seen = range(1, display_limit + 1)
-            tag = _hashline_record_snapshot(item["path"], item["after"], seen)
-            rendered.append(
-                _hashline_format_view(
-                    item["path"], item["after"], 1, 2000, tag=tag, seen_lines=seen
-                )
-            )
-            for warning in item["warnings"]:
-                rendered.append("[warning] %s" % warning)
-        return "\n\n".join(rendered)
-    except Exception as e:
-        return "Error: %s" % e
-

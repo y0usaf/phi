@@ -16,9 +16,7 @@ pub(super) fn json_to_lua(lua: &mlua::Lua, val: &serde_json::Value) -> mlua::Res
             }
             Ok(mlua::Value::Table(table))
         }
-        serde_json::Value::String(s) => {
-            Ok(mlua::Value::String(lua.create_string(s)?))
-        }
+        serde_json::Value::String(s) => Ok(mlua::Value::String(lua.create_string(s)?)),
         serde_json::Value::Number(n) => {
             if let Some(i) = n.as_i64() {
                 Ok(mlua::Value::Integer(i))
@@ -49,7 +47,9 @@ pub(super) fn lua_value_to_json_string(val: mlua::Value) -> Result<Option<String
             if map.is_empty() {
                 Ok(None)
             } else {
-                Ok(Some(serde_json::to_string(&serde_json::Value::Object(map))?))
+                Ok(Some(serde_json::to_string(&serde_json::Value::Object(
+                    map,
+                ))?))
             }
         }
         _ => Ok(None),

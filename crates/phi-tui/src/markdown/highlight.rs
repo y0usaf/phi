@@ -1,4 +1,3 @@
-use pulldown_cmark::CodeBlockKind;
 use syntect::easy::HighlightLines;
 use syntect::util::as_24_bit_terminal_escaped;
 

@@ -150,11 +150,11 @@ pub(crate) fn tool_arg<'a>(args: &'a serde_json::Value, key: &str) -> &'a str {
 
 pub(crate) fn tool_title_suffix(name: &str, args: &serde_json::Value) -> Option<String> {
     match name {
-        "read_file" | "read_hashline" | "apply_hashline" => {
+        "read_file" | "edit_file" => {
             let path = tool_arg(args, "path");
             (!path.is_empty()).then(|| format!(" — {path}"))
         }
-        "grep" | "find" | "grep_hashline" => {
+        "grep" | "find" => {
             let pattern = tool_arg(args, "pattern");
             let path = tool_arg(args, "path");
             if pattern.is_empty() {
@@ -174,10 +174,7 @@ pub(crate) fn tool_title_suffix(name: &str, args: &serde_json::Value) -> Option<
 }
 
 pub(crate) fn tool_shows_args_section(name: &str) -> bool {
-    !matches!(
-        name,
-        "read_file" | "read_hashline" | "grep" | "grep_hashline" | "find" | "ls"
-    )
+    !matches!(name, "read_file" | "grep" | "find" | "ls")
 }
 
 pub(crate) fn tool_shows_input_section(name: &str) -> bool {

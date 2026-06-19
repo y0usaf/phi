@@ -143,16 +143,19 @@ impl PhiHooks {
         let observers: *const Mutex<Vec<(SourceInfo, HookObserver)>> = &self.observers as *const _;
         drop(guard);
         move || {
-            if let Ok(mut g) = unsafe { &*observers }.try_lock() {
-                if let Some(entry) = g.get_mut(idx) {
+            if let Ok(mut g) = unsafe { &*observers }.try_lock()
+                && let Some(entry) = g.get_mut(idx) {
                     entry.1 = Arc::new(|_| Ok(()));
                 }
-            }
         }
     }
 
     /// Register a typed handler for event `E`. Returns a cleanup closure.
-    pub async fn on<E: HookEvent>(&self, source: SourceInfo, handler: HookHandler<E>) -> impl FnOnce() {
+    pub async fn on<E: HookEvent>(
+        &self,
+        source: SourceInfo,
+        handler: HookHandler<E>,
+    ) -> impl FnOnce() {
         let mut guard = self.handlers.write().await;
         let type_id = TypeId::of::<E>();
         let vec = guard.entry(type_id).or_default();
@@ -161,93 +164,143 @@ impl PhiHooks {
             source,
             handler: Arc::new(handler),
         });
-        let handlers: *const RwLock<BTreeMap<TypeId, Vec<HandlerEntry>>> = &self.handlers as *const _;
+        let handlers: *const RwLock<BTreeMap<TypeId, Vec<HandlerEntry>>> =
+            &self.handlers as *const _;
         drop(guard);
         move || {
-            if let Ok(mut g) = unsafe { &*handlers }.try_write() {
-                if let Some(vec) = g.get_mut(&type_id) {
-                    if let Some(entry) = vec.get_mut(idx) {
+            if let Ok(mut g) = unsafe { &*handlers }.try_write()
+                && let Some(vec) = g.get_mut(&type_id)
+                    && let Some(entry) = vec.get_mut(idx) {
                         let noop: HookHandler<E> = Arc::new(|_: &E| Ok(None));
                         entry.handler = Arc::new(noop) as Arc<dyn Any + Send + Sync>;
                     }
-                }
-            }
         }
     }
 
     /// Emit a `ContextEvent` (sequential reducer: each handler sees current
     /// messages; the last non-None modification wins).
-    pub async fn emit_context(&self, mut event: ContextEvent) -> Result<Option<ContextResult>, HarnessError> {
+    pub async fn emit_context(
+        &self,
+        mut event: ContextEvent,
+    ) -> Result<Option<ContextResult>, HarnessError> {
         let entries = self.snapshot_handlers::<ContextEvent>().await;
         let mut modified = false;
         for entry in &entries {
-            let handler = entry.handler.downcast_ref::<HookHandler<ContextEvent>>().unwrap();
-            if let Some(r) = handler(&event)? {
-                if let Some(msgs) = r.messages {
+            let handler = entry
+                .handler
+                .downcast_ref::<HookHandler<ContextEvent>>()
+                .unwrap();
+            if let Some(r) = handler(&event)?
+                && let Some(msgs) = r.messages {
                     event.messages = msgs;
                     modified = true;
                 }
-            }
         }
         Ok(if modified {
-            Some(ContextResult { messages: Some(event.messages) })
+            Some(ContextResult {
+                messages: Some(event.messages),
+            })
         } else {
             None
         })
     }
 
     /// Emit a `ToolCallEvent` (early-exit on block).
-    pub async fn emit_tool_call(&self, event: ToolCallEvent) -> Result<Option<ToolCallResult>, HarnessError> {
+    pub async fn emit_tool_call(
+        &self,
+        event: ToolCallEvent,
+    ) -> Result<Option<ToolCallResult>, HarnessError> {
         let entries = self.snapshot_handlers::<ToolCallEvent>().await;
         for entry in &entries {
-            let handler = entry.handler.downcast_ref::<HookHandler<ToolCallEvent>>().unwrap();
-            if let Some(r) = handler(&event)? {
-                if r.block {
+            let handler = entry
+                .handler
+                .downcast_ref::<HookHandler<ToolCallEvent>>()
+                .unwrap();
+            if let Some(r) = handler(&event)?
+                && r.block {
                     return Ok(Some(r));
                 }
-            }
         }
         Ok(None)
     }
 
     /// Emit a `ToolResultEvent` (patch accumulation).
-    pub async fn emit_tool_result(&self, mut event: ToolResultEvent) -> Result<Option<ToolResultPatch>, HarnessError> {
+    pub async fn emit_tool_result(
+        &self,
+        mut event: ToolResultEvent,
+    ) -> Result<Option<ToolResultPatch>, HarnessError> {
         let entries = self.snapshot_handlers::<ToolResultEvent>().await;
         let mut modified = false;
         for entry in &entries {
-            let handler = entry.handler.downcast_ref::<HookHandler<ToolResultEvent>>().unwrap();
+            let handler = entry
+                .handler
+                .downcast_ref::<HookHandler<ToolResultEvent>>()
+                .unwrap();
             if let Some(patch) = handler(&event)? {
-                if let Some(content) = patch.content { event.content = content; modified = true; }
-                if let Some(is_err) = patch.is_error { event.is_error = is_err; modified = true; }
+                if let Some(content) = patch.content {
+                    event.content = content;
+                    modified = true;
+                }
+                if let Some(is_err) = patch.is_error {
+                    event.is_error = is_err;
+                    modified = true;
+                }
             }
         }
         Ok(if modified {
-            Some(ToolResultPatch { content: Some(event.content), is_error: Some(event.is_error) })
-        } else { None })
+            Some(ToolResultPatch {
+                content: Some(event.content),
+                is_error: Some(event.is_error),
+            })
+        } else {
+            None
+        })
     }
 
     /// Emit a `BeforeAgentStartEvent` (collect messages, chain system prompt).
-    pub async fn emit_before_agent_start(&self, event: BeforeAgentStartEvent) -> Result<BeforeAgentStartResult, HarnessError> {
+    pub async fn emit_before_agent_start(
+        &self,
+        event: BeforeAgentStartEvent,
+    ) -> Result<BeforeAgentStartResult, HarnessError> {
         let entries = self.snapshot_handlers::<BeforeAgentStartEvent>().await;
         let mut messages = Vec::new();
         let mut system_prompt = event.system_prompt.clone();
         let prompt = event.prompt.clone();
         let mut modified_prompt = false;
         for entry in &entries {
-            let handler = entry.handler.downcast_ref::<HookHandler<BeforeAgentStartEvent>>().unwrap();
+            let handler = entry
+                .handler
+                .downcast_ref::<HookHandler<BeforeAgentStartEvent>>()
+                .unwrap();
             // Each handler sees the original event; accumulated messages are
             // collected from every handler's result.
-            let ev = BeforeAgentStartEvent { system_prompt: system_prompt.clone(), prompt: prompt.clone() };
+            let ev = BeforeAgentStartEvent {
+                system_prompt: system_prompt.clone(),
+                prompt: prompt.clone(),
+            };
             if let Some(r) = handler(&ev)? {
                 messages.extend(r.messages);
-                if let Some(sp) = r.system_prompt { system_prompt = sp; modified_prompt = true; }
+                if let Some(sp) = r.system_prompt {
+                    system_prompt = sp;
+                    modified_prompt = true;
+                }
             }
         }
-        Ok(BeforeAgentStartResult { messages, system_prompt: if modified_prompt { Some(system_prompt) } else { None } })
+        Ok(BeforeAgentStartResult {
+            messages,
+            system_prompt: if modified_prompt {
+                Some(system_prompt)
+            } else {
+                None
+            },
+        })
     }
 
     /// Emit an observation-only event (run start/end). Result is ().
-    pub async fn emit_observation<E: HookEvent<Result = ()>>(&self, event: E) -> Result<(), HarnessError> {
+    pub async fn emit_observation<E: HookEvent<Result = ()>>(
+        &self,
+        event: E,
+    ) -> Result<(), HarnessError> {
         self.run_observers(&event).await?;
         let entries = self.snapshot_handlers::<E>().await;
         for entry in &entries {
@@ -272,13 +325,20 @@ impl PhiHooks {
 
     /// Register a cleanup function.
     pub fn add_cleanup<F>(&self, _source: SourceInfo, cleanup: F)
-    where F: FnOnce() -> Result<(), HarnessError> + Send + Sync + 'static {
-        self.cleanups.lock().unwrap().push(CleanupEntry { cleanup: Box::new(cleanup) });
+    where
+        F: FnOnce() -> Result<(), HarnessError> + Send + Sync + 'static,
+    {
+        self.cleanups.lock().unwrap().push(CleanupEntry {
+            cleanup: Box::new(cleanup),
+        });
     }
 
     /// Create a scoped source for registering hooks from an extension.
     pub fn create_scope(&self, source: SourceInfo) -> HookScope<'_> {
-        HookScope { hooks: self, source }
+        HookScope {
+            hooks: self,
+            source,
+        }
     }
 
     /// Remove all handlers and run cleanups.
@@ -293,12 +353,17 @@ impl PhiHooks {
 }
 
 impl Default for PhiHooks {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Clone for HandlerEntry {
     fn clone(&self) -> Self {
-        Self { source: self.source.clone(), handler: self.handler.clone() }
+        Self {
+            source: self.source.clone(),
+            handler: self.handler.clone(),
+        }
     }
 }
 
@@ -315,5 +380,7 @@ impl<'a> HookScope<'a> {
     }
 
     /// Borrow the source info.
-    pub fn source(&self) -> &SourceInfo { &self.source }
+    pub fn source(&self) -> &SourceInfo {
+        &self.source
+    }
 }

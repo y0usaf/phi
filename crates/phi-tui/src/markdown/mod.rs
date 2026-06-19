@@ -4,6 +4,8 @@ mod constants;
 mod highlight;
 mod output;
 mod render;
+
+#[cfg(test)]
 mod tests;
 
 pub use highlight::{highlight_code, highlight_snippet};

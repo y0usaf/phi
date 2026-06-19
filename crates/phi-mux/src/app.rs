@@ -200,7 +200,7 @@ impl MuxApp {
         let mut ticker = tokio::time::interval(ANIMATION_TICK);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-        self.ensure_focused_session().await;
+        self.ensure_all_sessions().await;
         self.draw();
 
         while !self.quit {
@@ -324,6 +324,69 @@ impl MuxApp {
         }
     }
 
+    /// Spawn every session across all projects in parallel, so all are
+    /// warm immediately at startup. Sessions created later are still
+    /// loaded lazily by [`ensure_focused_session`] on focus.
+    async fn ensure_all_sessions(&mut self) {
+        let pane = self.pane_size();
+
+        // Ensure every project has at least one (possibly draft) session.
+        for i in 0..self.workspace.projects.len() {
+            let _ = self.workspace.ensure_project_session(i);
+        }
+
+        // Collect sessions that still need an embedded handle.
+        let mut specs: Vec<(SessionKey, PathBuf, Option<PathBuf>)> = Vec::new();
+        for project in &self.workspace.projects {
+            for session in &project.sessions {
+                if session.handle.is_none() {
+                    specs.push((session.key, project.cwd.clone(), session.store_path.clone()));
+                }
+            }
+        }
+
+        if specs.is_empty() {
+            return;
+        }
+
+        // Spawn all concurrently -- each `driver::spawn` launches an
+        // independent tokio task; `join_all` just awaits them in parallel.
+        let shared = &self.shared;
+        let channels = &self.channels;
+        let futures = specs
+            .iter()
+            .map(|(key, cwd, resume)| {
+                driver::spawn(*key, cwd, resume.as_deref(), pane, shared, channels)
+            });
+        let results = futures::future::join_all(futures).await;
+
+        // Assign handles (or crash status) back to the workspace.
+        let mut errors: Vec<String> = Vec::new();
+        for ((key, _, _), result) in specs.into_iter().zip(results) {
+            let session = self
+                .workspace
+                .projects
+                .iter_mut()
+                .find_map(|p| p.sessions.iter_mut().find(|s| s.key == key));
+            if let Some(session) = session {
+                match result {
+                    Ok(handle) => {
+                        session.handle = Some(handle);
+                        session.status = SessionStatus::Idle;
+                    }
+                    Err(error) => {
+                        session.status = SessionStatus::Crashed;
+                        errors.push(format!("session failed: {error:#}"));
+                    }
+                }
+            }
+        }
+
+        for msg in errors {
+            self.set_note(msg, StatusNoteKind::Error);
+        }
+    }
+
     /// Spawn the focused session's embedded loop if it isn't running yet.
     async fn ensure_focused_session(&mut self) {
         let pane = self.pane_size();
@@ -386,6 +449,13 @@ impl MuxApp {
 
     fn forward_to_session(&mut self, event: Event) {
         if let Some(handle) = self.focused_session().and_then(|s| s.handle.as_ref()) {
+            // Snap the terminal back to the bottom on any key input, matching
+            // pi where typing in a scrolled-up terminal jumps to the cursor.
+            if matches!(event, Event::Key(_)) {
+                driver::lock_parser(&handle.parser)
+                    .screen_mut()
+                    .set_scrollback(0);
+            }
             let _ = handle.input_tx.send(event);
         }
     }

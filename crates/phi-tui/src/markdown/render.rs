@@ -2,7 +2,7 @@ use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, T
 use unicode_width::UnicodeWidthStr;
 
 use super::constants::*;
-use super::highlight::{highlight_code, strip_ansi};
+use super::highlight::highlight_code;
 
 /// Color a diff-preview line: additions green, deletions red, hunk headers
 /// violet. File headers (`+++`/`---`) and context lines return None.

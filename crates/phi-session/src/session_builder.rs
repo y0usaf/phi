@@ -88,14 +88,16 @@ pub async fn build_session(
         rt_builder = rt_builder.register_boxed_extension(ext);
     }
     let memory_cfg = MemoryConfig {
-        enabled:      settings.memory.enabled,
-        vault_path:   settings.memory.vault_path.clone(),
+        enabled: settings.memory.enabled,
+        vault_path: settings.memory.vault_path.clone(),
         recall_limit: settings.memory.recall_limit,
-        auto_inject:  settings.memory.auto_inject,
+        auto_inject: settings.memory.auto_inject,
     };
     match MemoryExtension::with_config(memory_cfg) {
-        Ok(ext) => { rt_builder = rt_builder.register_boxed_extension(Box::new(ext)); }
-        Err(e)  => eprintln!("[memory] {e}"),
+        Ok(ext) => {
+            rt_builder = rt_builder.register_boxed_extension(Box::new(ext));
+        }
+        Err(e) => eprintln!("[memory] {e}"),
     }
     for ext in lua_exts {
         rt_builder = rt_builder.register_boxed_extension(ext);

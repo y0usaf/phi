@@ -3,31 +3,31 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use anyhow::Result;
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 
 /// A single memory node in the cognitive graph.
 #[derive(Debug, Clone)]
 pub struct Memory {
-    pub id:           i64,
-    pub title:        String,
-    pub body:         String,
-    pub kind:         String,
-    pub created_at:   i64,
-    pub accessed_at:  i64,
+    pub id: i64,
+    pub title: String,
+    pub body: String,
+    pub kind: String,
+    pub created_at: i64,
+    pub accessed_at: i64,
     pub access_count: i64,
-    pub strength:     f64,   // learned Q-value [0,1]
-    pub warmth:       f64,   // salience [0,1]
-    pub activation:   f64,   // cached ACT-R base-level activation
+    pub strength: f64,   // learned Q-value [0,1]
+    pub warmth: f64,     // salience [0,1]
+    pub activation: f64, // cached ACT-R base-level activation
 }
 
 /// A directed edge in the knowledge graph.
 #[derive(Debug, Clone)]
 pub struct Edge {
-    pub id:        i64,
-    pub source:    i64,
-    pub target:    i64,
-    pub relation:  String,
-    pub weight:    f64,
+    pub id: i64,
+    pub source: i64,
+    pub target: i64,
+    pub relation: String,
+    pub weight: f64,
     pub created_at: i64,
 }
 
@@ -35,17 +35,24 @@ pub struct Edge {
 /// PageRank+warmth via reciprocal-rank fusion; we expose the same knobs.
 #[derive(Debug, Clone)]
 pub struct FusionWeights {
-    pub bm25:        f64,
-    pub pagerank:    f64,
-    pub activation:  f64,
-    pub warmth:      f64,
-    pub strength:    f64,
-    pub recency:     f64,
+    pub bm25: f64,
+    pub pagerank: f64,
+    pub activation: f64,
+    pub warmth: f64,
+    pub strength: f64,
+    pub recency: f64,
 }
 
 impl Default for FusionWeights {
     fn default() -> Self {
-        Self { bm25: 0.40, pagerank: 0.20, activation: 0.15, warmth: 0.05, strength: 0.10, recency: 0.10 }
+        Self {
+            bm25: 0.40,
+            pagerank: 0.20,
+            activation: 0.15,
+            warmth: 0.05,
+            strength: 0.10,
+            recency: 0.10,
+        }
     }
 }
 
@@ -63,13 +70,20 @@ pub struct MemoryStore {
     fusion: Mutex<FusionWeights>,
 }
 
+/// Graph neighborhood: each node id maps to its weighted outgoing edges
+/// `(neighbor id, edge weight)`, plus the full set of visited node ids.
+type GraphNeighborhood = (HashMap<i64, Vec<(i64, f64)>>, HashSet<i64>);
+
 impl MemoryStore {
     pub fn open(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
         let conn = Connection::open(path)?;
-        let store = Self { conn: Mutex::new(conn), fusion: Mutex::new(FusionWeights::default()) };
+        let store = Self {
+            conn: Mutex::new(conn),
+            fusion: Mutex::new(FusionWeights::default()),
+        };
         store.init()?;
         Ok(store)
     }
@@ -152,29 +166,32 @@ impl MemoryStore {
             params![title, body, kind, now],
         )?;
         let id = tx.last_insert_rowid();
-        tx.execute("INSERT INTO practice (memory_id, ts) VALUES (?1, ?2)", params![id, now])?;
+        tx.execute(
+            "INSERT INTO practice (memory_id, ts) VALUES (?1, ?2)",
+            params![id, now],
+        )?;
         // Auto-link wiki-links: [[Target Title]] -> edge to a memory with that title.
         // Forward links: [[Target]] in this body -> existing memories with that title.
         let links = extract_wiki_links(body);
         for link_target in links {
-            if let Some(target_id) =
-                tx.query_row("SELECT id FROM memories WHERE title = ?1 AND pruned = 0",
-                             params![link_target], |r| r.get::<_, i64>(0)).ok()
-            {
-                if target_id != id {
+            if let Ok(target_id) = tx
+                .query_row(
+                    "SELECT id FROM memories WHERE title = ?1 AND pruned = 0",
+                    params![link_target],
+                    |r| r.get::<_, i64>(0),
+                )
+                && target_id != id {
                     tx.execute(
                         "INSERT OR IGNORE INTO edges (source, target, relation, weight, created_at)
                          VALUES (?1, ?2, 'derived', 0.5, ?3)",
                         params![id, target_id, now],
                     )?;
                 }
-            }
         }
         // Back links: existing memories whose bodies contain [[this title]].
         let pattern = format!("%[[{}]]%", title);
-        let mut back_stmt = tx.prepare(
-            "SELECT id FROM memories WHERE id != ?1 AND pruned = 0 AND body LIKE ?2",
-        )?;
+        let mut back_stmt =
+            tx.prepare("SELECT id FROM memories WHERE id != ?1 AND pruned = 0 AND body LIKE ?2")?;
         let back_ids: Vec<i64> = back_stmt
             .query_map(params![id, pattern], |r| r.get::<_, i64>(0))?
             .filter_map(|r| r.ok())
@@ -270,19 +287,23 @@ impl MemoryStore {
                 .collect()
         };
 
-        let bm25_rank: HashMap<i64, usize> = ids.iter().enumerate().map(|(i, &id)| (id, i)).collect();
+        let bm25_rank: HashMap<i64, usize> =
+            ids.iter().enumerate().map(|(i, &id)| (id, i)).collect();
         let pr = self.pagerank_map()?;
         let w = self.fusion.lock().unwrap().clone();
 
         let mut scored: Vec<(f64, Memory)> = rows
             .into_iter()
             .map(|m| {
-                let bm25_n = rank_norm(bm25_rank.get(&m.id).copied().unwrap_or(usize::MAX), ids.len());
-                let pr_n   = pr.get(&m.id).copied().unwrap_or(0.0);
-                let act_n  = sigmoid(m.activation);
-                let str_n  = m.strength.clamp(0.0, 1.0);
+                let bm25_n = rank_norm(
+                    bm25_rank.get(&m.id).copied().unwrap_or(usize::MAX),
+                    ids.len(),
+                );
+                let pr_n = pr.get(&m.id).copied().unwrap_or(0.0);
+                let act_n = sigmoid(m.activation);
+                let str_n = m.strength.clamp(0.0, 1.0);
                 let warm_n = m.warmth.clamp(0.0, 1.0);
-                let rec_n  = recency_norm(m.accessed_at, now);
+                let rec_n = recency_norm(m.accessed_at, now);
                 let score = w.bm25 * bm25_n
                     + w.pagerank * pr_n
                     + w.activation * act_n
@@ -320,7 +341,11 @@ impl MemoryStore {
         for _ in 0..20 {
             let mut next: HashMap<i64, f64> = HashMap::new();
             for (&node, &s) in &score {
-                let teleport = if seeds.contains(&node) { PR_DAMPING * s } else { 0.0 };
+                let teleport = if seeds.contains(&node) {
+                    PR_DAMPING * s
+                } else {
+                    0.0
+                };
                 *next.entry(node).or_insert(0.0) += teleport;
                 let spread = (1.0 - PR_DAMPING) * s;
                 if let Some(neighbors) = adjacency.get(&node) {
@@ -337,12 +362,16 @@ impl MemoryStore {
         // Exclude seeds; return top-N discovered.
         let mut discovered: Vec<(f64, i64)> = score
             .into_iter()
-            .filter(|(id, _)| !seeds.contains(&id))
-            .filter(|(id, _)| node_set.contains(&id))
+            .filter(|(id, _)| !seeds.contains(id))
+            .filter(|(id, _)| node_set.contains(id))
             .map(|(id, s)| (s, id))
             .collect();
         discovered.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-        let top_ids: Vec<i64> = discovered.into_iter().take(limit).map(|(_, id)| id).collect();
+        let top_ids: Vec<i64> = discovered
+            .into_iter()
+            .take(limit)
+            .map(|(_, id)| id)
+            .collect();
         if top_ids.is_empty() {
             return Ok(Vec::new());
         }
@@ -360,7 +389,12 @@ impl MemoryStore {
             .filter_map(|r| r.ok())
             .collect();
         // preserve PPR order
-        memories.sort_by_key(|m| top_ids.iter().position(|&id| id == m.id).unwrap_or(usize::MAX));
+        memories.sort_by_key(|m| {
+            top_ids
+                .iter()
+                .position(|&id| id == m.id)
+                .unwrap_or(usize::MAX)
+        });
         Ok(memories)
     }
 
@@ -372,7 +406,10 @@ impl MemoryStore {
         let mut conn = self.conn.lock().unwrap();
         let now = unix_now();
         let tx = conn.transaction()?;
-        tx.execute("INSERT INTO practice (memory_id, ts) VALUES (?1, ?2)", params![id, now])?;
+        tx.execute(
+            "INSERT INTO practice (memory_id, ts) VALUES (?1, ?2)",
+            params![id, now],
+        )?;
         // Q-learning-ish update: strength <- strength + alpha(reward - strength)
         let alpha = 0.2;
         tx.execute(
@@ -425,7 +462,8 @@ impl MemoryStore {
         let conn = self.conn.lock().unwrap();
         let now = unix_now();
         let times: Vec<i64> = {
-            let mut stmt = conn.prepare("SELECT ts FROM practice WHERE memory_id = ?1 ORDER BY ts")?;
+            let mut stmt =
+                conn.prepare("SELECT ts FROM practice WHERE memory_id = ?1 ORDER BY ts")?;
             stmt.query_map(params![id], |r| r.get::<_, i64>(0))?
                 .filter_map(|r| r.ok())
                 .collect()
@@ -443,7 +481,10 @@ impl MemoryStore {
                 .sum();
             if sum > 0.0 { sum.ln() } else { 0.0 }
         };
-        conn.execute("UPDATE memories SET activation = ?1 WHERE id = ?2", params![activation, id])?;
+        conn.execute(
+            "UPDATE memories SET activation = ?1 WHERE id = ?2",
+            params![activation, id],
+        )?;
         Ok(())
     }
 
@@ -485,14 +526,16 @@ impl MemoryStore {
              WHERE source = ?1 OR target = ?1 ORDER BY weight DESC",
         )?;
         let edges = stmt
-            .query_map(params![memory_id], |r| Ok(Edge {
-                id: r.get(0)?,
-                source: r.get(1)?,
-                target: r.get(2)?,
-                relation: r.get(3)?,
-                weight: r.get(4)?,
-                created_at: r.get(5)?,
-            }))?
+            .query_map(params![memory_id], |r| {
+                Ok(Edge {
+                    id: r.get(0)?,
+                    source: r.get(1)?,
+                    target: r.get(2)?,
+                    relation: r.get(3)?,
+                    weight: r.get(4)?,
+                    created_at: r.get(5)?,
+                })
+            })?
             .filter_map(|r| r.ok())
             .collect();
         Ok(edges)
@@ -504,7 +547,13 @@ impl MemoryStore {
         let mut adj: HashMap<i64, Vec<(i64, f64)>> = HashMap::new();
         let mut nodes: HashSet<i64> = HashSet::new();
         let mut stmt = conn.prepare("SELECT source, target, weight FROM edges")?;
-        let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, f64>(2)?)))?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, f64>(2)?,
+            ))
+        })?;
         for row in rows {
             let (s, t, w) = row?;
             adj.entry(s).or_default().push((t, w));
@@ -517,10 +566,15 @@ impl MemoryStore {
         let n = nodes.len() as f64;
         let mut pr: HashMap<i64, f64> = nodes.iter().map(|&id| (id, 1.0 / n)).collect();
         for _ in 0..PR_ITERS {
-            let mut next: HashMap<i64, f64> = nodes.iter().map(|&id| (id, (1.0 - PR_DAMPING) / n)).collect();
+            let mut next: HashMap<i64, f64> = nodes
+                .iter()
+                .map(|&id| (id, (1.0 - PR_DAMPING) / n))
+                .collect();
             for (&node, &score) in &pr {
                 let neighbors = adj.get(&node);
-                let out_w: f64 = neighbors.map(|v| v.iter().map(|(_, w)| *w).sum()).unwrap_or(0.0);
+                let out_w: f64 = neighbors
+                    .map(|v| v.iter().map(|(_, w)| *w).sum())
+                    .unwrap_or(0.0);
                 if out_w > 0.0 {
                     for &(tgt, w) in neighbors.unwrap() {
                         *next.get_mut(&tgt).unwrap() += PR_DAMPING * score * (w / out_w);
@@ -543,7 +597,11 @@ impl MemoryStore {
     }
 
     /// Collect the graph neighborhood up to `depth` hops from `seeds`.
-    fn graph_around(&self, seeds: &[i64], depth: usize) -> Result<(HashMap<i64, Vec<(i64, f64)>>, HashSet<i64>)> {
+    fn graph_around(
+        &self,
+        seeds: &[i64],
+        depth: usize,
+    ) -> Result<GraphNeighborhood> {
         let conn = self.conn.lock().unwrap();
         let mut adj: HashMap<i64, Vec<(i64, f64)>> = HashMap::new();
         let mut frontier: HashSet<i64> = seeds.iter().copied().collect();
@@ -566,12 +624,22 @@ impl MemoryStore {
             );
             let mut stmt = conn.prepare(&sql)?;
             let bindings = rusqlite::params_from_iter(layer.iter().chain(layer.iter()));
-            let rows = stmt.query_map(bindings, |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, f64>(2)?)))?;
+            let rows = stmt.query_map(bindings, |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, f64>(2)?,
+                ))
+            })?;
             for row in rows {
                 let (s, t, w) = row?;
                 adj.entry(s).or_default().push((t, w));
-                if !visited.contains(&s) { frontier.insert(s); }
-                if !visited.contains(&t) { frontier.insert(t); }
+                if !visited.contains(&s) {
+                    frontier.insert(s);
+                }
+                if !visited.contains(&t) {
+                    frontier.insert(t);
+                }
                 visited.insert(s);
                 visited.insert(t);
             }
@@ -617,11 +685,16 @@ impl MemoryStore {
 
     pub fn status(&self) -> Result<(usize, Option<i64>)> {
         let conn = self.conn.lock().unwrap();
-        let count: usize = conn.query_row(
-            "SELECT COUNT(*) FROM memories WHERE pruned = 0", [], |r| r.get::<_, i64>(0),
-        )? as usize;
+        let count: usize =
+            conn.query_row("SELECT COUNT(*) FROM memories WHERE pruned = 0", [], |r| {
+                r.get::<_, i64>(0)
+            })? as usize;
         let last: Option<i64> = conn
-            .query_row("SELECT MAX(created_at) FROM memories WHERE pruned = 0", [], |r| r.get(0))
+            .query_row(
+                "SELECT MAX(created_at) FROM memories WHERE pruned = 0",
+                [],
+                |r| r.get(0),
+            )
             .ok()
             .flatten();
         Ok((count, last))
@@ -629,9 +702,12 @@ impl MemoryStore {
 
     pub fn graph_status(&self) -> Result<(usize, f64)> {
         let conn = self.conn.lock().unwrap();
-        let edges: usize = conn.query_row("SELECT COUNT(*) FROM edges", [], |r| r.get::<_, i64>(0))? as usize;
+        let edges: usize =
+            conn.query_row("SELECT COUNT(*) FROM edges", [], |r| r.get::<_, i64>(0))? as usize;
         let avg_strength: f64 = conn.query_row(
-            "SELECT COALESCE(AVG(strength), 0.0) FROM memories WHERE pruned = 0", [], |r| r.get(0),
+            "SELECT COALESCE(AVG(strength), 0.0) FROM memories WHERE pruned = 0",
+            [],
+            |r| r.get(0),
         )?;
         Ok((edges, avg_strength))
     }
@@ -671,8 +747,15 @@ activation: {act:.3}
 
 {body}
 ",
-                id = m.id, kind = m.kind, created = m.created_at, ac = m.access_count,
-                st = m.strength, wm = m.warmth, act = m.activation, title = m.title, body = m.body,
+                id = m.id,
+                kind = m.kind,
+                created = m.created_at,
+                ac = m.access_count,
+                st = m.strength,
+                wm = m.warmth,
+                act = m.activation,
+                title = m.title,
+                body = m.body,
             );
             std::fs::write(&path, front)?;
             count += 1;
@@ -694,7 +777,10 @@ activation: {act:.3}
                 "UPDATE memories SET accessed_at = ?1, access_count = access_count + 1 WHERE id = ?2",
                 params![now, id],
             )?;
-            tx.execute("INSERT INTO practice (memory_id, ts) VALUES (?1, ?2)", params![id, now])?;
+            tx.execute(
+                "INSERT INTO practice (memory_id, ts) VALUES (?1, ?2)",
+                params![id, now],
+            )?;
         }
         tx.commit()?;
         drop(conn);
@@ -748,8 +834,8 @@ fn extract_wiki_links(body: &str) -> Vec<String> {
     let bytes = body.as_bytes();
     let mut i = 0;
     while i + 1 < bytes.len() {
-        if bytes[i] == b'[' && bytes[i + 1] == b'[' {
-            if let Some(end) = body[i + 2..].find("]]") {
+        if bytes[i] == b'[' && bytes[i + 1] == b'['
+            && let Some(end) = body[i + 2..].find("]]") {
                 let inner = &body[i + 2..i + 2 + end];
                 let title = inner.trim();
                 if !title.is_empty() && !out.contains(&title.to_owned()) {
@@ -758,7 +844,6 @@ fn extract_wiki_links(body: &str) -> Vec<String> {
                 i = i + 2 + end + 2;
                 continue;
             }
-        }
         i += 1;
     }
     out
@@ -805,7 +890,9 @@ mod tests {
     #[test]
     fn capture_and_recall() {
         let s = fresh();
-        let id = s.capture("FTS works", "sqlite full text search is neat", "note").unwrap();
+        let id = s
+            .capture("FTS works", "sqlite full text search is neat", "note")
+            .unwrap();
         let hits = s.recall("sqlite", 5).unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].id, id);
@@ -816,17 +903,29 @@ mod tests {
         // The bug that broke auto-inject: a natural-language prompt must still
         // match even if not every token appears in the document.
         let s = fresh();
-        s.capture("FTS works", "sqlite full text search is neat", "note").unwrap();
-        assert!(!s.recall("tell me about sqlite search", 5).unwrap().is_empty());
+        s.capture("FTS works", "sqlite full text search is neat", "note")
+            .unwrap();
+        assert!(
+            !s.recall("tell me about sqlite search", 5)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
     fn wiki_link_creates_edge() {
         let s = fresh();
-        s.capture("Root concept", "see [[Child concept]] for details", "note").unwrap();
-        let child = s.capture("Child concept", "a derived idea", "note").unwrap();
+        s.capture("Root concept", "see [[Child concept]] for details", "note")
+            .unwrap();
+        let child = s
+            .capture("Child concept", "a derived idea", "note")
+            .unwrap();
         let edges = s.edges_of(1).unwrap();
-        assert!(edges.iter().any(|e| e.target == child && e.relation == "derived"));
+        assert!(
+            edges
+                .iter()
+                .any(|e| e.target == child && e.relation == "derived")
+        );
     }
 
     #[test]
@@ -847,13 +946,19 @@ mod tests {
         // both match "rust" -> recalled together -> Hebbian edge
         s.recall("rust", 5).unwrap();
         let edges = s.edges_of(a).unwrap();
-        assert!(edges.iter().any(|e| e.target == b && e.relation == "cooccurs"));
+        assert!(
+            edges
+                .iter()
+                .any(|e| e.target == b && e.relation == "cooccurs")
+        );
     }
 
     #[test]
     fn explore_walks_graph() {
         let s = fresh();
-        let a = s.capture("Seed", "origin node for [[HopOne]]", "note").unwrap();
+        let a = s
+            .capture("Seed", "origin node for [[HopOne]]", "note")
+            .unwrap();
         let b = s.capture("HopOne", "links to [[HopTwo]]", "note").unwrap();
         let c = s.capture("HopTwo", "leaf node", "note").unwrap();
         let discovered = s.explore("seed", 5).unwrap();
@@ -878,7 +983,9 @@ mod tests {
     #[test]
     fn dead_memories_excluded() {
         let s = fresh();
-        let id = s.capture("Doomed", "this will be forgotten", "note").unwrap();
+        let id = s
+            .capture("Doomed", "this will be forgotten", "note")
+            .unwrap();
         s.forget(id).unwrap();
         assert!(s.recall("forgotten", 5).unwrap().is_empty());
     }

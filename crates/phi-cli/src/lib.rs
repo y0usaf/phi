@@ -5,7 +5,6 @@ use clap::Parser;
 #[command(name = "phi", about = "Recursive Language Model (RLM) coding agent")]
 pub struct Args {
     /// One-shot prompt; without it (on a TTY) the interactive TUI starts.
-    #[arg()]
     pub prompt: Vec<String>,
 
     /// Long context handed to the REPL: a file path, or '-' for stdin.
@@ -108,7 +107,7 @@ pub struct Args {
 
 impl Args {
     pub fn parse() -> Self {
-        <Self as Parser>::parse()
+        Parser::parse()
     }
 
     pub fn prompt_text(&self) -> Option<String> {

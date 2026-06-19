@@ -1,6 +1,8 @@
 mod diff;
 mod render;
-mod tests;
 mod types;
+
+#[cfg(test)]
+mod tests;
 
 pub use types::{BlockSpec, Frame, Transcript};

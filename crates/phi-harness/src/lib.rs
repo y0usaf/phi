@@ -28,16 +28,14 @@ pub use snapshot::TurnState;
 
 use std::sync::Arc;
 
-use phi_ext::ToolSpec;
 use phi_ai::ThinkingLevel;
-use phi_rlm::{
-    ContextPayload, LanguageModel, LoopDetector, Rlm, RlmCompletion, RlmConfig,
-};
+use phi_ext::ToolSpec;
+use phi_rlm::{ContextPayload, LanguageModel, LoopDetector, Rlm, RlmCompletion, RlmConfig};
 use phi_runtime::AppRuntime;
 use phi_session::durable::{self, DurableEntry, OperationKind};
 use phi_session::session::SessionStore;
-use tokio::sync::{Mutex, RwLock};
 use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::{Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
 
 /// Live (non-snapshotted) harness configuration. Updated by `set_model`,
@@ -129,11 +127,19 @@ impl PhiHarness {
         self
     }
 
-    pub fn rlm(&self) -> &Rlm { &self.rlm }
-    pub fn queues(&self) -> &Queues { &self.queues }
-    pub fn hooks(&self) -> &PhiHooks { &self.hooks }
+    pub fn rlm(&self) -> &Rlm {
+        &self.rlm
+    }
+    pub fn queues(&self) -> &Queues {
+        &self.queues
+    }
+    pub fn hooks(&self) -> &PhiHooks {
+        &self.hooks
+    }
 
-    pub async fn phase(&self) -> HarnessPhase { *self.phase.lock().await }
+    pub async fn phase(&self) -> HarnessPhase {
+        *self.phase.lock().await
+    }
 
     /// Start a new turn. Requires [`HarnessPhase::Idle`].
     pub async fn prompt(
@@ -184,12 +190,8 @@ impl PhiHarness {
                 .collect::<Vec<_>>()
                 .join("\n\n");
             match &payload {
-                ContextPayload::Str(s) => {
-                    ContextPayload::Str(format!("{combined}\n\n{s}"))
-                }
-                ContextPayload::Json(v) => {
-                    ContextPayload::Str(format!("{combined}\n\n{v}"))
-                }
+                ContextPayload::Str(s) => ContextPayload::Str(format!("{combined}\n\n{s}")),
+                ContextPayload::Json(v) => ContextPayload::Str(format!("{combined}\n\n{v}")),
             }
         };
 
@@ -300,7 +302,8 @@ impl PhiHarness {
         }
         let _g = Guard(self);
 
-        self.write_operation_start(OperationKind::TreeNavigation).await;
+        self.write_operation_start(OperationKind::TreeNavigation)
+            .await;
         let mut guard = self.session.lock().await;
         if let Some(session) = guard.as_mut() {
             session.set_leaf(Some(leaf_id.to_owned()));
@@ -356,11 +359,10 @@ impl PhiHarness {
         let path = session.path().to_path_buf();
         drop(guard);
 
-        let text = std::fs::read_to_string(&path)
-            .map_err(|e| HarnessError::Recovery {
-                message: format!("failed to read session log: {e}"),
-                source: anyhow::anyhow!(e),
-            })?;
+        let text = std::fs::read_to_string(&path).map_err(|e| HarnessError::Recovery {
+            message: format!("failed to read session log: {e}"),
+            source: anyhow::anyhow!(e),
+        })?;
 
         let report = phi_session::durable::reduce_log(&text);
 

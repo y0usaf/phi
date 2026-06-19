@@ -30,16 +30,15 @@ pub(super) fn setup_phi_global(lua: &mlua::Lua) -> mlua::Result<()> {
     phi.set("on", on_fn)?;
 
     // phi.register_command(name, opts)
-    let register_command_fn =
-        lua.create_function(|lua, (name, opts): (String, mlua::Table)| {
-            let globals = lua.globals();
-            let commands: mlua::Table = globals.get("_phi_commands")?;
-            commands.set(name.clone(), opts)?;
-            let reg: mlua::Table = globals.get("_phi_registered_commands")?;
-            let len = reg.raw_len();
-            reg.raw_set(len + 1, name)?;
-            Ok(())
-        })?;
+    let register_command_fn = lua.create_function(|lua, (name, opts): (String, mlua::Table)| {
+        let globals = lua.globals();
+        let commands: mlua::Table = globals.get("_phi_commands")?;
+        commands.set(name.clone(), opts)?;
+        let reg: mlua::Table = globals.get("_phi_registered_commands")?;
+        let len = reg.raw_len();
+        reg.raw_set(len + 1, name)?;
+        Ok(())
+    })?;
     phi.set("register_command", register_command_fn)?;
 
     // phi.notify(msg)
@@ -53,7 +52,8 @@ pub(super) fn setup_phi_global(lua: &mlua::Lua) -> mlua::Result<()> {
     phi.set("notify", notify_fn)?;
 
     // phi.set_status(key, text) -- no-op
-    let set_status_fn = lua.create_function(|_, (_key, _text): (mlua::Value, mlua::Value)| Ok(()))?;
+    let set_status_fn =
+        lua.create_function(|_, (_key, _text): (mlua::Value, mlua::Value)| Ok(()))?;
     phi.set("set_status", set_status_fn)?;
 
     // phi.clear_status(key) -- no-op

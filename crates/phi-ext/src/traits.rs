@@ -1,6 +1,6 @@
 use anyhow::Result;
 
-use crate::{ExtensionManifest, ToolSpec, CommandSpec, EventHandlerRegistration};
+use crate::{CommandSpec, EventHandlerRegistration, ExtensionManifest, ToolSpec};
 
 pub trait Extension: Send + Sync {
     fn manifest(&self) -> ExtensionManifest;

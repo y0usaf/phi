@@ -13,10 +13,9 @@ use std::path::Path;
 ///
 /// Returns `(system_prompt, append_prompt)`.
 pub fn discover_prompt_overrides(cwd: &Path) -> (Option<String>, Option<String>) {
-    let system = discover_file(cwd, "SYSTEM.md")
-        .or_else(|| discover_global_file("SYSTEM.md"));
-    let append = discover_file(cwd, "APPEND_SYSTEM.md")
-        .or_else(|| discover_global_file("APPEND_SYSTEM.md"));
+    let system = discover_file(cwd, "SYSTEM.md").or_else(|| discover_global_file("SYSTEM.md"));
+    let append =
+        discover_file(cwd, "APPEND_SYSTEM.md").or_else(|| discover_global_file("APPEND_SYSTEM.md"));
     (system, append)
 }
 

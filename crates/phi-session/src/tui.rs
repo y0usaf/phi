@@ -2,6 +2,7 @@
 //! background, the URL lands in scrollback, and the editor doubles as the
 //! paste-the-redirect-URL input (racing the localhost callback server).
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -37,6 +38,7 @@ const BOLD: &str = "\x1b[1m";
 const DIM: &str = "\x1b[2m";
 const CYAN: &str = "\x1b[36m";
 const YELLOW: &str = "\x1b[33m";
+#[allow(dead_code)] // used by success_status_text, kept for the success-state status family
 const GREEN: &str = "\x1b[32m";
 const RED: &str = "\x1b[31m";
 // Warm gold for tool verbs: the same accent highlight_known_repl_calls uses
@@ -126,6 +128,7 @@ fn first_block_start(text: &str) -> usize {
 /// while streaming: it ends at a completed blank line, leaves no code fence
 /// open, and stops before anything that is or could become a ```repl block
 /// (which `CodeExecStart` will consume from the stream).
+#[cfg(test)]
 fn stable_prefix(text: &str) -> usize {
     let limit = first_block_start(text);
     let mut fence_open = false;
@@ -186,6 +189,30 @@ fn truncate_for_log(text: &str) -> String {
         end -= 1;
     }
     format!("{}\n[truncated {} bytes]", &text[..end], text.len() - end)
+}
+
+/// Remove stdout lines that are verbatim echoes of tool-call results already
+/// rendered as nested panels in the same block (e.g. `print(grep(...))`).
+/// Returns the residual stdout; when empty, the caller's `push_preview`
+/// naturally skips rendering (no-op on empty), so the duplicate panel
+/// disappears entirely.
+fn strip_tool_echoes(stdout: &str, tools: &[session::ToolCall], exec_depth: usize) -> String {
+    let mut result_lines: HashSet<&str> = HashSet::new();
+    for t in tools {
+        if t.error.is_none() && t.depth == exec_depth {
+            for line in t.result.lines() {
+                let trimmed = line.trim();
+                if !trimmed.is_empty() {
+                    result_lines.insert(trimmed);
+                }
+            }
+        }
+    }
+    stdout
+        .lines()
+        .filter(|line| !result_lines.contains(line.trim()))
+        .collect::<Vec<&str>>()
+        .join("\n")
 }
 
 fn panel_border(label: &str, label_plain: &str, width: usize, color: &str) -> String {
@@ -346,6 +373,7 @@ fn fitted_sectioned_panel_width(
     label_width.max(body_width).min(max_width.max(1)).max(4)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_nested_sectioned_panel(
     label: &str,
     label_plain: &str,
@@ -481,6 +509,7 @@ fn running_status_text(label: &str, spinner: &str) -> String {
     format!("{CYAN}{spinner}{RESET} {label}")
 }
 
+#[allow(dead_code)] // reserved for a success-status state the status machine does not yet emit
 fn success_status_text(label: &str, duration_secs: f64) -> String {
     format!("{GREEN}✓{RESET} {label} {NUM_FG}{duration_secs:.1}s{RESET}")
 }
@@ -535,17 +564,10 @@ fn tool_title(name: &str, args: &serde_json::Value) -> String {
             }
         }
         "read_file" => format!("{TOOL_ACCENT}read{RESET} {PATH_FG}{}{RESET}", arg("path")),
-        "read_hashline" => format!("{TOOL_ACCENT}hread{RESET} {PATH_FG}{}{RESET}", arg("path")),
         "write_file" => format!("{TOOL_ACCENT}write{RESET} {PATH_FG}{}{RESET}", arg("path")),
         "edit_file" => format!("{TOOL_ACCENT}edit{RESET} {PATH_FG}{}{RESET}", arg("path")),
-        "apply_hashline" => format!("{TOOL_ACCENT}hedit{RESET} {PATH_FG}{}{RESET}", arg("path")),
         "grep" => format!(
             "{TOOL_ACCENT}grep{RESET} {STRING_FG}{}{RESET}{PATH_FG}{}{RESET}",
-            one_line(arg("pattern")),
-            in_path(arg("path"))
-        ),
-        "grep_hashline" => format!(
-            "{TOOL_ACCENT}hgrep{RESET} {STRING_FG}{}{RESET}{PATH_FG}{}{RESET}",
             one_line(arg("pattern")),
             in_path(arg("path"))
         ),
@@ -615,14 +637,11 @@ fn tool_preview_lang(name: &str, args: &serde_json::Value) -> Option<&'static st
 fn tool_panel_title_plain(name: &str) -> String {
     match name {
         "read_file" => "Read".to_owned(),
-        "read_hashline" => "Read Hashline".to_owned(),
         "write_file" => "Write".to_owned(),
         "edit_file" => "Edit".to_owned(),
-        "apply_hashline" => "Apply Hashline".to_owned(),
         "bash" => "Bash".to_owned(),
         "repl" => "Repl".to_owned(),
         "grep" => "Grep".to_owned(),
-        "grep_hashline" => "Grep Hashline".to_owned(),
         "find" => "Find".to_owned(),
         "ls" => "Ls".to_owned(),
         _ => name
@@ -676,10 +695,10 @@ fn tool_activity_lines(name: &str, args: &serde_json::Value) -> Vec<String> {
                 highlight_code(code, Some("repl"))
             }
         }
-        "read_file" | "read_hashline" | "write_file" | "edit_file" | "apply_hashline" => {
+        "read_file" | "write_file" | "edit_file" => {
             tool_arg_line(arg("path"), PATH_FG).into_iter().collect()
         }
-        "grep" | "grep_hashline" | "find" => {
+        "grep" | "find" => {
             let pattern = arg("pattern");
             if pattern.is_empty() {
                 Vec::new()
@@ -1536,7 +1555,6 @@ struct Ui {
     streamed: bool,
     status: String,
     turn: usize,
-    max_iterations: usize,
     model_label: String,
     storage: Arc<AuthStorage>,
     registry: Arc<Registry>,
@@ -1553,9 +1571,6 @@ struct Ui {
     /// Cached git branch for the footer, refreshed on a short TTL.
     branch: Option<String>,
     branch_at: std::time::Instant,
-    /// Whether this session is embedded inside the mux (vs standalone terminal).
-    /// Controls which Transcript scrollback formula is used.
-    embedded: bool,
 }
 
 /// Current git branch of `cwd` (or a short detached-HEAD hash), following a
@@ -1610,12 +1625,12 @@ impl Ui {
         runtime: Arc<AppRuntime>,
     ) -> Self {
         let UiSetup {
-            max_iterations,
             storage,
             registry,
             root_lm,
             sub_lm,
             store,
+            ..
         } = setup;
         let model_names = registry
             .supported_models()
@@ -1663,7 +1678,6 @@ impl Ui {
             streamed: false,
             status: String::new(),
             turn: 0,
-            max_iterations,
             model_label: model_label(&root_lm.model(), &sub_lm.model()),
             storage,
             registry,
@@ -1677,7 +1691,6 @@ impl Ui {
             usage: Usage::default(),
             branch: None,
             branch_at: std::time::Instant::now() - Duration::from_secs(60),
-            embedded,
         }
     }
 
@@ -2517,7 +2530,7 @@ impl Ui {
         code: &str,
         stdout: &str,
         stderr: &str,
-        duration_secs: f64,
+        _duration_secs: f64,
         tools: &[session::ToolCall],
         subcalls: &[session::SubcallRecord],
     ) {
@@ -2566,8 +2579,9 @@ impl Ui {
             }
             self.last_activity = true;
         }
-        self.push_bar(0, format!("exec{RESET} {NUM_FG}{duration_secs:.1}s"));
-        self.push_preview(0, stdout, self.output_limit());
+        self.last_activity = true;
+        let filtered = strip_tool_echoes(stdout, tools, 0);
+        self.push_preview(0, &filtered, self.output_limit());
         self.push_preview(0, stderr, self.output_limit());
         self.commit_block();
     }
@@ -2955,16 +2969,21 @@ impl Ui {
                     Some((name, rest)) => (name, rest),
                     None => (trimmed, ""),
                 };
-                let cmd_name = cmd_name.to_owned();
+                // Normalize a leading run of slashes (e.g. `//memories`) down
+                // to a single slash so the command is looked up by the name
+                // it was registered with.
+                let cmd_name = {
+                    let bare = cmd_name.trim_start_matches('/');
+                    format!("/{bare}")
+                };
                 let args = args.to_owned();
                 let runtime = Arc::clone(&self.runtime);
                 let result = tokio::task::block_in_place(|| {
                     let rt = runtime;
                     let cn = cmd_name.clone();
                     let ar = args.clone();
-                    tokio::runtime::Handle::current().block_on(async move {
-                        rt.invoke_command(&cn, &ar).await
-                    })
+                    tokio::runtime::Handle::current()
+                        .block_on(async move { rt.invoke_command(&cn, &ar).await })
                 });
                 match result {
                     Ok(Some(output)) => {
@@ -2974,13 +2993,11 @@ impl Ui {
                         }
                     }
                     Ok(None) => {
-                        self.pending.push(format!(
-                            "\x1b[33munknown command: {cmd_name}{RESET}"
-                        ));
+                        self.pending
+                            .push(format!("\x1b[33munknown command: {cmd_name}{RESET}"));
                     }
                     Err(e) => {
-                        self.pending
-                            .push(format!("\x1b[31merror:{RESET} {e}"));
+                        self.pending.push(format!("\x1b[31merror:{RESET} {e}"));
                     }
                 }
             }
@@ -3770,11 +3787,9 @@ impl Ui {
                         self.commit_block();
                     }
                 } else {
-                    self.push_bar(
-                        depth,
-                        format!("exec{RESET} {NUM_FG}{:.1}s", duration.as_secs_f64()),
-                    );
-                    self.push_preview(depth, &stdout, self.output_limit());
+                    self.last_activity = true;
+                    let filtered = strip_tool_echoes(&stdout, &self.live_tools, depth);
+                    self.push_preview(depth, &filtered, self.output_limit());
                     self.push_preview(depth, &stderr, self.output_limit());
                 }
             }
@@ -4005,10 +4020,7 @@ impl Ui {
     ) {
         match result {
             Ok(res) if record => {
-                self.push_bar(
-                    0,
-                    format!("exec{RESET} {NUM_FG}{:.1}s", res.duration.as_secs_f64()),
-                );
+                self.last_activity = true;
                 self.push_preview(0, &res.stdout, self.output_limit());
                 self.push_preview(0, &res.stderr, self.output_limit());
                 self.commit_block();
@@ -4302,6 +4314,141 @@ mod tests {
         assert!(plain.contains("Output"), "{plain}");
         assert!(plain.contains("print(1)"), "{plain}");
         assert!(plain.contains("exec 0.1s"), "{plain}");
+    }
+
+    #[test]
+    fn strip_tool_echoes_removes_printed_tool_result() {
+        let tools = vec![session::ToolCall {
+            name: "grep".to_owned(),
+            args: serde_json::json!({"pattern": "exec"}),
+            result: "crates/foo.rs:1: hello
+"
+            .to_owned(),
+            error: None,
+            duration_secs: 0.1,
+            depth: 0,
+        }];
+        // stdout == tool result -> fully stripped (empty residual)
+        assert_eq!(
+            strip_tool_echoes(
+                "crates/foo.rs:1: hello
+",
+                &tools,
+                0
+            ),
+            ""
+        );
+        // stdout != tool result -> unchanged
+        assert_eq!(
+            strip_tool_echoes(
+                "different output
+",
+                &tools,
+                0
+            ),
+            "different output"
+        );
+        // no tools -> unchanged
+        assert_eq!(
+            strip_tool_echoes(
+                "crates/foo.rs:1: hello
+",
+                &[],
+                0
+            ),
+            "crates/foo.rs:1: hello"
+        );
+        // wrong depth -> unchanged
+        assert_eq!(
+            strip_tool_echoes(
+                "crates/foo.rs:1: hello
+",
+                &tools,
+                1
+            ),
+            "crates/foo.rs:1: hello"
+        );
+    }
+
+    #[test]
+    fn strip_tool_echoes_removes_multiple_tool_results() {
+        let tools = vec![
+            session::ToolCall {
+                name: "grep".to_owned(),
+                args: serde_json::json!({}),
+                result: "match1
+"
+                .to_owned(),
+                error: None,
+                duration_secs: 0.1,
+                depth: 0,
+            },
+            session::ToolCall {
+                name: "find".to_owned(),
+                args: serde_json::json!({}),
+                result: "file1
+"
+                .to_owned(),
+                error: None,
+                duration_secs: 0.1,
+                depth: 0,
+            },
+        ];
+        // stdout == concatenation of both tool results -> fully stripped
+        assert_eq!(
+            strip_tool_echoes(
+                "match1
+file1
+",
+                &tools,
+                0
+            ),
+            ""
+        );
+        // stdout only matches one -> the other line remains
+        assert_eq!(
+            strip_tool_echoes(
+                "match1
+", &tools, 0
+            ),
+            ""
+        );
+    }
+
+    #[test]
+    fn strip_tool_echoes_preserves_non_tool_lines() {
+        let tools = vec![session::ToolCall {
+            name: "grep".to_owned(),
+            args: serde_json::json!({}),
+            result: "match1
+"
+            .to_owned(),
+            error: None,
+            duration_secs: 0.1,
+            depth: 0,
+        }];
+        // Mixed: tool echo + extra print -> only the extra line remains
+        assert_eq!(
+            strip_tool_echoes(
+                "match1
+done
+",
+                &tools,
+                0
+            ),
+            "done"
+        );
+        // Extra line before tool echo
+        assert_eq!(
+            strip_tool_echoes(
+                "starting
+match1
+",
+                &tools,
+                0
+            ),
+            "starting"
+        );
     }
 
     #[test]

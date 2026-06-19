@@ -2,7 +2,11 @@ use anyhow::Result;
 
 use super::convert::{json_to_lua, lua_value_to_json_string};
 
-pub(super) fn call_lua_event(lua: &mlua::Lua, event_name: &str, payload_json: &str) -> Result<Option<String>> {
+pub(super) fn call_lua_event(
+    lua: &mlua::Lua,
+    event_name: &str,
+    payload_json: &str,
+) -> Result<Option<String>> {
     let globals = lua.globals();
     let handlers: mlua::Table = globals.get("_phi_handlers")?;
     let handler: Option<mlua::Function> = handlers.get(event_name)?;

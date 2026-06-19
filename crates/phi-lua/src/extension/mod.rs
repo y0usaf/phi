@@ -3,8 +3,8 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use phi_ext::{
-    CommandInvocation, CommandOutput, CommandSpec, EventHandlerRegistration,
-    ExtensionHost, ExtensionManifest, LifecycleEvent,
+    CommandInvocation, CommandOutput, CommandSpec, EventHandlerRegistration, ExtensionHost,
+    ExtensionManifest, LifecycleEvent,
 };
 
 mod bridge;
@@ -36,7 +36,6 @@ impl LuaExtension {
 // ---------------------------------------------------------------------------
 // Channel message type
 // ---------------------------------------------------------------------------
-
 
 impl phi_ext::Extension for LuaExtension {
     fn manifest(&self) -> ExtensionManifest {
@@ -70,23 +69,13 @@ impl phi_ext::Extension for LuaExtension {
         let globals = lua.globals();
         let reg_events: mlua::Table = globals.get("_phi_registered_events")?;
         let event_names: Vec<String> = (1..)
-            .map_while(|i| {
-                reg_events
-                    .get::<Option<String>>(i)
-                    .ok()
-                    .flatten()
-            })
+            .map_while(|i| reg_events.get::<Option<String>>(i).ok().flatten())
             .collect();
 
         // Read registered commands
         let reg_commands: mlua::Table = globals.get("_phi_registered_commands")?;
         let command_names: Vec<String> = (1..)
-            .map_while(|i| {
-                reg_commands
-                    .get::<Option<String>>(i)
-                    .ok()
-                    .flatten()
-            })
+            .map_while(|i| reg_commands.get::<Option<String>>(i).ok().flatten())
             .collect();
 
         // Read command descriptions
@@ -128,9 +117,7 @@ impl phi_ext::Extension for LuaExtension {
                         reply: rtx,
                     })
                     .map_err(|e| anyhow::anyhow!("lua send: {e}"))?;
-                    let json_opt = rrx
-                        .recv()
-                        .map_err(|e| anyhow::anyhow!("lua recv: {e}"))??;
+                    let json_opt = rrx.recv().map_err(|e| anyhow::anyhow!("lua recv: {e}"))??;
                     decode_event_return(json_opt)
                 }),
             })?;
@@ -151,9 +138,7 @@ impl phi_ext::Extension for LuaExtension {
                         reply: rtx,
                     })
                     .map_err(|e| anyhow::anyhow!("lua send: {e}"))?;
-                    let msg_opt = rrx
-                        .recv()
-                        .map_err(|e| anyhow::anyhow!("lua recv: {e}"))??;
+                    let msg_opt = rrx.recv().map_err(|e| anyhow::anyhow!("lua recv: {e}"))??;
                     Ok(CommandOutput { message: msg_opt })
                 }),
             })?;

@@ -1,15 +1,20 @@
-def read_file(path, offset=0, limit=2000):
+def read_file(path, offset=0, limit=2000, raw=False):
     with open(path, errors="replace") as f:
-        lines = f.read().split("\n")
-    chunk = lines[offset : offset + limit]
-    text = "\n".join(chunk)
-    if offset + limit < len(lines):
-        text += "\n[truncated: file has %d lines, showing %d-%d]" % (
-            len(lines),
-            offset,
-            offset + len(chunk),
-        )
-    return _prelude_truncate(text)
+        full_text = f.read()
+    lines = _hashline_lines(full_text)
+    if raw:
+        chunk = lines[offset : offset + limit]
+        text = "\n".join(chunk)
+        if offset + limit < len(lines):
+            text += "\n[truncated: file has %d lines, showing %d-%d]" % (
+                len(lines),
+                offset,
+                offset + len(chunk),
+            )
+        return _prelude_truncate(text)
+    start_line = int(offset) + 1
+    seen_lines = range(start_line, min(len(lines), start_line + limit - 1) + 1)
+    return _hashline_format_view(path, full_text, start_line, limit, seen_lines=seen_lines)
 
 
 @_tool
@@ -32,7 +37,39 @@ def write_file(path, content):
 
 
 @_tool
-def edit_file(path, old, new, replace_all=False):
+def edit_file(path=None, old=None, new=None, replace_all=False, patch=None):
+    if patch is not None:
+        try:
+            sections = _hashline_parse_patch(patch)
+            planned = []
+            seen_paths = set()
+            for section in sections:
+                canonical = _hashline_canonical_path(section["path"])
+                if canonical in seen_paths:
+                    raise ValueError(
+                        "multiple hashline sections resolve to the same file (%s); merge their ops under one header"
+                        % section["path"]
+                    )
+                seen_paths.add(canonical)
+                planned.append(_hashline_prepare_section(section))
+            rendered = []
+            for item in planned:
+                with open(item["path"], "w") as f:
+                    f.write(item["after"])
+                lines = _hashline_lines(item["after"])
+                display_limit = min(len(lines), 2000)
+                seen = range(1, display_limit + 1)
+                tag = _hashline_record_snapshot(item["path"], item["after"], seen)
+                rendered.append(
+                    _hashline_format_view(
+                        item["path"], item["after"], 1, 2000, tag=tag, seen_lines=seen
+                    )
+                )
+                for warning in item["warnings"]:
+                    rendered.append("[warning] %s" % warning)
+            return "\n\n".join(rendered)
+        except Exception as e:
+            return "Error: %s" % e
     with open(path, errors="replace") as f:
         content = f.read()
     count = content.count(old)

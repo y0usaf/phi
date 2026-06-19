@@ -47,10 +47,7 @@ pub(super) fn decode_event_return(json_opt: Option<String>) -> Result<Option<Eve
             Some("handled") => InputActionKind::Handled,
             _ => InputActionKind::Continue,
         };
-        let text = obj
-            .get("text")
-            .and_then(|v| v.as_str())
-            .map(str::to_owned);
+        let text = obj.get("text").and_then(|v| v.as_str()).map(str::to_owned);
         return Ok(Some(EventReturn::InputAction { action, text }));
     }
 

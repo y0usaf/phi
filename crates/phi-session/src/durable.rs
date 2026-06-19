@@ -174,32 +174,34 @@ impl RecoveryReducer {
             }
             DurableEntry::OperationFinish { operation_id, .. } => {
                 self.open_operations.remove(&operation_id);
-                if let Some(uo) = &self.report.unfinished_operation {
-                    if uo.operation_id == operation_id {
+                if let Some(uo) = &self.report.unfinished_operation
+                    && uo.operation_id == operation_id {
                         self.report.unfinished_operation = None;
                     }
-                }
             }
             DurableEntry::OperationInterrupted { operation_id, .. } => {
                 self.open_operations.remove(&operation_id);
                 // Keep unfinished_operation as None: it was marked interrupted,
                 // not left open. The report still records nothing here; callers
                 // can inspect the log for interrupted markers.
-                if let Some(uo) = &self.report.unfinished_operation {
-                    if uo.operation_id == operation_id {
+                if let Some(uo) = &self.report.unfinished_operation
+                    && uo.operation_id == operation_id {
                         self.report.unfinished_operation = None;
                     }
-                }
             }
-            DurableEntry::TurnStart { id, operation_id, iteration, .. } => {
+            DurableEntry::TurnStart {
+                id,
+                operation_id,
+                iteration,
+                ..
+            } => {
                 if let Some((_, last)) = self.open_operations.get_mut(&operation_id) {
                     *last = Some(iteration);
                 }
-                if let Some(uo) = self.report.unfinished_operation.as_mut() {
-                    if uo.operation_id == operation_id {
+                if let Some(uo) = self.report.unfinished_operation.as_mut()
+                    && uo.operation_id == operation_id {
                         uo.last_completed_turn = Some(iteration);
                     }
-                }
                 let _ = id;
             }
             DurableEntry::TurnFinish { turn_id, .. } => {
@@ -212,16 +214,22 @@ impl RecoveryReducer {
                     .push(tool_name);
             }
             DurableEntry::ToolCallFinish { .. } => {}
-            DurableEntry::QueueEnqueued { id, queue, text, .. } => {
+            DurableEntry::QueueEnqueued {
+                id, queue, text, ..
+            } => {
                 if !self.consumed_queue_ids.contains(&id) {
-                    self.report.restored_queue_messages.push(RestoredQueueMessage {
-                        id,
-                        text,
-                        source: queue,
-                    });
+                    self.report
+                        .restored_queue_messages
+                        .push(RestoredQueueMessage {
+                            id,
+                            text,
+                            source: queue,
+                        });
                 }
             }
-            DurableEntry::QueueConsumed { queue_message_id, .. } => {
+            DurableEntry::QueueConsumed {
+                queue_message_id, ..
+            } => {
                 self.consumed_queue_ids.insert(queue_message_id.clone());
                 self.report
                     .restored_queue_messages

@@ -1,11 +1,9 @@
 use std::sync::Arc;
 
-use phi_ext::{
-    EventHandlerRegistration, EventKind, EventPayload, EventReturn, LifecycleEvent,
-};
+use phi_ext::{EventHandlerRegistration, EventKind, EventPayload, EventReturn, LifecycleEvent};
 
-use crate::store::MemoryStore;
 use crate::format::extract_keywords;
+use crate::store::MemoryStore;
 
 pub fn make_before_agent_start_handler(
     store: &Arc<MemoryStore>,
@@ -38,23 +36,28 @@ pub fn make_before_agent_start_handler(
                 return Ok(None);
             }
             let mut block = "## Recalled memories
-".to_owned();
+"
+            .to_owned();
             for m in &memories {
                 let snippet: String = m.body.chars().take(200).collect();
-                block.push_str(&format!("- **{}** ({}): {}
-", m.title, m.kind, snippet));
+                block.push_str(&format!(
+                    "- **{}** ({}): {}
+",
+                    m.title, m.kind, snippet
+                ));
             }
             block.push_str("
 _Use memory_recall / memory_explore / memory_reflect to query,                                     walk, and reinforce this graph._
 ");
-            Ok(Some(EventReturn::SystemPromptMod { append: Some(block), prepend: None }))
+            Ok(Some(EventReturn::SystemPromptMod {
+                append: Some(block),
+                prepend: None,
+            }))
         }),
     }
 }
 
-pub fn make_session_start_handler(
-    store: &Arc<MemoryStore>,
-) -> EventHandlerRegistration {
+pub fn make_session_start_handler(store: &Arc<MemoryStore>) -> EventHandlerRegistration {
     let store = Arc::clone(store);
     EventHandlerRegistration {
         event: EventKind::SessionStart,
@@ -72,5 +75,3 @@ pub fn make_session_start_handler(
         }),
     }
 }
-
-

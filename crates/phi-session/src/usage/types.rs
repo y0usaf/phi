@@ -4,7 +4,6 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::SystemTime;
 
-use crate::session;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct UsageTotals {
@@ -79,7 +78,8 @@ pub(super) struct CachedUsageEntries {
     pub(super) entries: Arc<[UsageEntry]>,
 }
 
-pub(super) static USAGE_ENTRIES_CACHE: OnceLock<Mutex<HashMap<PathBuf, CachedUsageEntries>>> = OnceLock::new();
+pub(super) static USAGE_ENTRIES_CACHE: OnceLock<Mutex<HashMap<PathBuf, CachedUsageEntries>>> =
+    OnceLock::new();
 
 pub(super) fn usage_entries_cache() -> &'static Mutex<HashMap<PathBuf, CachedUsageEntries>> {
     USAGE_ENTRIES_CACHE.get_or_init(|| Mutex::new(HashMap::new()))

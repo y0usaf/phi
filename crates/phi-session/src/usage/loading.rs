@@ -1,9 +1,10 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use serde_json::Value;
+use std::collections::BTreeMap;
+use std::collections::HashSet;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use serde_json::Value;
 
 use super::types::*;
 use crate::session;
@@ -153,7 +154,10 @@ pub(super) fn parse_usage_entries_from_file(path: &Path) -> Vec<UsageEntry> {
     entries
 }
 
-pub(crate) fn usage_entries_from_value(value: &Value, time_zone: &jiff::tz::TimeZone) -> Vec<UsageEntry> {
+pub(crate) fn usage_entries_from_value(
+    value: &Value,
+    time_zone: &jiff::tz::TimeZone,
+) -> Vec<UsageEntry> {
     if value.get("type").and_then(Value::as_str) != Some("message") {
         return Vec::new();
     }

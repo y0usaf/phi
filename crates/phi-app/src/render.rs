@@ -46,7 +46,13 @@ pub(crate) fn preview_tail_lines(lines: &[String], max_lines: usize, verbose: bo
     out
 }
 
-pub(crate) fn panel_border(label: &str, label_plain: &str, left: char, right: char, width: usize) -> String {
+pub(crate) fn panel_border(
+    label: &str,
+    label_plain: &str,
+    left: char,
+    right: char,
+    width: usize,
+) -> String {
     let fill = width.saturating_sub(plain_width(label_plain) + 7).max(1);
     format!(" {left}─── {label} {}{right}", "─".repeat(fill))
 }

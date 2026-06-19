@@ -1,17 +1,16 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{IsTerminal, Read};
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context as _, Result, bail};
 use phi_ai::{
-    AuthStorage, LoginMethod, Model, OAuthProviderId, PrintCallbacks, Registry, ThinkingLevel,
-    Usage,
+    AuthStorage, LoginMethod, OAuthProviderId, PrintCallbacks, Registry, ThinkingLevel,
 };
 use phi_builtins::prelude::{CODING_PRELUDE, coding_tools_section};
 use phi_cli::Args;
-use phi_mux as mux;
 use phi_harness::PhiHarness;
+use phi_mux as mux;
 use phi_rlm::engine::PythonEnvFactory;
 use phi_rlm::{ContextPayload, ProviderLm, Rlm, RlmConfig, RlmEvent, StopCause};
 use phi_session::{config, session_builder, tui};
@@ -64,12 +63,14 @@ async fn main() -> Result<()> {
 
 mod format;
 mod render;
-mod tests;
 mod tool_view;
 
+#[cfg(test)]
+mod tests;
+
 use format::{format_model_pricing, format_usage_summary};
-use tool_view::{check, cross, depth_tag, indent, preview, spin, tool_args_preview, limit_name};
 use render::render_tool_panel;
+use tool_view::{check, cross, depth_tag, indent, limit_name, preview, spin, tool_args_preview};
 
 async fn run(args: Args, storage: Arc<AuthStorage>, registry: Arc<Registry>) -> Result<()> {
     let cwd = std::env::current_dir().context("could not determine working directory")?;
@@ -235,6 +236,26 @@ async fn run(args: Args, storage: Arc<AuthStorage>, registry: Arc<Registry>) -> 
     Ok(())
 }
 
+/// Remove stdout lines that are verbatim echoes of tool-call results already
+/// rendered as panels above (e.g. `print(grep(...))`).  Returns the residual
+/// stdout; when empty, the caller skips printing the duplicate output.
+fn cli_strip_tool_echoes(stdout: &str, tool_results: &[String]) -> String {
+    let mut result_lines: HashSet<&str> = HashSet::new();
+    for r in tool_results {
+        for line in r.lines() {
+            let trimmed = line.trim();
+            if !trimmed.is_empty() {
+                result_lines.insert(trimmed);
+            }
+        }
+    }
+    stdout
+        .lines()
+        .filter(|line| !result_lines.contains(line.trim()))
+        .collect::<Vec<&str>>()
+        .join("\n")
+}
+
 fn auth_path() -> Result<std::path::PathBuf> {
     let dirs = directories::ProjectDirs::from("", "", "phi")
         .context("could not determine a home directory")?;
@@ -264,6 +285,7 @@ async fn print_events(
 ) {
     let color = std::io::stderr().is_terminal();
     let mut open_tool_args: HashMap<u64, serde_json::Value> = HashMap::new();
+    let mut tool_results: Vec<String> = Vec::new();
     while let Some(event) = rx.recv().await {
         match event {
             RlmEvent::IterationStart { depth, iteration } => {
@@ -278,6 +300,7 @@ async fn print_events(
                 }
             }
             RlmEvent::CodeExecStart { code, .. } => {
+                tool_results.clear();
                 eprintln!("{} exec", spin(color));
                 eprintln!("{}", indent(&preview(&code, 16, verbose)));
             }
@@ -297,8 +320,9 @@ async fn print_events(
                 } else {
                     eprintln!("  {glyph} exec • {:.1}s", duration.as_secs_f64());
                 }
-                if !stdout.trim().is_empty() {
-                    eprintln!("{}", indent(&preview(&stdout, 12, verbose)));
+                let filtered = cli_strip_tool_echoes(&stdout, &tool_results);
+                if !filtered.trim().is_empty() {
+                    eprintln!("{}", indent(&preview(&filtered, 12, verbose)));
                 }
                 if !stderr.trim().is_empty() {
                     eprintln!("{}", indent(&preview(&stderr, 12, verbose)));
@@ -355,6 +379,9 @@ async fn print_events(
                 let args = open_tool_args
                     .remove(&call_id)
                     .unwrap_or(serde_json::Value::Null);
+                if error.is_none() {
+                    tool_results.push(result.clone());
+                }
                 eprintln!(
                     "{}",
                     render_tool_panel(

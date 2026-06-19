@@ -47,15 +47,39 @@ impl fmt::Display for EventKind {
 #[derive(Clone, Debug, Serialize)]
 pub enum EventPayload {
     Empty,
-    SessionStart { cwd: String, session_id: String },
-    BeforeAgentStart { prompt: String, system_prompt: String },
-    Context { turn: u32 },
-    TurnStart { turn: u32 },
-    TurnEnd { turn: u32, had_code: bool },
-    AgentEnd { stop_cause: String },
-    ToolCall { name: String, args: Value },
-    ToolResult { name: String, result: String, error: Option<String> },
-    Input { text: String },
+    SessionStart {
+        cwd: String,
+        session_id: String,
+    },
+    BeforeAgentStart {
+        prompt: String,
+        system_prompt: String,
+    },
+    Context {
+        turn: u32,
+    },
+    TurnStart {
+        turn: u32,
+    },
+    TurnEnd {
+        turn: u32,
+        had_code: bool,
+    },
+    AgentEnd {
+        stop_cause: String,
+    },
+    ToolCall {
+        name: String,
+        args: Value,
+    },
+    ToolResult {
+        name: String,
+        result: String,
+        error: Option<String>,
+    },
+    Input {
+        text: String,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -66,11 +90,23 @@ pub struct LifecycleEvent {
 
 #[derive(Clone, Debug)]
 pub enum EventReturn {
-    SystemPromptMod { append: Option<String>, prepend: Option<String> },
-    MessageInjection { prepend: Vec<(String, String)> },
-    ToolBlock { reason: String },
-    ToolResultOverride { content: String },
-    InputAction { action: InputActionKind, text: Option<String> },
+    SystemPromptMod {
+        append: Option<String>,
+        prepend: Option<String>,
+    },
+    MessageInjection {
+        prepend: Vec<(String, String)>,
+    },
+    ToolBlock {
+        reason: String,
+    },
+    ToolResultOverride {
+        content: String,
+    },
+    InputAction {
+        action: InputActionKind,
+        text: Option<String>,
+    },
 }
 
 #[derive(Clone, Debug)]

@@ -4,8 +4,8 @@ use std::sync::Mutex;
 
 use anyhow::{Result, anyhow};
 use phi_ext::{
-    CommandInvocation, CommandOutput, CommandSpec, EventHandlerRegistration,
-    EventKind, EventPayload, EventReturn, ExtensionManifest, LifecycleEvent, ToolSpec,
+    CommandInvocation, CommandOutput, CommandSpec, EventHandlerRegistration, EventKind,
+    EventPayload, EventReturn, ExtensionManifest, LifecycleEvent, ToolSpec,
 };
 
 use crate::snapshot::{EventHandlerSummary, RuntimeSnapshot, command_summary, tool_summary};
@@ -59,14 +59,20 @@ impl AppRuntime {
 
     // ── System prompt injection ───────────────────────────────────────────────
 
-    pub async fn filter_system_prompt(&self, prompt: &str, system_prompt: String) -> Result<String> {
-        let returns = self.dispatch(LifecycleEvent {
-            kind: EventKind::BeforeAgentStart,
-            payload: EventPayload::BeforeAgentStart {
-                prompt: prompt.to_owned(),
-                system_prompt: system_prompt.clone(),
-            },
-        }).await?;
+    pub async fn filter_system_prompt(
+        &self,
+        prompt: &str,
+        system_prompt: String,
+    ) -> Result<String> {
+        let returns = self
+            .dispatch(LifecycleEvent {
+                kind: EventKind::BeforeAgentStart,
+                payload: EventPayload::BeforeAgentStart {
+                    prompt: prompt.to_owned(),
+                    system_prompt: system_prompt.clone(),
+                },
+            })
+            .await?;
 
         let mut result = system_prompt;
         for r in returns {
@@ -85,18 +91,24 @@ impl AppRuntime {
     // ── Context injection ─────────────────────────────────────────────────────
 
     pub async fn context_injections(&self, turn: u32) -> Result<Vec<(String, String)>> {
-        let returns = self.dispatch(LifecycleEvent {
-            kind: EventKind::Context,
-            payload: EventPayload::Context { turn },
-        }).await?;
+        let returns = self
+            .dispatch(LifecycleEvent {
+                kind: EventKind::Context,
+                payload: EventPayload::Context { turn },
+            })
+            .await?;
 
-        Ok(returns.into_iter().filter_map(|r| {
-            if let EventReturn::MessageInjection { prepend } = r {
-                Some(prepend)
-            } else {
-                None
-            }
-        }).flatten().collect())
+        Ok(returns
+            .into_iter()
+            .filter_map(|r| {
+                if let EventReturn::MessageInjection { prepend } = r {
+                    Some(prepend)
+                } else {
+                    None
+                }
+            })
+            .flatten()
+            .collect())
     }
 
     // ── Lifecycle helpers ─────────────────────────────────────────────────────
@@ -105,7 +117,8 @@ impl AppRuntime {
         self.dispatch(LifecycleEvent {
             kind: EventKind::RuntimeStart,
             payload: EventPayload::Empty,
-        }).await?;
+        })
+        .await?;
         Ok(())
     }
 
@@ -116,7 +129,8 @@ impl AppRuntime {
                 cwd: self.cwd.display().to_string(),
                 session_id: self.session_id.clone(),
             },
-        }).await?;
+        })
+        .await?;
         Ok(())
     }
 
@@ -124,7 +138,8 @@ impl AppRuntime {
         self.dispatch(LifecycleEvent {
             kind: EventKind::SessionShutdown,
             payload: EventPayload::Empty,
-        }).await?;
+        })
+        .await?;
         Ok(())
     }
 
@@ -166,48 +181,67 @@ impl AppRuntime {
             .collect()
     }
 
-    pub async fn invoke_command(&self, name: &str, raw_args: &str) -> Result<Option<CommandOutput>> {
+    pub async fn invoke_command(
+        &self,
+        name: &str,
+        raw_args: &str,
+    ) -> Result<Option<CommandOutput>> {
         let Some(cmd) = self.commands.get(name) else {
             return Ok(None);
         };
         let h = cmd.handler.clone();
         let args = raw_args.to_owned();
-        let output = tokio::task::spawn_blocking(move || h(CommandInvocation { raw_args: args })).await??;
+        let output =
+            tokio::task::spawn_blocking(move || h(CommandInvocation { raw_args: args })).await??;
         Ok(Some(output))
     }
 
     // ── Tool invocation ───────────────────────────────────────────────────────
 
-    pub fn invoke_tool_sync(&self, name: &str, input: &str) -> anyhow::Result<Option<phi_ext::ToolOutput>> {
+    pub fn invoke_tool_sync(
+        &self,
+        name: &str,
+        input: &str,
+    ) -> anyhow::Result<Option<phi_ext::ToolOutput>> {
         let Some(tool) = self.tools.get(name) else {
             return Ok(None);
         };
         let h = tool.handler.clone();
-        let inv = phi_ext::ToolInvocation { input: input.to_owned() };
+        let inv = phi_ext::ToolInvocation {
+            input: input.to_owned(),
+        };
         Ok(Some(h(inv)?))
     }
 
     // ── Tool prelude stubs ────────────────────────────────────────────────────
 
     pub fn extension_prelude_stubs(&self) -> String {
-        self.tools.values().map(|t| {
-            let sig: Vec<String> = t.params.iter().map(|p| {
-                match &p.default {
-                    Some(def) => format!("{}: {} = {}", p.name, p.ty, def),
-                    None      => format!("{}: {}", p.name, p.ty),
-                }
-            }).collect();
-            let dict: Vec<String> = t.params.iter()
-                .map(|p| format!("\"{}\":  {}", p.name, p.name))
-                .collect();
-            format!(
-                "def {}({}) -> str:\n    return __phi_ext_tool__(\"{}\" , {{{}}})",
-                t.name,
-                sig.join(", "),
-                t.name,
-                dict.join(", ")
-            )
-        }).collect::<Vec<_>>().join("\n\n")
+        self.tools
+            .values()
+            .map(|t| {
+                let sig: Vec<String> = t
+                    .params
+                    .iter()
+                    .map(|p| match &p.default {
+                        Some(def) => format!("{}: {} = {}", p.name, p.ty, def),
+                        None => format!("{}: {}", p.name, p.ty),
+                    })
+                    .collect();
+                let dict: Vec<String> = t
+                    .params
+                    .iter()
+                    .map(|p| format!("\"{}\":  {}", p.name, p.name))
+                    .collect();
+                format!(
+                    "def {}({}) -> str:\n    return __phi_ext_tool__(\"{}\" , {{{}}})",
+                    t.name,
+                    sig.join(", "),
+                    t.name,
+                    dict.join(", ")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n")
     }
 
     pub fn tool_specs(&self) -> impl Iterator<Item = &ToolSpec> {

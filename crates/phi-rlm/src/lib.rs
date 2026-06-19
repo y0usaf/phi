@@ -16,9 +16,9 @@ pub use engine::{
     RlmConfig, RlmEvent, RlmSession, StopCause,
 };
 pub use handler::{Completion, DeltaSink, LanguageModel, LmHandler, ThinkingSink, UsageBreakdown};
+pub use loop_detect::LoopDetector;
 pub use parsing::{could_open_block, find_code_blocks, split_at_first_block, split_prose};
 pub use phi_repl::ReplResult;
-pub use loop_detect::LoopDetector;
 pub use provider::ProviderLm;
 pub use turn::{HarnessError, HarnessPhase, TurnState};
 

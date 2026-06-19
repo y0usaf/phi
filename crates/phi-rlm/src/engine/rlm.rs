@@ -214,6 +214,7 @@ impl Rlm {
             run,
             loop_detector: Arc::new(Mutex::new(LoopDetector::new())),
             loop_detected: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            pending_args: Arc::new(Mutex::new(HashMap::new())),
         });
         let (context, context_str) = match payload {
             ContextPayload::Str(s) => (None, Some(s)),

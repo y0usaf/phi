@@ -34,10 +34,10 @@ pub struct Config {
 #[derive(Debug, Default, Clone, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct MemoryConfig {
-    pub enabled:      Option<bool>,
-    pub vault:        Option<String>,   // path to the SQLite DB file
+    pub enabled: Option<bool>,
+    pub vault: Option<String>, // path to the SQLite DB file
     pub recall_limit: Option<usize>,
-    pub auto_inject:  Option<bool>,
+    pub auto_inject: Option<bool>,
 }
 
 /// Settings for mux mode (the in-process session multiplexer).
@@ -76,11 +76,21 @@ impl Config {
         // No-op phi global: config.lua may contain phi.* calls (extension entry point).
         // The real phi global is set up by LuaExtension when loaded as an extension.
         {
-            let noop = lua.create_function(|_, _: mlua::MultiValue| Ok(()))
+            let noop = lua
+                .create_function(|_, _: mlua::MultiValue| Ok(()))
                 .expect("noop fn");
             let phi_table = lua.create_table().expect("phi table");
-            for method in &["on","register_tool","register_command","notify","set_status","clear_status"] {
-                phi_table.set(*method, noop.clone()).expect("set phi method");
+            for method in &[
+                "on",
+                "register_tool",
+                "register_command",
+                "notify",
+                "set_status",
+                "clear_status",
+            ] {
+                phi_table
+                    .set(*method, noop.clone())
+                    .expect("set phi method");
             }
             lua.globals().set("phi", phi_table).expect("set phi global");
         }
@@ -133,10 +143,10 @@ impl Config {
 }
 
 pub struct MemorySettings {
-    pub enabled:      bool,
-    pub vault_path:   std::path::PathBuf,
+    pub enabled: bool,
+    pub vault_path: std::path::PathBuf,
     pub recall_limit: usize,
-    pub auto_inject:  bool,
+    pub auto_inject: bool,
 }
 
 /// Final values after applying CLI flags over config over built-in defaults.
@@ -165,9 +175,11 @@ impl Settings {
             .unwrap_or_else(|| "off".to_owned());
         let memory_cfg = config.memory.as_ref();
         let default_vault = dirs::data_local_dir()
-            .unwrap_or_else(|| std::path::PathBuf::from(
-                std::env::var("HOME").unwrap_or_default() + "/.local/share"
-            ))
+            .unwrap_or_else(|| {
+                std::path::PathBuf::from(
+                    std::env::var("HOME").unwrap_or_default() + "/.local/share",
+                )
+            })
             .join("phi")
             .join("memory.db");
         Self {
@@ -202,12 +214,13 @@ impl Settings {
                 .or(config.max_concurrent_subcalls)
                 .unwrap_or(4),
             memory: MemorySettings {
-                enabled:      memory_cfg.and_then(|m| m.enabled).unwrap_or(true),
-                vault_path:   memory_cfg.and_then(|m| m.vault.as_ref())
-                    .map(|p| std::path::PathBuf::from(p))
+                enabled: memory_cfg.and_then(|m| m.enabled).unwrap_or(true),
+                vault_path: memory_cfg
+                    .and_then(|m| m.vault.as_ref())
+                    .map(std::path::PathBuf::from)
                     .unwrap_or(default_vault),
                 recall_limit: memory_cfg.and_then(|m| m.recall_limit).unwrap_or(5),
-                auto_inject:  memory_cfg.and_then(|m| m.auto_inject).unwrap_or(true),
+                auto_inject: memory_cfg.and_then(|m| m.auto_inject).unwrap_or(true),
             },
         }
     }

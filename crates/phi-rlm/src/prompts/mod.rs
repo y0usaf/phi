@@ -6,9 +6,13 @@
 mod builder;
 mod constants;
 mod metadata;
+
+#[cfg(test)]
 mod tests;
 
-pub use builder::{ContextFile, Skill, SystemPromptOptions, build_system_prompt, build_user_prompt};
+pub use builder::{
+    ContextFile, Skill, SystemPromptOptions, build_system_prompt, build_user_prompt,
+};
 pub use constants::{
     DEFAULT_ANSWER_NUDGE, DEFAULT_IDENTITY, DEFAULT_MECHANICS, DEFAULT_REPL_TOOLS,
     ORCHESTRATOR_ADDENDUM, PROSE_NUDGE, TURN_SCARCITY_NUDGE,

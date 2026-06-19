@@ -3,8 +3,6 @@ use std::collections::HashMap;
 use super::diff::*;
 use super::types::*;
 
-use super::types::*;
-
 impl Transcript {
     pub fn new() -> Self {
         Self::default()

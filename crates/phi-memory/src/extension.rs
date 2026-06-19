@@ -3,14 +3,14 @@ use std::sync::Arc;
 use anyhow::Result;
 use phi_ext::{Extension, ExtensionHost, ExtensionManifest};
 
+use crate::commands;
 use crate::config::MemoryConfig;
+use crate::events;
 use crate::store::MemoryStore;
 use crate::tools;
-use crate::commands;
-use crate::events;
 
 pub struct MemoryExtension {
-    store:  Arc<MemoryStore>,
+    store: Arc<MemoryStore>,
     config: MemoryConfig,
 }
 
@@ -69,5 +69,3 @@ impl Extension for MemoryExtension {
         Ok(())
     }
 }
-
-
