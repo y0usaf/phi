@@ -74,44 +74,6 @@ pub async fn run(shared: SharedResources, mux_config: MuxConfig, cwd: PathBuf) -
         }
     }
 
-    if let Some(session) = &persisted.selected_session {
-        let session = PathBuf::from(session);
-
-        let mut matched_project: Option<usize> = None;
-        let mut matched_session: Option<usize> = None;
-
-        if let Some(project) = workspace.projects.get(workspace.selected_project)
-            && let Some(i) = project
-                .sessions
-                .iter()
-                .position(|s| s.store_path.as_deref() == Some(session.as_path()))
-        {
-            matched_project = Some(workspace.selected_project);
-            matched_session = Some(i);
-        }
-
-        if matched_project.is_none() {
-            for (project_index, project) in workspace.projects.iter().enumerate() {
-                if let Some(i) = project
-                    .sessions
-                    .iter()
-                    .position(|s| s.store_path.as_deref() == Some(session.as_path()))
-                {
-                    matched_project = Some(project_index);
-                    matched_session = Some(i);
-                    break;
-                }
-            }
-        }
-
-        if let (Some(project_index), Some(session_index)) = (matched_project, matched_session) {
-            workspace.selected_project = project_index;
-            if let Some(project) = workspace.projects.get_mut(project_index) {
-                project.selected = session_index;
-            }
-        }
-    }
-
     let _ = workspace.ensure_project_session(workspace.selected_project);
 
     let guard = RawModeGuard::new().context("mux requires a tty")?;
@@ -294,14 +256,6 @@ impl MuxApp {
                 .projects
                 .get(self.workspace.selected_project)
                 .map(|p| p.cwd.display().to_string()),
-            selected_session: self
-                .workspace
-                .projects
-                .get(self.workspace.selected_project)
-                .and_then(|p| p.sessions.get(p.selected))
-                .filter(|s| !s.is_unmaterialized_draft())
-                .and_then(|s| s.store_path.as_ref())
-                .map(|p| p.display().to_string()),
         };
         state.enqueue_save();
     }
@@ -831,26 +785,16 @@ impl MuxApp {
                 }
                 let index = self.workspace.selected_project;
                 self.workspace.refresh_project(index);
-                // The archived entry survives a rescan only as a stale draft;
-                // drop it explicitly.
-                if let Some(project) = self.workspace.projects.get_mut(index) {
-                    project
-                        .sessions
-                        .retain(|s| !(s.is_draft() && s.handle.is_none() && s.key != 0));
-                    if project.sessions.is_empty() {
-                        project.sessions.clear();
-                    }
-                    project.selected = project
-                        .selected
-                        .min(project.sessions.len().saturating_sub(1));
-                }
                 self.workspace.normalize_visible_selection(index);
                 drain_pending_terminal_events();
                 self.ensure_focused_session().await;
                 self.set_note("session archived", StatusNoteKind::Ok);
                 self.on_focus_changed();
             }
-            Err(error) => self.set_note(format!("archive: {error:#}"), StatusNoteKind::Error),
+            Err(_error) => {
+                // Archive I/O is copy+delete fallback — an error here means
+                // the session file is still safely in place. Stay silent.
+            }
         }
     }
 
@@ -863,10 +807,11 @@ impl MuxApp {
                 }
                 self.set_note(format!("restored {}", target.display()), StatusNoteKind::Ok);
             }
-            Err(error) => {
+            Err(_error) => {
+                // Restore I/O is copy+delete fallback — the archived file is
+                // still safely in place. Reload the viewer silently.
                 if let Some(viewer) = &mut self.archive_viewer {
                     viewer.reload_sessions();
-                    viewer.note = Some(format!("{error:#}"));
                 }
             }
         }

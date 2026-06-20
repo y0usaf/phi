@@ -1,5 +1,5 @@
 //! Integration tests for phi-harness: queues, loop detection, hooks,
-//! observability, and durable recovery.
+//! observability, and session log recovery.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -11,8 +11,9 @@ use phi_harness::{
     trace_operation,
 };
 use phi_rlm::LoopDetector;
-use phi_session::durable::{DurableEntry, OperationKind, RecoveryReducer, reduce_log};
+use phi_session::session::SessionStore;
 use serde_json::json;
+use tempfile::tempdir;
 
 // ── Queue tests ─────────────────────────────────────────────────────────────
 
@@ -79,38 +80,52 @@ async fn queue_mode_setters() {
 
 #[test]
 fn loop_detector_no_repeat() {
-    let mut det = LoopDetector::new();
-    let args = json!({"key": "value"});
+    // Three distinct steps (different results) should never trigger.
+    let mut det = LoopDetector::with_params(10, 5);
     for i in 0..3 {
-        let result = format!("result_{i}");
-        assert!(det.observe("bash", &args, &result).is_none());
+        det.observe_call("bash", &json!({"key": "value"}), &format!("result_{i}"));
+        assert!(det.finalize_step().is_none());
     }
 }
 
 #[test]
 fn loop_detector_triggers_on_repeat() {
+    // max_repeats=3, threshold is exclusive (> 3), so 4th identical step triggers
+    // once the window has 10 steps.
     let mut det = LoopDetector::with_params(10, 3);
     let args = json!({"cmd": "ls"});
     let result = "same output";
 
-    // max_repeats=3, threshold is exclusive (> 3), so 4th identical call triggers.
-    for _ in 0..3 {
-        assert!(det.observe("bash", &args, result).is_none());
+    // Push 6 identical steps (window too small to fire yet).
+    for _ in 0..6 {
+        det.observe_call("bash", &args, result);
+        assert!(det.finalize_step().is_none());
     }
-    assert!(det.observe("bash", &args, result).is_some());
+    // Fill window with 3 distinct steps to reach 9 total (still < window).
+    for i in 0..3 {
+        det.observe_call("tool", &args, &format!("out_{i}"));
+        assert!(det.finalize_step().is_none());
+    }
+    // 10th step is the 7th identical -> window full, count=7 > 3 -> detected.
+    det.observe_call("bash", &args, result);
+    assert!(det.finalize_step().is_some());
 }
 
 #[test]
 fn loop_detector_window_evicts_old_signatures() {
-    let mut det = LoopDetector::with_params(3, 5); // small window
+    // With a small window (3), old entries scroll out. 5 distinct steps + 1
+    // repeat of step 0 means only 3 in window at detection time, and the
+    // repeat is not among them.
+    let mut det = LoopDetector::with_params(3, 5);
     let args = json!(null);
 
-    // Fill window with unique signatures.
     for i in 0..5 {
-        assert!(det.observe("tool", &args, &format!("out_{i}")).is_none());
+        det.observe_call("tool", &args, &format!("out_{i}"));
+        assert!(det.finalize_step().is_none());
     }
-    // Old entries evicted; repeating "out_0" shouldn't loop.
-    assert!(det.observe("tool", &args, "out_0").is_none());
+    // "out_0" has scrolled out of the window; repeating it shouldn't loop.
+    det.observe_call("tool", &args, "out_0");
+    assert!(det.finalize_step().is_none());
 }
 
 #[test]
@@ -118,11 +133,13 @@ fn loop_detector_reset() {
     let mut det = LoopDetector::with_params(5, 2);
     let args = json!(null);
     for _ in 0..3 {
-        let _ = det.observe("t", &args, "r");
+        det.observe_call("t", &args, "r");
     }
+    let _ = det.finalize_step();
     det.reset();
-    // After reset, same call shouldn't immediately trigger.
-    assert!(det.observe("t", &args, "r").is_none());
+    // After reset, history is empty; same call shouldn't trigger.
+    det.observe_call("t", &args, "r");
+    assert!(det.finalize_step().is_none());
 }
 
 // ── Hooks tests ─────────────────────────────────────────────────────────────
@@ -335,175 +352,46 @@ fn safe_payload_redacts_unsafe_keys() {
     assert!(!obj.contains_key("prompt"));
     assert!(!obj.contains_key("api_key"));
 }
-
-// ── Durable recovery tests ──────────────────────────────────────────────────
+// ── Session log recovery tests ──────────────────────────────────────────────
+//
+// The durable layer was pruned: the session log's own tolerant reader
+// (SessionStore::load) already handles unknown types, malformed lines, and
+// leaf reduction. These tests verify those properties through the session
+// store directly, not through a separate reducer.
 
 #[test]
-fn recovery_reducer_unfinished_operation() {
-    let mut reducer = RecoveryReducer::new();
-    let start = serde_json::to_string(&DurableEntry::OperationStart {
-        id: "op1".to_owned(),
-        timestamp: "2024-01-01T00:00:00Z".to_owned(),
-        operation: OperationKind::Prompt,
-        session_id: "s1".to_owned(),
-    })
-    .unwrap();
-    reducer.process(&start);
-
-    let turn = serde_json::to_string(&DurableEntry::TurnStart {
-        id: "t1".to_owned(),
-        timestamp: "2024-01-01T00:00:01Z".to_owned(),
-        operation_id: "op1".to_owned(),
-        iteration: 1,
-        consumed_queue_ids: vec![],
-    })
-    .unwrap();
-    reducer.process(&turn);
-
-    let report = reducer.finalize();
-    assert!(report.unfinished_operation.is_some());
-    let uo = report.unfinished_operation.unwrap();
-    assert_eq!(uo.operation_id, "op1");
-    assert_eq!(uo.kind, OperationKind::Prompt);
-    assert_eq!(uo.last_completed_turn, Some(1));
+fn session_log_tolerates_unknown_entry_types() {
+    // Unknown types (e.g. operation_start from an older log) are skipped
+    // by the tolerant reader, not errors. The leaf falls back to the last
+    // valid message entry.
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("test.jsonl");
+    let log = r#"{"type":"session","id":"s1","timestamp":"2024-01-01T00:00:00Z","cwd":"/tmp"}
+{"type":"operation_start","id":"op-1","operation":"prompt"}
+{"type":"message","id":"msg-1","parent_id":null,"timestamp":"2024-01-01T00:00:00Z","role":"user","text":"hello"}
+{"type":"queue_enqueued","id":"q1","queue":"steer","text":"go left"}
+{"type":"leaf","id":"msg-1"}
+"#;
+    std::fs::write(&path, log).unwrap();
+    let store = SessionStore::load(&path).unwrap();
+    assert_eq!(store.leaf(), Some("msg-1"));
 }
 
 #[test]
-fn recovery_reducer_finished_operation_clears_unfinished() {
-    let text = format!(
-        "{}\n{}",
-        serde_json::to_string(&DurableEntry::OperationStart {
-            id: "op1".to_owned(),
-            timestamp: "t".to_owned(),
-            operation: OperationKind::Prompt,
-            session_id: "s".to_owned(),
-        })
-        .unwrap(),
-        serde_json::to_string(&DurableEntry::OperationFinish {
-            id: "f1".to_owned(),
-            timestamp: "t".to_owned(),
-            operation_id: "op1".to_owned(),
-            stop_cause: Some("Answer".to_owned()),
-        })
-        .unwrap()
-    );
-    let report = reduce_log(&text);
-    assert!(report.unfinished_operation.is_none());
-}
+fn session_log_tolerates_malformed_lines() {
+    // Malformed lines are skipped; the leaf falls back to the last valid
+    // message entry when the leaf record points at a nonexistent id.
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("test.jsonl");
+    let log = r#"{"type":"session","id":"s1","timestamp":"2024-01-01T00:00:00Z","cwd":"/tmp"}
+not json at all
+{}
 
-#[test]
-fn recovery_reducer_restores_unconsumed_queue_messages() {
-    let text = format!(
-        "{}\n{}",
-        serde_json::to_string(&DurableEntry::QueueEnqueued {
-            id: "q1".to_owned(),
-            timestamp: "t".to_owned(),
-            queue: "steer".to_owned(),
-            text: "go left".to_owned(),
-        })
-        .unwrap(),
-        serde_json::to_string(&DurableEntry::QueueEnqueued {
-            id: "q2".to_owned(),
-            timestamp: "t".to_owned(),
-            queue: "next_turn".to_owned(),
-            text: "next msg".to_owned(),
-        })
-        .unwrap()
-    );
-    let report = reduce_log(&text);
-    assert_eq!(report.restored_queue_messages.len(), 2);
-    assert_eq!(report.restored_queue_messages[0].text, "go left");
-    assert_eq!(report.restored_queue_messages[1].source, "next_turn");
-}
-
-#[test]
-fn recovery_reducer_consumed_queue_removed() {
-    let text = format!(
-        "{}\n{}\n{}",
-        serde_json::to_string(&DurableEntry::QueueEnqueued {
-            id: "q1".to_owned(),
-            timestamp: "t".to_owned(),
-            queue: "steer".to_owned(),
-            text: "consumed msg".to_owned(),
-        })
-        .unwrap(),
-        serde_json::to_string(&DurableEntry::QueueConsumed {
-            id: "c1".to_owned(),
-            timestamp: "t".to_owned(),
-            queue_message_id: "q1".to_owned(),
-            turn_id: "t1".to_owned(),
-        })
-        .unwrap(),
-        serde_json::to_string(&DurableEntry::QueueEnqueued {
-            id: "q2".to_owned(),
-            timestamp: "t".to_owned(),
-            queue: "follow_up".to_owned(),
-            text: "unconsumed".to_owned(),
-        })
-        .unwrap()
-    );
-    let report = reduce_log(&text);
-    assert_eq!(report.restored_queue_messages.len(), 1);
-    assert_eq!(report.restored_queue_messages[0].id, "q2");
-}
-
-#[test]
-fn recovery_reducer_pending_writes() {
-    let text = serde_json::to_string(&DurableEntry::PendingWriteEnqueued {
-        id: "pw1".to_owned(),
-        timestamp: "t".to_owned(),
-        entry_type: "message".to_owned(),
-        entry_data: json!({"text": "deferred"}),
-    })
-    .unwrap();
-    let report = reduce_log(&text);
-    assert_eq!(report.pending_writes.len(), 1);
-    assert_eq!(report.pending_writes[0].id, "pw1");
-    assert_eq!(report.pending_writes[0].entry_type, "message");
-}
-
-#[test]
-fn recovery_reducer_pending_write_applied_removes_entry() {
-    let text = format!(
-        "{}\n{}",
-        serde_json::to_string(&DurableEntry::PendingWriteEnqueued {
-            id: "pw1".to_owned(),
-            timestamp: "t".to_owned(),
-            entry_type: "message".to_owned(),
-            entry_data: json!({"text": "deferred"}),
-        })
-        .unwrap(),
-        serde_json::to_string(&DurableEntry::PendingWriteApplied {
-            id: "pwa1".to_owned(),
-            timestamp: "t".to_owned(),
-            pending_write_id: "pw1".to_owned(),
-            target_entry_id: "e1".to_owned(),
-        })
-        .unwrap()
-    );
-    let report = reduce_log(&text);
-    assert!(report.pending_writes.is_empty());
-}
-
-#[test]
-fn recovery_reducer_skips_malformed_lines() {
-    let text = "not json\n{}\n\n";
-    let report = reduce_log(text);
-    assert!(report.restored_queue_messages.is_empty());
-    assert!(report.pending_writes.is_empty());
-    assert!(report.unfinished_operation.is_none());
-}
-
-#[test]
-fn recovery_reducer_tool_call_records_active_tools() {
-    let text = serde_json::to_string(&DurableEntry::ToolCallStart {
-        id: "tc1".to_owned(),
-        timestamp: "t".to_owned(),
-        turn_id: "t1".to_owned(),
-        tool_name: "bash".to_owned(),
-        args_preview: "ls".to_owned(),
-    })
-    .unwrap();
-    let report = reduce_log(&text);
-    assert_eq!(report.active_tools.unwrap().len(), 1);
+{"type":"message","id":"msg-1","parent_id":null,"timestamp":"2024-01-01T00:00:00Z","role":"assistant","text":"hi"}
+{"type":"leaf","id":"nonexistent"}
+"#;
+    std::fs::write(&path, log).unwrap();
+    let store = SessionStore::load(&path).unwrap();
+    // Leaf points at nonexistent id -> falls back to last message.
+    assert_eq!(store.leaf(), Some("msg-1"));
 }

@@ -6,7 +6,6 @@
 //! whether or not it runs under the mux.
 
 pub mod config;
-pub mod durable;
 pub mod files;
 pub mod prompts;
 pub mod session;

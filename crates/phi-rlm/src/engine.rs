@@ -301,10 +301,9 @@ struct EngineSubcalls {
     rlm: Rlm,
     handler: Arc<LmHandler>,
     run: RunState,
-    /// Loop detector shared with `run_loop` so tool calls are observed.
+    /// Loop detector shared with `run_loop` so tool calls are buffered per
+    /// step and finalized at each iteration boundary.
     loop_detector: Arc<Mutex<LoopDetector>>,
-    /// Set by `notify_tool` when a loop is detected; checked by `run_loop`.
-    loop_detected: Arc<std::sync::atomic::AtomicBool>,
     /// Pending tool-call args keyed by `call_id`, captured from
     /// `ToolEvent::Start` and consumed by `ToolEvent::End` for signatures.
     pending_args: Arc<Mutex<HashMap<u64, Value>>>,
@@ -461,7 +460,10 @@ impl SubcallHandler for EngineSubcalls {
             });
             return;
         }
-        // Observe tool-call signatures for loop detection on ToolEnd.
+        // Buffer tool-call signatures for loop detection on ToolEnd.
+        // Per-step (not per-call): the aggregate is finalized by
+        // `LoopDetector::finalize_step`, invoked from `run_loop` at each
+        // iteration boundary.
         if let ToolEvent::End {
             call_id,
             name,
@@ -470,22 +472,17 @@ impl SubcallHandler for EngineSubcalls {
             duration,
         } = &event
         {
-            // Retrieve args captured from the matching ToolEvent::Start.
             let args_val = self
                 .pending_args
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .remove(call_id)
                 .unwrap_or(serde_json::Value::Null);
-            if let Some(stop) = self
+            self
                 .loop_detector
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
-                .observe(name, &args_val, result)
-                && stop == StopCause::LoopDetected {
-                    self.loop_detected
-                        .store(true, std::sync::atomic::Ordering::Relaxed);
-                }
+                .observe_call(name, &args_val, result);
             self.rlm.events.emit(RlmEvent::ToolEnd {
                 depth,
                 call_id: *call_id,
@@ -633,6 +630,7 @@ impl Rlm {
             compaction_archive: Vec::new(),
             pending_shell: Vec::new(),
             loop_detected: None,
+            loop_detector: None,
         }
     }
 
@@ -685,7 +683,7 @@ impl Rlm {
         let metadata = QueryMetadata::from_payload(&payload);
         let root_prompt_str = root_prompt.unwrap_or("").to_owned();
         let outcome = match self.start_env(&handler, payload, run).await {
-            Ok((mut env, loop_detected)) => {
+            Ok((mut env, loop_detected, loop_detector)) => {
                 // Use snapshot history if provided, else build from config.
                 let mut history = if let Some(turn) = turn {
                     if !turn.messages.is_empty() {
@@ -713,6 +711,7 @@ impl Rlm {
                         false,
                         cancel,
                         Some(&loop_detected),
+                        Some(&loop_detector),
                         None,
                     )
                     .await;
@@ -729,14 +728,21 @@ impl Rlm {
         handler: &Arc<LmHandler>,
         payload: ContextPayload,
         run: RunState,
-    ) -> Result<(Box<dyn ReplEnv>, Arc<std::sync::atomic::AtomicBool>), String> {
+    ) -> Result<
+        (
+            Box<dyn ReplEnv>,
+            Arc<std::sync::atomic::AtomicBool>,
+            Arc<Mutex<LoopDetector>>,
+        ),
+        String,
+    > {
         let loop_detected = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let loop_detector = Arc::new(Mutex::new(LoopDetector::new()));
         let subcalls = Arc::new(EngineSubcalls {
             rlm: self.clone(),
             handler: handler.clone(),
             run,
-            loop_detector: Arc::new(Mutex::new(LoopDetector::new())),
-            loop_detected: loop_detected.clone(),
+            loop_detector: loop_detector.clone(),
             pending_args: Arc::new(Mutex::new(HashMap::new())),
         });
         let (context, context_str) = match payload {
@@ -756,7 +762,7 @@ impl Rlm {
         env.start(setup)
             .await
             .map_err(|e| format!("Error: failed to start REPL environment - {e}"))?;
-        Ok((env, loop_detected))
+        Ok((env, loop_detected, loop_detector))
     }
 
     fn initial_history(
@@ -803,6 +809,7 @@ impl Rlm {
         warm: bool,
         cancel: &CancellationToken,
         loop_detected: Option<&std::sync::atomic::AtomicBool>,
+        loop_detector: Option<&Arc<Mutex<LoopDetector>>>,
         save_point: Option<&SavePointFn>,
     ) -> Outcome {
         let start = Instant::now();
@@ -1163,6 +1170,23 @@ impl Rlm {
                 }
             }
 
+            // Loop detection: finalize the per-step aggregate signature
+            // (buffered by `notify_tool`) and check the repeat window over
+            // the last `window_size` steps, matching Crush's
+            // `hasRepeatedToolCalls`. Empty (text-only) steps produce no
+            // signature and are skipped. If a loop is detected, set the
+            // shared flag so the run terminates.
+            if let Some(detector) = loop_detector
+                && let Some(stop) = detector
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .finalize_step()
+                && stop == StopCause::LoopDetected {
+                    if let Some(flag) = loop_detected {
+                        flag.store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
+                }
+
             // Loop detection: if the shared flag is set, terminate.
             if let Some(flag) = loop_detected
                 && flag.load(std::sync::atomic::Ordering::Relaxed) {
@@ -1488,6 +1512,10 @@ pub struct RlmSession {
     /// it each iteration to break out of infinite loops). Populated by
     /// `ensure_env` alongside the env.
     loop_detected: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// Per-step loop detector shared between `EngineSubcalls` (which buffers
+    /// tool calls) and `run_loop` (which finalizes each step). Populated by
+    /// `ensure_env` alongside the env.
+    loop_detector: Option<Arc<Mutex<LoopDetector>>>,
 }
 
 /// Threshold: once the in-band transcript exceeds this many message pairs,
@@ -1605,6 +1633,7 @@ impl RlmSession {
                 warm,
                 cancel,
                 self.loop_detected.as_deref(),
+                self.loop_detector.as_ref(),
                 None,
             )
             .await;
@@ -1688,12 +1717,13 @@ impl RlmSession {
 
     async fn ensure_env(&mut self) -> Result<(), String> {
         if self.env.is_none() {
-            let (env, loop_detected) = self
+            let (env, loop_detected, loop_detector) = self
                 .rlm
                 .start_env(&self.handler, self.payload.clone(), self.run.clone())
                 .await?;
             self.env = Some(env);
             self.loop_detected = Some(loop_detected);
+            self.loop_detector = Some(loop_detector);
         }
         Ok(())
     }
@@ -1770,6 +1800,7 @@ impl RlmSession {
         self.compaction_archive.clear();
         self.pending_shell.clear();
         self.loop_detected = None;
+        self.loop_detector = None;
     }
 
     /// Compact the in-band transcript when it exceeds the threshold. The

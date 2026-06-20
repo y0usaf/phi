@@ -3,7 +3,6 @@
 //! on-disk session store; embedded handles are attached lazily when a
 //! session is first focused.
 
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
@@ -66,26 +65,6 @@ impl Workspace {
             ws.add_project(cwd);
         }
         ws
-    }
-
-    /// Discover all live (non-archived) session files on disk, grouped by
-    /// their recorded cwd. If there are no live sessions at all, fall back
-    /// to the startup cwd so mux can create the first draft.
-    pub fn discover_all(fallback_cwd: &Path) -> Self {
-        Self::discover_all_with_projects(fallback_cwd, std::iter::empty())
-    }
-
-    /// Like `discover_all`, but also keeps explicitly-open project
-    /// directories even when they do not yet have any live sessions.
-    pub fn discover_all_with_projects(
-        fallback_cwd: &Path,
-        open_projects: impl IntoIterator<Item = PathBuf>,
-    ) -> Self {
-        discover_all_with_projects_in(
-            session::sessions_root().ok().as_deref(),
-            fallback_cwd,
-            open_projects,
-        )
     }
 
     fn next_key(&mut self) -> SessionKey {
@@ -169,10 +148,13 @@ impl Workspace {
             }
         }
         // Keep drafts and anything with a live handle (e.g. a session whose
-        // file was archived while running).
+        // file was archived while running). A stale draft — no file, no live
+        // handle — means the session was archived or its file was removed
+        // externally, so drop it on refresh. The key-0 unmaterialized draft
+        // is retained so `new_draft` can reuse it.
         fresh.extend(
             old.into_iter()
-                .filter(|s| s.is_draft() || s.handle.is_some()),
+                .filter(|s| s.handle.is_some() || (s.is_draft() && s.key == 0)),
         );
         for s in &mut fresh {
             if s.key == 0 {
@@ -351,96 +333,6 @@ impl Workspace {
     }
 }
 
-fn discover_all_in(sessions_root: Option<&Path>, fallback_cwd: &Path) -> Workspace {
-    let mut grouped: BTreeMap<PathBuf, Vec<MuxSession>> = BTreeMap::new();
-
-    if let Some(root) = sessions_root
-        && let Ok(project_dirs) = std::fs::read_dir(root)
-    {
-        for project_dir in project_dirs.flatten() {
-            let path = project_dir.path();
-            if !path.is_dir() || path.file_name().is_some_and(|name| name == "ARCHIVE") {
-                continue;
-            }
-            let Ok(session_files) = std::fs::read_dir(&path) else {
-                continue;
-            };
-            for entry in session_files.flatten() {
-                let path = entry.path();
-                if path.extension().is_none_or(|ext| ext != "jsonl") {
-                    continue;
-                }
-                let Ok(store) = SessionStore::load(&path) else {
-                    continue;
-                };
-                let modified = entry.metadata().ok().and_then(|m| m.modified().ok());
-                let first_message = store
-                    .user_messages()
-                    .first()
-                    .map(|m| m.text.clone())
-                    .unwrap_or_default();
-                grouped
-                    .entry(PathBuf::from(store.cwd()))
-                    .or_default()
-                    .push(MuxSession {
-                        key: 0,
-                        store_path: Some(path),
-                        first_message,
-                        modified,
-                        status: SessionStatus::Idle,
-                        handle: None,
-                    });
-            }
-        }
-    }
-
-    let mut ws = Workspace::empty();
-    ws.projects = grouped
-        .into_iter()
-        .map(|(cwd, mut sessions)| {
-            sessions.sort_by_key(|session| std::cmp::Reverse(session.modified));
-            MuxProject {
-                cwd,
-                sessions,
-                selected: 0,
-            }
-        })
-        .collect();
-
-    ws.projects.sort_by(|a, b| {
-        let a_latest = a.sessions.first().and_then(|s| s.modified);
-        let b_latest = b.sessions.first().and_then(|s| s.modified);
-        b_latest.cmp(&a_latest).then_with(|| a.cwd.cmp(&b.cwd))
-    });
-
-    let mut next_key: SessionKey = 0;
-    for project in &mut ws.projects {
-        for session in &mut project.sessions {
-            next_key += 1;
-            session.key = next_key;
-        }
-    }
-    ws.next_key = next_key;
-
-    if ws.projects.is_empty() {
-        ws.add_project(fallback_cwd.to_path_buf());
-    }
-
-    ws
-}
-
-fn discover_all_with_projects_in(
-    sessions_root: Option<&Path>,
-    fallback_cwd: &Path,
-    open_projects: impl IntoIterator<Item = PathBuf>,
-) -> Workspace {
-    let mut ws = discover_all_in(sessions_root, fallback_cwd);
-    for cwd in open_projects {
-        ws.add_project(cwd);
-    }
-    ws
-}
-
 /// An archived session file, for the archive overlay.
 #[derive(Clone, Debug)]
 pub struct ArchivedSession {
@@ -472,7 +364,7 @@ fn archive_into(archive: &Path, path: &Path) -> Result<PathBuf> {
         .to_string_lossy();
     std::fs::create_dir_all(archive)?;
     let target = archive.join(format!("{dir_name}{file_name}"));
-    std::fs::rename(path, &target)
+    rename_or_copy_delete(path, &target)
         .with_context(|| format!("archiving {} -> {}", path.display(), target.display()))?;
     Ok(target)
 }
@@ -489,9 +381,25 @@ fn restore_into(sessions_root: &Path, archived: &Path) -> Result<PathBuf> {
     let dir = sessions_root.join(session::flatten_cwd(&cwd));
     std::fs::create_dir_all(&dir)?;
     let target = dir.join(format!("{}.jsonl", store.id()));
-    std::fs::rename(archived, &target)
+    rename_or_copy_delete(archived, &target)
         .with_context(|| format!("restoring {} -> {}", archived.display(), target.display()))?;
     Ok(target)
+}
+
+/// Move `src` to `target`; fall back to copy+delete when rename fails
+/// (e.g. cross-device EXDEV), so the source survives only after the
+/// destination is fully written.
+fn rename_or_copy_delete(src: &Path, target: &Path) -> Result<()> {
+    match std::fs::rename(src, target) {
+        Ok(()) => Ok(()),
+        Err(_) => {
+            std::fs::copy(src, target)
+                .with_context(|| format!("copying {} -> {}", src.display(), target.display()))?;
+            std::fs::remove_file(src)
+                .with_context(|| format!("removing source {}", src.display()))?;
+            Ok(())
+        }
+    }
 }
 
 /// Archived sessions, newest first.
@@ -642,6 +550,22 @@ mod tests {
     }
 
     #[test]
+    fn refresh_project_drops_stale_draft_after_archive() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut ws = Workspace::discover(vec![tmp.path().to_path_buf()]);
+        // Simulate a session whose file was archived: no store_path, no handle.
+        ws.projects[0].sessions = vec![test_session(1, None, "archived")];
+        assert!(ws.projects[0].sessions[0].is_draft());
+
+        // Ctrl+R / refresh should drop the stale draft — its file is gone.
+        ws.refresh_project(0);
+        assert!(
+            ws.projects[0].sessions.is_empty(),
+            "stale draft should be dropped on refresh"
+        );
+    }
+
+    #[test]
     fn discard_unmaterialized_draft_removes_selected_draft() {
         let tmp = tempfile::tempdir().unwrap();
         let mut ws = Workspace::discover(vec![tmp.path().to_path_buf()]);
@@ -751,79 +675,5 @@ mod tests {
         assert_eq!(ws.projects.len(), 1);
         ws.remove_project(0);
         assert!(ws.projects.is_empty());
-    }
-
-    #[test]
-    fn discover_all_groups_live_sessions_and_skips_archive() {
-        let tmp = tempfile::tempdir().unwrap();
-        let sessions_root = tmp.path().join("sessions");
-        let a = tmp.path().join("a");
-        let b = tmp.path().join("b");
-        std::fs::create_dir_all(&a).unwrap();
-        std::fs::create_dir_all(&b).unwrap();
-
-        let a1 = write_session(&sessions_root, &a, &["a1", "x"]);
-        let _a2 = write_session(&sessions_root, &a, &["a2", "y"]);
-        let b1 = write_session(&sessions_root, &b, &["b1", "z"]);
-        let archive = sessions_root.join("ARCHIVE");
-        let _archived = archive_into(&archive, &b1).unwrap();
-
-        let ws = discover_all_in(Some(&sessions_root), tmp.path());
-        assert_eq!(ws.projects.len(), 1);
-        assert_eq!(ws.projects[0].cwd, a);
-        assert_eq!(ws.projects[0].sessions.len(), 2);
-        assert!(
-            ws.projects[0]
-                .sessions
-                .iter()
-                .all(|s| s.store_path.as_ref() != Some(&b1))
-        );
-        assert!(
-            ws.projects[0]
-                .sessions
-                .iter()
-                .any(|s| s.store_path.as_ref() == Some(&a1))
-        );
-    }
-
-    #[test]
-    fn discover_all_falls_back_to_startup_cwd_when_empty() {
-        let tmp = tempfile::tempdir().unwrap();
-        let fallback = tmp.path().join("proj");
-        let ws = discover_all_in(Some(&tmp.path().join("sessions")), &fallback);
-        assert_eq!(ws.projects.len(), 1);
-        assert_eq!(ws.projects[0].cwd, fallback);
-        assert!(ws.projects[0].sessions.is_empty());
-    }
-
-    #[test]
-    fn discover_all_with_projects_keeps_explicit_empty_projects() {
-        let tmp = tempfile::tempdir().unwrap();
-        let sessions_root = tmp.path().join("sessions");
-        let live = tmp.path().join("live");
-        let empty = tmp.path().join("empty");
-        std::fs::create_dir_all(&live).unwrap();
-        std::fs::create_dir_all(&empty).unwrap();
-
-        let live_path = write_session(&sessions_root, &live, &["hello", "world"]);
-        let ws = discover_all_with_projects_in(
-            Some(&sessions_root),
-            tmp.path(),
-            vec![empty.clone(), live.clone()],
-        );
-
-        assert_eq!(ws.projects.len(), 2);
-        assert!(ws.projects.iter().any(|project| {
-            project.cwd == live
-                && project
-                    .sessions
-                    .iter()
-                    .any(|session| session.store_path.as_ref() == Some(&live_path))
-        }));
-        assert!(
-            ws.projects
-                .iter()
-                .any(|project| project.cwd == empty && project.sessions.is_empty())
-        );
     }
 }

@@ -1,7 +1,7 @@
 //! Phi Harness: the orchestration layer between [`phi_rlm`] and the frontends.
 //!
 //! Owns the phase state machine, turn snapshots, save points, queues, hooks,
-//! loop detection, observability, and durable operation recovery.
+//! loop detection, observability, and hooks.
 
 pub mod error;
 pub mod hooks;
@@ -32,7 +32,6 @@ use phi_ai::ThinkingLevel;
 use phi_ext::ToolSpec;
 use phi_rlm::{ContextPayload, LanguageModel, LoopDetector, Rlm, RlmCompletion, RlmConfig};
 use phi_runtime::AppRuntime;
-use phi_session::durable::{self, DurableEntry, OperationKind};
 use phi_session::session::SessionStore;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::{Mutex, RwLock};
@@ -115,7 +114,7 @@ impl PhiHarness {
         self
     }
 
-    /// Attach a session for durability / recovery.
+    /// Attach a session for persistence.
     pub fn with_session(mut self, session: SessionStore) -> Self {
         self.session = Mutex::new(Some(session));
         self
@@ -235,9 +234,6 @@ impl PhiHarness {
             })
             .await;
 
-        // 7. Write durable entries if a session is attached.
-        self.write_operation_finish(&completion).await;
-
         *self.cancel.lock().await = None;
         *self.phase.lock().await = HarnessPhase::Idle;
 
@@ -250,7 +246,6 @@ impl PhiHarness {
             token.cancel();
         }
         self.queues.clear_runtime_queues().await;
-        self.write_operation_interrupted("abort").await;
         Ok(())
     }
 
@@ -275,11 +270,9 @@ impl PhiHarness {
         }
         let _g = Guard(self);
 
-        self.write_operation_start(OperationKind::Compaction).await;
         // Compaction is delegated to the session layer; the harness just
-        // manages the phase transition and durable entry. The session's
-        // own compaction threshold handles the actual summarization.
-        self.write_operation_finish_durable().await;
+        // manages the phase transition. The session's own compaction
+        // threshold handles the actual summarization.
         Ok(())
     }
 
@@ -302,14 +295,10 @@ impl PhiHarness {
         }
         let _g = Guard(self);
 
-        self.write_operation_start(OperationKind::TreeNavigation)
-            .await;
         let mut guard = self.session.lock().await;
         if let Some(session) = guard.as_mut() {
             session.set_leaf(Some(leaf_id.to_owned())).map_err(HarnessError::Session)?;
         }
-        drop(guard);
-        self.write_operation_finish_durable().await;
         Ok(())
     }
 
@@ -317,17 +306,14 @@ impl PhiHarness {
 
     pub async fn steer(&self, text: &str) -> Result<String, HarnessError> {
         let id = self.queues.enqueue_steer(text).await;
-        self.write_queue_enqueued("steer", &id, text).await;
         Ok(id)
     }
     pub async fn follow_up(&self, text: &str) -> Result<String, HarnessError> {
         let id = self.queues.enqueue_follow_up(text).await;
-        self.write_queue_enqueued("follow_up", &id, text).await;
         Ok(id)
     }
     pub async fn next_turn(&self, text: &str) -> Result<String, HarnessError> {
         let id = self.queues.enqueue_next_turn(text).await;
-        self.write_queue_enqueued("next_turn", &id, text).await;
         Ok(id)
     }
 
@@ -347,144 +333,4 @@ impl PhiHarness {
         cfg.active_tools = active;
     }
 
-    // ── Recovery ────────────────────────────────────────────────────────────
-
-    /// Reconstruct harness state from the session log.
-    pub async fn recover(&self) -> Result<phi_session::durable::RecoveryReport, HarnessError> {
-        let guard = self.session.lock().await;
-        let Some(session) = guard.as_ref() else {
-            return Ok(phi_session::durable::RecoveryReport::default());
-        };
-        // Read the raw log text from the session file.
-        let path = session.path().to_path_buf();
-        drop(guard);
-
-        let text = std::fs::read_to_string(&path).map_err(|e| HarnessError::Recovery {
-            message: format!("failed to read session log: {e}"),
-            source: anyhow::anyhow!(e),
-        })?;
-
-        let report = phi_session::durable::reduce_log(&text);
-
-        // Restore queue messages.
-        for msg in &report.restored_queue_messages {
-            match msg.source.as_str() {
-                "steer" => {
-                    self.queues.enqueue_steer(&msg.text).await;
-                }
-                "follow_up" => {
-                    self.queues.enqueue_follow_up(&msg.text).await;
-                }
-                "next_turn" => {
-                    self.queues.enqueue_next_turn(&msg.text).await;
-                }
-                _ => {}
-            }
-        }
-
-        Ok(report)
-    }
-
-    // ── Durable entry writers ───────────────────────────────────────────────
-
-    async fn write_operation_start(&self, kind: OperationKind) {
-        let mut guard = self.session.lock().await;
-        if let Some(session) = guard.as_mut() {
-            let id = uuid::Uuid::now_v7().to_string();
-            let entry = DurableEntry::OperationStart {
-                id,
-                timestamp: jiff::Timestamp::now().to_string(),
-                operation: kind,
-                session_id: session.id().to_owned(),
-            };
-            match durable::to_line(&entry) {
-                Ok(line) => {
-                    let _ = session.append_durable(&line);
-                }
-                Err(e) => {
-                    eprintln!("durable: serialization failed, skipping entry: {e}");
-                }
-            }
-        }
-    }
-
-    async fn write_operation_finish(&self, completion: &RlmCompletion) {
-        let mut guard = self.session.lock().await;
-        if let Some(session) = guard.as_mut() {
-            let entry = DurableEntry::OperationFinish {
-                id: uuid::Uuid::now_v7().to_string(),
-                timestamp: jiff::Timestamp::now().to_string(),
-                operation_id: uuid::Uuid::now_v7().to_string(),
-                stop_cause: Some(format!("{:?}", completion.stop)),
-            };
-            match durable::to_line(&entry) {
-                Ok(line) => {
-                    let _ = session.append_durable(&line);
-                }
-                Err(e) => {
-                    eprintln!("durable: serialization failed, skipping entry: {e}");
-                }
-            }
-        }
-    }
-
-    async fn write_operation_finish_durable(&self) {
-        let mut guard = self.session.lock().await;
-        if let Some(session) = guard.as_mut() {
-            let entry = DurableEntry::OperationFinish {
-                id: uuid::Uuid::now_v7().to_string(),
-                timestamp: jiff::Timestamp::now().to_string(),
-                operation_id: uuid::Uuid::now_v7().to_string(),
-                stop_cause: None,
-            };
-            match durable::to_line(&entry) {
-                Ok(line) => {
-                    let _ = session.append_durable(&line);
-                }
-                Err(e) => {
-                    eprintln!("durable: serialization failed, skipping entry: {e}");
-                }
-            }
-        }
-    }
-
-    async fn write_operation_interrupted(&self, reason: &str) {
-        let mut guard = self.session.lock().await;
-        if let Some(session) = guard.as_mut() {
-            let entry = DurableEntry::OperationInterrupted {
-                id: uuid::Uuid::now_v7().to_string(),
-                timestamp: jiff::Timestamp::now().to_string(),
-                operation_id: uuid::Uuid::now_v7().to_string(),
-                reason: reason.to_owned(),
-            };
-            match durable::to_line(&entry) {
-                Ok(line) => {
-                    let _ = session.append_durable(&line);
-                }
-                Err(e) => {
-                    eprintln!("durable: serialization failed, skipping entry: {e}");
-                }
-            }
-        }
-    }
-
-    async fn write_queue_enqueued(&self, queue: &str, id: &str, text: &str) {
-        let mut guard = self.session.lock().await;
-        if let Some(session) = guard.as_mut() {
-            let entry = DurableEntry::QueueEnqueued {
-                id: id.to_owned(),
-                timestamp: jiff::Timestamp::now().to_string(),
-                queue: queue.to_owned(),
-                text: text.to_owned(),
-            };
-            match durable::to_line(&entry) {
-                Ok(line) => {
-                    let _ = session.append_durable(&line);
-                }
-                Err(e) => {
-                    eprintln!("durable: serialization failed, skipping entry: {e}");
-                }
-            }
-        }
-    }
 }

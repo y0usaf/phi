@@ -440,10 +440,13 @@ impl Wrapper {
     ) {
         let mut src = src;
         if self.col > 0 && self.col + spaces + word_w > self.width {
-            // The break drops the spaces from the output, but the cursor can
-            // still sit on them: keep them addressable past the row's end.
+            // The break drops the spaces from the output. Keep them
+            // addressable on the continuation row (`break_row` is about to
+            // create) at columns 0..spaces, so the cursor advances to the
+            // next row when it sits on a space that triggers a wrap rather
+            // than freezing at the last column of the current row.
             for i in 0..spaces {
-                self.marks.push((src + i, self.rows.len(), self.col + i));
+                self.marks.push((src + i, self.rows.len() + 1, i));
             }
             src += spaces;
             self.break_row(word_state);
@@ -695,8 +698,10 @@ mod tests {
         assert_eq!(pos, (1, 1));
         // Start of "world" (source col 6) is row 1 col 0.
         assert_eq!(wrap_ansi_locate("hello world", 8, 6).1, (1, 0));
-        // The dropped break space (source col 5) parks at the end of row 0.
-        assert_eq!(wrap_ansi_locate("hello world", 8, 5).1, (0, 5));
+        // The dropped break space (source col 5) wraps to the start of row 1
+        // so the cursor advances past it instead of freezing at row 0 last
+        // column (which render would clamp back to col 4).
+        assert_eq!(wrap_ansi_locate("hello world", 8, 5).1, (1, 0));
         // End of text parks after the last grapheme.
         assert_eq!(wrap_ansi_locate("hello world", 8, 11).1, (1, 5));
         // Hard character wrap still matches the plain arithmetic.
@@ -708,6 +713,14 @@ mod tests {
         assert_eq!(wrap_ansi_locate("", 4, 0).1, (0, 0));
         // Trailing spaces stay addressable.
         assert_eq!(wrap_ansi_locate("ab  ", 8, 4).1, (0, 4));
+        // Regression: typing a space that fills the row and triggers a wrap
+        // must advance the cursor to the next row, not freeze it on the last
+        // column of the current row (which render clamps to width-1).
+        // Before: "hello" cursor at end (col 5) -> (0, 5).
+        assert_eq!(wrap_ansi_locate("hello", 6, 5).1, (0, 5));
+        // After typing the wrap-triggering space (cursor on it, col 5):
+        // must move to row 1, not stay at (0, 5).
+        assert_eq!(wrap_ansi_locate("hello world", 6, 5).1, (1, 0));
     }
 
     #[test]

@@ -65,7 +65,6 @@ const CHROME_BORDER: &str = "\x1b[38;2;82;88;110m";
 // Additional ANSI colors for the forgecode-style chrome.
 const LIGHT_GREEN: &str = "\x1b[92m";
 const LIGHT_GRAY: &str = "\x1b[37m";
-const DARK_GRAY: &str = "\x1b[90m";
 const LIGHT_MAGENTA: &str = "\x1b[95m";
 
 #[allow(dead_code)]
@@ -1823,6 +1822,16 @@ impl Ui {
                 });
             }
 
+            if self.queued.is_empty() {
+                blocks.push(FrameTranscriptBlock {
+                    key: "live:hint".to_owned(),
+                    lines: vec![format!("{MUTED_FG}enter queue follow-up \u{00b7} esc cancel{RESET}")],
+                    finalized: false,
+                    commit_stable: false,
+                    version: 0,
+                });
+            }
+
             if self.block_active {
                 blocks.push(FrameTranscriptBlock {
                     key: "live:repl-block".to_owned(),
@@ -1878,12 +1887,11 @@ impl Ui {
         let active = self.usage.total_tokens > 0;
         let mut result = String::with_capacity(64);
 
-        // Agent
-        let agent_color = if active { LIGHT_GRAY } else { DARK_GRAY };
+        // Agent — always colored; never the dim/gray inactive variant.
         let agent_str = format!("{} PHI", agent_symbol());
-        result.push_str(&format!("{BOLD}{agent_color}{agent_str}{RESET}"));
+        result.push_str(&format!("{BOLD}{LIGHT_GRAY}{agent_str}{RESET}"));
 
-        // Tokens (only when active)
+        // Tokens (only when there is usage)
         if active {
             let tokens = format_tokens(self.usage.total_tokens);
             result.push_str(&format!(" {BOLD}{LIGHT_GRAY}{tokens}{RESET}"));
@@ -1901,16 +1909,14 @@ impl Ui {
         // Model — strip provider prefix if present
         let model_id = &self.root_lm.model().id;
         let short_model = model_id.rsplit('/').next().unwrap_or(model_id);
-        let model_color = if active { LIGHT_MAGENTA } else { DARK_GRAY };
         result.push_str(&format!(
-            " {model_color}{} {short_model}{RESET}",
+            " {LIGHT_MAGENTA}{} {short_model}{RESET}",
             model_symbol()
         ));
 
         // Effort (thinking level)
         if let Some(effort) = effort_label(self.root_lm.thinking(), self.term.width()) {
-            let effort_color = if active { YELLOW } else { DARK_GRAY };
-            result.push_str(&format!(" {effort_color}{effort}{RESET}"));
+            result.push_str(&format!(" {YELLOW}{effort}{RESET}"));
         }
 
         result
@@ -2071,8 +2077,6 @@ impl Ui {
                 ]
             } else if self.popup.is_some() {
                 &["tab complete \u{00b7} up/down select \u{00b7} enter accept \u{00b7} esc dismiss"]
-            } else if self.running.is_some() && self.queued.is_empty() {
-                &["enter queue follow-up \u{00b7} esc cancel"]
             } else if self.running.is_some() {
                 &["enter queue follow-up", "alt+up edit queued \u{00b7} esc cancel"]
             } else {

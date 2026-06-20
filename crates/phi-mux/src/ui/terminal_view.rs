@@ -13,6 +13,7 @@ pub struct TerminalCellView<'a> {
     pub text: &'a str,
     pub fg: Color,
     pub bg: Color,
+    pub bold: bool,
     pub underline: bool,
 }
 
@@ -79,6 +80,7 @@ pub fn for_each_terminal_screen_cell<F>(
                 },
                 fg,
                 bg,
+                bold: cell.bold(),
                 underline: cell.underline(),
             });
         }

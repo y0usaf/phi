@@ -1,5 +1,7 @@
 # Phi three-way synthesis: rlm engine × ori-mnemos recursive memory × absurd durable execution
 
+> **SUPERSEDED** by `plans/phi-durable-memory.md` (2026-06-19). The goal narrowed to two things — absurd-durable execution + a durable memory system — and rlm dropped as a first-class goal. This three-repo framing is kept for reference only; do not execute it.
+
 ## Thesis
 
 Phi is already a partial mix of its three references. **phi-rlm *is* rlm's engine** — the recursive `rlm.completion` completion loop, the ```repl```-fence / `answer["ready"]` protocol, `llm_query`/`rlm_query` sub-call routing, depth-based routing with budget/timeout inheritance, and the `RlmEvent` observability stream all already ship. **phi-memory *is* ori-flavored** — PPR, ACT-R decay, Q-values, wiki-link edges, and the seven memory tools already exist. **phi-session *is* proto-durable** — `DurableEntry` + `RecoveryReducer` + `RecoveryReport` (`crates/phi-session/src/durable.rs:24-136`) is an append-only, fsync-per-line JSONL event log with a tolerant reader that already skips unknown type tags. This plan closes the gaps so Phi becomes the faithful *combined* realization of the three, unified by **one recursion model** (memory recursion and RLM recursion become the same `EngineSubcalls::recurse` code path, checkpointed as absurd steps) and **one event-sourcing layer** (identity auto-inject, durable turn-replay, and recursive-sub-call checkpoints all flow through the single `phi-session` JSONL log + one `SystemPromptMod` injector).

@@ -945,7 +945,7 @@ pub fn render_terminal(
         &palette.ansi,
         false,
         |cell| {
-            surface.put_cell_span(
+            surface.put_cell_span_styled(
                 rect.col + i32::from(cell.col),
                 rect.row + i32::from(cell.row),
                 i32::from(cell.span),
@@ -953,6 +953,8 @@ pub fn render_terminal(
                 cell.fg,
                 cell.bg,
                 cell.underline,
+                false,
+                cell.bold,
             );
         },
     );

@@ -20,8 +20,6 @@ pub struct PersistedState {
     /// Open project directories, sidebar order.
     pub projects: Vec<String>,
     pub selected_project: Option<String>,
-    /// Selected session's JSONL path.
-    pub selected_session: Option<String>,
 }
 
 impl PersistedState {
@@ -59,9 +57,6 @@ impl PersistedState {
                 .projects
                 .contains(&normalized)
                 .then_some(normalized.clone());
-            if self.selected_project.is_none() {
-                self.selected_session = None;
-            }
         }
     }
 
@@ -191,7 +186,6 @@ mod tests {
         let state = PersistedState {
             projects: vec!["/tmp/a".into(), "/tmp/b".into()],
             selected_project: Some("/tmp/b".into()),
-            selected_session: Some("/tmp/s.jsonl".into()),
         };
         state.save_to(&path).unwrap();
         assert_eq!(PersistedState::load_from(&path).unwrap(), state);
@@ -209,23 +203,19 @@ mod tests {
         let mut state = PersistedState {
             projects: vec!["/tmp/a".into(), "/tmp/x/../a".into(), "/tmp/b".into()],
             selected_project: Some("/tmp/missing".into()),
-            selected_session: Some("/tmp/s.jsonl".into()),
         };
         state.normalize();
         assert_eq!(state.projects, vec!["/tmp/a", "/tmp/b"]);
         assert_eq!(state.selected_project, None);
-        assert_eq!(state.selected_session, None);
     }
 
     #[test]
-    fn normalize_keeps_session_when_project_is_valid() {
+    fn normalize_keeps_project_when_valid() {
         let mut state = PersistedState {
             projects: vec!["/tmp/a".into()],
             selected_project: Some("/tmp/x/../a".into()),
-            selected_session: Some("/tmp/s.jsonl".into()),
         };
         state.normalize();
         assert_eq!(state.selected_project, Some("/tmp/a".into()));
-        assert_eq!(state.selected_session, Some("/tmp/s.jsonl".into()));
     }
 }

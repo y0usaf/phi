@@ -388,34 +388,6 @@ impl SessionStore {
     /// Move the active branch tip (tree navigation). `None` rewinds to the
     /// session root. Persisted as a leaf record so resume returns to the
     /// branch the user was actually on, not the newest entry.
-    /// Append a raw durable entry line (already serialized JSON) to the
-    /// session log. Used by the harness for operation/turn/tool-call
-    /// durability entries that aren't message or repl records.
-    pub fn append_durable(&mut self, line: &str) -> Result<()> {
-        if !self.persisted {
-            let dir = self.path.parent().expect("session path has a dir");
-            std::fs::create_dir_all(dir)?;
-            let mut file = std::fs::OpenOptions::new()
-                .create_new(true)
-                .write(true)
-                .open(&self.path)?;
-            writeln!(
-                file,
-                "{}",
-                serde_json::to_string(&Line::Session(self.header.clone()))?
-            )?;
-            file.sync_data()?;
-            if let Ok(dir_handle) = std::fs::File::open(dir) {
-                let _ = dir_handle.sync_data();
-            }
-            self.persisted = true;
-        }
-        let mut file = std::fs::OpenOptions::new().append(true).open(&self.path)?;
-        writeln!(file, "{line}")?;
-        file.sync_data()?;
-        Ok(())
-    }
-
     pub fn set_leaf(&mut self, id: Option<String>) -> Result<()> {
         if self.persisted && id != self.leaf {
             // Propagate the write error: if the disk write fails, the
