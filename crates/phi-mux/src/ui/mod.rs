@@ -5,8 +5,10 @@
 pub mod ansi;
 pub mod cell_surface;
 pub mod color;
+pub mod damage;
 pub mod layout;
 pub mod overlays;
+pub mod packed;
 pub mod scene;
 pub mod selection;
 pub mod sidebar;

@@ -1822,16 +1822,6 @@ impl Ui {
                 });
             }
 
-            if self.queued.is_empty() {
-                blocks.push(FrameTranscriptBlock {
-                    key: "live:hint".to_owned(),
-                    lines: vec![format!("{MUTED_FG}enter queue follow-up \u{00b7} esc cancel{RESET}")],
-                    finalized: false,
-                    commit_stable: false,
-                    version: 0,
-                });
-            }
-
             if self.block_active {
                 blocks.push(FrameTranscriptBlock {
                     key: "live:repl-block".to_owned(),
@@ -2514,7 +2504,7 @@ impl Ui {
             session::Role::User => (entry.parent_id.clone(), Some(entry.text.clone())),
             session::Role::Assistant => (Some(entry.id.clone()), None),
         };
-        self.store.set_leaf(leaf);
+        let _ = self.store.set_leaf(leaf);
         self.pending.push(String::new());
         self.pending
             .push(format!("{DIM}[navigated to selected point]{RESET}"));
@@ -4216,15 +4206,6 @@ impl Ui {
         let _ = self.store.end_exchange(status);
         self.usage = completion.usage;
         self.pending.push(String::new());
-        self.pending.push(format!(
-            "{DIM}{} · {} turn{} · {:.1}s · {} tok · ${:.4}{RESET}",
-            format!("{:?}", completion.stop).to_lowercase(),
-            completion.iterations,
-            if completion.iterations == 1 { "" } else { "s" },
-            completion.duration.as_secs_f64(),
-            format_tokens(self.usage.total_tokens),
-            self.usage.cost.total
-        ));
         self.last_activity = false;
     }
 

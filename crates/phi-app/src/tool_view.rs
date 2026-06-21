@@ -54,7 +54,7 @@ pub(crate) fn residual_args(name: &str, args: &serde_json::Value) -> serde_json:
         "grep" | "find" => &["pattern", "path"],
         _ => return args.clone(),
     };
-    let Some(mut map) = args.as_object().map(|m| m.clone()) else {
+    let Some(mut map) = args.as_object().cloned() else {
         return args.clone();
     };
     for key in strip {

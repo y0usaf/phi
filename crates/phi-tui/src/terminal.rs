@@ -161,7 +161,7 @@ impl<W: Write> Terminal<W> {
                 // break drops whitespace or refuses to split a word.
                 let col = c.col.min(visible_width(line));
                 let (wrapped, (row, col)) = wrap_ansi_locate(line, self.width, col);
-                cursor_target = Some((rows.len() + row, col.min(self.width.saturating_sub(1))));
+                cursor_target = Some((rows.len() + row, col.min(self.width)));
                 wrapped
             } else {
                 wrap_ansi(line, self.width)
@@ -251,7 +251,18 @@ impl<W: Write> Terminal<W> {
         }
 
         move_rows(&mut buf, cur, target_row);
-        buf.push_str(&format!("\x1b[{}G", target_col + 1));
+        if target_col >= self.width && target_row < rows.len() {
+            // CHA (\x1b[NG) clamps to width-1, but the cursor may need
+            // to sit at the "phantom" column == width (deferred-wrap
+            // position) when text fills the row exactly. Re-emit the
+            // row content to push the cursor there via the terminal's
+            // deferred wrap instead of CHA, which would clamp to
+            // width-1 and freeze the cursor one cell short.
+            buf.push_str(CLEAR_LINE);
+            buf.push_str(&rows[target_row]);
+        } else {
+            buf.push_str(&format!("\x1b[{}G", target_col + 1));
+        }
         if cursor.is_some() {
             buf.push_str(SHOW_CURSOR);
         }
@@ -565,14 +576,20 @@ fn wrap_ansi_core(line: &str, width: usize) -> WrappedAnsi {
         src = consumed - spaces;
         spaces = 0;
     }
-    // Trailing spaces stay invisible (as before) but remain addressable so
-    // the cursor can sit on / after them; render clamps to the last column.
+    // Trailing spaces remain addressable so the cursor can sit on / after
+    // them. Include them in the row content so re-emitting the row positions
+    // the cursor at the phantom column (width) via deferred wrap, which CHA
+    // cannot reach (it clamps to width-1). Wrap excess spaces to the next row.
     let _ = src;
     for i in 0..spaces {
-        let row = w.rows.len();
-        w.marks.push((consumed - spaces + i, row, w.col + i));
+        if w.col >= w.width {
+            w.break_row(&word_state);
+        }
+        w.marks.push((consumed - spaces + i, w.rows.len(), w.col));
+        w.row.push(' ');
+        w.col += 1;
     }
-    let end_col = w.col + spaces;
+    let end_col = w.col;
     w.rows.push(w.row);
     let end = (w.rows.len() - 1, end_col);
     (w.rows, w.marks, end)

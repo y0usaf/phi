@@ -359,10 +359,9 @@ impl SseHandler for Parser {
                     .unwrap_or_default()
                     .to_owned();
                 // If the full arguments string is provided, replace the buffer.
-                if let Some(args) = value["arguments"].as_str() {
-                    if let Some(tool) = self.tools.get_mut(&item_id) {
-                        tool.arguments = args.to_owned();
-                    }
+                if let Some(args) = value["arguments"].as_str()
+                    && let Some(tool) = self.tools.get_mut(&item_id) {
+                    tool.arguments = args.to_owned();
                 }
             }
             // Tool call: the output item is complete — push it to the message.

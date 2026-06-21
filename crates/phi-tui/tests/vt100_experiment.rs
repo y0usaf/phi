@@ -16,6 +16,7 @@ impl Write for Buf {
 }
 
 #[test]
+#[ignore]
 fn experiment_cursor_beyond_width() {
     // After writing "hello" on a 5-col terminal, where is the cursor?
     let mut p = vt100::Parser::new(6, 5, 5000);

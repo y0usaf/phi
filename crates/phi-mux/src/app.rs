@@ -101,6 +101,8 @@ pub async fn run(shared: SharedResources, mux_config: MuxConfig, cwd: PathBuf) -
         clipboard: MuxClipboard::default(),
         renderer: AnsiRenderer::default(),
         size: phi_tui::crossterm::terminal::size().unwrap_or((80, 24)),
+        surface: CellSurface::default(),
+        alt_screen_active: false,
         sidebar_scroll: 0,
         note: None,
         channels: MuxChannels {
@@ -142,6 +144,13 @@ struct MuxApp {
     clipboard: MuxClipboard,
     renderer: AnsiRenderer,
     size: (u16, u16),
+    /// Persistent compositing surface, reused across frames so the
+    /// `StringInterner` isn't rebuilt and text re-interned every frame, and
+    /// so dirty tracking is relative to the previous frame's content.
+    surface: CellSurface,
+    /// Whether the focused session's screen was in the alternate screen last
+    /// frame; a transition drops scroll history and forces a full repaint.
+    alt_screen_active: bool,
     sidebar_scroll: usize,
     note: Option<(String, StatusNoteKind, Instant)>,
     channels: MuxChannels,
@@ -421,6 +430,12 @@ impl MuxApp {
                 .screen_mut()
                 .set_scrollback(0);
         }
+        // The new focused session's content is unrelated to the previous
+        // frame's row hashes; drop them so scroll detection can't mistake the
+        // session switch for a scroll, and force a clean repaint.
+        self.renderer.invalidate();
+        self.surface.invalidate();
+        self.alt_screen_active = false;
         self.persist_now();
     }
 
@@ -945,8 +960,19 @@ impl MuxApp {
         let (cols, rows) = self.size;
         let layout = self.layout();
         let palette = ScenePalette::default();
-        let mut surface =
-            CellSurface::new(i32::from(cols), i32::from(rows), palette.fg, palette.bg);
+
+        // Reuse the persistent surface across frames (resized in place on
+        // dimension change) so the interner survives and dirty tracking is
+        // relative to the previous frame. `mem::take` sidesteps the partial
+        // borrows of `self` below; the surface is put back at the end.
+        let mut surface = std::mem::take(&mut self.surface);
+        let want_cols = i32::from(cols);
+        let want_rows = i32::from(rows);
+        if surface.cols != want_cols || surface.rows != want_rows {
+            surface.resize(want_cols, want_rows, palette.fg, palette.bg);
+            // New dimensions: previous pane row hashes no longer line up.
+            self.renderer.invalidate();
+        }
 
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -992,6 +1018,16 @@ impl MuxApp {
             })
             .unwrap_or(0);
         let screen = parser_guard.as_deref().map(|p| p.screen());
+
+        // Alt-screen transition hook (Priority 4): entering/leaving the
+        // alternate screen replaces the whole pane, so drop scroll history and
+        // force a full repaint to avoid scrolling primary content into history.
+        let alt_active = screen.map(|s| s.alternate_screen()).unwrap_or(false);
+        if alt_active != self.alt_screen_active {
+            self.alt_screen_active = alt_active;
+            surface.invalidate();
+            self.renderer.invalidate();
+        }
 
         let mut hardware_cursor = render_scene(
             &mut surface,
@@ -1045,8 +1081,12 @@ impl MuxApp {
             hardware_cursor = None;
         }
 
+        let term_pane = layout.terminal;
         let mut stdout = std::io::stdout();
-        let _ = self.renderer.render(&mut stdout, surface, hardware_cursor);
+        let _ = self
+            .renderer
+            .render(&mut stdout, &mut surface, term_pane, hardware_cursor);
+        self.surface = surface;
     }
 
     fn chrome(&self) -> Chrome {

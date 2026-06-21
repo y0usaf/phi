@@ -145,11 +145,10 @@ impl PhiHooks {
         let observers = Arc::downgrade(&self.observers);
         drop(guard);
         move || {
-            if let Some(observers) = observers.upgrade() {
-                if let Ok(mut g) = observers.try_lock()
-                    && let Some(entry) = g.get_mut(idx) {
-                        entry.1 = Arc::new(|_| Ok(()));
-                    }
+            if let Some(observers) = observers.upgrade()
+                && let Ok(mut g) = observers.try_lock()
+                && let Some(entry) = g.get_mut(idx) {
+                entry.1 = Arc::new(|_| Ok(()));
             }
             // If upgrade returns None, the PhiHooks has been dropped already;
             // nothing to clean up.
@@ -174,13 +173,12 @@ impl PhiHooks {
         let handlers = Arc::downgrade(&self.handlers);
         drop(guard);
         move || {
-            if let Some(handlers) = handlers.upgrade() {
-                if let Ok(mut g) = handlers.try_write()
-                    && let Some(vec) = g.get_mut(&type_id)
-                        && let Some(entry) = vec.get_mut(idx) {
-                            let noop: HookHandler<E> = Arc::new(|_: &E| Ok(None));
-                            entry.handler = Arc::new(noop) as Arc<dyn Any + Send + Sync>;
-                        }
+            if let Some(handlers) = handlers.upgrade()
+                && let Ok(mut g) = handlers.try_write()
+                && let Some(vec) = g.get_mut(&type_id)
+                && let Some(entry) = vec.get_mut(idx) {
+                let noop: HookHandler<E> = Arc::new(|_: &E| Ok(None));
+                entry.handler = Arc::new(noop) as Arc<dyn Any + Send + Sync>;
             }
             // If upgrade returns None, the PhiHooks has been dropped already;
             // nothing to clean up.

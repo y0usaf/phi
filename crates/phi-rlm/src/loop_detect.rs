@@ -79,9 +79,7 @@ impl LoopDetector {
     pub fn finalize_step(&mut self) -> Option<StopCause> {
         let pending = std::mem::take(&mut self.pending);
         let sig = Self::step_signature(&pending);
-        let Some(sig) = sig else {
-            return None;
-        };
+        let sig = sig?;
 
         self.history.push(sig);
 

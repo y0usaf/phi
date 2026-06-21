@@ -299,12 +299,11 @@ impl PythonRepl {
         let result = tokio::time::timeout(timeout, rx).await;
         match result {
             Ok(Ok(frame)) => {
-                if frame_kind == "exec" {
-                    if let DriverFrame::Fatal { error } = &frame {
-                        let stderr = proc.stderr.lock().unwrap().clone();
-                        self.respawn().await;
-                        return Err(ReplError::Crashed(format!("{}: {}", error, stderr.trim())));
-                    }
+                if frame_kind == "exec"
+                    && let DriverFrame::Fatal { error } = &frame {
+                    let stderr = proc.stderr.lock().unwrap().clone();
+                    self.respawn().await;
+                    return Err(ReplError::Crashed(format!("{}: {}", error, stderr.trim())));
                 }
                 Ok(frame)
             }

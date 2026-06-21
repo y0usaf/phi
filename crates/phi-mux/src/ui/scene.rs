@@ -929,11 +929,28 @@ pub fn render_terminal(
     scrollback_total: usize,
     palette: &ScenePalette,
 ) -> Option<HardwareCursorPos> {
-    surface.fill_rect(rect, palette.term_fg, palette.term_bg);
     if rect.rows <= 0 || rect.cols <= 0 {
         return None;
     }
-    let screen = screen?;
+    // The cell loop below writes every pane cell's final value (empty screen
+    // cells are emitted as " "), so we only pre-clear when there's no screen
+    // to read or its size doesn't match the pane — both are rare (e.g. a
+    // resize transition). Skipping the clear on the matched path is what lets
+    // `write_cell`'s mark-on-change produce accurate per-cell dirty marks for
+    // the terminal pane, so only genuinely-changed cells are repainted.
+    let screen = match screen {
+        Some(s) => {
+            let (screen_rows, screen_cols) = s.size();
+            if screen_rows as i32 != rect.rows || screen_cols as i32 != rect.cols {
+                surface.fill_rect(rect, palette.term_fg, palette.term_bg);
+            }
+            s
+        }
+        None => {
+            surface.fill_rect(rect, palette.term_fg, palette.term_bg);
+            return None;
+        }
+    };
 
     for_each_terminal_screen_cell(
         screen,
@@ -1045,8 +1062,14 @@ mod tests {
             &ScenePalette::default(),
         )
         .unwrap();
-        assert_eq!(surface.cell(1, 1).unwrap().text, "h");
-        assert_eq!(surface.cell(2, 1).unwrap().text, "i");
+        assert_eq!(
+            surface.resolve_text(surface.cell(1, 1).unwrap().text),
+            "h"
+        );
+        assert_eq!(
+            surface.resolve_text(surface.cell(2, 1).unwrap().text),
+            "i"
+        );
         assert_eq!((cursor.col, cursor.row), (3, 1));
     }
 
@@ -1068,7 +1091,11 @@ mod tests {
             MuxMode::Normal,
         );
         let row: String = (0..80)
-            .map(|col| surface.cell(col, 2).unwrap().text.clone())
+            .map(|col| {
+                surface
+                    .resolve_text(surface.cell(col, 2).unwrap().text)
+                    .to_owned()
+            })
             .collect();
         assert!(row.contains("NOR"));
         assert!(row.contains("phi"));
