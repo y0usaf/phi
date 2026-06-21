@@ -373,3 +373,94 @@ impl SseHandler for Parser {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use crate::types::{Api, Auth, Context, CostRates, Model, StreamOptions};
+
+    use super::{CLAUDE_CODE_IDENTITY, build_body};
+
+    /// Minimal Anthropic model for exercising `build_body`'s system-block
+    /// assembly (no reasoning, no thinking levels).
+    fn model() -> Model {
+        Model {
+            id: "claude-test".to_owned(),
+            name: "Test".to_owned(),
+            api: Api::AnthropicMessages,
+            provider: "anthropic".to_owned(),
+            base_url: "https://api.anthropic.com".to_owned(),
+            reasoning: false,
+            input: vec![],
+            cost: CostRates::default(),
+            context_window: 200_000,
+            max_tokens: 4096,
+            headers: BTreeMap::new(),
+            thinking_levels: None,
+        }
+    }
+
+    /// The substantive RLM identity that `build_system_prompt` produces and that
+    /// `ctx.system_prompt` carries in the real flow.
+    const RLM_IDENTITY: &str = "You are a Recursive Language Model (RLM): a language model with a prompt, and a context stored in a Python REPL.";
+
+    /// Track 0 (plans/prompt-content-port.md): the API-key path emits exactly
+    /// one system block — the cached RLM identity — with no OAuth "Claude Code"
+    /// shim. Ported content must never reinforce the "Claude Code" identity in
+    /// the cached block.
+    #[test]
+    fn api_key_path_emits_single_cached_system_block() {
+        let ctx = Context {
+            system_prompt: Some(RLM_IDENTITY.to_owned()),
+            messages: vec![],
+        };
+        let opts = StreamOptions::new(Auth::ApiKey("k".to_owned()));
+        let body = build_body(&model(), &ctx, &opts);
+        let system = body["system"].as_array().expect("system array");
+        assert_eq!(system.len(), 1, "api-key path must emit exactly one system block");
+        assert_eq!(system[0]["text"].as_str(), Some(RLM_IDENTITY));
+        assert!(
+            system[0].get("cache_control").is_some(),
+            "the RLM block is the cached block"
+        );
+        assert!(
+            !system[0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("Claude Code, Anthropic's official CLI"),
+            "cached block must not duplicate the OAuth identity"
+        );
+    }
+
+    /// Track 0: the OAuth path emits the compliance shim (uncached) followed by
+    /// the cached RLM identity, in that order. The shim is a carrier required
+    /// to validate the token; the RLM identity is the substantive one.
+    #[test]
+    fn oauth_path_emits_shim_then_cached_rlm_block() {
+        let ctx = Context {
+            system_prompt: Some(RLM_IDENTITY.to_owned()),
+            messages: vec![],
+        };
+        let opts = StreamOptions::new(Auth::OAuthToken("token".to_owned()));
+        let body = build_body(&model(), &ctx, &opts);
+        let system = body["system"].as_array().expect("system array");
+        assert_eq!(system.len(), 2, "oauth path: shim + cached RLM block");
+        // Block 0: the OAuth compliance shim, uncached.
+        assert_eq!(system[0]["text"].as_str(), Some(CLAUDE_CODE_IDENTITY));
+        assert!(
+            system[0].get("cache_control").is_none(),
+            "the OAuth shim is uncached"
+        );
+        // Block 1: the substantive RLM identity, cached.
+        assert_eq!(system[1]["text"].as_str(), Some(RLM_IDENTITY));
+        assert!(
+            system[1].get("cache_control").is_some(),
+            "the RLM block is the cached block"
+        );
+        assert!(
+            system[1]["text"].as_str().unwrap().contains("Recursive Language Model"),
+            "the cached block is the RLM identity, not the shim"
+        );
+    }
+}

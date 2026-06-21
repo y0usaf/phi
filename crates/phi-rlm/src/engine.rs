@@ -24,8 +24,9 @@ use crate::parsing::{
     ExecutedBlock, could_open_block, find_code_blocks, format_iteration, last_block_end,
 };
 use crate::prompts::{
-    DEFAULT_ANSWER_NUDGE, PROSE_NUDGE, QueryMetadata, SystemPromptOptions, build_system_prompt,
-    build_user_prompt, metadata_user_prompt,
+    DEFAULT_ANSWER_NUDGE, DEFAULT_ACTIONS, DEFAULT_DOING_TASKS, DEFAULT_TONE_AND_STYLE,
+    DEFAULT_USING_YOUR_TOOLS, PROSE_NUDGE, QueryMetadata, SystemPromptOptions,
+    build_system_prompt, build_user_prompt, metadata_user_prompt,
 };
 use crate::{ChatMessage, ContextPayload, Role};
 
@@ -50,6 +51,10 @@ pub struct RlmConfig {
     pub orchestrator: bool,
     /// Pre-formatted custom-tools listing for the system prompt.
     pub tools_section: Option<String>,
+    /// Pre-formatted `# Environment` block for the system prompt (cwd, is-git,
+    /// platform, shell, OS version). Caller-supplied and memoized per session
+    /// (computed once at session build, not per turn). Emitted before `cwd`.
+    pub env_info: Option<String>,
     /// Code executed once at env startup (e.g. the coding-agent prelude).
     pub setup_code: Option<String>,
     /// Working directory for REPL code; defaults to a scratch temp dir.
@@ -76,6 +81,7 @@ impl Default for RlmConfig {
             user_prologue: None,
             orchestrator: true,
             tools_section: None,
+            env_info: None,
             setup_code: None,
             cwd: None,
             append_system_prompt: None,
@@ -774,15 +780,7 @@ impl Rlm {
         let mut history = vec![
             ChatMessage {
                 role: Role::System,
-                content: build_system_prompt(&SystemPromptOptions {
-                    identity: self.config.custom_system_prompt.as_deref(),
-                    custom_tools: self.config.tools_section.as_deref(),
-                    append: self.config.append_system_prompt.as_deref(),
-                    cwd: self.config.cwd.as_deref(),
-                    orchestrator: self.config.orchestrator,
-                    turn_cap: self.iteration_limit(),
-                    ..Default::default()
-                }),
+                content: build_system_prompt(&self.system_prompt_options()),
             },
             ChatMessage {
                 role: Role::User,
@@ -796,6 +794,38 @@ impl Rlm {
             });
         }
         history
+    }
+
+    /// Build the `SystemPromptOptions` for this RLM from its config. The
+    /// coding-agent sections (`doing_tasks`, `actions`, `using_your_tools`,
+    /// `tone_and_style`) are gated on `user_prologue`: they default to off for
+    /// the bare-RLM identity and turn on only in coding-agent mode. The
+    /// identity-neutral sections (`cyber_risk`, `output_efficiency`,
+    /// `system_reminder_semantics`, `summarize_tool_results`) fall back to
+    /// their `DEFAULT_*` const inside `build_system_prompt`, so they are left
+    /// `None` here. `env_info` is caller-supplied data threaded from
+    /// `RlmConfig::env_info`.
+    ///
+    /// The gate is re-evaluated every build (cold root and each warm `send`),
+    /// not once: `user_prologue` persists on the root config across warm turns
+    /// (only `recurse` clears it for child RLMs), so gated content survives
+    /// the whole session.
+    fn system_prompt_options(&self) -> SystemPromptOptions<'_> {
+        let coding = self.config.user_prologue.is_some();
+        SystemPromptOptions {
+            identity: self.config.custom_system_prompt.as_deref(),
+            custom_tools: self.config.tools_section.as_deref(),
+            doing_tasks: coding.then_some(DEFAULT_DOING_TASKS),
+            actions: coding.then_some(DEFAULT_ACTIONS),
+            using_your_tools: coding.then_some(DEFAULT_USING_YOUR_TOOLS),
+            tone_and_style: coding.then_some(DEFAULT_TONE_AND_STYLE),
+            env_info: self.config.env_info.as_deref(),
+            append: self.config.append_system_prompt.as_deref(),
+            cwd: self.config.cwd.as_deref(),
+            orchestrator: self.config.orchestrator,
+            turn_cap: self.iteration_limit(),
+            ..Default::default()
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1181,10 +1211,9 @@ impl Rlm {
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .finalize_step()
-                && stop == StopCause::LoopDetected {
-                    if let Some(flag) = loop_detected {
-                        flag.store(true, std::sync::atomic::Ordering::Relaxed);
-                    }
+                && stop == StopCause::LoopDetected
+                && let Some(flag) = loop_detected {
+                    flag.store(true, std::sync::atomic::Ordering::Relaxed);
                 }
 
             // Loop detection: if the shared flag is set, terminate.
@@ -2007,6 +2036,45 @@ mod tests {
 
     fn quiet_sub() -> Arc<ScriptedLm> {
         Arc::new(ScriptedLm::new("sub-model", &[]).with_default("sub default"))
+    }
+
+    #[test]
+    fn system_prompt_gate_bare_vs_coding() {
+        // Track 2 gate: coding-agent sections (`doing_tasks`, `actions`,
+        // `using_your_tools`, `tone_and_style`) emit only when `user_prologue`
+        // is set; identity-neutral guardrails are always on. The gate is re-read
+        // from config each build (cold root and every warm send).
+        let bare = rlm(
+            RlmConfig {
+                env_info: Some("# Environment\n - Primary working directory: /x".into()),
+                ..RlmConfig::default()
+            },
+            quiet_sub(),
+            quiet_sub(),
+        );
+        let bare_prompt = build_system_prompt(&bare.system_prompt_options());
+        assert!(!bare_prompt.contains("# Doing tasks"));
+        assert!(!bare_prompt.contains("# Executing actions with care"));
+        assert!(!bare_prompt.contains("# Using your REPL helpers"));
+        assert!(!bare_prompt.contains("# Tone and style"));
+        assert!(bare_prompt.contains("Assist with authorized security testing"));
+        assert!(bare_prompt.contains("# Output efficiency"));
+        assert!(bare_prompt.contains("# Environment"));
+
+        let coding = rlm(
+            RlmConfig {
+                env_info: Some("# Environment\n - Primary working directory: /x".into()),
+                user_prologue: Some("You are a coding agent.".into()),
+                ..RlmConfig::default()
+            },
+            quiet_sub(),
+            quiet_sub(),
+        );
+        let coding_prompt = build_system_prompt(&coding.system_prompt_options());
+        assert!(coding_prompt.contains("# Doing tasks"));
+        assert!(coding_prompt.contains("# Executing actions with care"));
+        assert!(coding_prompt.contains("# Using your REPL helpers"));
+        assert!(coding_prompt.contains("# Tone and style"));
     }
 
     #[tokio::test]

@@ -274,3 +274,84 @@ impl AppRuntime {
 pub fn missing_named_item(kind: &str, name: &str) -> anyhow::Error {
     anyhow!("{kind} '{name}' is not registered")
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use phi_ext::{
+        EventHandlerRegistration, EventKind, EventReturn, Extension, ExtensionHost,
+        ExtensionManifest, LifecycleEvent,
+    };
+
+    use crate::RuntimeBuilder;
+
+    /// Test extension that appends a fixed block to the system prompt on every
+    /// `BeforeAgentStart` (mirrors `phi-memory`'s auto-inject handler).
+    struct AppendingExt;
+
+    impl Extension for AppendingExt {
+        fn manifest(&self) -> ExtensionManifest {
+            ExtensionManifest {
+                id: "test.append".to_owned(),
+                name: "Append".to_owned(),
+                version: "0".to_owned(),
+                description: "test hook".to_owned(),
+            }
+        }
+
+        fn register(&self, host: &mut dyn ExtensionHost) -> anyhow::Result<()> {
+            host.subscribe(EventHandlerRegistration {
+                event: EventKind::BeforeAgentStart,
+                label: "test.append".to_owned(),
+                handler: Arc::new(|_ev: LifecycleEvent| {
+                    Ok(Some(EventReturn::SystemPromptMod {
+                        prepend: None,
+                        append: Some("\n\nINJECTED-BY-HOOK".to_owned()),
+                    }))
+                }),
+            })?;
+            Ok(())
+        }
+    }
+
+    /// Track 4 (plans/prompt-content-port.md): regression guard for the
+    /// "unbounded growth" worry. The engine rebuilds the system message fresh
+    /// each warm send (`initial_history`) and *then* applies
+    /// `filter_system_prompt`, so a hook append never accumulates across turns.
+    /// This test asserts the guard directly: repeated `filter_system_prompt`
+    /// calls, each starting from a fresh-built system prompt, yield a constant
+    /// length (the hook appends once per call, not once per session).
+    #[tokio::test]
+    async fn filter_system_prompt_does_not_grow_across_turns() {
+        let rt = RuntimeBuilder::new()
+            .with_cwd(std::path::Path::new("."))
+            .register_extension(AppendingExt)
+            .build()
+            .expect("build runtime");
+        let base = "BASE SYSTEM PROMPT".to_owned();
+
+        let mut lengths = Vec::new();
+        for _ in 0..5 {
+            // Each iteration is a fresh rebuild (as initial_history does each
+            // send), then the hook appends once.
+            let filtered = rt
+                .filter_system_prompt("user prompt", base.clone())
+                .await
+                .expect("filter");
+            lengths.push(filtered.len());
+        }
+        assert!(
+            lengths.windows(2).all(|w| w[0] == w[1]),
+            "system prompt grew across turns: {lengths:?}"
+        );
+
+        // The hook must actually append, else the constant-length check is vacuous.
+        let filtered = rt
+            .filter_system_prompt("user prompt", base.clone())
+            .await
+            .expect("filter");
+        assert!(filtered.contains("INJECTED-BY-HOOK"));
+        assert!(filtered.len() > base.len());
+    }
+}
