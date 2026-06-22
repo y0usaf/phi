@@ -30,7 +30,7 @@ use std::sync::Arc;
 
 use phi_ai::ThinkingLevel;
 use phi_ext::ToolSpec;
-use phi_rlm::{ContextPayload, LanguageModel, LoopDetector, Rlm, RlmCompletion, RlmConfig};
+use phi_rlm::{ContextPayload, LanguageModel, Rlm, RlmCompletion, RlmConfig};
 use phi_runtime::AppRuntime;
 use phi_session::session::SessionStore;
 use tokio::sync::mpsc::UnboundedSender;
@@ -83,7 +83,6 @@ pub struct PhiHarness {
     hooks: PhiHooks,
     cancel: Mutex<Option<CancellationToken>>,
     config: RwLock<HarnessConfig>,
-    loop_detector: Mutex<LoopDetector>,
     session: Mutex<Option<SessionStore>>,
 }
 
@@ -99,7 +98,6 @@ impl PhiHarness {
             hooks: PhiHooks::new(),
             cancel: Mutex::new(None),
             config: RwLock::new(HarnessConfig::new(root, sub, config)),
-            loop_detector: Mutex::new(LoopDetector::new()),
             session: Mutex::new(None),
         }
     }
@@ -156,9 +154,6 @@ impl PhiHarness {
             *phase = HarnessPhase::Turn;
         }
         *self.cancel.lock().await = Some(cancel.clone());
-
-        // Reset loop detector for this run.
-        self.loop_detector.lock().await.reset();
 
         struct PhaseGuard<'a>(&'a PhiHarness);
         impl Drop for PhaseGuard<'_> {

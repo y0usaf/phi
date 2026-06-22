@@ -173,6 +173,10 @@ fn effort_label(level: ThinkingLevel, width: usize) -> Option<String> {
 
 const CODE_PREVIEW_LINES: usize = 8;
 const OUTPUT_PREVIEW_LINES: usize = 5;
+/// Max visible lines for a live streaming-prose block (scrolls internally).
+const LIVE_PROSE_MAX_HEIGHT: usize = 12;
+/// Max visible lines for a live thinking block (scrolls internally).
+const LIVE_THINKING_MAX_HEIGHT: usize = 6;
 
 const ASSISTANT_THINKING_DISPLAY_OPEN: &str = "<phi-thinking>\n";
 const ASSISTANT_THINKING_DISPLAY_CLOSE: &str = "\n</phi-thinking>\n";
@@ -495,6 +499,7 @@ struct FrameTranscriptBlock {
     finalized: bool,
     commit_stable: bool,
     version: u64,
+    max_height: Option<usize>,
 }
 
 fn subcall_title(model: &str, prompt_preview: &str) -> String {
@@ -1759,6 +1764,7 @@ impl Ui {
                 finalized: true,
                 commit_stable: true,
                 version: 0,
+                max_height: None,
             });
         }
         for block in &live_blocks {
@@ -1768,6 +1774,7 @@ impl Ui {
                 finalized: block.finalized,
                 commit_stable: block.commit_stable,
                 version: block.version,
+                max_height: block.max_height,
             });
         }
 
@@ -1819,6 +1826,7 @@ impl Ui {
                     finalized: false,
                     commit_stable: false,
                     version: 0,
+                    max_height: Some(LIVE_THINKING_MAX_HEIGHT),
                 });
             }
 
@@ -1829,6 +1837,7 @@ impl Ui {
                     finalized: false,
                     commit_stable: false,
                     version: 0,
+                    max_height: Some(CODE_PREVIEW_LINES),
                 });
 
                 if !self.after_block.is_empty() {
@@ -1838,6 +1847,7 @@ impl Ui {
                         finalized: true,
                         commit_stable: true,
                         version: 0,
+                        max_height: Some(OUTPUT_PREVIEW_LINES),
                     });
                 }
             }
@@ -1850,6 +1860,7 @@ impl Ui {
                     finalized: false,
                     commit_stable: true,
                     version: 0,
+                    max_height: Some(LIVE_PROSE_MAX_HEIGHT),
                 });
             }
 
@@ -1863,6 +1874,7 @@ impl Ui {
                     finalized: false,
                     commit_stable: false,
                     version: 0,
+                    max_height: Some(CODE_PREVIEW_LINES),
                 });
             }
         }
@@ -4056,16 +4068,6 @@ impl Ui {
                         if iterations == 1 { "" } else { "s" },
                         duration.as_secs_f64()
                     ),
-                );
-            }
-            RlmEvent::LimitHit {
-                depth,
-                limit,
-                detail,
-            } => {
-                self.push_bar(
-                    depth,
-                    format!("limit {} · {detail}", format!("{limit:?}").to_lowercase()),
                 );
             }
             _ => {}

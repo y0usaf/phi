@@ -7,6 +7,9 @@ pub struct BlockSpec<'a> {
     pub finalized: bool,
     pub commit_stable: bool,
     pub version: u64,
+    /// When set, only the last `max_height` lines are rendered; earlier
+    /// lines are replaced by a single "… (N earlier lines)" indicator.
+    pub max_height: Option<usize>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]

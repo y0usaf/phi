@@ -87,6 +87,11 @@ impl LmHandler {
         self.usage.lock().unwrap_or_else(|e| e.into_inner()).total
     }
 
+    /// Add usage from a child RLM completion (rolls up the recursion tree).
+    pub fn add_child_usage(&self, child_usage: &Usage) {
+        self.usage.lock().unwrap_or_else(|e| e.into_inner()).total.add(child_usage);
+    }
+
     pub fn usage_by_model(&self) -> Vec<UsageBreakdown> {
         Self::breakdowns_from_ledger(&self.usage.lock().unwrap_or_else(|e| e.into_inner()).by_model)
     }

@@ -1,4 +1,3 @@
-use phi_rlm::LimitKind;
 
 /// First non-empty line of `text`, trimmed and truncated to `max` chars with a
 /// trailing `…` when either the line or the whole text was cut.
@@ -104,14 +103,6 @@ pub(crate) fn depth_tag(depth: usize) -> String {
     }
 }
 
-pub(crate) fn limit_name(limit: LimitKind) -> &'static str {
-    match limit {
-        LimitKind::Budget => "budget",
-        LimitKind::Timeout => "timeout",
-        LimitKind::Tokens => "tokens",
-        LimitKind::Errors => "errors",
-    }
-}
 
 pub(crate) fn preview(text: &str, max_lines: usize, verbose: bool) -> String {
     let text = text.trim_end();

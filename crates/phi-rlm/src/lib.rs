@@ -2,7 +2,6 @@
 
 pub mod engine;
 pub mod handler;
-pub mod loop_detect;
 pub mod parsing;
 pub mod prompts;
 pub mod provider;
@@ -11,12 +10,10 @@ pub mod turn;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub use engine::{
-    EnvFactory, LimitKind, PythonEnvFactory, RestoredExchange, RestoredRepl, Rlm, RlmCompletion,
+pub use engine::{RestoredExchange, RestoredRepl, Rlm, RlmCompletion,
     RlmConfig, RlmEvent, RlmSession, StopCause,
 };
 pub use handler::{Completion, DeltaSink, LanguageModel, LmHandler, ThinkingSink, UsageBreakdown};
-pub use loop_detect::LoopDetector;
 pub use parsing::{could_open_block, find_code_blocks, split_at_first_block, split_prose};
 pub use phi_repl::ReplResult;
 pub use provider::ProviderLm;

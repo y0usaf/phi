@@ -1,4 +1,4 @@
-//! Integration tests for phi-harness: queues, loop detection, hooks,
+//! Integration tests for phi-harness: queues, hooks,
 //! observability, and session log recovery.
 
 use std::sync::Arc;
@@ -10,7 +10,6 @@ use phi_harness::{
     ToolCallResult, ToolResultEvent, ToolResultPatch, safe_payload, subscribe_observability,
     trace_operation,
 };
-use phi_rlm::LoopDetector;
 use phi_session::session::SessionStore;
 use serde_json::json;
 use tempfile::tempdir;
@@ -74,72 +73,6 @@ async fn queue_mode_setters() {
     q.set_follow_up_mode(phi_harness::QueueMode::Interleave)
         .await;
     // Modes are set; no panic.
-}
-
-// ── Loop detector tests ─────────────────────────────────────────────────────
-
-#[test]
-fn loop_detector_no_repeat() {
-    // Three distinct steps (different results) should never trigger.
-    let mut det = LoopDetector::with_params(10, 5);
-    for i in 0..3 {
-        det.observe_call("bash", &json!({"key": "value"}), &format!("result_{i}"));
-        assert!(det.finalize_step().is_none());
-    }
-}
-
-#[test]
-fn loop_detector_triggers_on_repeat() {
-    // max_repeats=3, threshold is exclusive (> 3), so 4th identical step triggers
-    // once the window has 10 steps.
-    let mut det = LoopDetector::with_params(10, 3);
-    let args = json!({"cmd": "ls"});
-    let result = "same output";
-
-    // Push 6 identical steps (window too small to fire yet).
-    for _ in 0..6 {
-        det.observe_call("bash", &args, result);
-        assert!(det.finalize_step().is_none());
-    }
-    // Fill window with 3 distinct steps to reach 9 total (still < window).
-    for i in 0..3 {
-        det.observe_call("tool", &args, &format!("out_{i}"));
-        assert!(det.finalize_step().is_none());
-    }
-    // 10th step is the 7th identical -> window full, count=7 > 3 -> detected.
-    det.observe_call("bash", &args, result);
-    assert!(det.finalize_step().is_some());
-}
-
-#[test]
-fn loop_detector_window_evicts_old_signatures() {
-    // With a small window (3), old entries scroll out. 5 distinct steps + 1
-    // repeat of step 0 means only 3 in window at detection time, and the
-    // repeat is not among them.
-    let mut det = LoopDetector::with_params(3, 5);
-    let args = json!(null);
-
-    for i in 0..5 {
-        det.observe_call("tool", &args, &format!("out_{i}"));
-        assert!(det.finalize_step().is_none());
-    }
-    // "out_0" has scrolled out of the window; repeating it shouldn't loop.
-    det.observe_call("tool", &args, "out_0");
-    assert!(det.finalize_step().is_none());
-}
-
-#[test]
-fn loop_detector_reset() {
-    let mut det = LoopDetector::with_params(5, 2);
-    let args = json!(null);
-    for _ in 0..3 {
-        det.observe_call("t", &args, "r");
-    }
-    let _ = det.finalize_step();
-    det.reset();
-    // After reset, history is empty; same call shouldn't trigger.
-    det.observe_call("t", &args, "r");
-    assert!(det.finalize_step().is_none());
 }
 
 // ── Hooks tests ─────────────────────────────────────────────────────────────

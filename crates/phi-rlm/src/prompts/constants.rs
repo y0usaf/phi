@@ -87,8 +87,8 @@ pub const DEFAULT_OUTPUT_EFFICIENCY: &str = "# Output efficiency\n\nIMPORTANT: G
 
 /// `<system-reminder>` tag semantics — ported from `getSystemRemindersSection`
 /// (first bullet only; the summarization bullet is covered by
-/// `DEFAULT_SUMMARIZE_TOOL_RESULTS`). Phi uses the tag — `PROSE_NUDGE` is one —
-/// but never defined it to the model; this makes the model treat `PROSE_NUDGE`
+/// `DEFAULT_SUMMARIZE_TOOL_RESULTS`). Phi uses the tag
+/// but never defined it to the model; this makes the model treat the tags
 /// and future injections correctly. "Tool results" → "REPL output".
 /// Identity-neutral; default-on; folded into the `mechanics` section.
 pub const DEFAULT_SYSTEM_REMINDER_SEMANTICS: &str = "- REPL output and user messages may include <system-reminder> tags. <system-reminder> tags contain useful information and reminders. They are automatically added by the system, and bear no direct relation to the specific REPL output or user messages in which they appear.";
@@ -100,8 +100,3 @@ pub const DEFAULT_SYSTEM_REMINDER_SEMANTICS: &str = "- REPL output and user mess
 /// reworded to Phi's transcript compaction). "tool results" → "```repl``` block
 /// output and `rlm_query` results". Identity-neutral; default-on.
 pub const DEFAULT_SUMMARIZE_TOOL_RESULTS: &str = "When working with ```repl``` block output and `rlm_query` results, write down any important information you might need later in your response, as the original output may be cleared later. Old ```repl``` execution output and `rlm_query` results may be cleared from your message history to free space; the most recent results are always kept. Older conversation turns may also be compacted into a summary to keep the in-band context bounded, so your conversation is not limited by the context window.";
-
-/// Corrective reminder injected after a turn with no ```repl``` block.
-/// Sent as a user message because providers hoist `Role::System` messages
-/// into the top-level system prompt, losing their position in the turn order.
-pub const PROSE_NUDGE: &str = "<system-reminder>Your previous message contained no ```repl``` block, so nothing was executed and no answer was submitted. If it was meant as your final answer, submit it now: set answer[\"content\"] to it and answer[\"ready\"] = True in a ```repl``` block. Otherwise, continue working in ```repl``` blocks. If your next message also contains no ```repl``` block, it will be accepted as your final answer as written.</system-reminder>";

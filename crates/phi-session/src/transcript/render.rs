@@ -8,6 +8,23 @@ impl Transcript {
         Self::default()
     }
 
+    /// Apply `max_height` tail-truncation: when a block exceeds its cap,
+    /// replace all but the last `max_height` lines with a single dim
+    /// indicator line.  Returns the possibly-shortened contribution.
+    fn cap_lines(contribution: Vec<String>, max_height: Option<usize>) -> Vec<String> {
+        let Some(cap) = max_height else {
+            return contribution;
+        };
+        if contribution.len() <= cap {
+            return contribution;
+        }
+        let hidden = contribution.len() - cap;
+        let mut result = Vec::with_capacity(cap + 1);
+        result.push(format!("\x1b[2m… ({hidden} earlier lines)\x1b[0m"));
+        result.extend(contribution.into_iter().rev().take(cap).rev());
+        result
+    }
+
     pub fn new_embedded() -> Self {
         Self {
             embedded: true,
@@ -55,6 +72,7 @@ impl Transcript {
 
         for (i, block) in blocks.iter().enumerate() {
             let contribution = strip_plain_blank_edges(block.lines);
+            let contribution = Self::cap_lines(contribution, block.max_height);
             let previous = self.snapshots.get(block.key);
             let live_commit_state =
                 if i >= live_start_index && !block.finalized && block.commit_stable {

@@ -1,7 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::io::{IsTerminal, Read};
 use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::{Context as _, Result, bail};
 use phi_ai::{
@@ -11,7 +10,6 @@ use phi_builtins::prelude::{CODING_PRELUDE, coding_tools_section};
 use phi_cli::Args;
 use phi_harness::PhiHarness;
 use phi_mux as mux;
-use phi_rlm::engine::PythonEnvFactory;
 use phi_rlm::{ContextPayload, ProviderLm, Rlm, RlmConfig, RlmEvent, StopCause};
 use phi_session::{config, session_builder, tui};
 use tokio_util::sync::CancellationToken;
@@ -70,7 +68,7 @@ mod tests;
 
 use format::{format_model_pricing, format_usage_summary};
 use render::render_tool_panel;
-use tool_view::{call_anchor, check, cross, depth_tag, indent, limit_name, preview, spin};
+use tool_view::{call_anchor, check, cross, depth_tag, indent, preview, spin};
 
 async fn run(args: Args, storage: Arc<AuthStorage>, registry: Arc<Registry>) -> Result<()> {
     let cwd = std::env::current_dir().context("could not determine working directory")?;
@@ -137,10 +135,6 @@ async fn run(args: Args, storage: Arc<AuthStorage>, registry: Arc<Registry>) -> 
     let config = RlmConfig {
         max_depth: settings.max_depth,
         max_iterations: settings.max_iterations,
-        max_budget: settings.budget,
-        max_timeout: settings.timeout.map(Duration::from_secs),
-        max_tokens: settings.max_tokens,
-        max_errors: settings.max_errors,
         max_concurrent_subcalls: settings.max_concurrent_subcalls,
         setup_code: Some(CODING_PRELUDE.to_owned()),
         tools_section: Some(coding_tools_section()),
@@ -164,9 +158,6 @@ async fn run(args: Args, storage: Arc<AuthStorage>, registry: Arc<Registry>) -> 
         storage.clone(),
         sub_model_thinking,
     ));
-    let envs = Arc::new(PythonEnvFactory {
-        python: settings.python.clone(),
-    });
 
     let (payload, root_prompt) = match &args.context {
         Some(source) => (ContextPayload::Str(read_context(source)?), prompt.clone()),
@@ -178,7 +169,7 @@ async fn run(args: Args, storage: Arc<AuthStorage>, registry: Arc<Registry>) -> 
         },
     };
 
-    let mut rlm = Rlm::new(config, root, sub, envs);
+    let mut rlm = Rlm::new(config, root, sub, settings.python.clone());
     session_builder::register_supported_named_models(
         &mut rlm,
         registry.clone(),
@@ -388,15 +379,13 @@ async fn print_events(
             RlmEvent::AnswerSubmitted { .. } => {
                 eprintln!("{} answer submitted", check(color))
             }
-            RlmEvent::LimitHit { limit, detail, .. } => {
-                eprintln!("{} limit {} {detail}", cross(color), limit_name(limit));
-            }
             RlmEvent::RunStart { .. }
             | RlmEvent::RunEnd { .. }
             | RlmEvent::IterationEnd { .. }
             | RlmEvent::RootDelta { .. }
             | RlmEvent::RootThinkingDelta { .. }
-            | RlmEvent::RootText { .. } => {}
+            | RlmEvent::RootText { .. }
+            | RlmEvent::LimitHit { .. } => {}
         }
     }
 }

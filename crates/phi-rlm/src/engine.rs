@@ -19,13 +19,12 @@ use phi_ext::{EventKind, EventPayload, LifecycleEvent};
 use phi_runtime::AppRuntime;
 
 use crate::handler::{DeltaSink, LanguageModel, LmHandler, ThinkingSink, UsageBreakdown};
-use crate::loop_detect::LoopDetector;
 use crate::parsing::{
     ExecutedBlock, could_open_block, find_code_blocks, format_iteration, last_block_end,
 };
 use crate::prompts::{
     DEFAULT_ANSWER_NUDGE, DEFAULT_ACTIONS, DEFAULT_DOING_TASKS, DEFAULT_TONE_AND_STYLE,
-    DEFAULT_USING_YOUR_TOOLS, PROSE_NUDGE, QueryMetadata, SystemPromptOptions,
+    DEFAULT_USING_YOUR_TOOLS, QueryMetadata, SystemPromptOptions,
     build_system_prompt, build_user_prompt, metadata_user_prompt,
 };
 use crate::{ChatMessage, ContextPayload, Role};
@@ -102,9 +101,6 @@ pub enum LimitKind {
 pub enum StopCause {
     /// The model flipped `answer["ready"] = True`.
     Answer,
-    /// Two consecutive turns with no ```repl``` block: after one corrective
-    /// reminder, the second prose-only message is accepted as the answer.
-    Prose,
     /// Iterations exhausted; answer synthesized from the trajectory.
     DefaultAnswer,
     /// `depth >= max_depth`: plain LM completion, no REPL.
@@ -113,8 +109,6 @@ pub enum StopCause {
     Cancelled,
     /// Root model or environment failure.
     Failed,
-    /// Loop detected: same tool-call signature repeated > max_repeats times.
-    LoopDetected,
 }
 
 #[derive(Clone, Debug)]
@@ -307,12 +301,6 @@ struct EngineSubcalls {
     rlm: Rlm,
     handler: Arc<LmHandler>,
     run: RunState,
-    /// Loop detector shared with `run_loop` so tool calls are buffered per
-    /// step and finalized at each iteration boundary.
-    loop_detector: Arc<Mutex<LoopDetector>>,
-    /// Pending tool-call args keyed by `call_id`, captured from
-    /// `ToolEvent::Start` and consumed by `ToolEvent::End` for signatures.
-    pending_args: Arc<Mutex<HashMap<u64, Value>>>,
 }
 
 impl EngineSubcalls {
@@ -416,7 +404,7 @@ impl EngineSubcalls {
             root,
             sub: self.rlm.sub.clone(),
             named: self.rlm.named.clone(),
-            envs: self.rlm.envs.clone(),
+            python: self.rlm.python.clone(),
             host_fns: self.rlm.host_fns.clone(),
             events: self.rlm.events.clone(),
             depth: next_depth,
@@ -447,56 +435,35 @@ impl EngineSubcalls {
 impl SubcallHandler for EngineSubcalls {
     fn notify_tool(&self, event: ToolEvent) {
         let depth = self.rlm.depth;
-        // Capture args from ToolEvent::Start for loop-detection signatures.
-        if let ToolEvent::Start {
-            call_id,
-            name,
-            args,
-        } = &event
-        {
-            self.pending_args
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .insert(*call_id, args.clone());
-            self.rlm.events.emit(RlmEvent::ToolStart {
-                depth,
-                call_id: *call_id,
-                name: name.clone(),
-                args: args.clone(),
-            });
-            return;
-        }
-        // Buffer tool-call signatures for loop detection on ToolEnd.
-        // Per-step (not per-call): the aggregate is finalized by
-        // `LoopDetector::finalize_step`, invoked from `run_loop` at each
-        // iteration boundary.
-        if let ToolEvent::End {
-            call_id,
-            name,
-            result,
-            error,
-            duration,
-        } = &event
-        {
-            let args_val = self
-                .pending_args
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .remove(call_id)
-                .unwrap_or(serde_json::Value::Null);
-            self
-                .loop_detector
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .observe_call(name, &args_val, result);
-            self.rlm.events.emit(RlmEvent::ToolEnd {
-                depth,
-                call_id: *call_id,
-                name: name.clone(),
-                result: result.clone(),
-                error: error.clone(),
-                duration: *duration,
-            });
+        match event {
+            ToolEvent::Start {
+                call_id,
+                name,
+                args,
+            } => {
+                self.rlm.events.emit(RlmEvent::ToolStart {
+                    depth,
+                    call_id,
+                    name,
+                    args,
+                });
+            }
+            ToolEvent::End {
+                call_id,
+                name,
+                result,
+                error,
+                duration,
+            } => {
+                self.rlm.events.emit(RlmEvent::ToolEnd {
+                    depth,
+                    call_id,
+                    name,
+                    result,
+                    error,
+                    duration,
+                });
+            }
         }
     }
 
@@ -553,7 +520,7 @@ pub struct Rlm {
     root: Arc<dyn LanguageModel>,
     sub: Arc<dyn LanguageModel>,
     named: HashMap<String, Arc<dyn LanguageModel>>,
-    envs: Arc<dyn EnvFactory>,
+    python: String,
     host_fns: Option<Arc<dyn SubcallHandler>>,
     events: Events,
     depth: usize,
@@ -565,14 +532,14 @@ impl Rlm {
         config: RlmConfig,
         root: Arc<dyn LanguageModel>,
         sub: Arc<dyn LanguageModel>,
-        envs: Arc<dyn EnvFactory>,
+        python: String,
     ) -> Self {
         Self {
             config,
             root,
             sub,
             named: HashMap::new(),
-            envs,
+            python,
             host_fns: None,
             events: Events::default(),
             depth: 0,
@@ -635,8 +602,6 @@ impl Rlm {
             session_summary: None,
             compaction_archive: Vec::new(),
             pending_shell: Vec::new(),
-            loop_detected: None,
-            loop_detector: None,
         }
     }
 
@@ -689,7 +654,7 @@ impl Rlm {
         let metadata = QueryMetadata::from_payload(&payload);
         let root_prompt_str = root_prompt.unwrap_or("").to_owned();
         let outcome = match self.start_env(&handler, payload, run).await {
-            Ok((mut env, loop_detected, loop_detector)) => {
+            Ok(mut env) => {
                 // Use snapshot history if provided, else build from config.
                 let mut history = if let Some(turn) = turn {
                     if !turn.messages.is_empty() {
@@ -716,8 +681,6 @@ impl Rlm {
                         0,
                         false,
                         cancel,
-                        Some(&loop_detected),
-                        Some(&loop_detector),
                         None,
                     )
                     .await;
@@ -734,28 +697,17 @@ impl Rlm {
         handler: &Arc<LmHandler>,
         payload: ContextPayload,
         run: RunState,
-    ) -> Result<
-        (
-            Box<dyn ReplEnv>,
-            Arc<std::sync::atomic::AtomicBool>,
-            Arc<Mutex<LoopDetector>>,
-        ),
-        String,
-    > {
-        let loop_detected = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let loop_detector = Arc::new(Mutex::new(LoopDetector::new()));
+    ) -> Result<Box<dyn ReplEnv>, String> {
         let subcalls = Arc::new(EngineSubcalls {
             rlm: self.clone(),
             handler: handler.clone(),
             run,
-            loop_detector: loop_detector.clone(),
-            pending_args: Arc::new(Mutex::new(HashMap::new())),
         });
         let (context, context_str) = match payload {
             ContextPayload::Str(s) => (None, Some(s)),
             ContextPayload::Json(v) => (Some(v), None),
         };
-        let mut env = self.envs.create(subcalls);
+        let mut env = PythonEnvFactory { python: self.python.clone() }.create(subcalls);
         let setup = EnvSetup {
             context,
             context_str,
@@ -768,7 +720,7 @@ impl Rlm {
         env.start(setup)
             .await
             .map_err(|e| format!("Error: failed to start REPL environment - {e}"))?;
-        Ok((env, loop_detected, loop_detector))
+        Ok(env)
     }
 
     fn initial_history(
@@ -838,15 +790,12 @@ impl Rlm {
         history_count: usize,
         warm: bool,
         cancel: &CancellationToken,
-        loop_detected: Option<&std::sync::atomic::AtomicBool>,
-        loop_detector: Option<&Arc<Mutex<LoopDetector>>>,
         save_point: Option<&SavePointFn>,
     ) -> Outcome {
         let start = Instant::now();
         let mut best_partial: Option<String> = None;
         let mut consecutive_errors = 0usize;
         let mut iterations = 0usize;
-        let mut prose_nudged = false;
 
         let iteration_limit = self.iteration_limit();
         let mut i = 0usize;
@@ -1018,103 +967,6 @@ impl Rlm {
             }
 
             let final_answer = blocks.iter().find_map(|b| b.result.final_answer.clone());
-
-            // Enforce REPL-first behavior on the opening turn of a cold run:
-            // a plain prose reply with no executed blocks means the model
-            // ignored the environment. Instead of banking that as progress,
-            // bounce it with an explicit reminder and continue the loop.
-            // Warm sends (history_count > 0) skip this: follow-ups may
-            // legitimately be answered in prose from prior context.
-            if i == 0 && history_count == 0 && blocks.is_empty() {
-                history.push(ChatMessage {
-                    role: Role::Assistant,
-                    content: response,
-                });
-                history.push(ChatMessage {
-                    role: Role::User,
-                    content: "You must inspect the `context` via the REPL before answering. Write a ```repl``` block that probes the environment (for example, print a small slice, length, or keys) and continue from there.".to_owned(),
-                });
-                dispatch_event(
-                    &self.runtime,
-                    LifecycleEvent {
-                        kind: EventKind::TurnEnd,
-                        payload: EventPayload::TurnEnd {
-                            turn: i as u32,
-                            had_code: false,
-                        },
-                    },
-                );
-                self.events.emit(RlmEvent::IterationEnd {
-                    depth: self.depth,
-                    iteration: i,
-                    duration: iter_start.elapsed(),
-                });
-                i += 1;
-                continue;
-            }
-
-            // A turn with no ```repl``` block executed nothing and submitted
-            // nothing: re-prompting with a bare "Turn N:" gives the model no
-            // new information, so it re-emits the same prose until the
-            // iteration budget burns out. Instead, nudge once with a
-            // corrective reminder; a second consecutive block-free turn is
-            // accepted as the final answer.
-            if blocks.is_empty() && !response.trim().is_empty() {
-                best_partial = Some(response.clone());
-                if prose_nudged {
-                    dispatch_event(
-                        &self.runtime,
-                        LifecycleEvent {
-                            kind: EventKind::TurnEnd,
-                            payload: EventPayload::TurnEnd {
-                                turn: i as u32,
-                                had_code: false,
-                            },
-                        },
-                    );
-                    self.events.emit(RlmEvent::IterationEnd {
-                        depth: self.depth,
-                        iteration: i,
-                        duration: iter_start.elapsed(),
-                    });
-                    return Outcome {
-                        stop: StopCause::Prose,
-                        response,
-                        error: None,
-                        iterations,
-                    };
-                }
-                prose_nudged = true;
-                history.push(ChatMessage {
-                    role: Role::Assistant,
-                    content: response,
-                });
-                history.push(ChatMessage {
-                    role: Role::User,
-                    content: PROSE_NUDGE.to_owned(),
-                });
-                dispatch_event(
-                    &self.runtime,
-                    LifecycleEvent {
-                        kind: EventKind::TurnEnd,
-                        payload: EventPayload::TurnEnd {
-                            turn: i as u32,
-                            had_code: false,
-                        },
-                    },
-                );
-                self.events.emit(RlmEvent::IterationEnd {
-                    depth: self.depth,
-                    iteration: i,
-                    duration: iter_start.elapsed(),
-                });
-                i += 1;
-                continue;
-            }
-            if !blocks.is_empty() {
-                prose_nudged = false;
-            }
-
             if !response.trim().is_empty() {
                 best_partial = Some(response.clone());
             }
@@ -1199,35 +1051,6 @@ impl Rlm {
                     });
                 }
             }
-
-            // Loop detection: finalize the per-step aggregate signature
-            // (buffered by `notify_tool`) and check the repeat window over
-            // the last `window_size` steps, matching Crush's
-            // `hasRepeatedToolCalls`. Empty (text-only) steps produce no
-            // signature and are skipped. If a loop is detected, set the
-            // shared flag so the run terminates.
-            if let Some(detector) = loop_detector
-                && let Some(stop) = detector
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .finalize_step()
-                && stop == StopCause::LoopDetected
-                && let Some(flag) = loop_detected {
-                    flag.store(true, std::sync::atomic::Ordering::Relaxed);
-                }
-
-            // Loop detection: if the shared flag is set, terminate.
-            if let Some(flag) = loop_detected
-                && flag.load(std::sync::atomic::Ordering::Relaxed) {
-                    return Outcome {
-                        stop: StopCause::LoopDetected,
-                        response: best_partial.unwrap_or_else(|| {
-                            "Error: loop detected — repeated tool-call signature".to_owned()
-                        }),
-                        error: Some("Loop detected: repeated tool-call signature".to_owned()),
-                        iterations,
-                    };
-                }
 
             i += 1;
         }
@@ -1536,15 +1359,6 @@ pub struct RlmSession {
     /// `send`, as (assistant ```repl``` block, REPL-output user message)
     /// pairs — the model sees them as its own prior repl turns.
     pending_shell: Vec<ChatMessage>,
-    /// Loop-detection flag shared between `EngineSubcalls` (which sets it
-    /// when repeated tool calls are observed) and `run_loop` (which checks
-    /// it each iteration to break out of infinite loops). Populated by
-    /// `ensure_env` alongside the env.
-    loop_detected: Option<Arc<std::sync::atomic::AtomicBool>>,
-    /// Per-step loop detector shared between `EngineSubcalls` (which buffers
-    /// tool calls) and `run_loop` (which finalizes each step). Populated by
-    /// `ensure_env` alongside the env.
-    loop_detector: Option<Arc<Mutex<LoopDetector>>>,
 }
 
 /// Threshold: once the in-band transcript exceeds this many message pairs,
@@ -1648,9 +1462,6 @@ impl RlmSession {
         // branch drained them above, before the prompt).
         history.append(&mut self.pending_shell);
         let warm = !self.transcript.is_empty();
-        if let Some(flag) = &self.loop_detected {
-            flag.store(false, std::sync::atomic::Ordering::Relaxed);
-        }
         let outcome = self
             .rlm
             .run_loop(
@@ -1661,8 +1472,6 @@ impl RlmSession {
                 self.exchanges,
                 warm,
                 cancel,
-                self.loop_detected.as_deref(),
-                self.loop_detector.as_ref(),
                 None,
             )
             .await;
@@ -1746,13 +1555,11 @@ impl RlmSession {
 
     async fn ensure_env(&mut self) -> Result<(), String> {
         if self.env.is_none() {
-            let (env, loop_detected, loop_detector) = self
+            let env = self
                 .rlm
                 .start_env(&self.handler, self.payload.clone(), self.run.clone())
                 .await?;
             self.env = Some(env);
-            self.loop_detected = Some(loop_detected);
-            self.loop_detector = Some(loop_detector);
         }
         Ok(())
     }
@@ -1828,8 +1635,6 @@ impl RlmSession {
         self.session_summary = None;
         self.compaction_archive.clear();
         self.pending_shell.clear();
-        self.loop_detected = None;
-        self.loop_detector = None;
     }
 
     /// Compact the in-band transcript when it exceeds the threshold. The
@@ -2031,7 +1836,7 @@ mod tests {
     }
 
     fn rlm(config: RlmConfig, root: Arc<ScriptedLm>, sub: Arc<ScriptedLm>) -> Rlm {
-        Rlm::new(config, root, sub, Arc::new(PythonEnvFactory::default()))
+        Rlm::new(config, root, sub, "python3".to_owned())
     }
 
     fn quiet_sub() -> Arc<ScriptedLm> {
@@ -2207,7 +2012,7 @@ mod tests {
             RlmConfig::default(),
             root,
             quiet_sub(),
-            Arc::new(PythonEnvFactory::default()),
+            "python3".to_owned(),
         )
         .with_events(tx);
         let result = engine
@@ -2282,7 +2087,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn first_turn_plain_prose_is_bounced_until_repl_used() {
+    async fn first_turn_plain_prose_is_banked_until_answer() {
         let root = Arc::new(ScriptedLm::new(
             "root-model",
             &[
@@ -2303,6 +2108,9 @@ mod tests {
         assert_eq!(result.response, "42");
         assert_eq!(result.iterations, 3);
 
+        // The prose-only first turn is banked into history (not bounced with a
+        // corrective reminder), and the loop continues until the model
+        // submits an answer via the REPL.
         let prompts = root.recorded_prompts();
         let second = &prompts[1];
         assert!(
@@ -2310,15 +2118,14 @@ mod tests {
                 .iter()
                 .any(|m| m.role == Role::Assistant && m.content.contains("without using the REPL"))
         );
-        let reminder = second
-            .iter()
-            .find(|m| {
+        assert!(
+            !second.iter().any(|m| {
                 m.role == Role::User
                     && m.content
                         .contains("You must inspect the `context` via the REPL")
-            })
-            .expect("bounce reminder");
-        assert!(reminder.content.contains("```repl```"));
+            }),
+            "prose-only turn must not produce a bounce reminder"
+        );
     }
 
     #[tokio::test]

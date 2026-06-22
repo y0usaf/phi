@@ -20,10 +20,9 @@ use crate::parsing::{
     ExecutedBlock, could_open_block, find_code_blocks, format_iteration, last_block_end,
 };
 use crate::prompts::{
-    DEFAULT_ANSWER_NUDGE, PROSE_NUDGE, QueryMetadata, SystemPromptOptions,
+    DEFAULT_ANSWER_NUDGE, QueryMetadata, SystemPromptOptions,
     build_system_prompt, build_user_prompt, metadata_user_prompt,
 };
-use crate::loop_detect::LoopDetector;
 use crate::{ChatMessage, ContextPayload, Role, TurnState};
 
 use super::config::*;
@@ -191,7 +190,6 @@ impl Rlm {
                         false,
                         cancel,
                         None,
-                        None,
                     )
                     .await;
                 env.shutdown().await;
@@ -212,8 +210,6 @@ impl Rlm {
             rlm: self.clone(),
             handler: handler.clone(),
             run,
-            loop_detector: Arc::new(Mutex::new(LoopDetector::new())),
-            loop_detected: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             pending_args: Arc::new(Mutex::new(HashMap::new())),
         });
         let (context, context_str) = match payload {
@@ -278,14 +274,12 @@ impl Rlm {
         history_count: usize,
         warm: bool,
         cancel: &CancellationToken,
-        loop_detected: Option<&std::sync::atomic::AtomicBool>,
         save_point: Option<&SavePointFn>,
     ) -> Outcome {
         let start = Instant::now();
         let mut best_partial: Option<String> = None;
         let mut consecutive_errors = 0usize;
         let mut iterations = 0usize;
-        let mut prose_nudged = false;
 
         let iteration_limit = self.iteration_limit();
         let mut i = 0usize;
@@ -454,85 +448,6 @@ impl Rlm {
             }
 
             let final_answer = blocks.iter().find_map(|b| b.result.final_answer.clone());
-
-            // Enforce REPL-first behavior on the opening turn of a cold run:
-            // a plain prose reply with no executed blocks means the model
-            // ignored the environment. Instead of banking that as progress,
-            // bounce it with an explicit reminder and continue the loop.
-            // Warm sends (history_count > 0) skip this: follow-ups may
-            // legitimately be answered in prose from prior context.
-            if i == 0 && history_count == 0 && blocks.is_empty() {
-                history.push(ChatMessage {
-                    role: Role::Assistant,
-                    content: response,
-                });
-                history.push(ChatMessage {
-                    role: Role::User,
-                    content: "You must inspect the `context` via the REPL before answering. Write a ```repl``` block that probes the environment (for example, print a small slice, length, or keys) and continue from there.".to_owned(),
-                });
-                dispatch_event(&self.runtime, LifecycleEvent {
-                    kind: EventKind::TurnEnd,
-                    payload: EventPayload::TurnEnd { turn: i as u32, had_code: false },
-                });
-                self.events.emit(RlmEvent::IterationEnd {
-                    depth: self.depth,
-                    iteration: i,
-                    duration: iter_start.elapsed(),
-                });
-                i += 1;
-                continue;
-            }
-
-            // A turn with no ```repl``` block executed nothing and submitted
-            // nothing: re-prompting with a bare "Turn N:" gives the model no
-            // new information, so it re-emits the same prose until the
-            // iteration budget burns out. Instead, nudge once with a
-            // corrective reminder; a second consecutive block-free turn is
-            // accepted as the final answer.
-            if blocks.is_empty() && !response.trim().is_empty() {
-                best_partial = Some(response.clone());
-                if prose_nudged {
-                    dispatch_event(&self.runtime, LifecycleEvent {
-                        kind: EventKind::TurnEnd,
-                        payload: EventPayload::TurnEnd { turn: i as u32, had_code: false },
-                    });
-                    self.events.emit(RlmEvent::IterationEnd {
-                        depth: self.depth,
-                        iteration: i,
-                        duration: iter_start.elapsed(),
-                    });
-                    return Outcome {
-                        stop: StopCause::Prose,
-                        response,
-                        error: None,
-                        iterations,
-                    };
-                }
-                prose_nudged = true;
-                history.push(ChatMessage {
-                    role: Role::Assistant,
-                    content: response,
-                });
-                history.push(ChatMessage {
-                    role: Role::User,
-                    content: PROSE_NUDGE.to_owned(),
-                });
-                dispatch_event(&self.runtime, LifecycleEvent {
-                    kind: EventKind::TurnEnd,
-                    payload: EventPayload::TurnEnd { turn: i as u32, had_code: false },
-                });
-                self.events.emit(RlmEvent::IterationEnd {
-                    depth: self.depth,
-                    iteration: i,
-                    duration: iter_start.elapsed(),
-                });
-                i += 1;
-                continue;
-            }
-            if !blocks.is_empty() {
-                prose_nudged = false;
-            }
-
             if !response.trim().is_empty() {
                 best_partial = Some(response.clone());
             }
@@ -603,21 +518,6 @@ impl Rlm {
                     });
                 }
             }
-
-            // Loop detection: if the shared flag is set, terminate.
-            if let Some(flag) = loop_detected {
-                if flag.load(std::sync::atomic::Ordering::Relaxed) {
-                    return Outcome {
-                        stop: StopCause::LoopDetected,
-                        response: best_partial.unwrap_or_else(|| {
-                            "Error: loop detected — repeated tool-call signature".to_owned()
-                        }),
-                        error: Some("Loop detected: repeated tool-call signature".to_owned()),
-                        iterations,
-                    };
-                }
-            }
-
             i += 1;
         }
 

@@ -73,9 +73,6 @@ pub enum LimitKind {
 pub enum StopCause {
     /// The model flipped `answer["ready"] = True`.
     Answer,
-    /// Two consecutive turns with no ```repl``` block: after one corrective
-    /// reminder, the second prose-only message is accepted as the answer.
-    Prose,
     /// Iterations exhausted; answer synthesized from the trajectory.
     DefaultAnswer,
     /// `depth >= max_depth`: plain LM completion, no REPL.
@@ -84,8 +81,6 @@ pub enum StopCause {
     Cancelled,
     /// Root model or environment failure.
     Failed,
-    /// Loop detected: same tool-call signature repeated > max_repeats times.
-    LoopDetected,
 }
 
 #[derive(Clone, Debug)]

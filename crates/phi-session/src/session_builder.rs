@@ -4,14 +4,12 @@
 
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::{Context as _, Result};
 use phi_ai::{AuthStorage, Model, Registry, ThinkingLevel};
 use phi_builtins::bundled_extensions;
 use phi_builtins::prelude::{CODING_PRELUDE, coding_tools_section};
 use phi_cli::Args;
-use phi_rlm::engine::PythonEnvFactory;
 use phi_rlm::{ContextPayload, ProviderLm, Rlm, RlmConfig};
 use phi_runtime::RuntimeBuilder;
 
@@ -113,10 +111,6 @@ pub async fn build_session(
     let config = RlmConfig {
         max_depth: settings.max_depth,
         max_iterations: settings.max_iterations,
-        max_budget: settings.budget,
-        max_timeout: settings.timeout.map(Duration::from_secs),
-        max_tokens: settings.max_tokens,
-        max_errors: settings.max_errors,
         max_concurrent_subcalls: settings.max_concurrent_subcalls,
         custom_system_prompt: prompt_override,
         append_system_prompt: append_prompt,
@@ -144,9 +138,6 @@ pub async fn build_session(
         storage.clone(),
         sub_model_thinking,
     ));
-    let envs = Arc::new(PythonEnvFactory {
-        python: settings.python.clone(),
-    });
 
     let payload = ContextPayload::Str(workspace_context(cwd));
     let store = match resume {
@@ -154,7 +145,7 @@ pub async fn build_session(
         None => SessionStore::new(cwd)?,
     };
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut rlm = Rlm::new(config, root.clone(), sub.clone(), envs);
+    let mut rlm = Rlm::new(config, root.clone(), sub.clone(), settings.python.clone());
     register_supported_named_models(
         &mut rlm,
         registry.clone(),
