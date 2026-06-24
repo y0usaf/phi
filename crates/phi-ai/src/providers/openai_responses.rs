@@ -244,6 +244,16 @@ impl SseHandler for Parser {
         self.acc.message().clone()
     }
 
+    fn reset(&mut self, model: &Model) {
+        self.acc = Accumulator::new(model);
+        self.items.clear();
+        self.tools.clear();
+        self.stop_reason = StopReason::Stop;
+        self.usage_seen = false;
+        self.errored = false;
+        self.tool_use_seen = false;
+    }
+
     fn on_event(&mut self, _event_name: &str, data: &str, sink: &EventSink) {
         // The transport layer already rejects events over MAX_SSE_EVENT_BYTES,
         // but guard defensively: serde_json bounds recursion depth (128), not

@@ -13,6 +13,12 @@ pub enum AssistantEvent {
     ThinkingEnd { index: usize, content: String },
     Done { message: AssistantMessage },
     Error { message: AssistantMessage },
+    /// Sent before a mid-stream retry; the consumer should discard partial
+    /// output accumulated since the last `Start`/`RetryRollback`.
+    RetryRollback { attempt: u32, max: u32 },
+    /// Keepalive signal emitted periodically during slow generation so
+    /// consumers know the stream is still alive.
+    Pong,
 }
 
 impl AssistantEvent {
@@ -158,7 +164,11 @@ impl Accumulator {
                     *thinking = content.clone();
                 }
             }
-            AssistantEvent::Start | AssistantEvent::Done { .. } | AssistantEvent::Error { .. } => {}
+            AssistantEvent::Start
+            | AssistantEvent::Done { .. }
+            | AssistantEvent::Error { .. }
+            | AssistantEvent::RetryRollback { .. }
+            | AssistantEvent::Pong => {}
         }
     }
 

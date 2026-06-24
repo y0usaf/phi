@@ -242,6 +242,14 @@ impl SseHandler for Parser {
         self.acc.message().clone()
     }
 
+    fn reset(&mut self, model: &Model) {
+        self.acc = Accumulator::new(model);
+        self.tools.clear();
+        self.stop_reason = StopReason::Stop;
+        self.errored = false;
+        self.tool_use_seen = false;
+    }
+
     fn on_event(&mut self, _event_name: &str, data: &str, sink: &EventSink) {
         if data.len() > super::MAX_SSE_EVENT_BYTES {
             return;
