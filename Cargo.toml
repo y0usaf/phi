@@ -9,6 +9,10 @@ version = "0.1.0"
 
 [workspace.dependencies]
 anyhow = "1.0.98"
+# Memory allocator (reduces fragmentation for long-running processes)
+tikv-jemallocator = { version = "0.6", features = ["unprefixed_malloc_on_supported_platforms"] }
+tikv-jemalloc-ctl = "0.6"
+tikv-jemalloc-sys = "0.6"
 arboard = { version = "3", default-features = false, features = ["image-data", "wayland-data-control"] }
 async-trait = "0.1.88"
 base64 = "0.22.1"
@@ -38,6 +42,7 @@ tokio-util = "0.7.15"
 toml = "0.8.22"
 unicode-segmentation = "1.12"
 unicode-width = "0.2"
+image = "0.25"
 url = "2.5.4"
 uuid = { version = "1.17.0", features = ["v7"] }
 vt100 = "0.16"
@@ -56,5 +61,40 @@ phi-rlm = { path = "crates/phi-rlm" }
 phi-session = { path = "crates/phi-session" }
 phi-runtime = { path = "crates/phi-runtime" }
 phi-tui = { path = "crates/phi-tui" }
+phi-terminal-image = { path = "crates/phi-terminal-image" }
+phi-mermaid = { path = "crates/phi-mermaid" }
 phi-lua = { path = "crates/phi-lua" }
 phi-harness = { path = "crates/phi-harness" }
+
+[profile.dev]
+debug = 0
+incremental = true
+
+[profile.dev.package.syntect]
+opt-level = 3
+
+[profile.dev.package.base64]
+opt-level = 3
+
+[profile.test]
+debug = 0
+incremental = true
+codegen-units = 256
+
+[profile.test.package.syntect]
+opt-level = 3
+
+[profile.test.package.base64]
+opt-level = 3
+
+[profile.release]
+opt-level = 1
+codegen-units = 256
+incremental = true
+
+[profile.release-lto]
+inherits = "release"
+opt-level = 3
+codegen-units = 16
+incremental = false
+lto = "thin"

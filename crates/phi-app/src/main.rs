@@ -1,3 +1,19 @@
+#[cfg(feature = "jemalloc")]
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
+#[cfg(all(feature = "jemalloc", not(feature = "jemalloc-prof")))]
+#[allow(non_upper_case_globals)]
+#[unsafe(no_mangle)]
+pub static malloc_conf: Option<&'static [u8; 50]> =
+    Some(b"dirty_decay_ms:1000,muzzy_decay_ms:1000,narenas:4\0");
+
+#[cfg(feature = "jemalloc-prof")]
+#[allow(non_upper_case_globals)]
+#[unsafe(no_mangle)]
+pub static malloc_conf: Option<&'static [u8; 78]> =
+    Some(b"dirty_decay_ms:1000,muzzy_decay_ms:1000,narenas:4,prof:true,prof_active:false\0");
+
 use std::collections::{HashMap, HashSet};
 use std::io::{IsTerminal, Read};
 use std::sync::Arc;

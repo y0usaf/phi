@@ -335,6 +335,208 @@ fn generate_muted_text(bg: Color, mode: Mode) -> Color {
     Color::rgb(gray as u8, gray as u8, gray as u8)
 }
 
+// ---------------------------------------------------------------------------
+// Semantic palette (port of jcode-tui-style `theme` semantic colors)
+// ---------------------------------------------------------------------------
+// Rich, role-specific colors for chat / message rendering. These complement
+// the structural palette above. `ACCENT` (BOK) above is the primary accent;
+// `accent_color()` here provides jcode's purple semantic accent.
+
+pub fn user_color() -> Color {
+    Color::rgb(138, 180, 248)
+}
+pub fn ai_color() -> Color {
+    Color::rgb(129, 199, 132)
+}
+pub fn tool_color() -> Color {
+    Color::rgb(120, 120, 120)
+}
+pub fn file_link_color() -> Color {
+    Color::rgb(180, 200, 255)
+}
+pub fn accent_color() -> Color {
+    Color::rgb(186, 139, 255)
+}
+pub fn system_message_color() -> Color {
+    Color::rgb(255, 170, 220)
+}
+pub fn dim_color() -> Color {
+    Color::rgb(80, 80, 80)
+}
+pub fn queued_color() -> Color {
+    Color::rgb(255, 193, 7)
+}
+pub fn asap_color() -> Color {
+    Color::rgb(110, 210, 255)
+}
+pub fn pending_color() -> Color {
+    Color::rgb(140, 140, 140)
+}
+pub fn user_text() -> Color {
+    Color::rgb(245, 245, 255)
+}
+pub fn user_bg() -> Color {
+    Color::rgb(35, 40, 50)
+}
+pub fn ai_text() -> Color {
+    Color::rgb(220, 220, 215)
+}
+pub fn header_icon_color() -> Color {
+    Color::rgb(120, 210, 230)
+}
+pub fn header_name_color() -> Color {
+    Color::rgb(190, 210, 235)
+}
+pub fn header_session_color() -> Color {
+    Color::rgb(255, 255, 255)
+}
+
+// ---------------------------------------------------------------------------
+// Multi-tier animation FPS settings (port of jcode spinner system)
+// ---------------------------------------------------------------------------
+
+/// Spinner frames for animated status. Keep these single-cell because the
+/// fast spinner-only renderer patches one status cell between full TUI
+/// redraws. This sequence should read as a circular spin, not a pulse.
+const SPINNER_FRAMES: &[&str] = &["\u{280b}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283c}", "\u{2834}", "\u{2826}", "\u{2827}", "\u{2807}", "\u{280f}"];
+
+/// Frame rate for slow, full-line "liveness" indicators that can only be
+/// repainted by a full TUI redraw (e.g. a running-tool progress bar) when
+/// decorative animations are disabled (Minimal tier, SSH, WSL, etc.). These
+/// ride the ~1 Hz passive-liveness redraw, so advancing them faster would
+/// just skip frames.
+pub const LIVENESS_INDICATOR_FPS: f32 = 1.5;
+
+/// Frame rate for the low-cost single-cell circular spinner when decorative
+/// animations are disabled. Unlike the full-line indicators above, this
+/// spinner is patched by the cheap one-cell fast path between full redraws,
+/// so it can animate at a smooth, responsive cadence well above ~1 Hz while
+/// still staying very light on resources.
+pub const LIVENESS_SPINNER_FPS: f32 = 12.5;
+
+pub fn spinner_frame_index(elapsed: f32, fps: f32) -> usize {
+    ((elapsed * fps) as usize) % SPINNER_FRAMES.len()
+}
+
+pub fn spinner_frame(elapsed: f32, fps: f32) -> &'static str {
+    SPINNER_FRAMES[spinner_frame_index(elapsed, fps)]
+}
+
+pub fn activity_indicator_frame_index(
+    elapsed: f32,
+    fps: f32,
+    enable_decorative_animations: bool,
+) -> usize {
+    if enable_decorative_animations {
+        spinner_frame_index(elapsed, fps)
+    } else {
+        spinner_frame_index(elapsed, LIVENESS_SPINNER_FPS)
+    }
+}
+
+pub fn activity_indicator(
+    elapsed: f32,
+    fps: f32,
+    enable_decorative_animations: bool,
+) -> &'static str {
+    SPINNER_FRAMES[activity_indicator_frame_index(elapsed, fps, enable_decorative_animations)]
+}
+
+// ---------------------------------------------------------------------------
+// Color blending utilities (port of jcode blend + color_to_floats)
+// ---------------------------------------------------------------------------
+
+/// Extract (r, g, b) floats from a `Color`, resolving ANSI-indexed colors
+/// via the 256-color cube. Falls back for fully transparent (default) colors.
+pub fn color_to_floats(c: Color, fallback: (f32, f32, f32)) -> (f32, f32, f32) {
+    if let Some(idx) = c.ansi_index_value() {
+        let resolved = ansi_index_to_color(idx);
+        let (r, g, b) = resolved.rgb_components();
+        (r as f32, g as f32, b as f32)
+    } else {
+        let (r, g, b) = c.rgb_components();
+        // Detect transparent/default (alpha == 0) and use fallback.
+        if c.0 >> 24 == 0 {
+            fallback
+        } else {
+            (r as f32, g as f32, b as f32)
+        }
+    }
+}
+
+pub fn blend_color(from: Color, to: Color, t: f32) -> Color {
+    let (fr, fg, fb) = color_to_floats(from, (80.0, 80.0, 80.0));
+    let (tr, tg, tb) = color_to_floats(to, (200.0, 200.0, 200.0));
+    let r = fr + (tr - fr) * t;
+    let g = fg + (tg - fg) * t;
+    let b = fb + (tb - fb) * t;
+    Color::rgb(
+        r.clamp(0.0, 255.0) as u8,
+        g.clamp(0.0, 255.0) as u8,
+        b.clamp(0.0, 255.0) as u8,
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Prompt + tool animation functions (port of jcode prompt animations)
+// ---------------------------------------------------------------------------
+
+pub fn rainbow_prompt_color(distance: usize) -> Color {
+    const RAINBOW: [(u8, u8, u8); 7] = [
+        (255, 80, 80),   // Red (softened)
+        (255, 160, 80),  // Orange
+        (255, 230, 80),  // Yellow
+        (80, 220, 100),  // Green
+        (80, 200, 220),  // Cyan
+        (100, 140, 255), // Blue
+        (180, 100, 255), // Violet
+    ];
+    const GRAY: (u8, u8, u8) = (80, 80, 80);
+    let decay = (-0.4 * distance as f32).exp();
+    let rainbow_idx = distance.min(RAINBOW.len() - 1);
+    let (r, g, b) = RAINBOW[rainbow_idx];
+    let blend = |rainbow: u8, gray: u8| -> u8 {
+        (rainbow as f32 * decay + gray as f32 * (1.0 - decay)) as u8
+    };
+    Color::rgb(blend(r, GRAY.0), blend(g, GRAY.1), blend(b, GRAY.2))
+}
+
+pub fn prompt_entry_color(base: Color, t: f32) -> Color {
+    let peak = Color::rgb(255, 230, 120);
+    let phase = if t < 0.5 { t * 2.0 } else { (1.0 - t) * 2.0 };
+    blend_color(base, peak, phase.clamp(0.0, 1.0) * 0.7)
+}
+
+pub fn prompt_entry_bg_color(base: Color, t: f32) -> Color {
+    let spotlight = Color::rgb(58, 66, 82);
+    let ease_in = 1.0 - (1.0 - t).powi(3);
+    let ease_out = (1.0 - t).powi(2);
+    let phase = (ease_in * ease_out * 1.65).clamp(0.0, 1.0);
+    blend_color(base, spotlight, phase * 0.85)
+}
+
+pub fn prompt_entry_shimmer_color(base: Color, pos: f32, t: f32) -> Color {
+    let travel = (t * 1.15).clamp(0.0, 1.0);
+    let width = 0.18;
+    let dist = (pos - travel).abs();
+    let shimmer = (1.0 - (dist / width).clamp(0.0, 1.0)).powf(2.2);
+    let pulse = (1.0 - t).powf(0.55);
+    let highlight = Color::rgb(255, 248, 210);
+    blend_color(base, highlight, shimmer * pulse * 0.7)
+}
+
+/// Generate an animated color that pulses between two colors.
+pub fn animated_tool_color(elapsed: f32, enable_decorative_animations: bool) -> Color {
+    if !enable_decorative_animations {
+        return tool_color();
+    }
+    let t = (elapsed * 2.0).sin() * 0.5 + 0.5;
+    let r = (80.0 + t * 106.0) as u8;
+    let g = (200.0 - t * 61.0) as u8;
+    let b = (220.0 + t * 35.0) as u8;
+    Color::rgb(r, g, b)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

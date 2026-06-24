@@ -355,3 +355,36 @@ fn markdown_renders_repl_fences_literally() {
     assert_eq!(p.first().unwrap(), "```repl");
     assert_eq!(p.last().unwrap(), "```");
 }
+
+
+#[test]
+fn over_wide_tokens_are_hard_split() {
+    let p = palette();
+    // Long URL without spaces — wider than the line width.
+    let url = "https://example.com/very/very/very/very/very/long/path";
+    let lines = render_markdown(url, 20, &p);
+    for line in &lines {
+        assert!(visible_width(line) <= 20, "too wide: {line:?}");
+    }
+    let joined: String = plain(&lines)
+        .iter()
+        .filter(|s| !s.is_empty())
+        .cloned()
+        .collect();
+    assert!(joined.contains(url), "URL fragmented: {joined:?}");
+
+    // Long inline code — wider than the line width.
+    let lines = render_markdown("`aaaaaaaaaaaaaaaaaaaaaaaaa`", 20, &p);
+    for line in &lines {
+        assert!(visible_width(line) <= 20, "too wide: {line:?}");
+    }
+    let joined: String = plain(&lines)
+        .iter()
+        .filter(|s| !s.is_empty())
+        .cloned()
+        .collect();
+    assert!(
+        joined.contains("aaaaaaaaaaaaaaaaaaaaaaaaa"),
+        "code fragmented: {joined:?}"
+    );
+}

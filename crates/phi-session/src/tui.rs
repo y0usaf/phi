@@ -38,10 +38,8 @@ const RESET: &str = "\x1b[0m";
 const BOLD: &str = "\x1b[1m";
 const DIM: &str = "\x1b[2m";
 const CYAN: &str = "\x1b[36m";
-const YELLOW: &str = "\x1b[33m";
 #[allow(dead_code)] // used by success_status_text, kept for the success-state status family
 const GREEN: &str = "\x1b[32m";
-const RED: &str = "\x1b[31m";
 // Basic ANSI colors for the forgecode-style chrome — these already follow
 // the terminal's own palette, so they stay as &str constants.
 const LIGHT_GREEN: &str = "\x1b[92m";
@@ -79,6 +77,10 @@ pub struct InlinePalette {
     pub assistant_border: String,
     /// Chrome (status/footer) border.
     pub chrome_border: String,
+    /// Error text accent (ANSI red, terminal-derived).
+    pub error_fg: String,
+    /// Warning text accent (ANSI yellow, terminal-derived).
+    pub warning_fg: String,
     /// Markdown/output highlighting palette.
     pub markdown: MarkdownPalette,
 }
@@ -99,6 +101,8 @@ impl InlinePalette {
             user_border: s("\x1b[38;2;96;122;196m"),
             assistant_border: s("\x1b[38;2;84;91;116m"),
             chrome_border: s("\x1b[38;2;82;88;110m"),
+            error_fg: s("\x1b[31m"),
+            warning_fg: s("\x1b[33m"),
             markdown: MarkdownPalette::default_const(),
         }
     }
@@ -127,6 +131,8 @@ impl InlinePalette {
             user_border: col(4).unwrap_or_else(|| fallback.user_border.clone()),
             assistant_border: col(8).unwrap_or_else(|| fallback.assistant_border.clone()),
             chrome_border: col(8).unwrap_or_else(|| fallback.chrome_border.clone()),
+            error_fg: col(1).unwrap_or_else(|| fallback.error_fg.clone()),
+            warning_fg: col(3).unwrap_or_else(|| fallback.warning_fg.clone()),
             markdown: MarkdownPalette::from_terminal_colors(colors),
         }
     }
@@ -140,28 +146,6 @@ impl Default for InlinePalette {
 
 fn s(v: &str) -> String {
     v.to_owned()
-}
-
-#[allow(dead_code)]
-// Thinking-level border colors for the input box, mirroring pi's dark theme.
-const THINKING_BORDER_OFF: &str = "\x1b[90m"; // darkGray
-const THINKING_BORDER_MINIMAL: &str = "\x1b[38;2;110;110;110m"; // #6e6e6e
-const THINKING_BORDER_LOW: &str = "\x1b[38;2;95;135;175m"; // #5f87af
-const THINKING_BORDER_MEDIUM: &str = "\x1b[38;2;129;162;190m"; // #81a2be
-const THINKING_BORDER_HIGH: &str = "\x1b[38;2;178;148;187m"; // #b294bb
-const THINKING_BORDER_XHIGH: &str = "\x1b[38;2;209;131;232m"; // #d183e8
-
-/// Returns the input-box border color for a given thinking level.
-#[allow(dead_code)]
-fn thinking_border_color(level: ThinkingLevel) -> &'static str {
-    match level {
-        ThinkingLevel::Off => THINKING_BORDER_OFF,
-        ThinkingLevel::Minimal => THINKING_BORDER_MINIMAL,
-        ThinkingLevel::Low => THINKING_BORDER_LOW,
-        ThinkingLevel::Medium => THINKING_BORDER_MEDIUM,
-        ThinkingLevel::High => THINKING_BORDER_HIGH,
-        ThinkingLevel::XHigh => THINKING_BORDER_XHIGH,
-    }
 }
 
 
@@ -566,7 +550,7 @@ fn failed_status_text(
         .filter(|d| !d.trim().is_empty())
         .map(|d| format!(" {DIM}—{RESET} {d}"))
         .unwrap_or_default();
-    format!("{RED}✗{RESET} {label}{duration}{detail}")
+    format!("{}✗{RESET} {label}{duration}{detail}", p.error_fg)
 }
 
 /// Canonical identity for a tool call — the single source of truth shared by
@@ -1476,7 +1460,7 @@ pub async fn run(setup: TuiSetup, mut io: SessionIo) -> Result<()> {
                     ui.refresh_popup();
                 }
                 Ok(None) => {}
-                Err(e) => ui.pending.push(format!("\x1b[31merror:{RESET} {e}")),
+                Err(e) => ui.pending.push(ui.err(&e)),
             }
         }
         if let Some(pending_modal) = ui.pending_host_modal.take() {
@@ -1492,7 +1476,7 @@ pub async fn run(setup: TuiSetup, mut io: SessionIo) -> Result<()> {
                     }
                 }
                 Ok(None) => {}
-                Err(e) => ui.pending.push(format!("\x1b[31merror:{RESET} {e}")),
+                Err(e) => ui.pending.push(ui.err(&e)),
             }
         }
         dirty = true;
@@ -1801,6 +1785,14 @@ impl Ui {
         }
     }
 
+    fn err(&self, msg: &impl std::fmt::Display) -> String {
+        format!("{}error:{RESET} {msg}", &self.palette.error_fg)
+    }
+
+    fn warn(&self, msg: &impl std::fmt::Display) -> String {
+        format!("{}{msg}{RESET}", &self.palette.warning_fg)
+    }
+
     fn greet(&mut self, missing_credentials: &[String]) {
         self.pending.push(format!(
             "{BOLD}phi{RESET} {DIM}· {} · /help for commands{RESET}",
@@ -1808,7 +1800,8 @@ impl Ui {
         ));
         for provider in missing_credentials {
             self.pending.push(format!(
-                "{YELLOW}no credentials for '{provider}'{RESET} {DIM}— type /login to authenticate{RESET}"
+                "{}no credentials for '{provider}'{RESET} {DIM}— type /login to authenticate{RESET}",
+                &self.palette.warning_fg
             ));
         }
     }
@@ -1970,7 +1963,7 @@ impl Ui {
 
         // Effort (thinking level)
         if let Some(effort) = effort_label(self.root_lm.thinking(), self.term.width()) {
-            result.push_str(&format!(" {YELLOW}{effort}{RESET}"));
+            result.push_str(&format!(" {}{effort}{RESET}", &self.palette.warning_fg));
         }
 
         result
@@ -2532,7 +2525,7 @@ impl Ui {
                 self.replay_branch();
                 self.restore_rlm(cmd_tx);
             }
-            Err(e) => self.pending.push(format!("\x1b[31merror:{RESET} {e}")),
+            Err(e) => self.pending.push(self.err(&e)),
         }
     }
 
@@ -2552,7 +2545,7 @@ impl Ui {
                 self.restore_rlm(cmd_tx);
                 self.editor.set_text(&text);
             }
-            Err(e) => self.pending.push(format!("\x1b[31merror:{RESET} {e}")),
+            Err(e) => self.pending.push(self.err(&e)),
         }
     }
 
@@ -2659,7 +2652,8 @@ impl Ui {
         if self.store.interrupted_exchange().is_some() {
             self.pending.push(String::new());
             self.pending.push(format!(
-                "{YELLOW}previous run was interrupted mid-turn; completed work up to the last checkpoint is shown above{RESET}"
+                "{}previous run was interrupted mid-turn; completed work up to the last checkpoint is shown above{RESET}",
+                &self.palette.warning_fg
             ));
             self.last_activity = false;
             let _ = self.store.acknowledge_interrupted();
@@ -3049,7 +3043,7 @@ impl Ui {
                 let _ = self.term.clear_all();
                 match SessionStore::new(&self.cwd) {
                     Ok(store) => self.store = store,
-                    Err(e) => self.pending.push(format!("\x1b[31merror:{RESET} {e}")),
+                    Err(e) => self.pending.push(self.err(&e)),
                 }
                 self.pending.push(format!("{DIM}[session reset]{RESET}"));
             }
@@ -3096,7 +3090,7 @@ impl Ui {
                     Ok(()) => self
                         .pending
                         .push(format!("{DIM}[logged out of {provider}]{RESET}")),
-                    Err(e) => self.pending.push(format!("\x1b[31merror:{RESET} {e}")),
+                    Err(e) => self.pending.push(self.err(&e)),
                 }
             }
             _ if trimmed.starts_with('!') && trimmed.len() > 1 => {
@@ -3142,10 +3136,10 @@ impl Ui {
                     }
                     Ok(None) => {
                         self.pending
-                            .push(format!("\x1b[33munknown command: {cmd_name}{RESET}"));
+                            .push(self.warn(&format!("unknown command: {cmd_name}")));
                     }
                     Err(e) => {
-                        self.pending.push(format!("\x1b[31merror:{RESET} {e}"));
+                        self.pending.push(self.err(&e));
                     }
                 }
             }
@@ -3189,7 +3183,7 @@ impl Ui {
         self.push_user_message(prompt);
         if let Err(e) = self.store.append(session::Role::User, prompt) {
             self.pending
-                .push(format!("{YELLOW}session not saved:{RESET} {e}"));
+                .push(format!("{}session not saved:{RESET} {e}", &self.palette.warning_fg));
         }
         // Durable turn boundary: an exchange_start without its exchange_end
         // is how a crash mid-turn stays detectable after restart.
@@ -3209,15 +3203,14 @@ impl Ui {
 
     fn switch_model(&mut self, query: &str, root: bool) {
         let Some(model) = self.registry.find(query).cloned() else {
-            self.pending.push(format!(
-                "\x1b[31merror:{RESET} unknown model '{query}' (tab after /model lists models)"
+            self.pending.push(self.err(
+                &format!("unknown model '{query}' (tab after /model lists models)")
             ));
             return;
         };
         if !self.registry.is_supported(&model) {
-            self.pending.push(format!(
-                "\x1b[31merror:{RESET} model '{}/{}' is not supported",
-                model.provider, model.id
+            self.pending.push(self.err(
+                &format!("model '{}/{}' is not supported", model.provider, model.id)
             ));
             return;
         }
@@ -3261,8 +3254,8 @@ impl Ui {
             provider.to_owned()
         };
         let Some(provider) = OAuthProviderId::parse(&name) else {
-            self.pending.push(format!(
-                "\x1b[31merror:{RESET} unknown provider '{name}' (expected: anthropic, openai)"
+            self.pending.push(self.err(
+                &format!("unknown provider '{name}' (expected: anthropic, openai)")
             ));
             return;
         };
@@ -3307,7 +3300,7 @@ impl Ui {
                     }
                     Err(e) => self
                         .pending
-                        .push(format!("\x1b[31mlogin failed:{RESET} {e}")),
+                        .push(format!("{}login failed:{RESET} {e}", &self.palette.error_fg)),
                 }
             }
         }
@@ -4148,7 +4141,7 @@ impl Ui {
             Done::Restored(result) => {
                 if let Err(e) = result {
                     self.pending
-                        .push(format!("\x1b[31mrestore failed:{RESET} {e}"));
+                        .push(format!("{}restore failed:{RESET} {e}", &self.palette.error_fg));
                 }
             }
         }
@@ -4205,7 +4198,7 @@ impl Ui {
                     self.push_bar(0, format!("failed: {e}"));
                     self.commit_block();
                 } else {
-                    self.pending.push(format!("\x1b[31merror:{RESET} {e}"));
+                    self.pending.push(self.err(&e));
                     self.last_activity = false;
                 }
             }
@@ -4257,7 +4250,7 @@ impl Ui {
         self.pending.push(String::new());
         if completion.stop == StopCause::Failed {
             let error = completion.error.unwrap_or_else(|| "run failed".to_owned());
-            self.pending.push(format!("\x1b[31merror:{RESET} {error}"));
+            self.pending.push(self.err(&error));
         } else if !completion.response.is_empty() {
             self.push_assistant_message(&completion.response);
         }

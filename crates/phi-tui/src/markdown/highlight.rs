@@ -1,7 +1,59 @@
+use std::collections::{HashMap, hash_map::DefaultHasher};
+use std::hash::{Hash, Hasher};
+use std::sync::{LazyLock, Mutex};
+
 use syntect::easy::HighlightLines;
 use syntect::util::as_24_bit_terminal_escaped;
 
-use super::constants::{MarkdownPalette, RESET, SYNTAXES, THEME};
+use super::constants::{MarkdownPalette, RESET, SYNTAXES};
+
+/// Maximum number of highlighted code blocks kept in the cache.
+const HIGHLIGHT_CACHE_LIMIT: usize = 256;
+
+/// Thread-safe cache for syntax-highlighted code blocks.
+/// Keyed by `hash_code(code, lang)`; stores the ANSI-escaped output lines.
+static HIGHLIGHT_CACHE: LazyLock<Mutex<HashMap<u64, Vec<String>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Hash a code block's content and language tag to a 64-bit key.
+fn hash_code(code: &str, lang: Option<&str>) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    code.hash(&mut hasher);
+    lang.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Highlight a code block using a thread-safe cache.
+///
+/// On a cache hit the previously rendered ANSI lines are returned without
+/// re-tokenizing. On a miss the code is highlighted via `highlight_code`
+/// and stored for subsequent calls. The cache evicts entirely when it
+/// reaches `HIGHLIGHT_CACHE_LIMIT` entries (simple clear-all strategy).
+#[allow(clippy::collapsible_if)]
+pub fn highlight_code_cached(
+    code: &str,
+    lang: Option<&str>,
+    palette: &MarkdownPalette,
+) -> Vec<String> {
+    let hash = hash_code(code, lang);
+
+    if let Ok(cache) = HIGHLIGHT_CACHE.lock() {
+        if let Some(lines) = cache.get(&hash).cloned() {
+            return lines;
+        }
+    }
+
+    let lines = highlight_code(code, lang, palette);
+
+    if let Ok(mut cache) = HIGHLIGHT_CACHE.lock() {
+        if cache.len() >= HIGHLIGHT_CACHE_LIMIT {
+            cache.clear();
+        }
+        cache.insert(hash, lines.clone());
+    }
+
+    lines
+}
 
 pub(super) fn normalize_code_lang(lang: &str) -> String {
     match lang.trim().to_ascii_lowercase().as_str() {
@@ -51,7 +103,7 @@ pub(super) fn highlight_code_lines(
     });
     match syntax {
         Some(syntax) => {
-            let mut highlighter = HighlightLines::new(syntax, &THEME);
+            let mut highlighter = HighlightLines::new(syntax, &palette.syntax_theme);
             code_lines
                 .into_iter()
                 .map(|line| {
@@ -74,7 +126,7 @@ pub(super) fn highlight_repl_lines(
     let syntax = SYNTAXES.find_syntax_by_token("python");
     match syntax {
         Some(syntax) => {
-            let mut highlighter = HighlightLines::new(syntax, &THEME);
+            let mut highlighter = HighlightLines::new(syntax, &palette.syntax_theme);
             code_lines
                 .into_iter()
                 .map(|line| {
