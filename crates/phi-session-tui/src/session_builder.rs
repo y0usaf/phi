@@ -30,18 +30,22 @@ pub struct SharedResources {
 /// the project's own `.phi/config.lua`, so projects in one mux can use
 /// different models, pythons, or limits. With `resume`, the session picks up
 /// an existing JSONL instead of starting fresh.
-pub async fn build_session(
-    cwd: &Path,
-    shared: &SharedResources,
-    resume: Option<&Path>,
-) -> Result<TuiSetup> {
-    let SharedResources {
-        args,
-        storage,
-        registry,
-    } = shared;
-    let settings = Settings::resolve(&args.to_session_args(), Config::load(cwd)?, true);
+/// Resolved models, thinking levels, and missing-credential list for a session.
+struct ResolvedModels {
+    root_model: Model,
+    sub_model: Model,
+    thinking: ThinkingLevel,
+    sub_model_thinking: ThinkingLevel,
+    missing_credentials: Vec<String>,
+}
 
+/// Resolve root/sub models, parse thinking levels, and detect missing provider
+/// credentials from already-loaded settings.
+async fn resolve_models(
+    settings: &Settings,
+    registry: &Registry,
+    storage: &AuthStorage,
+) -> Result<ResolvedModels> {
     let root_model = find_model(registry, &settings.model)?;
     let sub_model = match &settings.sub_model {
         Some(query) => find_model(registry, query)?,
@@ -63,15 +67,24 @@ pub async fn build_session(
         }
     }
 
-    // Discover and load Lua extensions
+    Ok(ResolvedModels {
+        root_model,
+        sub_model,
+        thinking,
+        sub_model_thinking,
+        missing_credentials,
+    })
+}
+
+/// Discover and load Lua extensions and config.lua files, then build and boot
+/// the AppRuntime with all extensions registered.
+async fn build_runtime(cwd: &Path, settings: &Settings) -> Result<Arc<phi_runtime::AppRuntime>> {
     let ext_paths = phi_lua::discover_extensions(cwd);
     let lua_exts = phi_lua::load_extensions(&ext_paths);
 
-    // Load config.lua files as LuaExtensions (phi global active — extension entry point)
     let config_ext_paths = phi_lua::config_extension_paths(cwd);
     let config_exts = phi_lua::load_extensions(&config_ext_paths);
 
-    // Build AppRuntime
     let mut rt_builder = RuntimeBuilder::new().with_cwd(cwd);
     for ext in bundled_extensions() {
         rt_builder = rt_builder.register_boxed_extension(ext);
@@ -96,8 +109,11 @@ pub async fn build_session(
     }
     let runtime = Arc::new(rt_builder.build()?);
     runtime.boot().await?;
+    Ok(runtime)
+}
 
-    // Augment setup_code with extension stubs
+/// Build RlmConfig from resolved settings, prompt overrides, and environment info.
+fn build_rlm_config(cwd: &Path, settings: &Settings, runtime: &phi_runtime::AppRuntime) -> RlmConfig {
     let ext_stubs = runtime.extension_prelude_stubs();
     let setup_code = if ext_stubs.is_empty() {
         CODING_PRELUDE.to_owned()
@@ -107,8 +123,7 @@ pub async fn build_session(
 
     let (prompt_override, append_prompt) = phi_session::prompts::discover_prompt_overrides(cwd);
 
-    let env_info = env_info_block(cwd);
-    let config = RlmConfig {
+    RlmConfig {
         max_depth: settings.max_depth,
         max_iterations: settings.max_iterations,
         max_concurrent_subcalls: settings.max_concurrent_subcalls,
@@ -116,7 +131,7 @@ pub async fn build_session(
         append_system_prompt: append_prompt,
         setup_code: Some(setup_code),
         tools_section: Some(coding_tools_section()),
-        env_info: Some(env_info),
+        env_info: Some(env_info_block(cwd)),
         cwd: Some(cwd.display().to_string()),
         user_prologue: Some(format!(
             "You are a coding agent operating directly in the user's working directory: {}. \
@@ -124,22 +139,49 @@ pub async fn build_session(
             cwd.display()
         )),
         ..RlmConfig::default()
-    };
+    }
+}
 
+/// Build root and sub ProviderLm handles from resolved models.
+fn build_providers(
+    registry: &Arc<Registry>,
+    storage: &Arc<AuthStorage>,
+    models: &ResolvedModels,
+    max_tokens: Option<u64>,
+) -> (Arc<ProviderLm>, Arc<ProviderLm>) {
     let root = Arc::new(ProviderLm::new(
         registry.clone(),
-        root_model,
+        models.root_model.clone(),
         storage.clone(),
-        thinking,
-        settings.max_tokens,
+        models.thinking,
+        max_tokens,
     ));
     let sub = Arc::new(ProviderLm::new(
         registry.clone(),
-        sub_model,
+        models.sub_model.clone(),
         storage.clone(),
-        sub_model_thinking,
-        settings.max_tokens,
+        models.sub_model_thinking,
+        max_tokens,
     ));
+    (root, sub)
+}
+
+pub async fn build_session(
+    cwd: &Path,
+    shared: &SharedResources,
+    resume: Option<&Path>,
+) -> Result<TuiSetup> {
+    let SharedResources {
+        args,
+        storage,
+        registry,
+    } = shared;
+    let settings = Settings::resolve(&args.to_session_args(), Config::load(cwd)?, true);
+
+    let models = resolve_models(&settings, registry, storage).await?;
+    let runtime = build_runtime(cwd, &settings).await?;
+    let config = build_rlm_config(cwd, &settings, &runtime);
+    let (root, sub) = build_providers(registry, storage, &models, settings.max_tokens);
 
     let payload = ContextPayload::Str(workspace_context(cwd));
     let store = match resume {
@@ -152,7 +194,7 @@ pub async fn build_session(
         &mut rlm,
         registry.clone(),
         storage.clone(),
-        sub_model_thinking,
+        models.sub_model_thinking,
     );
     let rlm = rlm.with_events(tx);
     let rlm = rlm.with_runtime(Arc::clone(&runtime));
@@ -160,7 +202,7 @@ pub async fn build_session(
         rlm,
         payload,
         events: rx,
-        missing_credentials,
+        missing_credentials: models.missing_credentials,
         runtime,
         ui: UiSetup {
             max_iterations: settings.max_iterations,
