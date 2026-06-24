@@ -27,6 +27,21 @@ pub struct InlinePalette {
     pub assistant_border: String,
     /// Chrome (status/footer) border.
     pub chrome_border: String,
+    /// Chrome header: agent label + usage (PHI, tokens).
+    pub chrome_agent_fg: String,
+    /// Chrome header: cost figure.
+    pub chrome_cost_fg: String,
+    /// Chrome header: directory / branch / prompt glyph.
+    pub chrome_dir_fg: String,
+    /// Chrome header: model name.
+    pub chrome_model_fg: String,
+    /// Per-level thinking colors (progression: gray → blue → cyan → magenta).
+    pub thinking_off: String,
+    pub thinking_minimal: String,
+    pub thinking_low: String,
+    pub thinking_medium: String,
+    pub thinking_high: String,
+    pub thinking_xhigh: String,
     /// Error text accent (ANSI red, terminal-derived).
     pub error_fg: String,
     /// Warning text accent (ANSI yellow, terminal-derived).
@@ -53,6 +68,16 @@ impl InlinePalette {
             user_border: s("\x1b[38;2;96;122;196m"),
             assistant_border: s("\x1b[38;2;84;91;116m"),
             chrome_border: s("\x1b[38;2;82;88;110m"),
+            chrome_agent_fg: s("\x1b[1m\x1b[37m"),
+            chrome_cost_fg: s("\x1b[1m\x1b[32m"),
+            chrome_dir_fg: s("\x1b[1m\x1b[92m"),
+            chrome_model_fg: s("\x1b[95m"),
+            thinking_off: s("\x1b[38;2;80;80;80m"),
+            thinking_minimal: s("\x1b[38;2;110;110;110m"),
+            thinking_low: s("\x1b[38;2;95;135;175m"),
+            thinking_medium: s("\x1b[38;2;129;162;190m"),
+            thinking_high: s("\x1b[38;2;178;148;187m"),
+            thinking_xhigh: s("\x1b[38;2;209;131;232m"),
             error_fg: s("\x1b[31m"),
             warning_fg: s("\x1b[33m"),
             statusbar_bg: s("\x1b[48;2;45;44;53m"),
@@ -84,6 +109,16 @@ impl InlinePalette {
             user_border: col(4).unwrap_or_else(|| fallback.user_border.clone()),
             assistant_border: col(8).unwrap_or_else(|| fallback.assistant_border.clone()),
             chrome_border: col(8).unwrap_or_else(|| fallback.chrome_border.clone()),
+            chrome_agent_fg: col_bold(7).unwrap_or_else(|| fallback.chrome_agent_fg.clone()),
+            chrome_cost_fg: col_bold(2).unwrap_or_else(|| fallback.chrome_cost_fg.clone()),
+            chrome_dir_fg: col_bold(10).unwrap_or_else(|| fallback.chrome_dir_fg.clone()),
+            chrome_model_fg: col(13).unwrap_or_else(|| fallback.chrome_model_fg.clone()),
+            thinking_off: col(8).unwrap_or_else(|| fallback.thinking_off.clone()),
+            thinking_minimal: col(7).unwrap_or_else(|| fallback.thinking_minimal.clone()),
+            thinking_low: col(4).unwrap_or_else(|| fallback.thinking_low.clone()),
+            thinking_medium: col(6).unwrap_or_else(|| fallback.thinking_medium.clone()),
+            thinking_high: col(5).unwrap_or_else(|| fallback.thinking_high.clone()),
+            thinking_xhigh: col(13).unwrap_or_else(|| fallback.thinking_xhigh.clone()),
             error_fg: col(1).unwrap_or_else(|| fallback.error_fg.clone()),
             warning_fg: col(3).unwrap_or_else(|| fallback.warning_fg.clone()),
             statusbar_bg: statusbar_bg_from_terminal(colors, &fallback.statusbar_bg),

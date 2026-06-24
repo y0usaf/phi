@@ -38,14 +38,6 @@ pub(super) const RESET: &str = "\x1b[0m";
 pub(super) const BOLD: &str = "\x1b[1m";
 pub(super) const DIM: &str = "\x1b[2m";
 pub(super) const CYAN: &str = "\x1b[36m";
-#[allow(dead_code)] // used by success_status_text, kept for the success-state status family
-pub(super) const GREEN: &str = "\x1b[32m";
-// Basic ANSI colors for the forgecode-style chrome — these already follow
-// the terminal's own palette, so they stay as &str constants.
-pub(super) const LIGHT_GREEN: &str = "\x1b[92m";
-pub(super) const LIGHT_GRAY: &str = "\x1b[37m";
-pub(super) const LIGHT_MAGENTA: &str = "\x1b[95m";
-
 /// Truecolor ANSI escapes for the inline TUI's transcript/chrome rendering,
 /// derived from the host terminal's reported colors when available. Mirrors
 /// opencode's `generateSystem` mapping. `default_const()` returns the previous
@@ -873,16 +865,17 @@ impl Ui {
         let mut result = String::with_capacity(64);
 
         let agent_str = format!("{} PHI", agent_symbol());
-        result.push_str(&format!("{BOLD}{LIGHT_GRAY}{agent_str}{RESET}"));
+        result.push_str(&format!("{}{agent_str}{RESET}", &self.palette.chrome_agent_fg));
 
         if active {
             let tokens = format_tokens(self.usage.total_tokens);
-            result.push_str(&format!(" {BOLD}{LIGHT_GRAY}{tokens}{RESET}"));
+            result.push_str(&format!(" {}{tokens}{RESET}", &self.palette.chrome_agent_fg));
         }
 
         if active && self.usage.cost.total > 0.0 {
             result.push_str(&format!(
-                " {BOLD}{GREEN}{}{:.2}{RESET}",
+                " {}{}{:.2}{RESET}",
+                &self.palette.chrome_cost_fg,
                 cost_symbol(),
                 self.usage.cost.total
             ));
@@ -898,12 +891,14 @@ impl Ui {
         let model_id = &self.root_lm.model().id;
         let short_model = model_id.rsplit('/').next().unwrap_or(model_id);
         result.push_str(&format!(
-            "{LIGHT_MAGENTA}{} {short_model}{RESET}",
+            "{}{} {short_model}{RESET}",
+            &self.palette.chrome_model_fg,
             model_symbol()
         ));
 
         if let Some(effort) = effort_label(self.root_lm.thinking(), self.term.width()) {
-            result.push_str(&format!(" {}{effort}{RESET}", &self.palette.warning_fg));
+            let thinking_fg = thinking_level_color(self.root_lm.thinking(), &self.palette);
+            result.push_str(&format!(" {}{effort}{RESET}", thinking_fg));
         }
 
         result
@@ -986,14 +981,16 @@ impl Ui {
                 .unwrap_or_else(|| ".".to_string());
             let mut header = self.render_chrome_agent();
             header.push_str(&format!(
-                "  {BOLD}{LIGHT_GREEN}{} {current_dir}{RESET}",
+                "  {}{} {current_dir}{RESET}",
+                &self.palette.chrome_dir_fg,
                 dir_symbol()
             ));
             if let Some(branch) = &self.branch
                 && branch != &current_dir
             {
                 header.push_str(&format!(
-                    "  {BOLD}{LIGHT_GREEN}{} {branch}{RESET}",
+                    "  {}{} {branch}{RESET}",
+                    &self.palette.chrome_dir_fg,
                     branch_symbol()
                 ));
             }
@@ -1009,9 +1006,9 @@ impl Ui {
                 let absolute_row = i + self.editor_scroll;
                 let content = if absolute_row == 0 {
                     if line.is_empty() {
-                        format!("{LIGHT_GREEN}{}{RESET} ", success_symbol())
+                        format!("{}{}{RESET} ", &self.palette.chrome_dir_fg, success_symbol())
                     } else {
-                        format!("{LIGHT_GREEN}{}{RESET} {line}", success_symbol())
+                        format!("{}{}{RESET} {line}", &self.palette.chrome_dir_fg, success_symbol())
                     }
                 } else {
                     format!("  {line}")

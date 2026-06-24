@@ -24,6 +24,19 @@ pub(crate) fn effort_label(level: ThinkingLevel, width: usize) -> Option<String>
     }
 }
 
+/// Thinking-level color, mirroring pi's progression: off=gray, minimal=light
+/// gray, low=blue, medium=cyan, high=magenta, xhigh=bright magenta.
+pub(crate) fn thinking_level_color(level: ThinkingLevel, palette: &super::InlinePalette) -> &str {
+    match level {
+        ThinkingLevel::Off => &palette.thinking_off,
+        ThinkingLevel::Minimal => &palette.thinking_minimal,
+        ThinkingLevel::Low => &palette.thinking_low,
+        ThinkingLevel::Medium => &palette.thinking_medium,
+        ThinkingLevel::High => &palette.thinking_high,
+        ThinkingLevel::XHigh => &palette.thinking_xhigh,
+    }
+}
+
 // Transcript boxes keep their color in the chrome (borders/titles) only; the
 // body stays on the terminal/default background so content styling remains UI-only.
 
