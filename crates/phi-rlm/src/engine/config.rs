@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use phi_ai::Usage;
 use phi_repl::{PythonRepl, ReplEnv, SubcallHandler};
+use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -68,7 +69,8 @@ impl Default for RlmConfig {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum LimitKind {
     Budget,
     Timeout,
@@ -76,7 +78,8 @@ pub enum LimitKind {
     Errors,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum StopCause {
     /// The model flipped `answer["ready"] = True`.
     Answer,
@@ -101,7 +104,12 @@ pub struct RlmCompletion {
     pub error: Option<String>,
 }
 
-#[derive(Clone, Debug)]
+/// Serialize `Duration` as seconds (f64) for NDJSON output.
+fn duration_secs<S: serde::Serializer>(d: &Duration, s: S) -> Result<S::Ok, S::Error> {
+    s.serialize_f64(d.as_secs_f64())
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub enum RlmEvent {
     RunStart {
         depth: usize,
@@ -113,6 +121,7 @@ pub enum RlmEvent {
     IterationEnd {
         depth: usize,
         iteration: usize,
+        #[serde(serialize_with = "duration_secs")]
         duration: Duration,
     },
     /// Streamed root-model text chunk (only when the model streams).
@@ -143,6 +152,7 @@ pub enum RlmEvent {
         iteration: usize,
         stdout: String,
         stderr: String,
+        #[serde(serialize_with = "duration_secs")]
         duration: Duration,
     },
     /// A prelude tool (bash, edit_file, ...) started inside this run's REPL.
@@ -158,6 +168,7 @@ pub enum RlmEvent {
         name: String,
         result: String,
         error: Option<String>,
+        #[serde(serialize_with = "duration_secs")]
         duration: Duration,
     },
     SubcallStart {
@@ -170,6 +181,7 @@ pub enum RlmEvent {
         model: String,
         #[allow(dead_code)]
         result_preview: Option<String>,
+        #[serde(serialize_with = "duration_secs")]
         duration: Duration,
         error: Option<String>,
     },
@@ -186,6 +198,7 @@ pub enum RlmEvent {
         depth: usize,
         stop: StopCause,
         iterations: usize,
+        #[serde(serialize_with = "duration_secs")]
         duration: Duration,
     },
 }

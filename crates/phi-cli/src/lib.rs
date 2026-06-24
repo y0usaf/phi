@@ -99,6 +99,10 @@ pub struct Args {
     /// Suppress progress output; print only the final answer.
     #[arg(short, long)]
     pub quiet: bool,
+
+    /// Output format for one-shot mode: pretty (default) or ndjson.
+    #[arg(long, value_name = "FORMAT", value_parser = ["pretty", "ndjson"])]
+    pub output: Option<String>,
 }
 
 impl Args {
