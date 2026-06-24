@@ -90,9 +90,14 @@ async fn run(
 
 fn build_body(model: &Model, ctx: &Context, opts: &StreamOptions) -> Value {
     let is_oauth = matches!(opts.auth, Auth::OAuthToken(_));
+    // Cap to context_window defensively (see openai_completions::build_body).
+    let max = opts
+        .max_tokens
+        .unwrap_or(model.max_tokens)
+        .min(model.context_window);
     let mut body = json!({
         "model": model.id,
-        "max_tokens": opts.max_tokens.unwrap_or(model.max_tokens),
+        "max_tokens": max,
         "stream": true,
         "messages": convert_messages(&ctx.messages),
     });
@@ -168,6 +173,20 @@ fn convert_messages(messages: &[Message]) -> Vec<Value> {
             }
         }
     }
+
+    // Anthropic allows up to 4 cache breakpoints total. The system prompt
+    // already uses one (see build_body), leaving 3 for conversation messages.
+    // We place breakpoints on the last content block of the last 2 messages so
+    // that the stable conversation prefix gets cache-read pricing (10x cheaper
+    // than full input) on subsequent turns.
+    for msg in out.iter_mut().rev().take(2) {
+        if let Some(content) = msg.get_mut("content").and_then(|c| c.as_array_mut()) {
+            if let Some(last_block) = content.last_mut() {
+                last_block["cache_control"] = json!({ "type": "ephemeral" });
+            }
+        }
+    }
+
     out
 }
 
@@ -231,6 +250,11 @@ impl SseHandler for Parser {
     }
 
     fn on_event(&mut self, event_name: &str, data: &str, sink: &EventSink) {
+        // Transport already caps events at MAX_SSE_EVENT_BYTES; guard the parse
+        // defensively since serde_json bounds recursion depth, not total size.
+        if data.len() > super::MAX_SSE_EVENT_BYTES {
+            return;
+        }
         let Ok(value) = serde_json::from_str::<Value>(data) else {
             return;
         };
@@ -378,9 +402,9 @@ impl SseHandler for Parser {
 mod tests {
     use std::collections::BTreeMap;
 
-    use crate::types::{Api, Auth, Context, CostRates, Model, StreamOptions};
+    use crate::types::{Api, Auth, Context, CostRates, Message, Model, StreamOptions, UserMessage};
 
-    use super::{CLAUDE_CODE_IDENTITY, build_body};
+    use super::{CLAUDE_CODE_IDENTITY, build_body, convert_messages};
 
     /// Minimal Anthropic model for exercising `build_body`'s system-block
     /// assembly (no reasoning, no thinking levels).
@@ -462,5 +486,54 @@ mod tests {
             system[1]["text"].as_str().unwrap().contains("Recursive Language Model"),
             "the cached block is the RLM identity, not the shim"
         );
+    }
+
+    /// `convert_messages` must place `cache_control: ephemeral` on the last
+    /// content block of the last 2 messages so the stable conversation prefix
+    /// benefits from cache-read pricing on subsequent turns.
+    #[test]
+    fn convert_messages_places_cache_breakpoints_on_last_two() {
+        let messages = vec![
+            Message::User(UserMessage::new("hello")),
+            Message::User(UserMessage::new("world")),
+            Message::User(UserMessage::new("third message")),
+        ];
+
+        let result = convert_messages(&messages);
+        assert_eq!(result.len(), 3);
+
+        // First message: no cache_control.
+        let first_content = result[0]["content"].as_array().unwrap();
+        assert!(first_content[0].get("cache_control").is_none());
+
+        // Last 2 messages: last content block has cache_control.
+        for i in [1, 2] {
+            let content = result[i]["content"].as_array().unwrap();
+            let last_block = content.last().unwrap();
+            assert_eq!(
+                last_block["cache_control"]["type"].as_str(),
+                Some("ephemeral"),
+                "message {i} last block must be cached"
+            );
+        }
+    }
+
+    /// With a single message, only that message gets a cache breakpoint.
+    #[test]
+    fn convert_messages_single_message_gets_one_breakpoint() {
+        let messages = vec![Message::User(UserMessage::new("only message"))];
+        let result = convert_messages(&messages);
+        let content = result[0]["content"].as_array().unwrap();
+        assert_eq!(
+            content[0]["cache_control"]["type"].as_str(),
+            Some("ephemeral")
+        );
+    }
+
+    /// Empty messages produce no output and no breakpoints.
+    #[test]
+    fn convert_messages_empty() {
+        let result = convert_messages(&[]);
+        assert!(result.is_empty());
     }
 }

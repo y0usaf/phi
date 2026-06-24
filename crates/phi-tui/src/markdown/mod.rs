@@ -8,6 +8,7 @@ mod render;
 #[cfg(test)]
 mod tests;
 
+pub use constants::MarkdownPalette;
 pub use highlight::{highlight_code, highlight_snippet};
 pub use output::highlight_output;
 pub use render::{highlight_diff_line, render_markdown};

@@ -20,9 +20,10 @@ use phi_rlm::{
 };
 use phi_tui::crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers};
 use phi_tui::{
-    Editor, EditorAction, LiveCursor, RawModeGuard, Selector, SelectorItem, SelectorOutcome,
-    Spinner, Terminal, fuzzy_filter, highlight_code, highlight_diff_line, highlight_output,
-    render_markdown, visible_width, wrap_ansi, wrap_ansi_locate,
+    Editor, EditorAction, LiveCursor, MarkdownPalette, RawModeGuard, Selector, SelectorItem,
+    SelectorOutcome, Spinner, Terminal, detect_terminal_colors, fuzzy_filter, highlight_code,
+    highlight_diff_line, highlight_output, render_markdown, visible_width, wrap_ansi,
+    wrap_ansi_locate,
 };
 
 use crate::files::{self, FileSearcher};
@@ -41,31 +42,105 @@ const YELLOW: &str = "\x1b[33m";
 #[allow(dead_code)] // used by success_status_text, kept for the success-state status family
 const GREEN: &str = "\x1b[32m";
 const RED: &str = "\x1b[31m";
-// Warm gold for tool verbs: the same accent highlight_known_repl_calls uses
-// for tool calls inside repl code, so "tool" reads as one color everywhere.
-const TOOL_ACCENT: &str = "\x1b[1m\x1b[38;2;255;210;120m";
-// Violet for sub-LLM/rlm activity: the same accent as the repl fence, so
-// "recursion" reads as one color everywhere.
-const SUBCALL_ACCENT: &str = "\x1b[1m\x1b[38;2;180;140;255m";
-/// Soft blue for path-like args in tool titles (matches highlight_output paths).
-const PATH_FG: &str = "\x1b[38;2;130;180;230m";
-/// Muted green for quoted-string-like args (patterns, subcall prompt previews).
-const STRING_FG: &str = "\x1b[38;2;150;190;150m";
-/// Violet accent for numbers/durations (matches highlight_output numbers).
-const NUM_FG: &str = "\x1b[38;2;170;150;230m";
-// User-echo text: legible but not white; white is reserved for model prose.
-const USER_FG: &str = "\x1b[38;2;190;200;215m";
-const MUTED_FG: &str = "\x1b[38;2;120;128;148m";
-const ASSISTANT_FG: &str = "\x1b[38;2;220;224;235m";
-const PANEL_REPL: &str = "\x1b[38;2;180;140;255m";
-const USER_BORDER: &str = "\x1b[38;2;96;122;196m";
-const ASSISTANT_BORDER: &str = "\x1b[38;2;84;91;116m";
-const CHROME_BORDER: &str = "\x1b[38;2;82;88;110m";
-
-// Additional ANSI colors for the forgecode-style chrome.
+// Basic ANSI colors for the forgecode-style chrome — these already follow
+// the terminal's own palette, so they stay as &str constants.
 const LIGHT_GREEN: &str = "\x1b[92m";
 const LIGHT_GRAY: &str = "\x1b[37m";
 const LIGHT_MAGENTA: &str = "\x1b[95m";
+
+/// Truecolor ANSI escapes for the inline TUI's transcript/chrome rendering,
+/// derived from the host terminal's reported colors when available. Mirrors
+/// opencode's `generateSystem` mapping. `default_const()` returns the previous
+/// hardcoded values as the fallback. Basic ANSI colors (`RESET`, `BOLD`, etc.)
+/// stay as module-level `&str` since they already reference the terminal palette.
+#[derive(Clone)]
+pub struct InlinePalette {
+    /// Warm gold for tool verbs.
+    pub tool_accent: String,
+    /// Violet for sub-LLM/rlm activity.
+    pub subcall_accent: String,
+    /// Soft blue for path-like args.
+    pub path_fg: String,
+    /// Muted green for quoted-string-like args.
+    pub string_fg: String,
+    /// Violet accent for numbers/durations.
+    pub num_fg: String,
+    /// User-echo text.
+    pub user_fg: String,
+    /// Muted text.
+    pub muted_fg: String,
+    /// Assistant prose.
+    pub assistant_fg: String,
+    /// REPL fence / panel color.
+    pub panel_repl: String,
+    /// User message border.
+    pub user_border: String,
+    /// Assistant message border.
+    pub assistant_border: String,
+    /// Chrome (status/footer) border.
+    pub chrome_border: String,
+    /// Markdown/output highlighting palette.
+    pub markdown: MarkdownPalette,
+}
+
+impl InlinePalette {
+    /// Previous hardcoded values (base16-ocean family).
+    pub fn default_const() -> Self {
+        Self {
+            tool_accent: s("\x1b[1m\x1b[38;2;255;210;120m"),
+            subcall_accent: s("\x1b[1m\x1b[38;2;180;140;255m"),
+            path_fg: s("\x1b[38;2;130;180;230m"),
+            string_fg: s("\x1b[38;2;150;190;150m"),
+            num_fg: s("\x1b[38;2;170;150;230m"),
+            user_fg: s("\x1b[38;2;190;200;215m"),
+            muted_fg: s("\x1b[38;2;120;128;148m"),
+            assistant_fg: s("\x1b[38;2;220;224;235m"),
+            panel_repl: s("\x1b[38;2;180;140;255m"),
+            user_border: s("\x1b[38;2;96;122;196m"),
+            assistant_border: s("\x1b[38;2;84;91;116m"),
+            chrome_border: s("\x1b[38;2;82;88;110m"),
+            markdown: MarkdownPalette::default_const(),
+        }
+    }
+
+    /// Derive from terminal-reported colors (OSC 10/11/4), mirroring opencode's
+    /// `generateSystem`: ANSI palette → UI roles.
+    pub fn from_terminal_colors(colors: &phi_tui::TerminalColors) -> Self {
+        let col = |i: usize| {
+            colors.palette[i].map(|c| format!("\x1b[38;2;{};{};{}m", c.0, c.1, c.2))
+        };
+        let col_bold = |i: usize| {
+            colors.palette[i]
+                .map(|c| format!("\x1b[1m\x1b[38;2;{};{};{}m", c.0, c.1, c.2))
+        };
+        let fallback = Self::default_const();
+        Self {
+            tool_accent: col_bold(3).unwrap_or_else(|| fallback.tool_accent.clone()),
+            subcall_accent: col_bold(5).unwrap_or_else(|| fallback.subcall_accent.clone()),
+            path_fg: col(4).unwrap_or_else(|| fallback.path_fg.clone()),
+            string_fg: col(2).unwrap_or_else(|| fallback.string_fg.clone()),
+            num_fg: col(3).unwrap_or_else(|| fallback.num_fg.clone()),
+            user_fg: col(7).unwrap_or_else(|| fallback.user_fg.clone()),
+            muted_fg: col(8).unwrap_or_else(|| fallback.muted_fg.clone()),
+            assistant_fg: col(7).unwrap_or_else(|| fallback.assistant_fg.clone()),
+            panel_repl: col(5).unwrap_or_else(|| fallback.panel_repl.clone()),
+            user_border: col(4).unwrap_or_else(|| fallback.user_border.clone()),
+            assistant_border: col(8).unwrap_or_else(|| fallback.assistant_border.clone()),
+            chrome_border: col(8).unwrap_or_else(|| fallback.chrome_border.clone()),
+            markdown: MarkdownPalette::from_terminal_colors(colors),
+        }
+    }
+}
+
+impl Default for InlinePalette {
+    fn default() -> Self {
+        Self::default_const()
+    }
+}
+
+fn s(v: &str) -> String {
+    v.to_owned()
+}
 
 #[allow(dead_code)]
 // Thinking-level border colors for the input box, mirroring pi's dark theme.
@@ -343,21 +418,10 @@ fn fitted_panel_width(label_plain: &str, max_width: usize, body: &[String]) -> u
     label_width.max(body_width).min(max_width.max(1)).max(4)
 }
 
-/// Plain title for the `repl` block. With a turn number the committed/live
-/// block reads `repl · turn N` (the depth-0 `IterationStart` handler's count);
-/// `None` (e.g. an unevaluated streamed preview) stays plain `repl`.
-fn repl_block_title(turn: Option<usize>) -> String {
-    match turn {
-        Some(n) => format!("repl · turn {n}"),
-        None => "repl".to_owned(),
-    }
-}
-
 /// Per-level nesting indent: two spaces per `depth`. Used to inset a flat
-/// header line under its enclosing unit (a repl block or an RLM subcall). This
-/// is the claude-code model — nesting is shown by indentation, and the `⎿`
-/// marker (see `result_prefix`) marks *result* lines, never headers. Two cells
-/// per level keeps `card_body_width(depth)` arithmetic stable across depths.
+/// header line under its enclosing unit (a repl block or an RLM subcall).
+/// Nesting is shown by indentation alone — no glyph marker. Two cells per
+/// level keeps `card_body_width(depth)` arithmetic stable across depths.
 fn indent(depth: usize) -> String {
     " ".repeat(depth.saturating_mul(2))
 }
@@ -368,30 +432,15 @@ fn indent_width(depth: usize) -> usize {
     depth.saturating_mul(2)
 }
 
-/// claude-code result-line gutter: `{indent(depth)}{DIM}  ⎿  {RESET}` — a dim
-/// `⎿` (5 display cells: 2 spaces, `⎿`, 2 spaces) marking the output/result of
-/// the header above it, inset by the nesting indent. `⎿` is reserved for result
-/// lines; headers carry the `●`, not `⎿`, so the two never collide on one line.
-///
-/// Only the *first* row of a result block carries `⎿` (see `render_flat`):
-/// claude-code renders `⎿` as a single-row left flex column, so continuation
-/// rows get `result_continuation` (5 blank cells) instead — one `⎿` per result,
-/// not one per line.
+/// Result-line gutter: `indent(depth)` plus two spaces. No glyph — the body
+/// simply indents under its header. Body content is wrapped to fit after it.
 fn result_prefix(depth: usize) -> String {
-    format!("{}{DIM}  ⎿  {RESET}", indent(depth))
+    format!("{}  ", indent(depth))
 }
 
-/// Continuation gutter for rows after the first in a result block: `indent(depth)`
-/// plus 5 spaces (the `  ⎿  ` width), with no `⎿` glyph. Matches claude-code's
-/// left-column layout where `⎿` only appears on row 0.
-fn result_continuation(depth: usize) -> String {
-    format!("{}     ", indent(depth))
-}
-
-/// Width of `result_prefix(depth)`'s visible cells: `indent_width(depth) + 5`
-/// (the `  ⎿  ` gutter is 5 cells). Body content is wrapped to fit after it.
+/// Width of `result_prefix(depth)`'s visible cells: `indent_width(depth) + 2`.
 fn result_prefix_width(depth: usize) -> usize {
-    indent_width(depth) + 5
+    indent_width(depth) + 2
 }
 
 /// Local wall-clock `HH:MM:SS`, for the `[time]` segment of live-committed
@@ -402,71 +451,57 @@ fn now_hms() -> String {
     jiff::Zoned::now().strftime("%H:%M:%S").to_string()
 }
 
-/// forgecode-style flat header line:
-/// `{indent(depth)}{dot_color}●{RESET} {DIM}[{timestamp}] {RESET}{title}`.
-/// `timestamp == None` omits the `[time]` segment (replay/restored rows). There
-/// is no trailing `─…─` fill and no `⎿` on the header — the `●` is the left
-/// marker and the title follows it, exactly like claude-code's tool-use line
-/// (`●` gutter + command). The colored `●` carries status (success/failure/
-/// tool/subcall) instead of a separate ✓/✗ glyph.
-fn forge_title(depth: usize, dot_color: &str, timestamp: Option<&str>, title: &str) -> String {
+/// Flat header line: `{indent(depth)}[{timestamp}] {title}`. The header is a
+/// bare title at the nesting indent (no bullet glyph, no trailing rule).
+/// `timestamp == None` omits the `[time]` segment (replay/restored rows).
+fn forge_title(depth: usize, timestamp: Option<&str>, title: &str) -> String {
     let stamp = match timestamp {
         Some(t) => format!("{DIM}[{t}] {RESET}"),
         None => String::new(),
     };
-    format!("{}{dot_color}●{RESET} {stamp}{title}", indent(depth))
+    format!("{}{stamp}{title}", indent(depth))
 }
 
-/// Flat header line + `⎿`-guttered result body. The single replacement for
-/// `render_card`. `body` lines must already be wrapped to
-/// `card_body_width(depth)`. Only the first non-empty body row carries the `⎿`
-/// gutter (`result_prefix`); subsequent rows use `result_continuation` (same
-/// 5-cell width, no glyph) so a result block shows exactly one `⎿`, matching
-/// claude-code's single-row left flex column. Empty body lines collapse to the
-/// indent. If `body` is empty the header stands alone (no `⎿`).
+/// Flat header line + indented result body. `body` lines must already be
+/// wrapped to `card_body_width(depth)`. Every body row is inset by the
+/// 2-space result gutter (`result_prefix`). Empty body lines collapse to the
+/// bare indent. If `body` is empty the header stands alone.
 fn render_flat(
-    dot_color: &str,
     timestamp: Option<&str>,
     title: &str,
     depth: usize,
     body: &[String],
 ) -> Vec<String> {
-    let header = forge_title(depth, dot_color, timestamp, title);
+    let header = forge_title(depth, timestamp, title);
     let blank = indent(depth);
-    let result = result_prefix(depth);
-    let cont = result_continuation(depth);
+    let prefix = result_prefix(depth);
     let mut out = Vec::with_capacity(body.len().saturating_add(1));
     out.push(header);
-    let mut seen_first = false;
     for line in body {
         if line.is_empty() {
             out.push(blank.clone());
-        } else if !seen_first {
-            out.push(format!("{result}{line}"));
-            seen_first = true;
         } else {
-            out.push(format!("{cont}{line}"));
+            out.push(format!("{prefix}{line}"));
         }
     }
     out
 }
 
-/// REPL block: a flat `● repl · turn N` header (violet ●) + its activity rows
-/// inset by one nesting level. Unlike `render_flat`, the body rows here are
-/// *child headers* (tool/subcall `●` lines and their own `⎿` results), not
-/// results of the repl header — so they get a plain 2-space indent, not the `⎿`
-/// gutter (which would wrongly mark them as the repl block's own output).
-fn render_repl_block(body: &[String], turn: Option<usize>) -> Vec<String> {
-    let mut out = vec![forge_title(0, PANEL_REPL, None, &repl_block_title(turn))];
+/// REPL block: its activity rows inset by one nesting level. No block header —
+/// the code and its output speak for themselves. Body rows are child headers
+/// (tool/subcall lines and their own results), so they get a plain 2-space
+/// indent on top of their own nesting.
+fn render_repl_block(body: &[String], _turn: Option<usize>) -> Vec<String> {
     let prefix = indent(1);
-    for line in body {
-        out.push(if line.is_empty() {
-            prefix.clone()
-        } else {
-            format!("{prefix}{line}")
-        });
-    }
-    out
+    body.iter()
+        .map(|line| {
+            if line.is_empty() {
+                prefix.clone()
+            } else {
+                format!("{prefix}{line}")
+            }
+        })
+        .collect()
 }
 
 #[derive(Clone)]
@@ -487,27 +522,23 @@ struct OpenSubcallRow {
 }
 
 #[derive(Clone)]
-struct RetainedTranscriptBlock {
-    key: String,
-    lines: Vec<String>,
-}
-
-#[derive(Clone)]
-struct FrameTranscriptBlock {
+struct TranscriptBlock {
     key: String,
     lines: Vec<String>,
     finalized: bool,
-    commit_stable: bool,
-    version: u64,
     max_height: Option<usize>,
 }
 
-fn subcall_title(model: &str, prompt_preview: &str) -> String {
+fn subcall_title(model: &str, prompt_preview: &str, p: &InlinePalette) -> String {
     let prompt_preview = prompt_preview
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ");
-    format!("{SUBCALL_ACCENT}{model}{RESET} {DIM}←{RESET} {STRING_FG}\"{prompt_preview}\"{RESET}")
+    format!(
+        "{subcall}{model}{RESET} {DIM}←{RESET} {strfg}\"{prompt_preview}\"{RESET}",
+        subcall = &p.subcall_accent,
+        strfg = &p.string_fg,
+    )
 }
 
 fn running_status_text(label: &str, spinner: &str) -> String {
@@ -515,13 +546,21 @@ fn running_status_text(label: &str, spinner: &str) -> String {
 }
 
 #[allow(dead_code)] // reserved for a success-status state the status machine does not yet emit
-fn success_status_text(label: &str, duration_secs: f64) -> String {
-    format!("{GREEN}✓{RESET} {label} {NUM_FG}{duration_secs:.1}s{RESET}")
+fn success_status_text(label: &str, duration_secs: f64, p: &InlinePalette) -> String {
+    format!(
+        "{GREEN}✓{RESET} {label} {numfg}{duration_secs:.1}s{RESET}",
+        numfg = &p.num_fg,
+    )
 }
 
-fn failed_status_text(label: &str, duration_secs: Option<f64>, detail: Option<&str>) -> String {
+fn failed_status_text(
+    label: &str,
+    duration_secs: Option<f64>,
+    detail: Option<&str>,
+    p: &InlinePalette,
+) -> String {
     let duration = duration_secs
-        .map(|secs| format!(" {NUM_FG}{secs:.1}s{RESET}"))
+        .map(|secs| format!(" {numfg}{secs:.1}s{RESET}", numfg = &p.num_fg))
         .unwrap_or_default();
     let detail = detail
         .filter(|d| !d.trim().is_empty())
@@ -551,7 +590,7 @@ struct Identity {
     body: Vec<String>,
 }
 
-fn tool_identity(name: &str, args: &serde_json::Value) -> Identity {
+fn tool_identity(name: &str, args: &serde_json::Value, p: &InlinePalette) -> Identity {
     let arg = |key: &str| tool_arg(args, key);
     let one_line = |text: &str| {
         let flat = text.lines().next().unwrap_or("").trim().to_owned();
@@ -580,9 +619,13 @@ fn tool_identity(name: &str, args: &serde_json::Value) -> Identity {
                     other => format!("{key}={other}"),
                 })
                 .collect();
-            format!("{TOOL_ACCENT}{name}{RESET} {DIM}{}{RESET}", pairs.join(" "))
+            format!(
+                "{tool}{name}{RESET} {DIM}{}{RESET}",
+                pairs.join(" "),
+                tool = &p.tool_accent,
+            )
         }
-        _ => format!("{TOOL_ACCENT}{name}{RESET}"),
+        _ => format!("{tool}{name}{RESET}", tool = &p.tool_accent),
     };
     // Fallback body: a pretty-print of the args shown only when it carries
     // detail the one-line anchor can't — a value that is multi-line, longer
@@ -619,25 +662,29 @@ fn tool_identity(name: &str, args: &serde_json::Value) -> Identity {
             let anchor = if multiline {
                 // Multi-line: anchor is the truncated first line; the full
                 // command is the body, so the canonical content is shown once.
-                format!("{TOOL_ACCENT}${RESET} {DIM}{}{RESET}", one_line(cmd))
+                format!(
+                    "{tool}${RESET} {DIM}{}{RESET}",
+                    one_line(cmd),
+                    tool = &p.tool_accent,
+                )
             } else {
                 let echoed = one_line(cmd);
-                let lit = highlight_code(&echoed, Some("bash"))
+                let lit = highlight_code(&echoed, Some("bash"), &p.markdown)
                     .into_iter()
                     .next()
                     .unwrap_or(echoed);
-                format!("{TOOL_ACCENT}${RESET} {lit}{RESET}")
+                format!("{tool}${RESET} {lit}{RESET}", tool = &p.tool_accent)
             };
             // The body carries the full multi-line command. For a single-line
             // command the anchor already shows it — emitting a body line
             // would duplicate the canonical content (anchor-once), so the
             // body is reserved for the multi-line case (and empty cmd).
             let body = if cmd.trim().is_empty() {
-                vec![format!("{TOOL_ACCENT}${RESET}")]
+                vec![format!("{tool}${RESET}", tool = &p.tool_accent)]
             } else if multiline {
-                highlight_code(cmd, Some("bash"))
+                highlight_code(cmd, Some("bash"), &p.markdown)
                     .into_iter()
-                    .map(|line| format!("{TOOL_ACCENT}${RESET} {line}"))
+                    .map(|line| format!("{tool}${RESET} {line}", tool = &p.tool_accent))
                     .collect()
             } else {
                 Vec::new()
@@ -652,7 +699,12 @@ fn tool_identity(name: &str, args: &serde_json::Value) -> Identity {
             };
             let path = arg("path");
             (
-                format!("{TOOL_ACCENT}{verb}{RESET} {PATH_FG}{}{RESET}", path),
+                format!(
+                    "{tool}{verb}{RESET} {pathfg}{}{RESET}",
+                    path,
+                    tool = &p.tool_accent,
+                    pathfg = &p.path_fg,
+                ),
                 Vec::new(),
             )
         }
@@ -661,17 +713,25 @@ fn tool_identity(name: &str, args: &serde_json::Value) -> Identity {
             let pattern = arg("pattern");
             let path = arg("path");
             let anchor = format!(
-                "{TOOL_ACCENT}{verb}{RESET} {STRING_FG}{}{RESET}{PATH_FG}{}{RESET}",
+                "{tool}{verb}{RESET} {strfg}{}{RESET}{pathfg}{}{RESET}",
                 one_line(pattern),
-                in_path(path)
+                in_path(path),
+                tool = &p.tool_accent,
+                strfg = &p.string_fg,
+                pathfg = &p.path_fg,
             );
             (anchor, Vec::new())
         }
         "ls" => {
             let path = arg("path");
-            let anchor = format!("{TOOL_ACCENT}ls{RESET} {PATH_FG}{}{RESET}", path)
-                .trim_end()
-                .to_owned();
+            let anchor = format!(
+                "{tool}ls{RESET} {pathfg}{}{RESET}",
+                path,
+                tool = &p.tool_accent,
+                pathfg = &p.path_fg,
+            )
+            .trim_end()
+            .to_owned();
             (anchor, Vec::new())
         }
         "repl" => {
@@ -688,7 +748,7 @@ fn tool_identity(name: &str, args: &serde_json::Value) -> Identity {
             let body = if code.trim().is_empty() || code.lines().count() <= 1 {
                 Vec::new()
             } else {
-                highlight_code(code, Some("repl"))
+                highlight_code(code, Some("repl"), &p.markdown)
             };
             (fallback_anchor(), body)
         }
@@ -698,8 +758,8 @@ fn tool_identity(name: &str, args: &serde_json::Value) -> Identity {
 }
 
 /// One-line title for a tool block. Thin projection over [`tool_identity`].
-fn tool_title(name: &str, args: &serde_json::Value) -> String {
-    tool_identity(name, args).anchor
+fn tool_title(name: &str, args: &serde_json::Value, p: &InlinePalette) -> String {
+    tool_identity(name, args, p).anchor
 }
 
 fn lang_hint_for_path(path: &str) -> Option<&'static str> {
@@ -1292,9 +1352,16 @@ pub async fn run(setup: TuiSetup, mut io: SessionIo) -> Result<()> {
         login_tx,
         io.cwd.clone(),
         io.host_modal_tx.take(),
-        io.embedded,
         runtime,
     );
+    // Probe the host terminal's colors (OSC 10/11/4) once, inside raw mode,
+    // and derive the inline TUI palette from them. Falls back to the built-in
+    // hardcoded palette when the terminal doesn't answer in time.
+    if !io.embedded
+        && let Some(colors) = detect_terminal_colors(Duration::from_millis(150))
+    {
+        ui.palette = InlinePalette::from_terminal_colors(&colors);
+    }
     let restoring = ui.store.leaf().is_some();
     if restoring {
         ui.replay_branch();
@@ -1515,6 +1582,7 @@ struct Ui {
     term: Terminal<Box<dyn std::io::Write + Send>>,
     editor: Editor,
     spinner: Spinner,
+    palette: InlinePalette,
     /// Cancel token of the in-flight turn, if any.
     running: Option<CancellationToken>,
     /// In-flight /login flow, if any. The editor feeds it pasted codes.
@@ -1554,7 +1622,7 @@ struct Ui {
     /// Phi transcript-block model.
     transcript: Transcript,
     /// Finalized transcript blocks retained across frames.
-    transcript_blocks: Vec<RetainedTranscriptBlock>,
+    transcript_blocks: Vec<TranscriptBlock>,
     /// Monotonic key source for finalized transcript blocks.
     next_transcript_block_id: u64,
     /// Rows of the in-flight depth-0 ```repl``` block (with everything nested in
@@ -1664,7 +1732,6 @@ impl Ui {
         login_tx: mpsc::UnboundedSender<LoginMsg>,
         cwd: PathBuf,
         host_modal_tx: Option<mpsc::UnboundedSender<HostModalRequest>>,
-        embedded: bool,
         runtime: Arc<AppRuntime>,
     ) -> Self {
         let UiSetup {
@@ -1683,6 +1750,7 @@ impl Ui {
             term,
             editor: Editor::new(),
             spinner: Spinner::new(),
+            palette: InlinePalette::default_const(),
             running: None,
             login: None,
             popup: None,
@@ -1698,11 +1766,7 @@ impl Ui {
             queued: Vec::new(),
             last_ctrl_c: None,
             pending: Vec::new(),
-            transcript: if embedded {
-                Transcript::new_embedded()
-            } else {
-                Transcript::new()
-            },
+            transcript: Transcript::new(),
             transcript_blocks: Vec::new(),
             next_transcript_block_id: 0,
             block: Vec::new(),
@@ -1762,8 +1826,6 @@ impl Ui {
                 key: &block.key,
                 lines: &block.lines,
                 finalized: true,
-                commit_stable: true,
-                version: 0,
                 max_height: None,
             });
         }
@@ -1772,15 +1834,13 @@ impl Ui {
                 key: &block.key,
                 lines: &block.lines,
                 finalized: block.finalized,
-                commit_stable: block.commit_stable,
-                version: block.version,
                 max_height: block.max_height,
             });
         }
 
         let frame = self
             .transcript
-            .render(self.term.width(), transcript_height, &specs);
+            .render(transcript_height, &specs);
 
         let transcript_live_len = frame.live.len();
         let mut live = frame.live;
@@ -1797,9 +1857,11 @@ impl Ui {
         if pending.is_empty() {
             return;
         }
-        self.transcript_blocks.push(RetainedTranscriptBlock {
+        self.transcript_blocks.push(TranscriptBlock {
             key: format!("tx:{}", self.next_transcript_block_id),
             lines: pending,
+            finalized: true,
+            max_height: None,
         });
         self.next_transcript_block_id += 1;
     }
@@ -1814,39 +1876,33 @@ impl Ui {
         self.last_activity = false;
     }
 
-    fn current_live_transcript_blocks(&self) -> Vec<FrameTranscriptBlock> {
+    fn current_live_transcript_blocks(&self) -> Vec<TranscriptBlock> {
         let mut blocks = Vec::new();
 
         if self.running.is_some() {
             let thinking = self.live_thinking_lines();
             if !thinking.is_empty() {
-                blocks.push(FrameTranscriptBlock {
+                blocks.push(TranscriptBlock {
                     key: "live:thinking".to_owned(),
                     lines: thinking,
                     finalized: false,
-                    commit_stable: false,
-                    version: 0,
                     max_height: Some(LIVE_THINKING_MAX_HEIGHT),
                 });
             }
 
             if self.block_active {
-                blocks.push(FrameTranscriptBlock {
+                blocks.push(TranscriptBlock {
                     key: "live:repl-block".to_owned(),
                     lines: render_repl_block(&self.block, Some(self.turn)),
                     finalized: false,
-                    commit_stable: false,
-                    version: 0,
                     max_height: Some(CODE_PREVIEW_LINES),
                 });
 
                 if !self.after_block.is_empty() {
-                    blocks.push(FrameTranscriptBlock {
+                    blocks.push(TranscriptBlock {
                         key: "live:after-block".to_owned(),
                         lines: self.after_block.clone(),
                         finalized: true,
-                        commit_stable: true,
-                        version: 0,
                         max_height: Some(OUTPUT_PREVIEW_LINES),
                     });
                 }
@@ -1854,26 +1910,22 @@ impl Ui {
 
             let visible = self.stream[..first_block_start(&self.stream)].trim();
             if !visible.is_empty() {
-                blocks.push(FrameTranscriptBlock {
+                blocks.push(TranscriptBlock {
                     key: "live:stream-prose".to_owned(),
                     lines: self.assistant_card_lines(visible),
                     finalized: false,
-                    commit_stable: true,
-                    version: 0,
                     max_height: Some(LIVE_PROSE_MAX_HEIGHT),
                 });
             }
 
             if let Some(block) = live_block_body(&self.stream) {
-                blocks.push(FrameTranscriptBlock {
+                blocks.push(TranscriptBlock {
                     key: "live:preview-repl".to_owned(),
                     lines: render_repl_block(
                         &self.repl_code_lines(0, block, self.code_limit()),
                         None,
                     ),
                     finalized: false,
-                    commit_stable: false,
-                    version: 0,
                     max_height: Some(CODE_PREVIEW_LINES),
                 });
             }
@@ -1927,6 +1979,7 @@ impl Ui {
     fn chrome_lines(&mut self) -> (Vec<String>, Option<LiveCursor>) {
         let mut lines: Vec<String> = Vec::new();
         let width = self.term.width().max(12);
+        let p = &self.palette;
 
         if self.running.is_some() {
             lines.push(format!(
@@ -1950,8 +2003,9 @@ impl Ui {
                 .saturating_sub(header_plain.chars().count() + 5)
                 .max(1);
             lines.push(format!(
-                "{CHROME_BORDER}┌─ {BOLD}φ{RESET} {}┐{RESET}",
-                "─".repeat(header_fill)
+                "{chrome_border}┌─ {BOLD}φ{RESET} {}┐{RESET}",
+                "─".repeat(header_fill),
+                chrome_border = &p.chrome_border,
             ));
         }
 
@@ -1970,7 +2024,7 @@ impl Ui {
             } else {
                 "up/down select · enter confirm · esc cancel"
             };
-            lines.push(format!("{MUTED_FG}{hint}{RESET}"));
+            lines.push(format!("{muted_fg}{hint}{RESET}", muted_fg = &p.muted_fg));
         } else {
             let (editor_lines, (row, col)) = self.editor.render();
             let max_visible = (self.term.height() * 3 / 10).max(5);
@@ -2054,7 +2108,7 @@ impl Ui {
             }
             if end < editor_lines.len() {
                 let below = editor_lines.len() - end;
-                lines.push(format!("{MUTED_FG}  \u{2193} {below} more{RESET}"));
+                lines.push(format!("{muted_fg}  \u{2193} {below} more{RESET}", muted_fg = &p.muted_fg));
             }
             cursor = input_cursor;
 
@@ -2066,7 +2120,7 @@ impl Ui {
                 } else {
                     String::new()
                 };
-                lines.push(format!("{MUTED_FG}queued{count} > {first}{more}{RESET}"));
+                lines.push(format!("{muted_fg}queued{count} > {first}{more}{RESET}", muted_fg = &p.muted_fg));
             }
 
             if let Some(popup) = &self.popup {
@@ -2085,7 +2139,7 @@ impl Ui {
                 &[]
             };
             for hint in hints {
-                lines.push(format!("{MUTED_FG}{hint}{RESET}"));
+                lines.push(format!("{muted_fg}{hint}{RESET}", muted_fg = &p.muted_fg));
             }
         }
 
@@ -2126,8 +2180,10 @@ impl Ui {
         if framed {
             let footer_fill = width.saturating_sub(footer.chars().count() + 5).max(1);
             lines.push(format!(
-                "{CHROME_BORDER}\u{2514}\u{2500} {MUTED_FG}{footer}{RESET} {}\u{2518}{RESET}",
-                "\u{2500}".repeat(footer_fill)
+                "{chrome_border}\u{2514}\u{2500} {muted_fg}{footer}{RESET} {}\u{2518}{RESET}",
+                "\u{2500}".repeat(footer_fill),
+                chrome_border = &p.chrome_border,
+                muted_fg = &p.muted_fg,
             ));
         }
         (lines, cursor)
@@ -2653,7 +2709,7 @@ impl Ui {
         }
         for subcall in subcalls {
             let depth = subcall.depth;
-            let label = subcall_title(&subcall.model, &subcall.prompt_preview);
+            let label = subcall_title(&subcall.model, &subcall.prompt_preview, &self.palette);
             let content = subcall
                 .error
                 .as_deref()
@@ -2687,7 +2743,7 @@ impl Ui {
         if let Some(thinking) = thinking
             && self.expand_thinking
         {
-            self.push_dot(0, DIM, "thinking".to_owned());
+            self.push_dot(0, "thinking".to_owned());
             self.push_preview(0, thinking, usize::MAX);
         }
 
@@ -3123,7 +3179,7 @@ impl Ui {
         } else {
             self.pending.push(String::new());
             self.pending
-                .push(format!("{TOOL_ACCENT}${RESET} {DIM}{cmd}{RESET}"));
+                .push(format!("{tool}${RESET} {DIM}{cmd}{RESET}", tool = &self.palette.tool_accent));
             self.last_activity = false;
         }
         let _ = cmd_tx.send(Cmd::Shell { code, record });
@@ -3283,26 +3339,26 @@ impl Ui {
     }
 
     /// Display columns available to a flat row's result body at `depth`: the
-    /// repl body minus the `⎿` result-gutter width (`result_prefix_width` =
-    /// `indent_width(depth) + 5`). Body content is wrapped to this so each
-    /// `⎿ <content>` line fits within the repl body.
+    /// repl body minus the result-gutter width (`result_prefix_width` =
+    /// `indent_width(depth) + 2`). Body content is wrapped to this so each
+    /// indented result line fits within the repl body.
     fn card_body_width(&self, depth: usize) -> usize {
         self.repl_body_width()
             .saturating_sub(result_prefix_width(depth))
             .max(1)
     }
 
-    /// Assistant prose: a flat `● Assistant` header + plain markdown body. No
-    /// box, no `⎿` indent — prose is the model's primary output, not nested
-    /// secondary content (matches forgecode's flat speaker line).
+    /// Assistant prose: a flat `Assistant` header + plain markdown body. No
+    /// box, no result indent — prose is the model's primary output, not nested
+    /// secondary content.
     fn assistant_card_lines(&self, text: &str) -> Vec<String> {
-        let rendered = render_markdown(text, self.markdown_width());
-        let mut out = vec![forge_title(0, ASSISTANT_BORDER, None, "Assistant")];
+        let rendered = render_markdown(text, self.markdown_width(), &self.palette.markdown);
+        let mut out = vec![forge_title(0, None, "Assistant")];
         for line in rendered {
             out.push(if line.is_empty() {
                 String::new()
             } else {
-                format!("{ASSISTANT_FG}{line}{RESET}")
+                format!("{fg}{line}{RESET}", fg = &self.palette.assistant_fg)
             });
         }
         out
@@ -3310,13 +3366,13 @@ impl Ui {
 
     /// User echo: a flat `● You` header + plain body.
     fn user_card_lines(&self, text: &str) -> Vec<String> {
-        let rendered = render_markdown(text, self.markdown_width());
-        let mut out = vec![forge_title(0, USER_BORDER, None, "You")];
+        let rendered = render_markdown(text, self.markdown_width(), &self.palette.markdown);
+        let mut out = vec![forge_title(0, None, "You")];
         for line in rendered {
             out.push(if line.is_empty() {
                 String::new()
             } else {
-                format!("{USER_FG}{line}{RESET}")
+                format!("{fg}{line}{RESET}", fg = &self.palette.user_fg)
             });
         }
         out
@@ -3344,14 +3400,14 @@ impl Ui {
             }
         }
 
-        render_flat(TOOL_ACCENT, None, title, depth, &rows)
+        render_flat(None, title, depth, &rows)
     }
 
     fn repl_code_lines(&self, depth: usize, body: &str, max: usize) -> Vec<String> {
         let trimmed = body.trim_end();
         let mut rows = Vec::new();
         if !trimmed.is_empty() {
-            rows = highlight_code(trimmed, Some("repl"))
+            rows = highlight_code(trimmed, Some("repl"), &self.palette.markdown)
                 .into_iter()
                 .flat_map(|line| wrap_ansi(&line, self.card_body_width(depth)))
                 .collect();
@@ -3361,15 +3417,17 @@ impl Ui {
                 rows.push(format!("{DIM}… ({hidden} more lines){RESET}"));
             }
         }
-
-        let label = if depth == 0 { "Input" } else { "repl" };
-        render_flat(
-            PANEL_REPL,
-            None,
-            &format!("{BOLD}{label}{RESET}"),
-            depth,
-            &rows,
-        )
+        let prefix = result_prefix(depth);
+        let blank = indent(depth);
+        rows.into_iter()
+            .map(|line| {
+                if line.is_empty() {
+                    blank.clone()
+                } else {
+                    format!("{prefix}{line}")
+                }
+            })
+            .collect()
     }
 
     fn live_thinking_lines(&self) -> Vec<String> {
@@ -3394,7 +3452,7 @@ impl Ui {
             return;
         }
         if self.expand_thinking {
-            self.push_dot(0, DIM, "thinking".to_owned());
+            self.push_dot(0, "thinking".to_owned());
             self.push_preview(0, &thinking, usize::MAX);
         }
     }
@@ -3514,14 +3572,14 @@ impl Ui {
             self.replace_block_rows(
                 row.start,
                 row.len,
-                self.status_rows(row.depth, &failed_status_text(&row.label, None, None)),
+                self.status_rows(row.depth, &failed_status_text(&row.label, None, None, &self.palette)),
             );
         }
         while let Some(row) = self.open_subcall_rows.pop_back() {
             self.replace_block_rows(
                 row.start,
                 row.len,
-                self.status_rows(row.depth, &failed_status_text(&row.label, None, None)),
+                self.status_rows(row.depth, &failed_status_text(&row.label, None, None, &self.palette)),
             );
         }
     }
@@ -3573,13 +3631,12 @@ impl Ui {
     /// forgecode-style anchor for a tool/thinking unit. A depth-0 action that
     /// follows prose gets a separating blank line first. `dot_color` carries
     /// the category; `title` is the already-styled text.
-    fn push_dot(&mut self, depth: usize, dot_color: &str, text: String) {
+    fn push_dot(&mut self, depth: usize, text: String) {
         if depth == 0 && !self.last_activity && !self.block_active {
             self.pending.push(String::new());
         }
         self.push_row(forge_title(
             depth,
-            dot_color,
             self.committed_ts().as_deref(),
             &text,
         ));
@@ -3589,7 +3646,7 @@ impl Ui {
     /// Continuation/result line inside an action block, rendered as a flat
     /// `●`-prefixed line under the nesting gutter.
     fn push_bar(&mut self, depth: usize, text: String) {
-        let rows = render_flat(DIM, None, &format!("{DIM}{text}{RESET}"), depth, &[]);
+        let rows = render_flat(None, &format!("{DIM}{text}{RESET}"), depth, &[]);
         for row in rows {
             self.push_row(row);
         }
@@ -3614,10 +3671,13 @@ impl Ui {
             return Vec::new();
         }
         let base_rows: Vec<String> = match lang {
-            Some(lang) => highlight_code(trimmed, Some(lang)),
+            Some(lang) => highlight_code(trimmed, Some(lang), &self.palette.markdown),
             None => trimmed
                 .lines()
-                .map(|line| highlight_diff_line(line).unwrap_or_else(|| highlight_output(line)))
+                .map(|line| {
+                    highlight_diff_line(line, &self.palette.markdown)
+                        .unwrap_or_else(|| highlight_output(line, &self.palette.markdown))
+                })
                 .collect(),
         };
         let mut rows: Vec<String> = base_rows
@@ -3637,9 +3697,14 @@ impl Ui {
         if rows.is_empty() {
             return;
         }
-        let rows = render_flat(DIM, None, "output", depth, &rows);
-        for row in rows {
-            self.push_row(row);
+        let prefix = result_prefix(depth);
+        let blank = indent(depth);
+        for line in &rows {
+            self.push_row(if line.is_empty() {
+                blank.clone()
+            } else {
+                format!("{prefix}{line}")
+            });
         }
     }
 
@@ -3658,10 +3723,10 @@ impl Ui {
         output: &str,
         max: usize,
         lang: Option<&str>,
-        failed: bool,
+        _failed: bool,
         ts: Option<&str>,
     ) -> Vec<String> {
-        let identity = tool_identity(name, args);
+        let identity = tool_identity(name, args, &self.palette);
         // The colored `●` carries success/failure (green/red); the in-flight
         // spinner label uses the same anchor via `tool_title`, so running and
         // committed render the same identity (no flicker on done). The header
@@ -3669,7 +3734,6 @@ impl Ui {
         // folds multi-line detail (full bash command / repl code) under it. For
         // tools whose identity IS the anchor, the body is empty and only the
         // output preview shows.
-        let dot = if failed { RED } else { GREEN };
         let width = self.card_body_width(depth);
         let mut body: Vec<String> = identity
             .body
@@ -3677,7 +3741,7 @@ impl Ui {
             .flat_map(|line| wrap_ansi(&line, width))
             .collect();
         body.extend(self.preview_rows_with_lang(depth, output, max, lang));
-        render_flat(dot, ts, &identity.anchor, depth, &body)
+        render_flat(ts, &identity.anchor, depth, &body)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -3687,14 +3751,13 @@ impl Ui {
         label: &str,
         content: Option<&str>,
         max: usize,
-        failed: bool,
+        _failed: bool,
         ts: Option<&str>,
     ) -> Vec<String> {
-        let dot = if failed { RED } else { SUBCALL_ACCENT };
         let body = content
             .map(|text| self.preview_rows_with_lang(depth, text, max, None))
             .unwrap_or_default();
-        render_flat(dot, ts, label, depth, &body)
+        render_flat(ts, label, depth, &body)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -3905,7 +3968,7 @@ impl Ui {
                 if self.live_code.is_some() {
                     self.open_tool_args.insert(key, args.clone());
                 }
-                let label = tool_title(&name, &args);
+                let label = tool_title(&name, &args, &self.palette);
                 if let Some((start, len)) =
                     self.push_status(depth + 1, running_status_text(&label, self.spinner.frame()))
                 {
@@ -3980,7 +4043,7 @@ impl Ui {
                 model,
                 prompt_preview,
             } => {
-                let label = subcall_title(&model, &prompt_preview);
+                let label = subcall_title(&model, &prompt_preview, &self.palette);
                 if let Some((start, len)) =
                     self.push_status(depth, running_status_text(&label, self.spinner.frame()))
                 {
@@ -4027,7 +4090,7 @@ impl Ui {
                 let label = open
                     .as_ref()
                     .map(|row| row.label.clone())
-                    .unwrap_or_else(|| subcall_title(&model, ""));
+                    .unwrap_or_else(|| subcall_title(&model, "", &self.palette));
                 let content = error.as_deref().or(result_preview.as_deref());
                 let rows = self.subcall_result_rows(
                     depth,
@@ -4244,12 +4307,14 @@ mod tests {
             model.clone(),
             storage.clone(),
             ThinkingLevel::Off,
+            None,
         ));
         let sub_lm = Arc::new(ProviderLm::new(
             registry.clone(),
             model,
             storage.clone(),
             ThinkingLevel::Off,
+            None,
         ));
         let mut store = SessionStore::new(&cwd).unwrap();
         // Redirect under the temp dir so tests never touch the real
@@ -4281,14 +4346,13 @@ mod tests {
             login_tx,
             cwd,
             None,
-            false,
             runtime,
         )
     }
 
     #[test]
     fn subcall_title_flattens_multiline_preview() {
-        let title = subcall_title("model-x", "first line\n\nsecond\tline");
+        let title = subcall_title("model-x", "first line\n\nsecond\tline", &InlinePalette::default_const());
         assert!(title.contains("\"first line second line\""), "{title}");
         assert!(!title.contains('\n'), "{title}");
         assert!(!title.contains('\t'), "{title}");
@@ -4296,43 +4360,42 @@ mod tests {
 
     #[test]
     fn panel_row_does_not_paint_box_body_background() {
-        let row = panel_row("\x1b[31mred\x1b[0m", 12, USER_BORDER);
+        let p = InlinePalette::default_const();
+        let row = panel_row("\x1b[31mred\x1b[0m", 12, &p.user_border);
         assert!(!row.contains("\x1b[48;"), "{row:?}");
         assert_eq!(visible_width(&row), 12, "{row:?}");
     }
 
     #[test]
     fn panel_border_reopens_color_after_label_reset() {
-        let border = panel_border(&format!("{BOLD}Input{RESET}"), "Input", 12, USER_BORDER);
+        let p = InlinePalette::default_const();
+        let border = panel_border(&format!("{BOLD}Input{RESET}"), "Input", 12, &p.user_border);
         assert!(
-            border.contains(&format!("{RESET}{USER_BORDER}")),
+            border.contains(&format!("{RESET}{}", p.user_border)),
             "{border:?}"
         );
     }
 
-    // Flat form: a `● title` header line (no trailing `─…─` rule) plus a body    // indented under the nesting gutter. Confirms the header carries no box
-    // claude-code-style: the header carries `●` (no `⎿`), and the body/result
-    // line carries `⎿` indented under it. `⎿` and `●` never share a line.
+    // Flat form: a bare header line (no trailing `─…─` rule) plus a body
+    // indented under a 2-space result gutter. No glyph — the header is just
+    // the title at the nesting indent, the body is plain indented text.
     #[test]
     fn render_flat_is_a_bare_header_with_indented_body() {
-        let lines = render_flat(GREEN, None, "read foo.rs", 1, &["body one".to_owned()]);
+        let lines = render_flat(None, "read foo.rs", 1, &["body one".to_owned()]);
         let plain: Vec<String> = lines.iter().map(|l| phi_tui::strip_ansi(l)).collect();
-        // Header at depth 1: 2-space indent, then `●`, then the title.
-        assert_eq!(plain[0], "  ● read foo.rs", "{plain:?}");
+        // Header at depth 1: 2-space indent + title, no glyph.
+        assert_eq!(plain[0], "  read foo.rs", "{plain:?}");
         assert!(!plain[0].contains('⎿'), "header must not carry ⎿: {plain:?}");
         assert!(!plain[0].contains('─'), "no trailing rule fill: {plain:?}");
-        // Result body: `⎿` gutter (2 sp + ⎿ + 2 sp) under the depth-1 indent.
-        assert_eq!(plain[1], "    ⎿  body one", "{plain:?}");
+        // Result body: indent(1)=2 + result gutter 2 = 4 cells, then content.
+        assert_eq!(plain[1], "    body one", "{plain:?}");
     }
 
-    // claude-code shows `⎿` once per result block — on the first non-empty
-    // row only. Continuation rows are blank-aligned (5-cell gutter, no glyph)
-    // so a multi-line result doesn't paint a wall of `⎿`. Regression guard
-    // for the "tons of ⎿" bug.
+    // Every body row shares the same plain 2-space result gutter — no glyph
+    // on any row, so multi-line results stay flat and uniform.
     #[test]
     fn render_flat_shows_single_crop_for_multiline_body() {
         let lines = render_flat(
-            GREEN,
             None,
             "read foo.rs",
             1,
@@ -4344,16 +4407,15 @@ mod tests {
             ],
         );
         let plain: Vec<String> = lines.iter().map(|l| phi_tui::strip_ansi(l)).collect();
-        // Exactly one `⎿` across the whole block.
-        assert_eq!(plain.iter().map(|l| l.matches('⎿').count()).sum::<usize>(), 1, "{plain:?}");
-        // First non-empty body row carries it.
-        assert_eq!(plain[1], "    ⎿  line one", "{plain:?}");
-        // Continuation rows: indent + 5-cell blank gutter (7 at depth 1), no glyph.
-        assert_eq!(plain[2], "       line two", "{plain:?}");
+        // No glyph across the whole block.
+        assert_eq!(plain.iter().map(|l| l.matches('⎿').count()).sum::<usize>(), 0, "{plain:?}");
+        // Every non-empty body row: indent(1)=2 + result gutter 2 = 4 cells.
+        assert_eq!(plain[1], "    line one", "{plain:?}");
+        assert_eq!(plain[2], "    line two", "{plain:?}");
         // Empty body line collapses to the depth indent (2 at depth 1).
         assert_eq!(plain[3], "  ", "{plain:?}");
-        // A non-empty row after a blank is still a continuation (no `⎿`).
-        assert_eq!(plain[4], "       line four", "{plain:?}");
+        // A non-empty row after a blank keeps the same gutter.
+        assert_eq!(plain[4], "    line four", "{plain:?}");
     }
 
     // forge_title stamps `[HH:MM:SS]` only when given a timestamp; without one
@@ -4361,26 +4423,26 @@ mod tests {
     // false replay-time clock.
     #[test]
     fn forge_title_omits_timestamp_when_none() {
-        let with_ts = phi_tui::strip_ansi(&forge_title(0, GREEN, Some("12:00:01"), "read x"));
-        let no_ts = phi_tui::strip_ansi(&forge_title(0, GREEN, None, "read x"));
+        let with_ts = phi_tui::strip_ansi(&forge_title(0, Some("12:00:01"), "read x"));
+        let no_ts = phi_tui::strip_ansi(&forge_title(0, None, "read x"));
         assert!(with_ts.contains("[12:00:01]"), "{with_ts}");
         assert!(!no_ts.contains('['), "{no_ts}");
-        assert!(no_ts.contains("●"), "{no_ts}");
+        assert!(!no_ts.contains("●"), "{no_ts}");
     }
 
-    // `indent` keeps the 2-cells-per-depth nesting budget, and the `⎿` result
-    // gutter is a fixed 5 cells (2 sp + `⎿` + 2 sp). `card_body_width` subtracts
-    // `result_prefix_width = indent_width(depth) + 5`, so result bodies fit
-    // under their `⎿` gutter and the math is stable across depths.
+    // `indent` keeps the 2-cells-per-depth nesting budget, and the result
+    // gutter is a fixed 2 cells. `card_body_width` subtracts
+    // `result_prefix_width = indent_width(depth) + 2`, so result bodies fit
+    // under their gutter and the math is stable across depths.
     #[test]
     fn indent_and_result_gutter_widths() {
         assert_eq!(indent_width(0), 0);
         assert_eq!(indent_width(1), 2);
         assert_eq!(indent_width(3), 6);
         assert_eq!(visible_width(&indent(3)), 6);
-        // `⎿` gutter is 5 cells at every depth (indent + 5).
+        // Result gutter is 2 cells at every depth (indent + 2).
         for depth in 0..=4 {
-            assert_eq!(result_prefix_width(depth), indent_width(depth) + 5, "depth {depth}");
+            assert_eq!(result_prefix_width(depth), indent_width(depth) + 2, "depth {depth}");
             assert_eq!(visible_width(&result_prefix(depth)), result_prefix_width(depth), "depth {depth}");
         }
         // card_body_width == repl_body_width - result_prefix_width.
@@ -4450,7 +4512,7 @@ mod tests {
 
         // Header carries the green ● (no ✓ glyph, no `─` rule) and the anchor
         // (path) once.
-        assert!(plain.contains("● read"), "{plain}");
+        assert!(plain.contains("read"), "{plain}");
         assert!(!plain.contains("✓"), "{plain}");
         assert!(!plain.contains('─'), "{plain}");
         assert!(plain.contains("crates/phi-session/src/usage.rs"), "{plain}");
@@ -4469,17 +4531,14 @@ mod tests {
         assert!(!plain.contains('└'), "{plain}");
         assert!(!plain.contains("Activity"), "{plain}");
         assert!(!plain.contains("Output"), "{plain}");
-        // Depth-1 header is inset 2 spaces under the repl block; the `⎿` result
-        // gutter sits under it. `⎿` and `●` never share a line.
-        assert!(plain.lines().any(|l| l.starts_with("  ● ")), "{plain}");
-        assert!(plain.lines().any(|l| l.contains('⎿')), "{plain}");
-        assert!(!plain.lines().any(|l| l.starts_with('⎿')), "{plain}");
+        // Depth-1 header is inset 2 spaces under the repl block; no `⎿` glyph.
+        assert!(plain.lines().any(|l| l.starts_with("  read")), "{plain}");
+        assert!(!plain.lines().any(|l| l.contains('⎿')), "{plain}");
     }
 
-    // Flat form for a repl block: a `● repl · turn N` header (violet ●, no box),
-    // code folds under an `Input` flat card, the exec bar is its own flat
-    // line, and stdout folds under a lowercase `output` card (no capital
-    // `Output` section box, no `├` separator).
+    // Flat form for a repl block: no header — code folds under a bare indented
+    // body, the exec bar is its own flat line, and stdout folds under it
+    // (no `output` label, no `├` separator).
     #[test]
     fn repl_panel_splits_input_and_output_sections() {
         let mut ui = test_ui(80, 24);
@@ -4495,14 +4554,15 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
 
-        // The repl block is a flat `●` header labelled with the turn.
-        assert!(plain.contains("●"), "{plain}");
-        assert!(plain.contains("repl · turn 1"), "{plain}");
-        assert!(plain.contains("Input"), "{plain}");
+        // No repl block header — the code speaks for itself.
+        assert!(!plain.contains("repl"), "{plain}");
+        // Code and exec bar are present as bare indented rows.
         assert!(plain.contains("print(1)"), "{plain}");
         assert!(plain.contains("exec 0.1s"), "{plain}");
-        // Output is a lowercase card header, never a capital `Output` section.
-        assert!(plain.contains("output"), "{plain}");
+        // The stdout value ("1") is present as a bare row, with no "output"
+        // label above it.
+        assert!(plain.lines().any(|l| l.trim() == "1"), "{plain}");
+        assert!(!plain.contains("output"), "{plain}");
         assert!(!plain.contains("Output"), "{plain}");
         // No box chrome or section separator.
         assert!(!plain.contains('┌'), "{plain}");
@@ -4517,31 +4577,35 @@ mod tests {
     // the in-flight label and the committed card header share.
     #[test]
     fn tool_identity_anchor_shown_once() {
+        let p = InlinePalette::default_const();
         let read = tool_identity(
             "read_file",
             &serde_json::json!({"path": "src/parser.rs"}),
+            &p,
         );
         assert!(phi_tui::strip_ansi(&read.anchor).contains("read src/parser.rs"));
         assert!(read.body.is_empty());
         let grep = tool_identity(
             "grep",
             &serde_json::json!({"pattern": "parse", "path": "src/"}),
+            &p,
         );
         let grep_plain = phi_tui::strip_ansi(&grep.anchor);
         assert!(grep_plain.contains("grep parse in src/"));
         assert!(grep.body.is_empty());
-        let ls = tool_identity("ls", &serde_json::json!({"path": "src"}));
+        let ls = tool_identity("ls", &serde_json::json!({"path": "src"}), &p);
         assert!(phi_tui::strip_ansi(&ls.anchor) == "ls src");
         assert!(ls.body.is_empty());
         // bash: single-line command lives in the anchor only (empty body); a
         // multi-line command's truncated first line is the anchor and its full
         // text is the body — the canonical command is shown once either way.
-        let bash1 = tool_identity("bash", &serde_json::json!({"cmd": "cargo check"}));
+        let bash1 = tool_identity("bash", &serde_json::json!({"cmd": "cargo check"}), &p);
         assert!(phi_tui::strip_ansi(&bash1.anchor).contains("$ cargo check"));
         assert!(bash1.body.is_empty(), "single-line bash must not duplicate the command in the body");
         let bash2 = tool_identity(
             "bash",
             &serde_json::json!({"cmd": "cargo test\ncargo build"}),
+            &p,
         );
         assert!(phi_tui::strip_ansi(&bash2.anchor).contains("$ cargo test…"));
         assert!(!bash2.body.is_empty(), "multi-line bash must carry the full command in the body");
@@ -4549,7 +4613,7 @@ mod tests {
         // Unknown (e.g. MCP/extension) tools: small `key=value` args live in the
         // anchor only (empty body — no dup); a long value earns a body row with
         // the full text (anchor keeps the truncated one).
-        let small = tool_identity("mcp__x", &serde_json::json!({"q": "hi"}));
+        let small = tool_identity("mcp__x", &serde_json::json!({"q": "hi"}), &p);
         assert_eq!(
             phi_tui::strip_ansi(&small.anchor),
             "mcp__x q=hi",
@@ -4558,7 +4622,7 @@ mod tests {
         );
         assert!(small.body.is_empty(), "small unknown-tool arg must not duplicate in the body");
         let big_cmd = "x".repeat(120);
-        let big = tool_identity("mcp__x", &serde_json::json!({"q": big_cmd}));
+        let big = tool_identity("mcp__x", &serde_json::json!({"q": big_cmd}), &p);
         assert!(!big.body.is_empty(), "long unknown-tool arg should carry full text in body");
         let joined = big
             .body
@@ -4569,7 +4633,7 @@ mod tests {
         assert!(joined.contains(&big_cmd), "{joined}");
         // A bare (non-object) arg is never in the anchor (anchor is just the
         // name), so a non-empty value lives in the body once.
-        let bare = tool_identity("mcp__x", &serde_json::json!("hello"));
+        let bare = tool_identity("mcp__x", &serde_json::json!("hello"), &p);
         assert_eq!(phi_tui::strip_ansi(&bare.anchor), "mcp__x", "{:?}", bare.anchor);
         assert!(!bare.body.is_empty(), "bare-string arg must show its value in the body");
         assert!(
@@ -4659,10 +4723,10 @@ mod tests {
         assert!(plain.contains("Compiling"), "{plain}");
     }
 
-    // The outer `repl` panel is labelled `repl · turn N` for a *live* action
-    // block (built during an iteration), but a persisted assistant message
-    // re-rendered as prose after the run completes has no per-block turn, so
-    // its repl container stays at a plain `repl` label — never `turn 0`.
+    // The repl block has no header, so neither a *live* action block (built
+    // during an iteration) nor a persisted assistant message re-rendered as
+    // prose after the run completes carries a `repl` or `turn` label — the
+    // code and output stand on their own.
     #[test]
     fn repl_panel_label_carries_turn_only_for_live_blocks() {
         use tokio_util::sync::CancellationToken;
@@ -4695,16 +4759,18 @@ mod tests {
             duration: Duration::from_millis(5),
         });
         let live_plain = pending_plain(&ui);
-        assert!(live_plain.contains("repl · turn 1"), "{live_plain}");
+        assert!(!live_plain.contains("repl"), "{live_plain}");
+        assert!(!live_plain.contains("turn"), "{live_plain}");
+        assert!(live_plain.contains("print(1)"), "{live_plain}");
 
         // Persisted assistant message rendered after the run completes (run
-        // no longer active): the repl container is plain `repl`, no turn.
+        // no longer active): also plain, no `repl`/`turn` label.
         ui.running = None;
         ui.pending.clear();
         ui.push_assistant_message("Here is code:\n\n```repl\nprint(1)\n```\n");
         let replay_plain = pending_plain(&ui);
-        assert!(replay_plain.contains("● repl"), "{replay_plain}");
         assert!(!replay_plain.contains("turn"), "{replay_plain}");
+        assert!(replay_plain.contains("print(1)"), "{replay_plain}");
     }
 
     #[test]
@@ -4854,7 +4920,7 @@ match1
                 "
 ",
             );
-        assert!(plain.contains("Input"), "{plain}");
+        // Input label removed for minimalist TUI
         assert!(!plain.contains("```"), "{plain}");
     }
 

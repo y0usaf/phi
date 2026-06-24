@@ -8,6 +8,7 @@ use super::dialog::render_dialog_title_line;
 use crate::driver::SessionKey;
 use crate::ui::cell_surface::{CellSurface, draw_box, render_cell_scrollbar, truncate_to_cells};
 use crate::ui::layout::CellRect as Rect;
+use crate::ui::scene::ScenePalette;
 use crate::ui::theme;
 
 #[derive(Debug)]
@@ -144,28 +145,32 @@ fn visible_rows(cols: u16, rows: u16) -> usize {
         .saturating_sub(7) as usize
 }
 
-pub fn render_model_overlay(surface: &mut CellSurface, model: &mut ModelOverlayState) {
+pub fn render_model_overlay(
+    surface: &mut CellSurface,
+    model: &mut ModelOverlayState,
+    palette: &ScenePalette,
+) {
     let rect = model_overlay_rect(surface.cols, surface.rows);
     draw_box(
         surface,
         rect,
-        theme::TEXT,
-        theme::SURFACE_RAISED,
-        theme::STATUS_BG,
+        palette.fg,
+        palette.surface_raised,
+        palette.statusbar_bg,
     );
     if rect.cols <= 2 || rect.rows <= 2 {
         return;
     }
 
     let inner = rect.inset_edges(2, 1, 2, 1);
-    surface.fill_rect(inner, theme::TEXT, theme::SURFACE);
+    surface.fill_rect(inner, palette.fg, palette.bg);
     let title = if model.root {
         " SWITCH MODEL "
     } else {
         " SWITCH SUB MODEL "
     };
     let info = format!(" {}/{} ", model.filtered.len(), model.models.len());
-    render_dialog_title_line(surface, inner.row, inner.col, inner.cols, title, &info);
+    render_dialog_title_line(surface, inner.row, inner.col, inner.cols, title, &info, palette);
 
     let query_row = inner.row + 2;
     let list_row = inner.row + 4;
@@ -177,8 +182,8 @@ pub fn render_model_overlay(surface: &mut CellSurface, model: &mut ModelOverlayS
         inner.col,
         query_row,
         inner.cols,
-        theme::TEXT,
-        theme::SURFACE,
+        palette.fg,
+        palette.bg,
         &truncate_to_cells(&format!("› {}", model.query), inner.cols.max(0) as usize),
     );
 
@@ -187,8 +192,8 @@ pub fn render_model_overlay(surface: &mut CellSurface, model: &mut ModelOverlayS
             inner.col,
             list_row,
             list_width,
-            theme::MUTED,
-            theme::SURFACE,
+            palette.muted,
+            palette.bg,
             "No matching models.",
         );
     } else {
@@ -205,14 +210,14 @@ pub fn render_model_overlay(surface: &mut CellSurface, model: &mut ModelOverlayS
             let current = *value == model.current;
             let row_rect = Rect::new(inner.col, row, list_width, 1);
             let row_bg = if selected {
-                theme::SURFACE_RAISED
+                palette.surface_raised
             } else {
-                theme::SURFACE
+                palette.bg
             };
             let row_fg = if selected {
-                theme::TEXT
+                palette.fg
             } else {
-                theme::brighten(theme::MUTED, 30)
+                theme::brighten(palette.muted, 30)
             };
             surface.fill_rect(row_rect, row_fg, row_bg);
             let mut line = if selected {
@@ -240,10 +245,10 @@ pub fn render_model_overlay(surface: &mut CellSurface, model: &mut ModelOverlayS
             list_rows,
             model.filtered.len(),
             start,
-            theme::BORDER,
-            theme::SURFACE,
+            palette.border,
+            palette.bg,
             "╎",
-            theme::ACCENT_2,
+            palette.accent_2,
             "┃",
         );
     }
@@ -253,8 +258,8 @@ pub fn render_model_overlay(surface: &mut CellSurface, model: &mut ModelOverlayS
         inner.col,
         footer_row,
         inner.cols,
-        theme::MUTED,
-        theme::SURFACE,
+        palette.muted,
+        palette.bg,
         &truncate_to_cells(hint, inner.cols.max(0) as usize),
     );
 }

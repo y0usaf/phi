@@ -9,6 +9,54 @@ const MODELS_DEV_URL: &str = "https://models.dev/api.json";
 const AI_GATEWAY_MODELS_URL: &str = "https://ai-gateway.vercel.sh/v1/models";
 const AI_GATEWAY_BASE_URL: &str = "https://ai-gateway.vercel.sh";
 
+/// Maximum bytes accepted from a model-listing endpoint. These are dev-only
+/// manual fetches against hardcoded HTTPS URLs; the cap bounds memory if a
+/// compromised endpoint or TLS MITM streams an oversized body.
+const MAX_MODELS_JSON_BYTES: usize = 64 * 1024 * 1024;
+
+/// Per-model fixes for upstream listings that disagree with the runtime
+/// server. Sourced from `limit.context`/`limit.output` is generally right,
+/// but some providers advertise limits larger than what they actually serve.
+/// Entries are `(provider_id, model_id, context_window, max_tokens)`.
+///
+/// Known bad cases as of 2026-06: neuralwatt's `/v1/models` lists
+/// `glm-5.2` with max_context_length = 1048560 but their vLLM serving
+/// endpoint enforces `max_model_len = max_total_tokens = 200000`.
+const OVERRIDES: &[(&str, &str, u64, u64)] = &[
+    ("neuralwatt", "glm-5.2", 200_000, 65_536),
+];
+
+fn override_for(provider: &str, model: &str) -> Option<(u64, u64)> {
+    OVERRIDES
+        .iter()
+        .find(|(p, m, _, _)| *p == provider && *m == model)
+        .map(|(_, _, ctx, max)| (*ctx, *max))
+}
+
+/// Fetch and parse a JSON model listing with a body-size cap. `reqwest`'s
+/// `.json()` buffers the entire response with no limit, so we read the bytes
+/// explicitly and reject anything over `MAX_MODELS_JSON_BYTES` before parsing.
+async fn fetch_capped_json<T: serde::de::DeserializeOwned>(url: &str) -> Result<T> {
+    use futures::StreamExt as _;
+    let response = reqwest::get(url)
+        .await
+        .context("fetching model listing")?
+        .error_for_status()?;
+    let mut buf: Vec<u8> = Vec::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.context("reading model-list body")?;
+        buf.extend_from_slice(&chunk);
+        if buf.len() > MAX_MODELS_JSON_BYTES {
+            anyhow::bail!(
+                "model-list response from {url} exceeded {} bytes",
+                MAX_MODELS_JSON_BYTES
+            );
+        }
+    }
+    serde_json::from_slice(&buf).context("parsing model-list response")
+}
+
 #[derive(Deserialize)]
 struct DevProvider {
     id: String,
@@ -222,6 +270,11 @@ fn convert(provider: &DevProvider, api: Api, base_url: &str) -> Vec<Model> {
         }
         let limit = m.limit.as_ref();
         let max_tokens = limit.and_then(|l| l.output).unwrap_or(4096);
+        let context_window = limit.and_then(|l| l.context).unwrap_or(4096);
+        // Apply per-(provider, model) overrides where upstream data disagrees
+        // with the actual server. See `OVERRIDES` for known bad cases.
+        let (context_window, max_tokens) = override_for(&provider.id, id)
+            .unwrap_or((context_window, max_tokens));
         let cost = m.cost.as_ref();
         let input = match &m.modalities {
             Some(mods) if mods.input.iter().any(|i| i == "image") => {
@@ -243,7 +296,7 @@ fn convert(provider: &DevProvider, api: Api, base_url: &str) -> Vec<Model> {
                 cache_read: cost.map_or(0.0, |c| c.cache_read),
                 cache_write: cost.map_or(0.0, |c| c.cache_write),
             },
-            context_window: limit.and_then(|l| l.context).unwrap_or(4096),
+            context_window,
             max_tokens,
             headers: BTreeMap::new(),
             thinking_levels: thinking_levels(api, m, max_tokens),
@@ -255,13 +308,9 @@ fn convert(provider: &DevProvider, api: Api, base_url: &str) -> Vec<Model> {
 fn fetch_ai_gateway_models(runtime: &tokio::runtime::Runtime) -> Result<Vec<Model>> {
     runtime.block_on(async {
         eprintln!("fetching {AI_GATEWAY_MODELS_URL}...");
-        let response: AiGatewayResponse = reqwest::get(AI_GATEWAY_MODELS_URL)
+        let response: AiGatewayResponse = fetch_capped_json(AI_GATEWAY_MODELS_URL)
             .await
-            .context("fetching Vercel AI Gateway models")?
-            .error_for_status()?
-            .json()
-            .await
-            .context("parsing Vercel AI Gateway response")?;
+            .context("fetching Vercel AI Gateway models")?;
 
         let mut models = Vec::new();
         for m in response.data {
@@ -302,13 +351,7 @@ pub fn run() -> Result<()> {
         .build()?;
     let providers: BTreeMap<String, DevProvider> = runtime.block_on(async {
         eprintln!("fetching {MODELS_DEV_URL}...");
-        reqwest::get(MODELS_DEV_URL)
-            .await
-            .context("fetching models.dev")?
-            .error_for_status()?
-            .json()
-            .await
-            .context("parsing models.dev response")
+        fetch_capped_json(MODELS_DEV_URL).await
     })?;
 
     let mut models = Vec::new();
@@ -349,4 +392,22 @@ pub fn run() -> Result<()> {
         eprintln!("  {}", skipped.join(", "));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn override_for_known_bad_neuralwatt_glm_5_2() {
+        // models.dev advertises 1048560 for both; vLLM actually serves 200k.
+        let (ctx, max) = override_for("neuralwatt", "glm-5.2").expect("override present");
+        assert_eq!(ctx, 200_000);
+        assert_eq!(max, 65_536);
+    }
+
+    #[test]
+    fn override_for_unknown_returns_none() {
+        assert!(override_for("anthropic", "claude-opus-4-7").is_none());
+    }
 }

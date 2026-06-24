@@ -7,6 +7,7 @@ use super::dialog::render_dialog_title_line;
 use crate::keymap::{AppAction, Keymap};
 use crate::ui::cell_surface::{CellSurface, draw_box, render_cell_scrollbar, truncate_to_cells};
 use crate::ui::layout::CellRect as Rect;
+use crate::ui::scene::ScenePalette;
 use crate::ui::theme;
 
 #[derive(Clone, Debug, Default)]
@@ -160,21 +161,22 @@ pub fn render_help_overlay(
     surface: &mut CellSurface,
     help: &mut HelpOverlayState,
     keymap: &Keymap,
+    palette: &ScenePalette,
 ) {
     let rect = help_overlay_rect(surface.cols, surface.rows);
     draw_box(
         surface,
         rect,
-        theme::TEXT,
-        theme::SURFACE_RAISED,
-        theme::STATUS_BG,
+        palette.fg,
+        palette.surface_raised,
+        palette.statusbar_bg,
     );
     if rect.cols <= 2 || rect.rows <= 2 {
         return;
     }
 
     let inner = rect.inset_edges(2, 1, 2, 1);
-    surface.fill_rect(inner, theme::TEXT, theme::SURFACE);
+    surface.fill_rect(inner, palette.fg, palette.bg);
     render_dialog_title_line(
         surface,
         inner.row,
@@ -182,6 +184,7 @@ pub fn render_help_overlay(
         inner.cols,
         " HELP ",
         " ctrl+g/Esc/q close ",
+        palette,
     );
 
     let lines = help_overlay_lines(keymap);
@@ -202,7 +205,7 @@ pub fn render_help_overlay(
             && !line.contains('/')
             && !line.contains(':');
         if is_heading {
-            render_dialog_title_line(surface, row, inner.col, text_width, line, "");
+            render_dialog_title_line(surface, row, inner.col, text_width, line, "", palette);
         } else {
             let split_at = line.len().min(24);
             let (keys, description) = line.split_at(split_at);
@@ -210,16 +213,16 @@ pub fn render_help_overlay(
                 inner.col,
                 row,
                 split_at as i32,
-                theme::ACCENT_2,
-                theme::SURFACE,
+                palette.accent_2,
+                palette.bg,
                 keys.trim_end(),
             );
             surface.put_text(
                 inner.col + 25,
                 row,
                 text_width.saturating_sub(25),
-                theme::brighten(theme::MUTED, 44),
-                theme::SURFACE,
+                theme::brighten(palette.muted, 44),
+                palette.bg,
                 &truncate_to_cells(description.trim(), text_width.saturating_sub(25) as usize),
             );
         }
@@ -232,10 +235,10 @@ pub fn render_help_overlay(
         list_rows,
         lines.len(),
         help.scroll,
-        theme::BORDER,
-        theme::SURFACE,
+        palette.border,
+        palette.bg,
         "╎",
-        theme::ACCENT_2,
+        palette.accent_2,
         "┃",
     );
 }

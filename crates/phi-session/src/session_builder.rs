@@ -131,12 +131,14 @@ pub async fn build_session(
         root_model,
         storage.clone(),
         thinking,
+        settings.max_tokens,
     ));
     let sub = Arc::new(ProviderLm::new(
         registry.clone(),
         sub_model,
         storage.clone(),
         sub_model_thinking,
+        settings.max_tokens,
     ));
 
     let payload = ContextPayload::Str(workspace_context(cwd));
@@ -191,6 +193,7 @@ pub fn register_supported_named_models(
             model.clone(),
             storage.clone(),
             thinking,
+            None,
         ));
         rlm.register_model(name, lm);
     }

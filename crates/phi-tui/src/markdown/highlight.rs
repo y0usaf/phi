@@ -1,7 +1,7 @@
 use syntect::easy::HighlightLines;
 use syntect::util::as_24_bit_terminal_escaped;
 
-use super::constants::*;
+use super::constants::{MarkdownPalette, RESET, SYNTAXES, THEME};
 
 pub(super) fn normalize_code_lang(lang: &str) -> String {
     match lang.trim().to_ascii_lowercase().as_str() {
@@ -20,23 +20,27 @@ pub(super) fn normalize_code_lang(lang: &str) -> String {
 /// theme. Common aliases are normalized (notably `repl` -> `python`).
 /// Near-white default tokens are softened to gray: in this UI, white is
 /// reserved for model prose, so code must never render as plain white.
-pub fn highlight_code(text: &str, lang: Option<&str>) -> Vec<String> {
+pub fn highlight_code(text: &str, lang: Option<&str>, palette: &MarkdownPalette) -> Vec<String> {
     let mut code_lines: Vec<&str> = text.split('\n').collect();
     if text.ends_with('\n') {
         code_lines.pop();
     }
-    highlight_code_lines(code_lines, lang)
+    highlight_code_lines(code_lines, lang, palette)
 }
 
 /// Highlight a snippet when a language hint is available, otherwise return
 /// plain lines unchanged. Useful for previews nested inside the REPL UI.
-pub fn highlight_snippet(text: &str, lang: Option<&str>) -> Vec<String> {
-    highlight_code(text, lang)
+pub fn highlight_snippet(text: &str, lang: Option<&str>, palette: &MarkdownPalette) -> Vec<String> {
+    highlight_code(text, lang, palette)
 }
 
-pub(super) fn highlight_code_lines(code_lines: Vec<&str>, lang: Option<&str>) -> Vec<String> {
+pub(super) fn highlight_code_lines(
+    code_lines: Vec<&str>,
+    lang: Option<&str>,
+    palette: &MarkdownPalette,
+) -> Vec<String> {
     if matches!(lang, Some(l) if l.trim().eq_ignore_ascii_case("repl")) {
-        return highlight_repl_lines(code_lines);
+        return highlight_repl_lines(code_lines, palette);
     }
     let syntax = lang.map(normalize_code_lang).and_then(|lang| {
         SYNTAXES.find_syntax_by_token(&lang).or_else(|| {
@@ -63,7 +67,10 @@ pub(super) fn highlight_code_lines(code_lines: Vec<&str>, lang: Option<&str>) ->
     }
 }
 
-pub(super) fn highlight_repl_lines(code_lines: Vec<&str>) -> Vec<String> {
+pub(super) fn highlight_repl_lines(
+    code_lines: Vec<&str>,
+    palette: &MarkdownPalette,
+) -> Vec<String> {
     let syntax = SYNTAXES.find_syntax_by_token("python");
     match syntax {
         Some(syntax) => {
@@ -76,13 +83,13 @@ pub(super) fn highlight_repl_lines(code_lines: Vec<&str>) -> Vec<String> {
                         .map(|ranges| as_24_bit_terminal_escaped(&ranges, false))
                         .unwrap_or_else(|_| line.to_owned());
                     let softened = soften_ansi(&base);
-                    highlight_known_repl_calls(&softened)
+                    highlight_known_repl_calls(&softened, palette)
                 })
                 .collect()
         }
         None => code_lines
             .into_iter()
-            .map(highlight_known_repl_calls)
+            .map(|line| highlight_known_repl_calls(line, palette))
             .collect(),
     }
 }
@@ -239,7 +246,10 @@ pub(super) fn visible_after_call(text: &str, mut i: usize) -> bool {
     false
 }
 
-pub(super) fn highlight_known_repl_calls(line: impl AsRef<str>) -> String {
+pub(super) fn highlight_known_repl_calls(
+    line: impl AsRef<str>,
+    palette: &MarkdownPalette,
+) -> String {
     const NAMES: &[&str] = &[
         "bash",
         "read_file",
@@ -307,7 +317,7 @@ pub(super) fn highlight_known_repl_calls(line: impl AsRef<str>) -> String {
         }
 
         if let Some(name) = matched {
-            out.push_str(REPL_FN);
+            out.push_str(&palette.repl_fn);
             out.push_str(name);
             out.push_str(RESET);
             i += name.len();

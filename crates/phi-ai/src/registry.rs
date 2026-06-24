@@ -27,6 +27,10 @@ impl Registry {
             Api::OpenAiResponses,
             Arc::new(crate::providers::openai_responses::OpenAiResponsesProvider::new()),
         );
+        providers.insert(
+            Api::OpenAiCompletions,
+            Arc::new(crate::providers::openai_completions::OpenAiCompletionsProvider::new()),
+        );
         Self { models, providers }
     }
 
@@ -118,24 +122,36 @@ mod tests {
         // excluded from the supported view.
         assert!(supported.len() < total);
         assert!(
-            supported
-                .iter()
-                .all(|m| matches!(m.api, Api::AnthropicMessages | Api::OpenAiResponses))
+            supported.iter().all(|m| matches!(
+                m.api,
+                Api::AnthropicMessages | Api::OpenAiResponses | Api::OpenAiCompletions
+            ))
         );
-        // Unqualified find prefers a supported model on id collisions.
-        let opus = registry.find("claude-opus-4-7").unwrap();
+        // Unqualified find prefers a supported model on id collisions; with
+        // OpenAiCompletions registered, the 302ai variant is supported and
+        // appears first. Use a qualified lookup to pin the Anthropic model.
+        let opus = registry.find("anthropic/claude-opus-4-7").unwrap();
         assert_eq!(opus.provider, "anthropic");
+    }
+
+    #[test]
+    fn openai_completions_provider_is_registered() {
+        let registry = Registry::builtin();
+        // Any openai-completions model should now be supported.
+        let nw = registry.first_for_provider("neuralwatt").unwrap();
+        assert_eq!(nw.api, Api::OpenAiCompletions);
+        assert!(registry.is_supported(nw));
     }
 
     #[test]
     fn thinking_value_clamps() {
         let registry = Registry::builtin();
-        let opus = registry.find("claude-opus-4-7").unwrap();
+        let opus = registry.find("anthropic/claude-opus-4-7").unwrap();
         assert_eq!(
             opus.thinking_value(crate::types::ThinkingLevel::Medium),
             Some("8192".to_owned())
         );
-        let gpt = registry.find("gpt-5.1").unwrap();
+        let gpt = registry.find("openai/gpt-5.1").unwrap();
         // xhigh unsupported on gpt-5.1 -> clamps down to high
         assert_eq!(
             gpt.thinking_value(crate::types::ThinkingLevel::XHigh),

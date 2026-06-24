@@ -1,4 +1,3 @@
-mod diff;
 mod render;
 mod types;
 

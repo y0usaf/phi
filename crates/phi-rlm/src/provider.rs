@@ -17,6 +17,11 @@ pub struct ProviderLm {
     model: RwLock<Model>,
     auth: Arc<AuthStorage>,
     thinking: RwLock<ThinkingLevel>,
+    /// Optional per-request output-token cap; overrides `model.max_tokens`
+    /// (which is sourced from upstream model listings that are sometimes
+    /// wrong — e.g. neuralwatt advertises 1M for glm-5.2 but only serves
+    /// 200k). `None` falls back to `model.max_tokens`.
+    max_tokens: Option<u64>,
 }
 
 /// Transient-looking provider failures are retried; auth/4xx errors are not.
@@ -43,12 +48,14 @@ impl ProviderLm {
         model: Model,
         auth: Arc<AuthStorage>,
         thinking: ThinkingLevel,
+        max_tokens: Option<u64>,
     ) -> Self {
         Self {
             registry,
             model: RwLock::new(model),
             auth,
             thinking: RwLock::new(thinking),
+            max_tokens,
         }
     }
 
@@ -171,6 +178,7 @@ impl ProviderLm {
 
         let mut opts = StreamOptions::new(auth);
         opts.thinking = self.thinking();
+        opts.max_tokens = self.max_tokens;
 
         let context = Self::context(&model, prompt);
         let mut stream = self.registry.stream(&model, &context, opts);

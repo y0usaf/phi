@@ -8,6 +8,7 @@ use phi_tui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use super::dialog::render_dialog_title_line;
 use crate::ui::cell_surface::{CellSurface, draw_box, render_cell_scrollbar, truncate_to_cells};
 use crate::ui::layout::CellRect as Rect;
+use crate::ui::scene::ScenePalette;
 use crate::ui::theme;
 use crate::workspace::{self, ArchivedSession};
 
@@ -155,21 +156,25 @@ fn visible_rows(cols: u16, rows: u16) -> usize {
         .saturating_sub(7) as usize
 }
 
-pub fn render_archive_viewer(surface: &mut CellSurface, viewer: &mut ArchiveViewerState) {
+pub fn render_archive_viewer(
+    surface: &mut CellSurface,
+    viewer: &mut ArchiveViewerState,
+    palette: &ScenePalette,
+) {
     let rect = archive_viewer_rect(surface.cols, surface.rows);
     draw_box(
         surface,
         rect,
-        theme::TEXT,
-        theme::SURFACE_RAISED,
-        theme::STATUS_BG,
+        palette.fg,
+        palette.surface_raised,
+        palette.statusbar_bg,
     );
     if rect.cols <= 2 || rect.rows <= 2 {
         return;
     }
 
     let inner = rect.inset_edges(2, 1, 2, 1);
-    surface.fill_rect(inner, theme::TEXT, theme::SURFACE);
+    surface.fill_rect(inner, palette.fg, palette.bg);
     let count = format!(" {} archived ", viewer.sessions.len());
     render_dialog_title_line(
         surface,
@@ -178,6 +183,7 @@ pub fn render_archive_viewer(surface: &mut CellSurface, viewer: &mut ArchiveView
         inner.cols,
         " ARCHIVE ",
         &count,
+        palette,
     );
 
     let hint = "↑/↓/j/k select  Enter restore  r reload  q/Esc close";
@@ -185,8 +191,8 @@ pub fn render_archive_viewer(surface: &mut CellSurface, viewer: &mut ArchiveView
         inner.col,
         inner.row + 2,
         inner.cols,
-        theme::MUTED,
-        theme::SURFACE,
+        palette.muted,
+        palette.bg,
         hint,
     );
     let header_row = inner.row + 3;
@@ -194,8 +200,8 @@ pub fn render_archive_viewer(surface: &mut CellSurface, viewer: &mut ArchiveView
         inner.col,
         header_row,
         inner.cols,
-        theme::brighten(theme::MUTED, 24),
-        theme::SURFACE,
+        theme::brighten(palette.muted, 24),
+        palette.bg,
         "UPDATED  SESSION / PROJECT",
     );
     let list_row = inner.row + 4;
@@ -209,8 +215,8 @@ pub fn render_archive_viewer(surface: &mut CellSurface, viewer: &mut ArchiveView
             inner.col,
             list_row,
             list_width,
-            theme::MUTED,
-            theme::SURFACE,
+            palette.muted,
+            palette.bg,
             "No archived sessions. Ctrl+Delete archives the selected session.",
         );
     } else {
@@ -222,14 +228,14 @@ pub fn render_archive_viewer(surface: &mut CellSurface, viewer: &mut ArchiveView
             let line = archive_viewer_row_text(&viewer.sessions[index], now);
             let row_rect = Rect::new(inner.col, row, list_width, 1);
             let row_bg = if selected {
-                theme::SURFACE_RAISED
+                palette.surface_raised
             } else {
-                theme::SURFACE
+                palette.bg
             };
             let row_fg = if selected {
-                theme::TEXT
+                palette.fg
             } else {
-                theme::brighten(theme::MUTED, 30)
+                theme::brighten(palette.muted, 30)
             };
             surface.fill_rect(row_rect, row_fg, row_bg);
             surface.put_text(
@@ -249,10 +255,10 @@ pub fn render_archive_viewer(surface: &mut CellSurface, viewer: &mut ArchiveView
             list_rows,
             viewer.sessions.len(),
             viewer.scroll,
-            theme::BORDER,
-            theme::SURFACE,
+            palette.border,
+            palette.bg,
             "╎",
-            theme::ACCENT_2,
+            palette.accent_2,
             "┃",
         );
     }
@@ -265,8 +271,8 @@ pub fn render_archive_viewer(surface: &mut CellSurface, viewer: &mut ArchiveView
         inner.col,
         footer_row,
         inner.cols,
-        theme::MUTED,
-        theme::SURFACE,
+        palette.muted,
+        palette.bg,
         &truncate_to_cells(footer, inner.cols.max(0) as usize),
     );
 }

@@ -151,12 +151,14 @@ async fn run(args: Args, storage: Arc<AuthStorage>, registry: Arc<Registry>) -> 
         root_model,
         storage.clone(),
         thinking,
+        settings.max_tokens,
     ));
     let sub = Arc::new(ProviderLm::new(
         registry.clone(),
         sub_model,
         storage.clone(),
         sub_model_thinking,
+        settings.max_tokens,
     ));
 
     let (payload, root_prompt) = match &args.context {

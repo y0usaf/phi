@@ -1,7 +1,7 @@
 //! Shared dialog chrome (port of pi-harness `overlays/dialog.rs`).
 
 use crate::ui::cell_surface::{CellSurface, display_cell_width};
-use crate::ui::theme;
+use crate::ui::scene::ScenePalette;
 
 pub fn render_dialog_title_line(
     surface: &mut CellSurface,
@@ -10,12 +10,13 @@ pub fn render_dialog_title_line(
     width: i32,
     title: &str,
     info: &str,
+    palette: &ScenePalette,
 ) {
     if width <= 0 {
         return;
     }
 
-    surface.put_text_bold(col, row, width, theme::ACCENT, theme::SURFACE, title);
+    surface.put_text_bold(col, row, width, palette.accent, palette.bg, title);
     let title_width = display_cell_width(title) as i32;
     let info_width = display_cell_width(info) as i32;
     let rule_start = col + title_width + 1;
@@ -26,8 +27,8 @@ pub fn render_dialog_title_line(
         surface.set_cell(
             rule_start + index,
             row,
-            theme::BORDER,
-            theme::SURFACE,
+            palette.border,
+            palette.bg,
             "─",
             false,
         );
@@ -37,8 +38,8 @@ pub fn render_dialog_title_line(
             col + width - info_width,
             row,
             info_width,
-            theme::ACCENT_2,
-            theme::SURFACE,
+            palette.accent_2,
+            palette.bg,
             info,
         );
     }

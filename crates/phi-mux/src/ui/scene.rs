@@ -14,6 +14,7 @@ use super::sidebar::{
 };
 use super::terminal_view::for_each_terminal_screen_cell;
 use super::theme;
+use phi_tui::palette::TerminalColors;
 
 const STATUSLINE_MODE_LABEL_WIDTH: i32 = 5;
 const SCROLLBAR_TRACK_GLYPH: &str = "│";
@@ -28,6 +29,7 @@ const SIDEBAR_SELECTOR_GLYPH: &str = "> ";
 pub struct ScenePalette {
     pub fg: Color,
     pub bg: Color,
+    pub surface_raised: Color,
     pub statusbar_bg: Color,
     pub statusbar_fg: Color,
     pub sidebar_bg: Color,
@@ -54,6 +56,7 @@ impl Default for ScenePalette {
             // Grounded canvas: real surfaces instead of floating on whatever
             // the host terminal happens to show through.
             bg: theme::SURFACE,
+            surface_raised: theme::SURFACE_RAISED,
             statusbar_fg: theme::STATUS_FG,
             statusbar_bg: theme::STATUS_BG,
             // Keep the sidebar on the same plane as the rest of mux; row
@@ -71,6 +74,35 @@ impl Default for ScenePalette {
             success_subtle: theme::SUCCESS_SUBTLE,
             warning: theme::WARNING,
             error: theme::ERROR,
+        }
+    }
+}
+
+impl ScenePalette {
+    /// Derive a palette from the host terminal's reported colors (OSC 10/11/4),
+    /// matching opencode's auto-theming. Missing palette entries fall back to
+    /// the standard 256-color cube inside `theme::generate_system`.
+    pub fn from_terminal_colors(colors: &TerminalColors) -> Self {
+        let g = theme::generate_system(colors);
+        Self {
+            fg: g.fg,
+            bg: g.bg,
+            surface_raised: g.surface_raised,
+            statusbar_bg: g.statusbar_bg,
+            statusbar_fg: g.statusbar_fg,
+            sidebar_bg: g.sidebar_bg,
+            border: g.border,
+            muted: g.muted,
+            term_fg: g.term_fg,
+            term_bg: g.term_bg,
+            accent: g.accent,
+            accent_2: g.accent_2,
+            ansi: g.ansi,
+            running: g.running,
+            success: g.success,
+            success_subtle: g.success_subtle,
+            warning: g.warning,
+            error: g.error,
         }
     }
 }
@@ -360,7 +392,7 @@ fn statusline_status_symbol(status: &str) -> &'static str {
     match status {
         "thinking" => "⋯",
         "outputting" => "⟡",
-        "running" | "launching" => "●",
+        "running" | "launching" => ">",
         "error" | "interrupted" | "crashed" => "×",
         "exited" => "◌",
         _ if status.starts_with("tool") => "⚙",

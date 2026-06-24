@@ -1,25 +1,25 @@
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use unicode_width::UnicodeWidthStr;
 
-use super::constants::*;
+use super::constants::{BOLD, DIM, ITALIC, RESET, UNDERLINE, CYAN, MarkdownPalette};
 use super::highlight::highlight_code;
 
 /// Color a diff-preview line: additions green, deletions red, hunk headers
 /// violet. File headers (`+++`/`---`) and context lines return None.
-pub fn highlight_diff_line(line: &str) -> Option<String> {
+pub fn highlight_diff_line(line: &str, palette: &MarkdownPalette) -> Option<String> {
     if line.starts_with("@@") {
-        Some(format!("{REPL_FENCE}{line}{RESET}"))
+        Some(format!("{}{line}{RESET}", palette.repl_fence))
     } else if line.starts_with('+') && !line.starts_with("+++") {
-        Some(format!("{DIFF_ADD}{line}{RESET}"))
+        Some(format!("{}{line}{RESET}", palette.diff_add))
     } else if line.starts_with('-') && !line.starts_with("---") {
-        Some(format!("{DIFF_DEL}{line}{RESET}"))
+        Some(format!("{}{line}{RESET}", palette.diff_del))
     } else {
         None
     }
 }
 
 #[derive(Clone, Copy, Default)]
-pub(super) struct Style {
+pub(super) struct Style<'p> {
     bold: bool,
     italic: bool,
     code: bool,
@@ -27,11 +27,11 @@ pub(super) struct Style {
     link: bool,
     heading: bool,
     subhead: bool,
-    accent: Option<&'static str>,
+    accent: Option<&'p str>,
 }
 
-impl Style {
-    fn prefix(&self) -> String {
+impl<'p> Style<'p> {
+    fn prefix(&self, palette: &MarkdownPalette) -> String {
         let mut s = String::new();
         if self.bold {
             s.push_str(BOLD);
@@ -46,7 +46,7 @@ impl Style {
             s.push_str(CYAN);
         }
         if self.subhead {
-            s.push_str(SUBHEAD);
+            s.push_str(&palette.subhead);
         }
         if let Some(accent) = self.accent {
             s.push_str(accent);
@@ -60,7 +60,7 @@ impl Style {
 }
 
 /// Render markdown to terminal lines, word-wrapped to `width` columns.
-pub fn render_markdown(text: &str, width: usize) -> Vec<String> {
+pub fn render_markdown(text: &str, width: usize, palette: &MarkdownPalette) -> Vec<String> {
     let width = width.max(1);
     let options =
         Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TABLES | Options::ENABLE_TASKLISTS;
@@ -79,6 +79,7 @@ pub fn render_markdown(text: &str, width: usize) -> Vec<String> {
         code_lang: None,
         link: None,
         started: false,
+        palette,
     };
     r.run(parser);
     r.flush_line();
@@ -96,13 +97,13 @@ pub(super) struct ListLevel {
     hang: usize,
 }
 
-pub(super) struct Renderer {
+pub(super) struct Renderer<'p> {
     width: usize,
     lines: Vec<String>,
     current: String,
     col: usize,
     indent: String,
-    style: Style,
+    style: Style<'p>,
     list_stack: Vec<ListLevel>,
     quote_depth: usize,
     in_code_block: bool,
@@ -113,9 +114,10 @@ pub(super) struct Renderer {
     /// skip the trailing `(url)`).
     link: Option<(String, bool)>,
     started: bool,
+    palette: &'p MarkdownPalette,
 }
 
-impl Renderer {
+impl<'p> Renderer<'p> {
     fn run(&mut self, parser: Parser) {
         for event in parser {
             match event {
@@ -149,7 +151,7 @@ impl Renderer {
                 Event::TaskListMarker(done) => {
                     let saved = self.style;
                     if done {
-                        self.style.accent = Some(TASK_DONE);
+                        self.style.accent = Some(&self.palette.task_done);
                     } else {
                         self.style.dim = true;
                     }
@@ -184,7 +186,8 @@ impl Renderer {
                     && !lang.is_empty()
                 {
                     if lang.trim().eq_ignore_ascii_case("repl") {
-                        self.lines.push(format!("{REPL_FENCE}```repl{RESET}"));
+                        let fence = &self.palette.repl_fence;
+                        self.lines.push(format!("{fence}```repl{RESET}"));
                     } else {
                         self.lines.push(format!("{DIM}\u{258d} {lang}{RESET}"));
                     }
@@ -220,7 +223,7 @@ impl Renderer {
                 }
                 self.update_indent();
                 let saved = self.style;
-                self.style.accent = Some(MARKER_ACCENT);
+                self.style.accent = Some(&self.palette.marker_accent);
                 self.push_words(&marker);
                 self.style = saved;
                 if let Some(level) = self.list_stack.last_mut() {
@@ -266,7 +269,8 @@ impl Renderer {
                     .as_deref()
                     .is_some_and(|lang| lang.eq_ignore_ascii_case("repl"))
                 {
-                    self.lines.push(format!("{REPL_FENCE}```{RESET}"));
+                    let fence = &self.palette.repl_fence;
+                    self.lines.push(format!("{fence}```{RESET}"));
                 }
                 self.in_code_block = false;
                 self.code_lang = None;
@@ -301,7 +305,8 @@ impl Renderer {
         let mut prefix = format!("{}{}", "│ ".repeat(self.quote_depth), " ".repeat(hang));
         if self.quote_depth > 0 {
             prefix = format!(
-                "{QUOTE_BAR}{}{RESET}{}",
+                "{}{}{RESET}{}",
+                self.palette.quote_bar,
                 "│ ".repeat(self.quote_depth),
                 " ".repeat(hang)
             );
@@ -324,7 +329,7 @@ impl Renderer {
                 self.flush_line();
             }
             self.ensure_line_started();
-            let prefix = self.style.prefix();
+            let prefix = self.style.prefix(self.palette);
             if prefix.is_empty() {
                 self.current.push_str(word);
             } else {
@@ -337,7 +342,7 @@ impl Renderer {
     }
 
     fn push_code_text(&mut self, text: &str) {
-        let highlighted = highlight_code(text, self.code_lang.as_deref());
+        let highlighted = highlight_code(text, self.code_lang.as_deref(), self.palette);
         for line in highlighted {
             self.lines
                 .push(format!("{DIM}\u{258f}{RESET} {line}{RESET}"));

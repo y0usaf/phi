@@ -7,6 +7,7 @@ use phi_tui::truncate_to_cells;
 use super::dialog::render_dialog_title_line;
 use crate::ui::cell_surface::{CellSurface, draw_box, render_cell_scrollbar};
 use crate::ui::layout::CellRect as Rect;
+use crate::ui::scene::ScenePalette;
 use crate::ui::theme;
 use phi_session::usage::{
     self, UsageReport, is_usage_separator_line, is_usage_total_line, usage_header_line,
@@ -99,24 +100,28 @@ fn visible_rows(cols: u16, rows: u16) -> usize {
         .saturating_sub(8) as usize
 }
 
-pub fn render_usage_overlay(surface: &mut CellSurface, usage: &mut UsageOverlayState) {
+pub fn render_usage_overlay(
+    surface: &mut CellSurface,
+    usage: &mut UsageOverlayState,
+    palette: &ScenePalette,
+) {
     let rect = usage_overlay_rect(surface.cols, surface.rows);
     draw_box(
         surface,
         rect,
-        theme::TEXT,
-        theme::SURFACE_RAISED,
-        theme::STATUS_BG,
+        palette.fg,
+        palette.surface_raised,
+        palette.statusbar_bg,
     );
     if rect.cols <= 2 || rect.rows <= 2 {
         return;
     }
 
     let inner = rect.inset_edges(2, 1, 2, 1);
-    surface.fill_rect(inner, theme::TEXT, theme::SURFACE);
+    surface.fill_rect(inner, palette.fg, palette.bg);
 
     let count = format!(" {} ", usage.report.entries);
-    render_dialog_title_line(surface, inner.row, inner.col, inner.cols, " USAGE ", &count);
+    render_dialog_title_line(surface, inner.row, inner.col, inner.cols, " USAGE ", &count, palette);
 
     let header_row = inner.row + 1;
     let header_separator_row = inner.row + 2;
@@ -132,8 +137,8 @@ pub fn render_usage_overlay(surface: &mut CellSurface, usage: &mut UsageOverlayS
         inner.col,
         header_row,
         inner.cols,
-        theme::brighten(theme::MUTED, 24),
-        theme::SURFACE,
+        theme::brighten(palette.muted, 24),
+        palette.bg,
         &header_line,
     );
 
@@ -142,8 +147,8 @@ pub fn render_usage_overlay(surface: &mut CellSurface, usage: &mut UsageOverlayS
         inner.col,
         header_separator_row,
         inner.cols,
-        theme::BORDER,
-        theme::SURFACE,
+        palette.border,
+        palette.bg,
         &separator_line,
     );
 
@@ -152,16 +157,16 @@ pub fn render_usage_overlay(surface: &mut CellSurface, usage: &mut UsageOverlayS
         inner.col,
         total_row,
         inner.cols,
-        theme::TEXT,
-        theme::SURFACE,
+        palette.fg,
+        palette.bg,
         &total_line,
     );
     surface.put_text(
         inner.col,
         total_separator_row,
         inner.cols,
-        theme::BORDER,
-        theme::SURFACE,
+        palette.border,
+        palette.bg,
         &separator_line,
     );
 
@@ -173,17 +178,17 @@ pub fn render_usage_overlay(surface: &mut CellSurface, usage: &mut UsageOverlayS
         let is_separator = is_usage_separator_line(line);
         let is_total = is_usage_total_line(line);
         let fg = if is_separator {
-            theme::BORDER
+            palette.border
         } else if is_total {
-            theme::TEXT
+            palette.fg
         } else {
-            theme::brighten(theme::MUTED, 32)
+            theme::brighten(palette.muted, 32)
         };
         let text = truncate_to_cells(line, list_width as usize);
         if is_total {
-            surface.put_text_bold(inner.col, row, list_width, fg, theme::SURFACE, &text);
+            surface.put_text_bold(inner.col, row, list_width, fg, palette.bg, &text);
         } else {
-            surface.put_text(inner.col, row, list_width, fg, theme::SURFACE, &text);
+            surface.put_text(inner.col, row, list_width, fg, palette.bg, &text);
         }
     }
     render_cell_scrollbar(
@@ -194,10 +199,10 @@ pub fn render_usage_overlay(surface: &mut CellSurface, usage: &mut UsageOverlayS
         list_rows,
         usage_overlay_line_count(&usage.report),
         usage.scroll,
-        theme::BORDER,
-        theme::SURFACE,
+        palette.border,
+        palette.bg,
         "╎",
-        theme::ACCENT_2,
+        palette.accent_2,
         "┃",
     );
 
@@ -205,8 +210,8 @@ pub fn render_usage_overlay(surface: &mut CellSurface, usage: &mut UsageOverlayS
         inner.col,
         footer_row,
         inner.cols,
-        theme::MUTED,
-        theme::SURFACE,
+        palette.muted,
+        palette.bg,
         &truncate_to_cells(USAGE_FOOTER_HINT, inner.cols.max(0) as usize),
     );
 }

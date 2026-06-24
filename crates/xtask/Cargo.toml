@@ -7,6 +7,7 @@ publish = false
 
 [dependencies]
 anyhow.workspace = true
+futures.workspace = true
 phi-ai.workspace = true
 reqwest.workspace = true
 serde.workspace = true

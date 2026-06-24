@@ -1,16 +1,16 @@
-use super::constants::*;
+use super::constants::{MarkdownPalette, RESET, UNDERLINE};
 
 /// stderr, logs). Base text renders as a quiet gray; error/warning/success
 /// keywords, file paths, numbers/durations, quoted spans and URLs get colored
 /// accents. Lines that already carry ANSI escapes pass through unchanged so
 /// styled output is never double-highlighted. Highlighted lines always end
 /// with a reset.
-pub fn highlight_output(line: &str) -> String {
+pub fn highlight_output(line: &str, palette: &MarkdownPalette) -> String {
     if line.contains('\x1b') {
         return line.to_owned();
     }
     let mut out = String::with_capacity(line.len() + 32);
-    out.push_str(OUT_BASE);
+    out.push_str(&palette.out_base);
     let mut i = 0;
     while i < line.len() {
         let ch = line[i..].chars().next().unwrap();
@@ -18,9 +18,9 @@ pub fn highlight_output(line: &str) -> String {
             && let Some(off) = line[i + ch.len_utf8()..].find(ch)
         {
             let end = i + ch.len_utf8() + off + ch.len_utf8();
-            out.push_str(OUT_STR);
+            out.push_str(&palette.out_str);
             out.push_str(&line[i..end]);
-            out.push_str(OUT_BASE);
+            out.push_str(&palette.out_base);
             i = end;
             continue;
         }
@@ -35,7 +35,7 @@ pub fn highlight_output(line: &str) -> String {
             .unwrap_or(line.len());
         let token = &line[i..end];
         let (lead, core, trail) = split_output_token(token);
-        match classify_output_token(core) {
+        match classify_output_token(core, palette) {
             Some((color, underline)) => {
                 out.push_str(lead);
                 if underline {
@@ -46,7 +46,7 @@ pub fn highlight_output(line: &str) -> String {
                 if underline {
                     out.push_str("\x1b[24m");
                 }
-                out.push_str(OUT_BASE);
+                out.push_str(&palette.out_base);
                 out.push_str(trail);
             }
             None => out.push_str(token),
@@ -73,30 +73,33 @@ pub(super) fn split_output_token(token: &str) -> (&str, &str, &str) {
 }
 
 /// Returns the accent color (and whether to underline) for an output token.
-pub(super) fn classify_output_token(core: &str) -> Option<(&'static str, bool)> {
+pub(super) fn classify_output_token<'p>(
+    core: &str,
+    palette: &'p MarkdownPalette,
+) -> Option<(&'p str, bool)> {
     if core.is_empty() {
         return None;
     }
     if core.starts_with("http://") || core.starts_with("https://") {
-        return Some((OUT_URL, true));
+        return Some((&palette.out_url, true));
     }
     let lower = core.to_ascii_lowercase();
     match lower.as_str() {
         "error" | "errors" | "panicked" | "traceback" | "failed" | "failure" | "exception" => {
-            return Some((OUT_ERR, false));
+            return Some((&palette.out_err, false));
         }
-        "warning" | "warnings" | "warn" | "deprecated" => return Some((OUT_WARN, false)),
-        "ok" | "passed" | "success" | "finished" => return Some((OUT_OK, false)),
+        "warning" | "warnings" | "warn" | "deprecated" => return Some((&palette.out_warn, false)),
+        "ok" | "passed" | "success" | "finished" => return Some((&palette.out_ok, false)),
         _ => {}
     }
     if lower.starts_with("error[") {
-        return Some((OUT_ERR, false));
+        return Some((&palette.out_err, false));
     }
     if looks_like_path(core) {
-        return Some((OUT_PATH, false));
+        return Some((&palette.out_path, false));
     }
     if looks_like_number(core) {
-        return Some((OUT_NUM, false));
+        return Some((&palette.out_num, false));
     }
     None
 }

@@ -3,6 +3,7 @@
 //! screens onto the surface.
 
 use super::color::Color;
+use phi_tui::palette::TerminalColors;
 
 // Charmtone hexes (subset used by the mux chrome).
 pub const SRIRACHA: Color = Color::rgb(0xEB, 0x42, 0x68);
@@ -167,9 +168,239 @@ pub fn fade_toward(color: Color, target: Color, mix: u8) -> Color {
     Color::rgb(blend(r1, r2), blend(g1, g2), blend(b1, b2))
 }
 
+// ----- terminal-driven theme generation (port of opencode `generateSystem`) --
+//
+// Derives a full mux palette from the host terminal's reported colors so the
+// chrome follows the user's terminal theme instead of forcing a fixed one.
+// Mirrors opencode's approach: ANSI-mapped accents/status, a background-derived
+// gray ramp, and a generated muted text color. Surfaces stay opaque (unlike
+// opencode's transparent background) because mux draws its own grounded canvas.
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mode {
+    Dark,
+    Light,
+}
+
+/// Colors resolved from the host terminal, in the mux `Color` space. Built from
+/// `phi_tui::palette::TerminalColors` (OSC 10/11/4 probes); missing palette
+/// entries fall back to the standard 256-color cube via `ansi_index_to_color`.
+pub struct GeneratedTheme {
+    pub fg: Color,
+    pub bg: Color,
+    pub surface_raised: Color,
+    pub statusbar_fg: Color,
+    pub statusbar_bg: Color,
+    pub sidebar_bg: Color,
+    pub border: Color,
+    pub muted: Color,
+    pub term_fg: Color,
+    pub term_bg: Color,
+    pub accent: Color,
+    pub accent_2: Color,
+    pub ansi: [Color; 16],
+    pub running: Color,
+    pub success: Color,
+    pub success_subtle: Color,
+    pub warning: Color,
+    pub error: Color,
+}
+
+pub fn terminal_mode(colors: &TerminalColors) -> Mode {
+    let c = colors.background;
+    if luminance_rgb(c.0, c.1, c.2) > 127 {
+        Mode::Light
+    } else {
+        Mode::Dark
+    }
+}
+
+pub fn generate_system(colors: &TerminalColors) -> GeneratedTheme {
+    let mode = terminal_mode(colors);
+    let bg = color_of(colors.background);
+    let fg = color_of(colors.foreground);
+    let grays = generate_gray_scale(bg, mode);
+    let muted = generate_muted_text(bg, mode);
+    let ansi = ansi_from_terminal(colors);
+    let col = |i: u8| palette_color(colors, i);
+
+    // opencode tints diff backgrounds at ~0.22 (dark) / 0.14 (light) alpha;
+    // reuse the same strength for the subtle success wash.
+    let subtle_alpha = if matches!(mode, Mode::Dark) { 56 } else { 36 };
+
+    GeneratedTheme {
+        fg,
+        bg: grays[2],
+        surface_raised: grays[3],
+        statusbar_fg: fg,
+        statusbar_bg: grays[3],
+        sidebar_bg: grays[2],
+        border: grays[7],
+        muted,
+        term_fg: fg,
+        term_bg: grays[2],
+        accent: col(6),
+        accent_2: col(5),
+        ansi,
+        running: col(10),
+        success: col(2),
+        success_subtle: fade_toward(grays[2], col(2), subtle_alpha),
+        warning: col(3),
+        error: col(1),
+    }
+}
+
+fn palette_color(colors: &TerminalColors, idx: u8) -> Color {
+    colors.palette[idx as usize]
+        .map(color_of)
+        .unwrap_or_else(|| ansi_index_to_color(idx))
+}
+
+fn ansi_from_terminal(colors: &TerminalColors) -> [Color; 16] {
+    let mut out = [Color::rgb(0, 0, 0); 16];
+    for i in 0..16u8 {
+        out[i as usize] = palette_color(colors, i);
+    }
+    out
+}
+
+fn color_of(c: phi_tui::palette::Rgb) -> Color {
+    Color::rgb(c.0, c.1, c.2)
+}
+
+fn luminance_rgb(r: u8, g: u8, b: u8) -> u32 {
+    (u32::from(r) * 299 + u32::from(g) * 587 + u32::from(b) * 114) / 1000
+}
+
+/// 12-step ramp (indices 1..=12; index 0 unused) derived from the terminal
+/// background, matching opencode's `generateGrayScale`.
+fn generate_gray_scale(bg: Color, mode: Mode) -> [Color; 13] {
+    let mut grays = [Color::rgb(0, 0, 0); 13];
+    let (br, bgc, bb) = bg.rgb_components();
+    let lum = luminance_rgb(br, bgc, bb);
+    let dark = matches!(mode, Mode::Dark);
+
+    for i in 1..=12u8 {
+        let factor = f64::from(i) / 12.0;
+        let (r, g, b) = if dark {
+            if lum < 10 {
+                let v = (factor * 0.4 * 255.0).floor() as u8;
+                (v, v, v)
+            } else {
+                let new_lum = f64::from(lum) + (255.0 - f64::from(lum)) * factor * 0.4;
+                let ratio = new_lum / f64::from(lum);
+                scale_toward(br, bgc, bb, ratio, false)
+            }
+        } else if lum > 245 {
+            let v = (255.0 - factor * 0.4 * 255.0).floor() as u8;
+            (v, v, v)
+        } else {
+            let new_lum = f64::from(lum) * (1.0 - factor * 0.4);
+            let ratio = new_lum / f64::from(lum);
+            scale_toward(br, bgc, bb, ratio, true)
+        };
+        grays[i as usize] = Color::rgb(r, g, b);
+    }
+    grays
+}
+
+fn scale_toward(r: u8, g: u8, b: u8, ratio: f64, floor: bool) -> (u8, u8, u8) {
+    let clamp = |v: f64| {
+        let v = v * ratio;
+        if floor {
+            v.max(0.0)
+        } else {
+            v.min(255.0)
+        }
+    };
+    (clamp(f64::from(r)) as u8, clamp(f64::from(g)) as u8, clamp(f64::from(b)) as u8)
+}
+
+/// Port of opencode's `generateMutedTextColor`: a neutral gray tuned to the
+/// background luminance so muted text stays readable in both modes.
+fn generate_muted_text(bg: Color, mode: Mode) -> Color {
+    let (r, g, b) = bg.rgb_components();
+    let lum = luminance_rgb(r, g, b);
+    let gray = if matches!(mode, Mode::Dark) {
+        if lum < 10 {
+            180u16
+        } else {
+            ((160.0 + f64::from(lum) * 0.3).min(200.0)) as u16
+        }
+    } else if lum > 245 {
+        75u16
+    } else {
+        ((100.0 - (255.0 - f64::from(lum)) * 0.2).max(60.0)) as u16
+    };
+    Color::rgb(gray as u8, gray as u8, gray as u8)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use phi_tui::palette::{Rgb, TerminalColors};
+
+    fn colors_from(bg: Rgb, fg: Rgb) -> TerminalColors {
+        TerminalColors {
+            background: bg,
+            foreground: fg,
+            palette: std::array::from_fn(|i| {
+                Some(Rgb(i as u8 * 8, i as u8 * 8, i as u8 * 8))
+            }),
+        }
+    }
+
+    #[test]
+    fn terminal_mode_splits_on_background_luminance() {
+        assert_eq!(terminal_mode(&colors_from(Rgb(0, 0, 0), Rgb(255, 255, 255))), Mode::Dark);
+        assert_eq!(
+            terminal_mode(&colors_from(Rgb(255, 255, 255), Rgb(0, 0, 0))),
+            Mode::Light
+        );
+    }
+
+    #[test]
+    fn generate_system_maps_ansi_roles_and_surfaces() {
+        let colors = colors_from(Rgb(20, 20, 26), Rgb(220, 220, 220));
+        let theme = generate_system(&colors);
+
+        // Accents/status follow the ANSI palette, not the background.
+        assert_eq!(theme.accent, theme.ansi[6]);
+        assert_eq!(theme.accent_2, theme.ansi[5]);
+        assert_eq!(theme.error, theme.ansi[1]);
+        assert_eq!(theme.success, theme.ansi[2]);
+        assert_eq!(theme.warning, theme.ansi[3]);
+        // Text mirrors the terminal foreground; the canvas is a generated surface.
+        assert_eq!(theme.fg, Color::rgb(220, 220, 220));
+        assert_eq!(theme.term_fg, theme.fg);
+        assert_ne!(theme.bg, Color::rgb(20, 20, 26));
+    }
+
+    #[test]
+    fn generate_system_falls_back_to_cube_colors_for_missing_palette_entries() {
+        let mut colors = colors_from(Rgb(0, 0, 0), Rgb(255, 255, 255));
+        colors.palette[6] = None;
+        let theme = generate_system(&colors);
+        assert_eq!(theme.accent, ansi_index_to_color(6));
+    }
+
+    #[test]
+    fn muted_text_is_neutral_and_lighter_on_dark_than_background() {
+        let colors = colors_from(Rgb(20, 20, 26), Rgb(220, 220, 220));
+        let theme = generate_system(&colors);
+        let (r, g, b) = theme.muted.rgb_components();
+        assert_eq!(r, g);
+        assert_eq!(g, b);
+        assert!(u32::from(r) > luminance_rgb(20, 20, 26));
+    }
+
+    #[test]
+    fn success_subtle_is_a_tint_toward_green() {
+        let colors = colors_from(Rgb(20, 20, 26), Rgb(220, 220, 220));
+        let theme = generate_system(&colors);
+        let expected = fade_toward(theme.bg, theme.ansi[2], 56);
+        assert_eq!(theme.success_subtle, expected);
+    }
 
     fn cell_from_bytes(bytes: &[u8]) -> vt100::Cell {
         let mut parser = vt100::Parser::new(1, 8, 0);

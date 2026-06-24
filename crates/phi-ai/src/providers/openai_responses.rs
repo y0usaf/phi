@@ -103,7 +103,12 @@ fn build_body(model: &Model, ctx: &Context, opts: &StreamOptions) -> Value {
         );
         body["include"] = json!(["reasoning.encrypted_content"]);
     } else {
-        body["max_output_tokens"] = json!(opts.max_tokens.unwrap_or(model.max_tokens));
+        // Cap to context_window defensively (see openai_completions::build_body).
+        let max = opts
+            .max_tokens
+            .unwrap_or(model.max_tokens)
+            .min(model.context_window);
+        body["max_output_tokens"] = json!(max);
         if let Some(prompt) = &ctx.system_prompt {
             body["instructions"] = json!(prompt);
         }
@@ -240,6 +245,13 @@ impl SseHandler for Parser {
     }
 
     fn on_event(&mut self, _event_name: &str, data: &str, sink: &EventSink) {
+        // The transport layer already rejects events over MAX_SSE_EVENT_BYTES,
+        // but guard defensively: serde_json bounds recursion depth (128), not
+        // total size, so a wide/flat or single-huge-string payload would still
+        // allocate O(n). Skip oversized events rather than parse them.
+        if data.len() > super::MAX_SSE_EVENT_BYTES {
+            return;
+        }
         let Ok(value) = serde_json::from_str::<Value>(data) else {
             return;
         };

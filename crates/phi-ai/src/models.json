@@ -42462,8 +42462,8 @@
       "cache_read": 0.0,
       "cache_write": 0.0
     },
-    "context_window": 1048560,
-    "max_tokens": 1048560,
+    "context_window": 200000,
+    "max_tokens": 65536,
     "headers": {},
     "thinking_levels": {
       "minimal": "minimal",

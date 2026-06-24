@@ -82,6 +82,14 @@ pub async fn run(shared: SharedResources, mux_config: MuxConfig, cwd: PathBuf) -
     // The mux owns the whole screen (unlike the inline single-session TUI).
     let _ = write!(stdout, "\x1b[2J\x1b[H");
 
+    // Probe the host terminal's colors (OSC 10/11/4) once, inside raw mode,
+    // and derive the mux palette from them. Falls back to the built-in
+    // Charmtone palette when the terminal doesn't answer in time.
+    let palette = phi_tui::detect_terminal_colors(Duration::from_millis(150))
+        .as_ref()
+        .map(ScenePalette::from_terminal_colors)
+        .unwrap_or_default();
+
     let (status_tx, status_rx) = mpsc::unbounded_channel();
     let (redraw_tx, redraw_rx) = mpsc::unbounded_channel();
     let (suspend_tx, suspend_rx) = mpsc::unbounded_channel();
@@ -102,6 +110,7 @@ pub async fn run(shared: SharedResources, mux_config: MuxConfig, cwd: PathBuf) -
         renderer: AnsiRenderer::default(),
         size: phi_tui::crossterm::terminal::size().unwrap_or((80, 24)),
         surface: CellSurface::default(),
+        palette,
         alt_screen_active: false,
         sidebar_scroll: 0,
         note: None,
@@ -148,6 +157,9 @@ struct MuxApp {
     /// `StringInterner` isn't rebuilt and text re-interned every frame, and
     /// so dirty tracking is relative to the previous frame's content.
     surface: CellSurface,
+    /// Resolved mux palette. Derived from the host terminal's OSC colors at
+    /// startup; falls back to the built-in Charmtone palette.
+    palette: ScenePalette,
     /// Whether the focused session's screen was in the alternate screen last
     /// frame; a transition drops scroll history and forces a full repaint.
     alt_screen_active: bool,
@@ -959,7 +971,7 @@ impl MuxApp {
     fn draw(&mut self) {
         let (cols, rows) = self.size;
         let layout = self.layout();
-        let palette = ScenePalette::default();
+        let palette = self.palette;
 
         // Reuse the persistent surface across frames (resized in place on
         // dimension change) so the interner survives and dirty tracking is
@@ -1067,17 +1079,17 @@ impl MuxApp {
         }
 
         if let Some(viewer) = &mut self.archive_viewer {
-            render_archive_viewer(&mut surface, viewer);
+            render_archive_viewer(&mut surface, viewer, &palette);
             hardware_cursor = None;
         } else if let Some(model) = &mut self.model_overlay {
-            render_model_overlay(&mut surface, model);
+            render_model_overlay(&mut surface, model, &palette);
             hardware_cursor = None;
         } else if let Some(usage) = &mut self.usage_overlay {
-            render_usage_overlay(&mut surface, usage);
+            render_usage_overlay(&mut surface, usage, &palette);
             hardware_cursor = None;
         } else if let Some(help) = &mut self.help_overlay {
             let keymap = self.keymap.clone();
-            render_help_overlay(&mut surface, help, &keymap);
+            render_help_overlay(&mut surface, help, &keymap, &palette);
             hardware_cursor = None;
         }
 

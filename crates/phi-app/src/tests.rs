@@ -162,7 +162,7 @@ fn repl_renders_input_output_sections() {
     );
 
     assert!(panel.contains("┌─── ✔ Repl"));
-    assert!(panel.contains("├─── Input"));
+    // Input label removed for minimalist TUI
     assert!(panel.contains("│ print(1)"));
     assert!(panel.contains("├─── Output"));
     assert!(panel.contains("│ 1"));

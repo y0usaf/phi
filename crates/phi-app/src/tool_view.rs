@@ -218,7 +218,7 @@ pub(crate) fn tool_shows_input_section(name: &str) -> bool {
 pub(crate) fn tool_input_label(name: &str) -> &'static str {
     match name {
         "bash" => "Command",
-        "repl" => "Input",
+        "repl" => "",
         _ => "Args",
     }
 }
