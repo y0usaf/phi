@@ -2,14 +2,12 @@
 //! screen), grapheme-aware input editor, markdown → ANSI rendering, spinner.
 //! This crate knows nothing about the RLM engine; phi-app wires the two.
 
-pub mod box_render;
 pub mod cells;
 pub mod editor;
 pub mod fuzzy;
 pub mod markdown;
 pub mod palette;
 pub mod selector;
-pub mod donut;
 pub mod spinner;
 pub mod style;
 pub mod terminal;

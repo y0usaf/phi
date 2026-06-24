@@ -7,7 +7,6 @@ pub mod clipboard;
 pub mod command;
 pub mod command_line;
 pub mod driver;
-pub mod stream_buffer;
 pub mod keymap;
 pub mod persisted;
 pub mod status;

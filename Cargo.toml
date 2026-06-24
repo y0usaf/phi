@@ -61,8 +61,6 @@ phi-rlm = { path = "crates/phi-rlm" }
 phi-session = { path = "crates/phi-session" }
 phi-runtime = { path = "crates/phi-runtime" }
 phi-tui = { path = "crates/phi-tui" }
-phi-terminal-image = { path = "crates/phi-terminal-image" }
-phi-mermaid = { path = "crates/phi-mermaid" }
 phi-lua = { path = "crates/phi-lua" }
 phi-harness = { path = "crates/phi-harness" }
 

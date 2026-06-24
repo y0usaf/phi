@@ -31,3 +31,4 @@ jemalloc = [
     "dep:tikv-jemalloc-ctl",
     "dep:tikv-jemalloc-sys",
 ]
+jemalloc-prof = ["jemalloc"]
