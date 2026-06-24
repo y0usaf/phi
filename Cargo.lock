@@ -1668,6 +1668,7 @@ dependencies = [
  "phi-mux",
  "phi-rlm",
  "phi-session",
+ "phi-session-tui",
  "serde_json",
  "tikv-jemalloc-ctl",
  "tikv-jemalloc-sys",
@@ -1693,6 +1694,7 @@ name = "phi-cli"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "phi-session",
 ]
 
 [[package]]
@@ -1763,6 +1765,7 @@ dependencies = [
  "jiff",
  "phi-rlm",
  "phi-session",
+ "phi-session-tui",
  "phi-tui",
  "serde",
  "serde_json",
@@ -1826,6 +1829,24 @@ dependencies = [
  "anyhow",
  "directories",
  "dirs",
+ "ignore",
+ "jiff",
+ "mlua",
+ "phi-rlm",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "unicode-width",
+ "uuid",
+]
+
+[[package]]
+name = "phi-session-tui"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "directories",
+ "dirs",
  "futures",
  "ignore",
  "jiff",
@@ -1838,6 +1859,7 @@ dependencies = [
  "phi-memory",
  "phi-rlm",
  "phi-runtime",
+ "phi-session",
  "phi-tui",
  "serde",
  "serde_json",

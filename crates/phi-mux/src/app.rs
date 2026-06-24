@@ -39,8 +39,8 @@ use super::ui::sidebar::{
 };
 use super::workspace::{self, Workspace};
 use phi_session::config::MuxConfig;
-use phi_session::session_builder::SharedResources;
-use phi_session::tui::{self, HostModalKind, HostModalRequest};
+use phi_session_tui::session_builder::SharedResources;
+use phi_session_tui::tui::{self, HostModalKind, HostModalRequest};
 
 const ANIMATION_TICK: Duration = Duration::from_millis(60);
 const NOTE_TTL: Duration = Duration::from_secs(4);

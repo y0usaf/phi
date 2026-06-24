@@ -11,8 +11,8 @@ use tokio::sync::mpsc::{self, UnboundedSender};
 use tokio::task::JoinHandle;
 
 use super::status::{self, SessionStatus};
-use phi_session::session_builder::{self, SharedResources};
-use phi_session::tui::{self, HostModalRequest, SessionIo, SuspendRequest};
+use phi_session_tui::session_builder::{self, SharedResources};
+use phi_session_tui::tui::{self, HostModalRequest, SessionIo, SuspendRequest};
 
 /// Mux-local session identity, stable across rescans and restarts.
 pub type SessionKey = u64;

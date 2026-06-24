@@ -1,3 +1,5 @@
+//! Engine config types: RlmConfig, events, limits, and the env factory.
+
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -27,6 +29,10 @@ pub struct RlmConfig {
     pub orchestrator: bool,
     /// Pre-formatted custom-tools listing for the system prompt.
     pub tools_section: Option<String>,
+    /// Pre-formatted `# Environment` block for the system prompt (cwd, is-git,
+    /// platform, shell, OS version). Caller-supplied and memoized per session
+    /// (computed once at session build, not per turn). Emitted before `cwd`.
+    pub env_info: Option<String>,
     /// Code executed once at env startup (e.g. the coding-agent prelude).
     pub setup_code: Option<String>,
     /// Working directory for REPL code; defaults to a scratch temp dir.
@@ -53,6 +59,7 @@ impl Default for RlmConfig {
             user_prologue: None,
             orchestrator: true,
             tools_section: None,
+            env_info: None,
             setup_code: None,
             cwd: None,
             append_system_prompt: None,

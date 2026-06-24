@@ -15,8 +15,8 @@ use phi_runtime::RuntimeBuilder;
 
 use phi_memory::{MemoryConfig, MemoryExtension};
 
-use crate::config::{Config, Settings};
-use crate::session::SessionStore;
+use phi_session::config::{Config, Settings};
+use phi_session::session::SessionStore;
 use crate::tui::{TuiSetup, UiSetup};
 
 /// Process-wide handles shared by every session.
@@ -40,7 +40,7 @@ pub async fn build_session(
         storage,
         registry,
     } = shared;
-    let settings = Settings::resolve(args, Config::load(cwd)?, true);
+    let settings = Settings::resolve(&args.to_session_args(), Config::load(cwd)?, true);
 
     let root_model = find_model(registry, &settings.model)?;
     let sub_model = match &settings.sub_model {
@@ -105,7 +105,7 @@ pub async fn build_session(
         format!("{CODING_PRELUDE}\n\n# Extension tools\n{ext_stubs}")
     };
 
-    let (prompt_override, append_prompt) = crate::prompts::discover_prompt_overrides(cwd);
+    let (prompt_override, append_prompt) = phi_session::prompts::discover_prompt_overrides(cwd);
 
     let env_info = env_info_block(cwd);
     let config = RlmConfig {

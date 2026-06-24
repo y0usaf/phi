@@ -5,9 +5,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use phi_ai::Usage;
-use phi_repl::{
-    EnvSetup, ReplEnv, ReplResult, SubcallHandler,
-};
+use phi_repl::{EnvSetup, ReplEnv, ReplResult, SubcallHandler};
 use serde_json::Value;
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 use tokio_util::sync::CancellationToken;
@@ -16,18 +14,14 @@ use phi_ext::{EventKind, EventPayload, LifecycleEvent};
 use phi_runtime::AppRuntime;
 
 use crate::handler::{DeltaSink, LanguageModel, LmHandler, ThinkingSink, UsageBreakdown};
-use crate::parsing::{
-    ExecutedBlock, could_open_block, find_code_blocks, format_iteration, last_block_end,
-};
-use crate::prompts::{
-    DEFAULT_ANSWER_NUDGE, QueryMetadata, SystemPromptOptions,
-    build_system_prompt, build_user_prompt, metadata_user_prompt,
-};
-use crate::{ChatMessage, ContextPayload, Role, TurnState};
+use crate::parsing::{ExecutedBlock, could_open_block, find_code_blocks, format_iteration, last_block_end};
+use crate::prompts::{DEFAULT_ANSWER_NUDGE, DEFAULT_ACTIONS, DEFAULT_DOING_TASKS, DEFAULT_TONE_AND_STYLE, DEFAULT_USING_YOUR_TOOLS, QueryMetadata, SystemPromptOptions, build_system_prompt, build_user_prompt, metadata_user_prompt};
+use crate::{ChatMessage, ContextPayload, Role};
 
-use super::config::*;
-use super::helpers::*;
-use super::state::*;
+use super::config::{EnvFactory, Events, LimitKind, PythonEnvFactory, RlmCompletion, RlmConfig, RlmEvent, SavePointFn, StopCause};
+use super::helpers::{dispatch_event, usage_breakdowns_for_model};
+use super::state::RunState;
+use super::subcalls::{EngineSubcalls, Outcome};
 use super::session::RlmSession;
 
 #[derive(Clone)]
@@ -36,7 +30,7 @@ pub struct Rlm {
     pub(super) root: Arc<dyn LanguageModel>,
     pub(super) sub: Arc<dyn LanguageModel>,
     pub(super) named: HashMap<String, Arc<dyn LanguageModel>>,
-    pub(super) envs: Arc<dyn EnvFactory>,
+    pub(super) python: String,
     pub(super) host_fns: Option<Arc<dyn SubcallHandler>>,
     pub(super) events: Events,
     pub(super) depth: usize,
@@ -48,14 +42,14 @@ impl Rlm {
         config: RlmConfig,
         root: Arc<dyn LanguageModel>,
         sub: Arc<dyn LanguageModel>,
-        envs: Arc<dyn EnvFactory>,
+        python: String,
     ) -> Self {
         Self {
             config,
             root,
             sub,
             named: HashMap::new(),
-            envs,
+            python,
             host_fns: None,
             events: Events::default(),
             depth: 0,
@@ -93,7 +87,7 @@ impl Rlm {
         self
     }
 
-    fn iteration_limit(&self) -> Option<usize> {
+    pub(super) fn iteration_limit(&self) -> Option<usize> {
         (self.depth > 0).then_some(self.config.max_iterations)
     }
 
@@ -116,6 +110,7 @@ impl Rlm {
             contexts: 1,
             transcript: Vec::new(),
             session_summary: None,
+            compaction_archive: Vec::new(),
             pending_shell: Vec::new(),
         }
     }
@@ -126,7 +121,8 @@ impl Rlm {
         root_prompt: Option<&str>,
         cancel: &CancellationToken,
     ) -> RlmCompletion {
-        self.completion_with(payload, root_prompt, None, cancel).await
+        self.completion_with(payload, root_prompt, None, cancel)
+            .await
     }
 
     pub async fn completion_with(
@@ -138,10 +134,13 @@ impl Rlm {
     ) -> RlmCompletion {
         let start = Instant::now();
         self.events.emit(RlmEvent::RunStart { depth: self.depth });
-        dispatch_event(&self.runtime, LifecycleEvent {
-            kind: EventKind::AgentStart,
-            payload: EventPayload::Empty,
-        });
+        dispatch_event(
+            &self.runtime,
+            LifecycleEvent {
+                kind: EventKind::AgentStart,
+                payload: EventPayload::Empty,
+            },
+        );
 
         // When a TurnState snapshot is provided, use it to drive the loop.
         let turn_config = turn.map(|t| &t.config);
@@ -152,8 +151,12 @@ impl Rlm {
         }
 
         // Use snapshot models if provided, else fall back to engine models.
-        let root = turn.map(|t| t.root_model.clone()).unwrap_or_else(|| self.root.clone());
-        let sub = turn.map(|t| t.sub_model.clone()).unwrap_or_else(|| self.sub.clone());
+        let root = turn
+            .map(|t| t.root_model.clone())
+            .unwrap_or_else(|| self.root.clone());
+        let sub = turn
+            .map(|t| t.sub_model.clone())
+            .unwrap_or_else(|| self.sub.clone());
         let handler = Arc::new(LmHandler::new(root, sub, self.named.clone()));
         let run = RunState::new();
         run.begin(cancel.clone());
@@ -172,14 +175,13 @@ impl Rlm {
                 } else {
                     self.initial_history(metadata, root_prompt, 0)
                 };
-                if let Some(rt) = &self.runtime {
-                    if let Some(sys_msg) = history.iter_mut().find(|m| m.role == Role::System) {
+                if let Some(rt) = &self.runtime
+                    && let Some(sys_msg) = history.iter_mut().find(|m| m.role == Role::System) {
                         sys_msg.content = rt
                             .filter_system_prompt(&root_prompt_str, sys_msg.content.clone())
                             .await
                             .unwrap_or_else(|_| sys_msg.content.clone());
                     }
-                }
                 let outcome = self
                     .run_loop(
                         &mut env,
@@ -210,13 +212,12 @@ impl Rlm {
             rlm: self.clone(),
             handler: handler.clone(),
             run,
-            pending_args: Arc::new(Mutex::new(HashMap::new())),
         });
         let (context, context_str) = match payload {
             ContextPayload::Str(s) => (None, Some(s)),
             ContextPayload::Json(v) => (Some(v), None),
         };
-        let mut env = self.envs.create(subcalls);
+        let mut env = PythonEnvFactory { python: self.python.clone() }.create(subcalls);
         let setup = EnvSetup {
             context,
             context_str,
@@ -241,15 +242,7 @@ impl Rlm {
         let mut history = vec![
             ChatMessage {
                 role: Role::System,
-                content: build_system_prompt(&SystemPromptOptions {
-                    identity: self.config.custom_system_prompt.as_deref(),
-                    custom_tools: self.config.tools_section.as_deref(),
-                    append: self.config.append_system_prompt.as_deref(),
-                    cwd: self.config.cwd.as_deref(),
-                    orchestrator: self.config.orchestrator,
-                    turn_cap: self.iteration_limit(),
-                    ..Default::default()
-                }),
+                content: build_system_prompt(&self.system_prompt_options()),
             },
             ChatMessage {
                 role: Role::User,
@@ -265,6 +258,39 @@ impl Rlm {
         history
     }
 
+    /// Build the `SystemPromptOptions` for this RLM from its config. The
+    /// coding-agent sections (`doing_tasks`, `actions`, `using_your_tools`,
+    /// `tone_and_style`) are gated on `user_prologue`: they default to off for
+    /// the bare-RLM identity and turn on only in coding-agent mode. The
+    /// identity-neutral sections (`cyber_risk`, `output_efficiency`,
+    /// `system_reminder_semantics`, `summarize_tool_results`) fall back to
+    /// their `DEFAULT_*` const inside `build_system_prompt`, so they are left
+    /// `None` here. `env_info` is caller-supplied data threaded from
+    /// `RlmConfig::env_info`.
+    ///
+    /// The gate is re-evaluated every build (cold root and each warm `send`),
+    /// not once: `user_prologue` persists on the root config across warm turns
+    /// (only `recurse` clears it for child RLMs), so gated content survives
+    /// the whole session.
+    pub(super) fn system_prompt_options(&self) -> SystemPromptOptions<'_> {
+        let coding = self.config.user_prologue.is_some();
+        SystemPromptOptions {
+            identity: self.config.custom_system_prompt.as_deref(),
+            custom_tools: self.config.tools_section.as_deref(),
+            doing_tasks: coding.then_some(DEFAULT_DOING_TASKS),
+            actions: coding.then_some(DEFAULT_ACTIONS),
+            using_your_tools: coding.then_some(DEFAULT_USING_YOUR_TOOLS),
+            tone_and_style: coding.then_some(DEFAULT_TONE_AND_STYLE),
+            env_info: self.config.env_info.as_deref(),
+            append: self.config.append_system_prompt.as_deref(),
+            cwd: self.config.cwd.as_deref(),
+            orchestrator: self.config.orchestrator,
+            turn_cap: self.iteration_limit(),
+            ..Default::default()
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub(super) async fn run_loop(
         &self,
         env: &mut Box<dyn ReplEnv>,
@@ -307,10 +333,13 @@ impl Rlm {
                 depth: self.depth,
                 iteration: i,
             });
-            dispatch_event(&self.runtime, LifecycleEvent {
-                kind: EventKind::TurnStart,
-                payload: EventPayload::TurnStart { turn: i as u32 },
-            });
+            dispatch_event(
+                &self.runtime,
+                LifecycleEvent {
+                    kind: EventKind::TurnStart,
+                    payload: EventPayload::TurnStart { turn: i as u32 },
+                },
+            );
             let iter_start = Instant::now();
 
             // Stream the completion and execute ```repl blocks eagerly: the
@@ -456,10 +485,16 @@ impl Rlm {
                     depth: self.depth,
                     content: answer.clone(),
                 });
-                dispatch_event(&self.runtime, LifecycleEvent {
-                    kind: EventKind::TurnEnd,
-                    payload: EventPayload::TurnEnd { turn: i as u32, had_code: !blocks.is_empty() },
-                });
+                dispatch_event(
+                    &self.runtime,
+                    LifecycleEvent {
+                        kind: EventKind::TurnEnd,
+                        payload: EventPayload::TurnEnd {
+                            turn: i as u32,
+                            had_code: !blocks.is_empty(),
+                        },
+                    },
+                );
                 self.events.emit(RlmEvent::IterationEnd {
                     depth: self.depth,
                     iteration: i,
@@ -491,10 +526,16 @@ impl Rlm {
                     content: outputs,
                 });
             }
-            dispatch_event(&self.runtime, LifecycleEvent {
-                kind: EventKind::TurnEnd,
-                payload: EventPayload::TurnEnd { turn: i as u32, had_code: !blocks.is_empty() },
-            });
+            dispatch_event(
+                &self.runtime,
+                LifecycleEvent {
+                    kind: EventKind::TurnEnd,
+                    payload: EventPayload::TurnEnd {
+                        turn: i as u32,
+                        had_code: !blocks.is_empty(),
+                    },
+                },
+            );
             self.events.emit(RlmEvent::IterationEnd {
                 depth: self.depth,
                 iteration: i,
@@ -512,12 +553,15 @@ impl Rlm {
                             .iter()
                             .map(|m| m.content.clone())
                             .collect::<Vec<_>>()
-                            .join("
+                            .join(
+                                "
 
-"),
+",
+                            ),
                     });
                 }
             }
+
             i += 1;
         }
 
@@ -638,7 +682,7 @@ impl Rlm {
     }
 
     /// `depth >= max_depth`: the RLM is just an LM.
-    async fn fallback(&self, payload: ContextPayload, start: Instant) -> RlmCompletion {
+    pub(super) async fn fallback(&self, payload: ContextPayload, start: Instant) -> RlmCompletion {
         let content = match payload {
             ContextPayload::Str(s) => s,
             ContextPayload::Json(Value::String(s)) => s,
@@ -689,12 +733,15 @@ impl Rlm {
 
     fn complete_run(&self, outcome: Outcome, handler: &LmHandler, start: Instant) -> RlmCompletion {
         let duration = start.elapsed();
-        dispatch_event(&self.runtime, LifecycleEvent {
-            kind: EventKind::AgentEnd,
-            payload: EventPayload::AgentEnd {
-                stop_cause: format!("{:?}", outcome.stop),
+        dispatch_event(
+            &self.runtime,
+            LifecycleEvent {
+                kind: EventKind::AgentEnd,
+                payload: EventPayload::AgentEnd {
+                    stop_cause: format!("{:?}", outcome.stop),
+                },
             },
-        });
+        );
         self.events.emit(RlmEvent::RunEnd {
             depth: self.depth,
             stop: outcome.stop,
@@ -721,12 +768,15 @@ impl Rlm {
         start: Instant,
     ) -> RlmCompletion {
         let duration = start.elapsed();
-        dispatch_event(&self.runtime, LifecycleEvent {
-            kind: EventKind::AgentEnd,
-            payload: EventPayload::AgentEnd {
-                stop_cause: format!("{:?}", outcome.stop),
+        dispatch_event(
+            &self.runtime,
+            LifecycleEvent {
+                kind: EventKind::AgentEnd,
+                payload: EventPayload::AgentEnd {
+                    stop_cause: format!("{:?}", outcome.stop),
+                },
             },
-        });
+        );
         self.events.emit(RlmEvent::RunEnd {
             depth: self.depth,
             stop: outcome.stop,
@@ -773,3 +823,4 @@ impl Rlm {
         }
     }
 }
+

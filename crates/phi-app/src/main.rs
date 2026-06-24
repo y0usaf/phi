@@ -27,7 +27,8 @@ use phi_cli::Args;
 use phi_harness::PhiHarness;
 use phi_mux as mux;
 use phi_rlm::{ContextPayload, ProviderLm, Rlm, RlmConfig, RlmEvent, StopCause};
-use phi_session::{config, session_builder, tui};
+use phi_session::config;
+use phi_session_tui::{session_builder, tui};
 use tokio_util::sync::CancellationToken;
 
 #[tokio::main]
@@ -122,7 +123,7 @@ async fn run(args: Args, storage: Arc<AuthStorage>, registry: Arc<Registry>) -> 
         return tui::run(setup, tui::SessionIo::standalone(cwd)).await;
     }
 
-    let settings = config::Settings::resolve(&args, config::Config::load(&cwd)?, false);
+    let settings = config::Settings::resolve(&args.to_session_args(), config::Config::load(&cwd)?, false);
 
     let root_model = session_builder::find_model(&registry, &settings.model)?;
     let sub_model = match &settings.sub_model {

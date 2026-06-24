@@ -20,839 +20,50 @@ use phi_rlm::{
 };
 use phi_tui::crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers};
 use phi_tui::{
-    Editor, EditorAction, LiveCursor, MarkdownPalette, RawModeGuard, Selector, SelectorItem,
+    Editor, EditorAction, LiveCursor, RawModeGuard, Selector, SelectorItem,
     SelectorOutcome, Spinner, Terminal, detect_terminal_colors, fuzzy_filter, highlight_code,
     highlight_diff_line, highlight_output, render_markdown, visible_width, wrap_ansi,
     wrap_ansi_locate,
 };
 
-use crate::files::{self, FileSearcher};
-use crate::session::{self, SessionStore};
-use crate::transcript::{BlockSpec, Transcript};
-use crate::usage::load_usage_report;
-use crate::usage::usage_overlay_lines;
+use phi_session::files::{self, FileSearcher};
+use phi_session::session::{self, SessionStore};
+use phi_session::transcript::{BlockSpec, Transcript};
+use phi_session::usage::load_usage_report;
+use phi_session::usage::usage_overlay_lines;
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
-const RESET: &str = "\x1b[0m";
-const BOLD: &str = "\x1b[1m";
-const DIM: &str = "\x1b[2m";
-const CYAN: &str = "\x1b[36m";
+pub(super) const RESET: &str = "\x1b[0m";
+pub(super) const BOLD: &str = "\x1b[1m";
+pub(super) const DIM: &str = "\x1b[2m";
+pub(super) const CYAN: &str = "\x1b[36m";
 #[allow(dead_code)] // used by success_status_text, kept for the success-state status family
-const GREEN: &str = "\x1b[32m";
+pub(super) const GREEN: &str = "\x1b[32m";
 // Basic ANSI colors for the forgecode-style chrome — these already follow
 // the terminal's own palette, so they stay as &str constants.
-const LIGHT_GREEN: &str = "\x1b[92m";
-const LIGHT_GRAY: &str = "\x1b[37m";
-const LIGHT_MAGENTA: &str = "\x1b[95m";
+pub(super) const LIGHT_GREEN: &str = "\x1b[92m";
+pub(super) const LIGHT_GRAY: &str = "\x1b[37m";
+pub(super) const LIGHT_MAGENTA: &str = "\x1b[95m";
 
 /// Truecolor ANSI escapes for the inline TUI's transcript/chrome rendering,
 /// derived from the host terminal's reported colors when available. Mirrors
 /// opencode's `generateSystem` mapping. `default_const()` returns the previous
 /// hardcoded values as the fallback. Basic ANSI colors (`RESET`, `BOLD`, etc.)
 /// stay as module-level `&str` since they already reference the terminal palette.
-#[derive(Clone)]
-pub struct InlinePalette {
-    /// Warm gold for tool verbs.
-    pub tool_accent: String,
-    /// Violet for sub-LLM/rlm activity.
-    pub subcall_accent: String,
-    /// Soft blue for path-like args.
-    pub path_fg: String,
-    /// Muted green for quoted-string-like args.
-    pub string_fg: String,
-    /// Violet accent for numbers/durations.
-    pub num_fg: String,
-    /// User-echo text.
-    pub user_fg: String,
-    /// Muted text.
-    pub muted_fg: String,
-    /// Assistant prose.
-    pub assistant_fg: String,
-    /// REPL fence / panel color.
-    pub panel_repl: String,
-    /// User message border.
-    pub user_border: String,
-    /// Assistant message border.
-    pub assistant_border: String,
-    /// Chrome (status/footer) border.
-    pub chrome_border: String,
-    /// Error text accent (ANSI red, terminal-derived).
-    pub error_fg: String,
-    /// Warning text accent (ANSI yellow, terminal-derived).
-    pub warning_fg: String,
-    /// Markdown/output highlighting palette.
-    pub markdown: MarkdownPalette,
-}
+mod palette;
+mod render;
+mod tool_display;
+mod popup;
 
-impl InlinePalette {
-    /// Previous hardcoded values (base16-ocean family).
-    pub fn default_const() -> Self {
-        Self {
-            tool_accent: s("\x1b[1m\x1b[38;2;255;210;120m"),
-            subcall_accent: s("\x1b[1m\x1b[38;2;180;140;255m"),
-            path_fg: s("\x1b[38;2;130;180;230m"),
-            string_fg: s("\x1b[38;2;150;190;150m"),
-            num_fg: s("\x1b[38;2;170;150;230m"),
-            user_fg: s("\x1b[38;2;190;200;215m"),
-            muted_fg: s("\x1b[38;2;120;128;148m"),
-            assistant_fg: s("\x1b[38;2;220;224;235m"),
-            panel_repl: s("\x1b[38;2;180;140;255m"),
-            user_border: s("\x1b[38;2;96;122;196m"),
-            assistant_border: s("\x1b[38;2;84;91;116m"),
-            chrome_border: s("\x1b[38;2;82;88;110m"),
-            error_fg: s("\x1b[31m"),
-            warning_fg: s("\x1b[33m"),
-            markdown: MarkdownPalette::default_const(),
-        }
-    }
+pub use palette::InlinePalette;
+pub(crate) use render::{OpenToolRow, OpenSubcallRow, TranscriptBlock};
+pub(crate) use tool_display::{format_model_pricing, format_tokens, tool_identity, tool_title};
 
-    /// Derive from terminal-reported colors (OSC 10/11/4), mirroring opencode's
-    /// `generateSystem`: ANSI palette → UI roles.
-    pub fn from_terminal_colors(colors: &phi_tui::TerminalColors) -> Self {
-        let col = |i: usize| {
-            colors.palette[i].map(|c| format!("\x1b[38;2;{};{};{}m", c.0, c.1, c.2))
-        };
-        let col_bold = |i: usize| {
-            colors.palette[i]
-                .map(|c| format!("\x1b[1m\x1b[38;2;{};{};{}m", c.0, c.1, c.2))
-        };
-        let fallback = Self::default_const();
-        Self {
-            tool_accent: col_bold(3).unwrap_or_else(|| fallback.tool_accent.clone()),
-            subcall_accent: col_bold(5).unwrap_or_else(|| fallback.subcall_accent.clone()),
-            path_fg: col(4).unwrap_or_else(|| fallback.path_fg.clone()),
-            string_fg: col(2).unwrap_or_else(|| fallback.string_fg.clone()),
-            num_fg: col(3).unwrap_or_else(|| fallback.num_fg.clone()),
-            user_fg: col(7).unwrap_or_else(|| fallback.user_fg.clone()),
-            muted_fg: col(8).unwrap_or_else(|| fallback.muted_fg.clone()),
-            assistant_fg: col(7).unwrap_or_else(|| fallback.assistant_fg.clone()),
-            panel_repl: col(5).unwrap_or_else(|| fallback.panel_repl.clone()),
-            user_border: col(4).unwrap_or_else(|| fallback.user_border.clone()),
-            assistant_border: col(8).unwrap_or_else(|| fallback.assistant_border.clone()),
-            chrome_border: col(8).unwrap_or_else(|| fallback.chrome_border.clone()),
-            error_fg: col(1).unwrap_or_else(|| fallback.error_fg.clone()),
-            warning_fg: col(3).unwrap_or_else(|| fallback.warning_fg.clone()),
-            markdown: MarkdownPalette::from_terminal_colors(colors),
-        }
-    }
-}
-
-impl Default for InlinePalette {
-    fn default() -> Self {
-        Self::default_const()
-    }
-}
-
-fn s(v: &str) -> String {
-    v.to_owned()
-}
-
-
-// ── Forgecode-style chrome symbols ──────────────────────────────────────
-//
-// The chrome prompt uses Nerd Font glyphs (folder, branch, chevron, etc.)
-// to match the reference forgecode prompt.  Terminal capability queries
-// cannot detect whether a Nerd Font is installed, so detection is manual:
-// set `PHI_NO_NERD_FONTS=1` to fall back to plain ASCII equivalents.
-//
-// Nerd Font symbols — left prompt
-const NERD_DIR_SYMBOL: &str = "\u{ea83}";      // folder icon
-const NERD_BRANCH_SYMBOL: &str = "\u{f418}"; //  branch icon
-const NERD_SUCCESS_SYMBOL: &str = "\u{f013e}"; //  chevron
-
-// Nerd Font symbols — right prompt
-const NERD_AGENT_SYMBOL: &str = "\u{f167a}";
-const NERD_MODEL_SYMBOL: &str = "\u{ec19}";
-const NERD_COST_SYMBOL: &str = "\u{f155}"; // dollar sign
-
-// ASCII fallbacks
-const ASCII_DIR_SYMBOL: &str = "./";
-const ASCII_BRANCH_SYMBOL: &str = "#";
-const ASCII_SUCCESS_SYMBOL: &str = ">";
-const ASCII_AGENT_SYMBOL: &str = "@";
-const ASCII_MODEL_SYMBOL: &str = "m";
-const ASCII_COST_SYMBOL: &str = "$";
-
-/// Width at which effort collapses from full label to 3-letter abbreviation.
-const WIDE_TERMINAL_THRESHOLD: usize = 100;
-
-/// Whether Nerd Font glyphs are enabled.  Detection is manual: terminals
-/// don't expose font coverage, and cursor-position probing can't distinguish
-/// a real glyph from a fallback box.  Set `PHI_NO_NERD_FONTS=1` for ASCII.
-fn nerd_fonts_enabled() -> bool {
-    !matches!(
-        std::env::var("PHI_NO_NERD_FONTS").as_deref(),
-        Ok("1") | Ok("true")
-    )
-}
-
-fn dir_symbol() -> &'static str {
-    if nerd_fonts_enabled() { NERD_DIR_SYMBOL } else { ASCII_DIR_SYMBOL }
-}
-fn branch_symbol() -> &'static str {
-    if nerd_fonts_enabled() { NERD_BRANCH_SYMBOL } else { ASCII_BRANCH_SYMBOL }
-}
-fn success_symbol() -> &'static str {
-    if nerd_fonts_enabled() { NERD_SUCCESS_SYMBOL } else { ASCII_SUCCESS_SYMBOL }
-}
-fn agent_symbol() -> &'static str {
-    if nerd_fonts_enabled() { NERD_AGENT_SYMBOL } else { ASCII_AGENT_SYMBOL }
-}
-fn model_symbol() -> &'static str {
-    if nerd_fonts_enabled() { NERD_MODEL_SYMBOL } else { ASCII_MODEL_SYMBOL }
-}
-fn cost_symbol() -> &'static str {
-    if nerd_fonts_enabled() { NERD_COST_SYMBOL } else { ASCII_COST_SYMBOL }
-}
-
-/// Formats a [`ThinkingLevel`] as an uppercase effort label, collapsing to
-/// the first 3 characters on narrow terminals (< 100 cols).  `Off` -> `None`.
-fn effort_label(level: ThinkingLevel, width: usize) -> Option<String> {
-    if level == ThinkingLevel::Off {
-        return None;
-    }
-    let full = match level {
-        ThinkingLevel::Off => "OFF",
-        ThinkingLevel::Minimal => "MINIMAL",
-        ThinkingLevel::Low => "LOW",
-        ThinkingLevel::Medium => "MEDIUM",
-        ThinkingLevel::High => "HIGH",
-        ThinkingLevel::XHigh => "XHIGH",
-    };
-    if width >= WIDE_TERMINAL_THRESHOLD {
-        Some(full.to_string())
-    } else {
-        Some(full.chars().take(3).collect())
-    }
-}
-
-// Transcript boxes keep their color in the chrome (borders/titles) only; the
-// body stays on the terminal/default background so content styling remains UI-only.
-
-const CODE_PREVIEW_LINES: usize = 8;
-const OUTPUT_PREVIEW_LINES: usize = 5;
-/// Max visible lines for a live streaming-prose block (scrolls internally).
-const LIVE_PROSE_MAX_HEIGHT: usize = 12;
-/// Max visible lines for a live thinking block (scrolls internally).
-const LIVE_THINKING_MAX_HEIGHT: usize = 6;
-
-const ASSISTANT_THINKING_DISPLAY_OPEN: &str = "<phi-thinking>\n";
-const ASSISTANT_THINKING_DISPLAY_CLOSE: &str = "\n</phi-thinking>\n";
-
-fn assistant_display_text(response: &str, thinking: &str) -> Option<String> {
-    let thinking = thinking.trim();
-    if thinking.is_empty() {
-        None
-    } else {
-        Some(format!(
-            "{ASSISTANT_THINKING_DISPLAY_OPEN}{thinking}{ASSISTANT_THINKING_DISPLAY_CLOSE}{response}"
-        ))
-    }
-}
-
-fn split_assistant_display_text(text: &str) -> (Option<&str>, &str) {
-    if let Some(rest) = text.strip_prefix(ASSISTANT_THINKING_DISPLAY_OPEN)
-        && let Some((thinking, remainder)) = rest.split_once(ASSISTANT_THINKING_DISPLAY_CLOSE)
-    {
-        (Some(thinking), remainder)
-    } else {
-        (None, text)
-    }
-}
-
-/// Byte offset of the first position in `text` that is, or could still grow
-/// into, a ```repl fence. The engine's block regex matches mid-line (the
-/// model sometimes glues ```repl to the end of a sentence), so this scans
-/// raw byte positions rather than line starts.
-fn first_block_start(text: &str) -> usize {
-    text.char_indices()
-        .filter(|&(_, c)| c == '`')
-        .map(|(i, _)| i)
-        .find(|&i| could_open_block(&text[i..]))
-        .unwrap_or(text.len())
-}
-
-/// Byte length of the prefix of `text` that is safe to flush into scrollback
-/// while streaming: it ends at a completed blank line, leaves no code fence
-/// open, and stops before anything that is or could become a ```repl block
-/// (which `CodeExecStart` will consume from the stream).
-#[cfg(test)]
-fn stable_prefix(text: &str) -> usize {
-    let limit = first_block_start(text);
-    let mut fence_open = false;
-    let mut boundary = 0;
-    let mut pos = 0;
-    for line in text.split_inclusive('\n') {
-        pos += line.len();
-        if pos > limit {
-            break;
-        }
-        if line.trim_start().starts_with("```") {
-            fence_open = !fence_open;
-        } else if !fence_open && line.ends_with('\n') && line.trim().is_empty() {
-            boundary = pos;
-        }
-    }
-    boundary
-}
-
-/// Body of the first live ```repl block once its header newline has landed.
-/// Partial headers still return `None`; a closing fence, if already present,
-/// is excluded so the body can be previewed before `CodeExecStart` arrives.
-fn live_block_body(text: &str) -> Option<&str> {
-    let start = first_block_start(text);
-    let tail = &text[start..];
-    let rest = tail.strip_prefix("```repl")?;
-    let mut header_len = "```repl".len();
-    let mut saw_newline = false;
-    for (i, c) in rest.char_indices() {
-        match c {
-            ' ' | '\t' => continue,
-            '\n' => {
-                header_len += i + 1;
-                saw_newline = true;
-                break;
-            }
-            _ => return None,
-        }
-    }
-    if !saw_newline {
-        return None;
-    }
-    let body = &tail[header_len..];
-    Some(body.split_once("\n```").map_or(body, |(body, _)| body))
-}
-
-/// Cap persisted tool results at roughly the replay preview budget. The full
-/// output already lives in the repl stdout payload; storing it twice only
-/// bloats the log with bytes nothing ever reads back.
-const TOOL_RESULT_LOG_BUDGET: usize = 4096;
-
-fn truncate_for_log(text: &str) -> String {
-    if text.len() <= TOOL_RESULT_LOG_BUDGET {
-        return text.to_owned();
-    }
-    let mut end = TOOL_RESULT_LOG_BUDGET;
-    while !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    format!("{}\n[truncated {} bytes]", &text[..end], text.len() - end)
-}
-
-/// Remove stdout lines that are verbatim echoes of tool-call results already
-/// rendered as cards in the same block (e.g. `print(grep(...))` literally
-/// writes the grep output into stdout). This is a **data-level** coalescing of
-/// the stdout stream — it trims echo lines *before* any rendering — never a
-/// layout-level deletion of committed rows (scrollback is immutable; see
-/// `replace_block_rows`, which only mutates the live block). Returns the
-/// residual stdout; when empty, the caller's `push_preview` naturally skips
-/// rendering (no-op on empty), so the duplicate card disappears entirely.
-fn strip_tool_echoes(stdout: &str, tools: &[session::ToolCall], exec_depth: usize) -> String {
-    let mut result_lines: HashSet<&str> = HashSet::new();
-    for t in tools {
-        if t.error.is_none() && t.depth == exec_depth {
-            for line in t.result.lines() {
-                let trimmed = line.trim();
-                if !trimmed.is_empty() {
-                    result_lines.insert(trimmed);
-                }
-            }
-        }
-    }
-    stdout
-        .lines()
-        .filter(|line| !result_lines.contains(line.trim()))
-        .collect::<Vec<&str>>()
-        .join("\n")
-}
-
-#[allow(dead_code)]
-fn panel_border(label: &str, label_plain: &str, width: usize, color: &str) -> String {
-    let fill = width
-        .saturating_sub(phi_tui::display_cell_width(label_plain) + 5)
-        .max(1);
-    format!("{color}┌─ {label}{color} {}┐{RESET}", "─".repeat(fill))
-}
-
-#[allow(dead_code)]
-fn panel_row(text: &str, width: usize, border: &str) -> String {
-    let inner = width.saturating_sub(2).max(1);
-    let body = format!(" {text}");
-    let pad = inner.saturating_sub(visible_width(&body));
-    format!("{border}│{RESET}{body}{RESET}{:pad$}{border}│{RESET}", "")
-}
-
-#[allow(dead_code)]
-fn panel_bottom(width: usize, color: &str) -> String {
-    format!(
-        "{color}└{}┘{RESET}",
-        "─".repeat(width.saturating_sub(2).max(1))
-    )
-}
-
-#[allow(dead_code)]
-fn fitted_panel_width(label_plain: &str, max_width: usize, body: &[String]) -> usize {
-    let label_width = phi_tui::display_cell_width(label_plain).saturating_add(6);
-    let body_width = body
-        .iter()
-        .map(|line| visible_width(line).saturating_add(4))
-        .max()
-        .unwrap_or(4);
-    label_width.max(body_width).min(max_width.max(1)).max(4)
-}
-
-/// Per-level nesting indent: two spaces per `depth`. Used to inset a flat
-/// header line under its enclosing unit (a repl block or an RLM subcall).
-/// Nesting is shown by indentation alone — no glyph marker. Two cells per
-/// level keeps `card_body_width(depth)` arithmetic stable across depths.
-fn indent(depth: usize) -> String {
-    " ".repeat(depth.saturating_mul(2))
-}
-
-/// Visible width of `indent(depth)`: `depth * 2` cells. (Equals the old
-/// `gutter_width`/`nest_width`, so depth math is unchanged.)
-fn indent_width(depth: usize) -> usize {
-    depth.saturating_mul(2)
-}
-
-/// Result-line gutter: `indent(depth)` plus two spaces. No glyph — the body
-/// simply indents under its header. Body content is wrapped to fit after it.
-fn result_prefix(depth: usize) -> String {
-    format!("{}  ", indent(depth))
-}
-
-/// Width of `result_prefix(depth)`'s visible cells: `indent_width(depth) + 2`.
-fn result_prefix_width(depth: usize) -> usize {
-    indent_width(depth) + 2
-}
-
-/// Local wall-clock `HH:MM:SS`, for the `[time]` segment of live-committed
-/// `forge_title` headers. Replay/restored rows pass `None` instead (see
-/// `forge_title`) so re-rendered transcripts don't stamp a false replay-time
-/// clock. Uses `jiff` (already a workspace dep) — not `chrono`.
-fn now_hms() -> String {
-    jiff::Zoned::now().strftime("%H:%M:%S").to_string()
-}
-
-/// Flat header line: `{indent(depth)}[{timestamp}] {title}`. The header is a
-/// bare title at the nesting indent (no bullet glyph, no trailing rule).
-/// `timestamp == None` omits the `[time]` segment (replay/restored rows).
-fn forge_title(depth: usize, timestamp: Option<&str>, title: &str) -> String {
-    let stamp = match timestamp {
-        Some(t) => format!("{DIM}[{t}] {RESET}"),
-        None => String::new(),
-    };
-    format!("{}{stamp}{title}", indent(depth))
-}
-
-/// Flat header line + indented result body. `body` lines must already be
-/// wrapped to `card_body_width(depth)`. Every body row is inset by the
-/// 2-space result gutter (`result_prefix`). Empty body lines collapse to the
-/// bare indent. If `body` is empty the header stands alone.
-fn render_flat(
-    timestamp: Option<&str>,
-    title: &str,
-    depth: usize,
-    body: &[String],
-) -> Vec<String> {
-    let header = forge_title(depth, timestamp, title);
-    let blank = indent(depth);
-    let prefix = result_prefix(depth);
-    let mut out = Vec::with_capacity(body.len().saturating_add(1));
-    out.push(header);
-    for line in body {
-        if line.is_empty() {
-            out.push(blank.clone());
-        } else {
-            out.push(format!("{prefix}{line}"));
-        }
-    }
-    out
-}
-
-/// REPL block: its activity rows inset by one nesting level. No block header —
-/// the code and its output speak for themselves. Body rows are child headers
-/// (tool/subcall lines and their own results), so they get a plain 2-space
-/// indent on top of their own nesting.
-fn render_repl_block(body: &[String], _turn: Option<usize>) -> Vec<String> {
-    let prefix = indent(1);
-    body.iter()
-        .map(|line| {
-            if line.is_empty() {
-                prefix.clone()
-            } else {
-                format!("{prefix}{line}")
-            }
-        })
-        .collect()
-}
-
-#[derive(Clone)]
-struct OpenToolRow {
-    depth: usize,
-    label: String,
-    start: usize,
-    len: usize,
-}
-
-#[derive(Clone)]
-struct OpenSubcallRow {
-    depth: usize,
-    prompt_preview: String,
-    label: String,
-    start: usize,
-    len: usize,
-}
-
-#[derive(Clone)]
-struct TranscriptBlock {
-    key: String,
-    lines: Vec<String>,
-    finalized: bool,
-    max_height: Option<usize>,
-}
-
-fn subcall_title(model: &str, prompt_preview: &str, p: &InlinePalette) -> String {
-    let prompt_preview = prompt_preview
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
-    format!(
-        "{subcall}{model}{RESET} {DIM}←{RESET} {strfg}\"{prompt_preview}\"{RESET}",
-        subcall = &p.subcall_accent,
-        strfg = &p.string_fg,
-    )
-}
-
-fn running_status_text(label: &str, spinner: &str) -> String {
-    format!("{CYAN}{spinner}{RESET} {label}")
-}
-
-#[allow(dead_code)] // reserved for a success-status state the status machine does not yet emit
-fn success_status_text(label: &str, duration_secs: f64, p: &InlinePalette) -> String {
-    format!(
-        "{GREEN}✓{RESET} {label} {numfg}{duration_secs:.1}s{RESET}",
-        numfg = &p.num_fg,
-    )
-}
-
-fn failed_status_text(
-    label: &str,
-    duration_secs: Option<f64>,
-    detail: Option<&str>,
-    p: &InlinePalette,
-) -> String {
-    let duration = duration_secs
-        .map(|secs| format!(" {numfg}{secs:.1}s{RESET}", numfg = &p.num_fg))
-        .unwrap_or_default();
-    let detail = detail
-        .filter(|d| !d.trim().is_empty())
-        .map(|d| format!(" {DIM}—{RESET} {d}"))
-        .unwrap_or_default();
-    format!("{}✗{RESET} {label}{duration}{detail}", p.error_fg)
-}
-
-/// Canonical identity for a tool call — the single source of truth shared by
-/// the in-flight status line and the committed card header. `anchor` is the
-/// one-line form (verb + defining argument, e.g. `read src/parser.rs`,
-/// `$ cargo check`); `body` is the multi-line detail folded under it (full
-/// highlighted bash command, repl code, a long/nested unknown-tool arg).
-/// `tool_title` below is a thin projection over this — never duplicate the
-/// per-tool match.
-///
-/// Anchor-once invariant: the canonical argument (path/command/pattern/value)
-/// is shown **once** across the card — in the anchor when it fits, in the body
-/// when it's richer than a one-line anchor can carry. So bash/repl keep a body
-/// only for multi-line command/code (the anchor is the truncated first line);
-/// single-line bash/repl have an empty body (the anchor already shows them).
-/// read/write/edit/grep/find/ls have an empty body — the identity IS the
-/// anchor. Unknown tools keep a pretty-printed body only when a value is
-/// multi-line, long, or nested; otherwise the `key=value` anchor carries it.
-struct Identity {
-    anchor: String,
-    body: Vec<String>,
-}
-
-fn tool_identity(name: &str, args: &serde_json::Value, p: &InlinePalette) -> Identity {
-    let arg = |key: &str| tool_arg(args, key);
-    let one_line = |text: &str| {
-        let flat = text.lines().next().unwrap_or("").trim().to_owned();
-        let short: String = flat.chars().take(80).collect();
-        if short.len() < flat.len() || text.lines().count() > 1 {
-            format!("{short}…")
-        } else {
-            short
-        }
-    };
-    let in_path = |path: &str| {
-        if path.is_empty() || path == "." {
-            String::new()
-        } else {
-            format!(" in {path}")
-        }
-    };
-    // Fallback anchor (unknown tools, and `repl` which has no dedicated one):
-    // `name key=value …` or bare `name` — exactly what `tool_title` produced.
-    let fallback_anchor = || match args.as_object() {
-        Some(map) if !map.is_empty() => {
-            let pairs: Vec<String> = map
-                .iter()
-                .map(|(key, value)| match value {
-                    serde_json::Value::String(s) => format!("{key}={}", one_line(s)),
-                    other => format!("{key}={other}"),
-                })
-                .collect();
-            format!(
-                "{tool}{name}{RESET} {DIM}{}{RESET}",
-                pairs.join(" "),
-                tool = &p.tool_accent,
-            )
-        }
-        _ => format!("{tool}{name}{RESET}", tool = &p.tool_accent),
-    };
-    // Fallback body: a pretty-print of the args shown only when it carries
-    // detail the one-line anchor can't — a value that is multi-line, longer
-    // than one line can fit, or nested (object/array). When every value fits
-    // the `key=value` anchor un-truncated, the body is empty (anchor-once —
-    // the same invariant read/grep/ls/bash honor: the canonical arg appears
-    // once total, the full text shown once when it's richer than the anchor).
-    let fallback_body = || {
-        if args.is_null() || args.as_object().is_some_and(|m| m.is_empty()) {
-            return Vec::new();
-        }
-        // For an object, the anchor already shows every `key=value`, so the
-        // body earns a row only when some value is richer than one line. For a
-        // bare (non-object) arg the anchor is just the tool name — the value is
-        // not shown there — so the body carries it whenever it's non-empty.
-        let needs_body = match args {
-            serde_json::Value::Object(map) => map.values().any(value_richer_than_one_line),
-            other => !is_empty_value(other),
-        };
-        if needs_body {
-            serde_json::to_string_pretty(args)
-                .unwrap_or_else(|_| args.to_string())
-                .lines()
-                .map(|line| format!("{DIM}{line}{RESET}"))
-                .collect()
-        } else {
-            Vec::new()
-        }
-    };
-    let (anchor, body): (String, Vec<String>) = match name {
-        "bash" => {
-            let cmd = arg("cmd");
-            let multiline = cmd.lines().count() > 1;
-            let anchor = if multiline {
-                // Multi-line: anchor is the truncated first line; the full
-                // command is the body, so the canonical content is shown once.
-                format!(
-                    "{tool}${RESET} {DIM}{}{RESET}",
-                    one_line(cmd),
-                    tool = &p.tool_accent,
-                )
-            } else {
-                let echoed = one_line(cmd);
-                let lit = highlight_code(&echoed, Some("bash"), &p.markdown)
-                    .into_iter()
-                    .next()
-                    .unwrap_or(echoed);
-                format!("{tool}${RESET} {lit}{RESET}", tool = &p.tool_accent)
-            };
-            // The body carries the full multi-line command. For a single-line
-            // command the anchor already shows it — emitting a body line
-            // would duplicate the canonical content (anchor-once), so the
-            // body is reserved for the multi-line case (and empty cmd).
-            let body = if cmd.trim().is_empty() {
-                vec![format!("{tool}${RESET}", tool = &p.tool_accent)]
-            } else if multiline {
-                highlight_code(cmd, Some("bash"), &p.markdown)
-                    .into_iter()
-                    .map(|line| format!("{tool}${RESET} {line}", tool = &p.tool_accent))
-                    .collect()
-            } else {
-                Vec::new()
-            };
-            (anchor, body)
-        }
-        "read_file" | "write_file" | "edit_file" => {
-            let verb = match name {
-                "read_file" => "read",
-                "write_file" => "write",
-                _ => "edit",
-            };
-            let path = arg("path");
-            (
-                format!(
-                    "{tool}{verb}{RESET} {pathfg}{}{RESET}",
-                    path,
-                    tool = &p.tool_accent,
-                    pathfg = &p.path_fg,
-                ),
-                Vec::new(),
-            )
-        }
-        "grep" | "find" => {
-            let verb = if name == "grep" { "grep" } else { "find" };
-            let pattern = arg("pattern");
-            let path = arg("path");
-            let anchor = format!(
-                "{tool}{verb}{RESET} {strfg}{}{RESET}{pathfg}{}{RESET}",
-                one_line(pattern),
-                in_path(path),
-                tool = &p.tool_accent,
-                strfg = &p.string_fg,
-                pathfg = &p.path_fg,
-            );
-            (anchor, Vec::new())
-        }
-        "ls" => {
-            let path = arg("path");
-            let anchor = format!(
-                "{tool}ls{RESET} {pathfg}{}{RESET}",
-                path,
-                tool = &p.tool_accent,
-                pathfg = &p.path_fg,
-            )
-            .trim_end()
-            .to_owned();
-            (anchor, Vec::new())
-        }
-        "repl" => {
-            // No dedicated one-line anchor (keeps the fallback form `repl
-            // code=<first line>…`); the body carries the full repl code. A
-            // single-line code value is already in the anchor, so the body is
-            // reserved for the multi-line case (anchor-once — the canonical
-            // code is shown once, not in both the anchor and a body line).
-            let code = args
-                .get("code")
-                .or_else(|| args.get("input"))
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("");
-            let body = if code.trim().is_empty() || code.lines().count() <= 1 {
-                Vec::new()
-            } else {
-                highlight_code(code, Some("repl"), &p.markdown)
-            };
-            (fallback_anchor(), body)
-        }
-        _ => (fallback_anchor(), fallback_body()),
-    };
-    Identity { anchor, body }
-}
-
-/// One-line title for a tool block. Thin projection over [`tool_identity`].
-fn tool_title(name: &str, args: &serde_json::Value, p: &InlinePalette) -> String {
-    tool_identity(name, args, p).anchor
-}
-
-fn lang_hint_for_path(path: &str) -> Option<&'static str> {
-    let path = Path::new(path)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or(path);
-    if path.eq_ignore_ascii_case("dockerfile") {
-        return Some("docker");
-    }
-    let ext = path
-        .rsplit_once('.')
-        .map(|(_, ext)| ext.to_ascii_lowercase())?;
-    match ext.as_str() {
-        "rs" => Some("rust"),
-        "py" => Some("python"),
-        "js" | "jsx" | "mjs" | "cjs" => Some("javascript"),
-        "ts" | "tsx" => Some("typescript"),
-        "sh" | "bash" | "zsh" | "fish" => Some("bash"),
-        "json" => Some("json"),
-        "toml" => Some("toml"),
-        "yaml" | "yml" => Some("yaml"),
-        "md" => Some("markdown"),
-        "html" | "htm" => Some("html"),
-        "css" | "scss" => Some("css"),
-        "sql" => Some("sql"),
-        "xml" => Some("xml"),
-        _ => None,
-    }
-}
-
-fn tool_preview_lang(name: &str, args: &serde_json::Value) -> Option<&'static str> {
-    match name {
-        "read_file" => args
-            .get("path")
-            .and_then(serde_json::Value::as_str)
-            .and_then(lang_hint_for_path),
-        _ => None,
-    }
-}
-
-fn tool_arg<'a>(args: &'a serde_json::Value, key: &str) -> &'a str {
-    args.get(key)
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("")
-}
-
-/// Whether a value carries detail the one-line `key=value` anchor cannot show:
-/// a multi-line string, a >80-char string, or any nested object/array. Used to
-/// decide whether the fallback body (full pretty-printed arg) earns a row, so
-/// the canonical value is shown once at full fidelity only when the anchor
-/// truncates it (anchor-once).
-fn value_richer_than_one_line(v: &serde_json::Value) -> bool {
-    match v {
-        serde_json::Value::String(s) => {
-            let flat = s.lines().next().unwrap_or("");
-            flat.chars().take(80).collect::<String>().chars().count() < flat.chars().count()
-                || s.lines().count() > 1
-        }
-        serde_json::Value::Object(_) | serde_json::Value::Array(_) => true,
-        _ => false,
-    }
-}
-
-/// Trivially-empty value: null, empty string, empty array/object.
-fn is_empty_value(v: &serde_json::Value) -> bool {
-    match v {
-        serde_json::Value::Null => true,
-        serde_json::Value::String(s) => s.is_empty(),
-        serde_json::Value::Array(a) => a.is_empty(),
-        serde_json::Value::Object(m) => m.is_empty(),
-        _ => false,
-    }
-}
-
-fn format_tokens(count: u64) -> String {
-    match count {
-        0..=999 => count.to_string(),
-        1_000..=9_999 => format!("{:.1}k", count as f64 / 1_000.0),
-        10_000..=999_999 => format!("{}k", count / 1_000),
-        _ => format!("{:.1}M", count as f64 / 1_000_000.0),
-    }
-}
-
-fn format_rate(rate: f64) -> String {
-    if rate == 0.0 {
-        "$0/M".to_owned()
-    } else if rate >= 10.0 {
-        format!("${rate:.0}/M")
-    } else if rate >= 1.0 {
-        format!("${rate:.2}/M")
-    } else {
-        format!("${rate:.4}/M")
-    }
-}
-
-fn format_model_pricing(model: &Model) -> String {
-    let mut parts = vec![
-        format!("in {}", format_rate(model.cost.input)),
-        format!("out {}", format_rate(model.cost.output)),
-    ];
-    if model.cost.cache_write > 0.0 {
-        parts.push(format!("cache+ {}", format_rate(model.cost.cache_write)));
-    }
-    if model.cost.cache_read > 0.0 {
-        parts.push(format!("cache↺ {}", format_rate(model.cost.cache_read)));
-    }
-    parts.join(" · ")
-}
+use palette::*;
+use render::*;
+use tool_display::*;
+use popup::*;
 
 enum Cmd {
     Prompt {
@@ -994,278 +205,6 @@ impl InputSource {
             Self::Closed => None,
         }
     }
-}
-
-struct CommandSpec {
-    name: &'static str,
-    args: &'static str,
-    desc: &'static str,
-}
-
-const COMMANDS: &[CommandSpec] = &[
-    CommandSpec {
-        name: "login",
-        args: "[provider]",
-        desc: "authenticate via OAuth (anthropic | openai)",
-    },
-    CommandSpec {
-        name: "logout",
-        args: "[provider]",
-        desc: "remove stored credentials",
-    },
-    CommandSpec {
-        name: "model",
-        args: "[model]",
-        desc: "switch the root model (no arg: open the selector)",
-    },
-    CommandSpec {
-        name: "submodel",
-        args: "[model]",
-        desc: "switch the sub model used by llm_query",
-    },
-    CommandSpec {
-        name: "resume",
-        args: "",
-        desc: "pick a past session for this directory to resume",
-    },
-    CommandSpec {
-        name: "tree",
-        args: "",
-        desc: "navigate the session tree (also esc esc)",
-    },
-    CommandSpec {
-        name: "fork",
-        args: "",
-        desc: "fork a new session from a prior user message",
-    },
-    CommandSpec {
-        name: "new",
-        args: "",
-        desc: "reset the session (fresh REPL, history cleared)",
-    },
-    CommandSpec {
-        name: "usage",
-        args: "",
-        desc: "show usage totals",
-    },
-    CommandSpec {
-        name: "help",
-        args: "",
-        desc: "show commands and keys",
-    },
-    CommandSpec {
-        name: "quit",
-        args: "",
-        desc: "exit (also ctrl-d on an empty line)",
-    },
-];
-
-#[derive(Clone, Copy, Eq, PartialEq)]
-enum PopupKind {
-    /// Completing a command name; enter applies and submits.
-    Command,
-    /// Completing a command argument; enter only applies.
-    Argument,
-    /// `@token` fuzzy file search; directories keep completing.
-    File,
-    /// Tab path completion (no `@` prefix).
-    Path,
-}
-
-/// What a confirmed selector value means (pi-style editor-swap selectors).
-enum SelectorKind {
-    /// Value is a `provider/id` model name; true switches the root model.
-    Model { root: bool },
-    /// Read-only usage browser; confirm just closes it.
-    Usage,
-    /// Value is a session file path to resume.
-    Resume,
-    /// Value is the entry id of a user message to fork from.
-    Fork,
-    /// Value is the entry id to navigate the active branch to.
-    Tree,
-}
-
-struct Suggestion {
-    /// Text inserted on completion (command name without the slash, or the
-    /// argument value).
-    value: String,
-    label: String,
-    desc: String,
-}
-
-struct Popup {
-    items: Vec<Suggestion>,
-    selected: usize,
-    /// The text ending at the cursor that a completion replaces.
-    prefix: String,
-    kind: PopupKind,
-}
-
-#[derive(Eq, PartialEq)]
-enum PopupOutcome {
-    /// The key was consumed by the popup.
-    Handled,
-    /// Let the regular input path process the key.
-    Pass,
-}
-
-const POPUP_MAX_VISIBLE: usize = 6;
-
-fn render_popup(popup: &Popup) -> Vec<String> {
-    let total = popup.items.len();
-    let start = popup
-        .selected
-        .saturating_sub(POPUP_MAX_VISIBLE - 1)
-        .min(total.saturating_sub(POPUP_MAX_VISIBLE));
-    let width = popup
-        .items
-        .iter()
-        .map(|item| item.label.len())
-        .max()
-        .unwrap_or(0);
-    let mut lines: Vec<String> = popup
-        .items
-        .iter()
-        .enumerate()
-        .skip(start)
-        .take(POPUP_MAX_VISIBLE)
-        .map(|(i, item)| {
-            if i == popup.selected {
-                format!(
-                    "{CYAN}› {:<width$}{RESET}  {DIM}{}{RESET}",
-                    item.label, item.desc
-                )
-            } else {
-                format!("{DIM}  {:<width$}  {}{RESET}", item.label, item.desc)
-            }
-        })
-        .collect();
-    if total > start + POPUP_MAX_VISIBLE {
-        lines.push(format!(
-            "{DIM}  … {} more{RESET}",
-            total - start - POPUP_MAX_VISIBLE
-        ));
-    }
-    lines
-}
-
-/// Suggestions for the text before the cursor, pi-style: `/prefix` fuzzy
-/// filters command names; `/command arg-prefix` filters that command's
-/// arguments.
-fn complete(before: &str, model_names: &[String], ext_cmds: &[(String, String)]) -> Option<Popup> {
-    let rest = before.strip_prefix('/')?;
-    let Some((command, arg)) = rest.split_once(' ') else {
-        let mut items: Vec<Suggestion> =
-            fuzzy_filter(COMMANDS.iter().collect(), rest, |c| c.name.to_owned())
-                .into_iter()
-                .map(|c| Suggestion {
-                    value: c.name.to_owned(),
-                    label: format!("/{} {}", c.name, c.args).trim_end().to_owned(),
-                    desc: c.desc.to_owned(),
-                })
-                .collect();
-        // Include extension commands in completion
-        let ext_items: Vec<Suggestion> = ext_cmds
-            .iter()
-            .filter(|(name, _)| rest.is_empty() || name.contains(rest) || rest.is_empty())
-            .filter(|(name, _)| {
-                // Simple prefix/substring filter matching fuzzy_filter behaviour
-                name.to_ascii_lowercase()
-                    .contains(&rest.to_ascii_lowercase())
-            })
-            .map(|(name, desc)| Suggestion {
-                value: name.clone(),
-                label: format!("/{name}"),
-                desc: desc.clone(),
-            })
-            .collect();
-        items.extend(ext_items);
-        return (!items.is_empty()).then(|| Popup {
-            items,
-            selected: 0,
-            prefix: before.to_owned(),
-            kind: PopupKind::Command,
-        });
-    };
-    if arg.contains(' ') {
-        return None;
-    }
-    let candidates: Vec<&str> = match command {
-        "login" | "logout" => vec!["anthropic", "openai"],
-        "model" | "submodel" => model_names.iter().map(String::as_str).collect(),
-        _ => return None,
-    };
-    let items: Vec<Suggestion> = fuzzy_filter(candidates, arg, |c| (*c).to_owned())
-        .into_iter()
-        .map(|c| Suggestion {
-            value: c.to_owned(),
-            label: c.to_owned(),
-            desc: String::new(),
-        })
-        .collect();
-    (!items.is_empty()).then(|| Popup {
-        items,
-        selected: 0,
-        prefix: arg.to_owned(),
-        kind: PopupKind::Argument,
-    })
-}
-
-/// The `@`-prefixed token ending at the cursor, if any. Tokens break at
-/// spaces/tabs/quotes/`=`, except inside an unclosed `@"…` quote.
-fn extract_at_token(before: &str) -> Option<String> {
-    // Unclosed `@"…` quote: the token runs from the `@` to the cursor.
-    if let Some(qstart) = find_unclosed_quote(before)
-        && qstart > 0
-        && before[..qstart].ends_with('@')
-        && is_token_start(before, qstart - 1)
-    {
-        return Some(before[qstart - 1..].to_owned());
-    }
-    let start = before
-        .rfind([' ', '\t', '"', '\'', '='])
-        .map_or(0, |i| i + 1);
-    let token = &before[start..];
-    (token.starts_with('@') && is_token_start(before, start)).then(|| token.to_owned())
-}
-
-fn find_unclosed_quote(text: &str) -> Option<usize> {
-    let mut open = None;
-    for (i, c) in text.char_indices() {
-        if c == '"' {
-            open = match open {
-                Some(_) => None,
-                None => Some(i),
-            };
-        }
-    }
-    open
-}
-
-fn is_token_start(text: &str, index: usize) -> bool {
-    index == 0
-        || matches!(
-            text.as_bytes()[index - 1],
-            b' ' | b'\t' | b'"' | b'\'' | b'='
-        )
-}
-
-/// Collapse a message to one display line for selector rows.
-fn single_line(text: &str) -> String {
-    let joined = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    if joined.is_empty() {
-        "(empty)".to_owned()
-    } else {
-        joined
-    }
-}
-
-/// Path-like token ending at the cursor for Tab completion: the last
-/// whitespace-delimited word (always returned; Tab forces completion).
-fn extract_path_token(before: &str) -> String {
-    let start = before.rfind([' ', '\t']).map_or(0, |i| i + 1);
-    before[start..].to_owned()
 }
 
 pub async fn run(setup: TuiSetup, mut io: SessionIo) -> Result<()> {
@@ -1928,23 +867,19 @@ impl Ui {
     }
 
 
-    /// Right-prompt for the forgecode-style chrome header: agent, tokens,
-    /// cost, model, and effort — right-aligned on the header line.
-    fn render_chrome_rprompt(&self) -> String {
+    /// Agent + usage segment for the chrome header: " PHI  1.2k  $0.01".
+    fn render_chrome_agent(&self) -> String {
         let active = self.usage.total_tokens > 0;
         let mut result = String::with_capacity(64);
 
-        // Agent — always colored; never the dim/gray inactive variant.
         let agent_str = format!("{} PHI", agent_symbol());
         result.push_str(&format!("{BOLD}{LIGHT_GRAY}{agent_str}{RESET}"));
 
-        // Tokens (only when there is usage)
         if active {
             let tokens = format_tokens(self.usage.total_tokens);
             result.push_str(&format!(" {BOLD}{LIGHT_GRAY}{tokens}{RESET}"));
         }
 
-        // Cost (only when active)
         if active && self.usage.cost.total > 0.0 {
             result.push_str(&format!(
                 " {BOLD}{GREEN}{}{:.2}{RESET}",
@@ -1953,15 +888,20 @@ impl Ui {
             ));
         }
 
-        // Model — strip provider prefix if present
+        result
+    }
+
+    /// Model + effort segment for the chrome header: "  glm-5.2 XHIGH".
+    fn render_chrome_model(&self) -> String {
+        let mut result = String::with_capacity(64);
+
         let model_id = &self.root_lm.model().id;
         let short_model = model_id.rsplit('/').next().unwrap_or(model_id);
         result.push_str(&format!(
-            " {LIGHT_MAGENTA}{} {short_model}{RESET}",
+            "{LIGHT_MAGENTA}{} {short_model}{RESET}",
             model_symbol()
         ));
 
-        // Effort (thinking level)
         if let Some(effort) = effort_label(self.root_lm.thinking(), self.term.width()) {
             result.push_str(&format!(" {}{effort}{RESET}", &self.palette.warning_fg));
         }
@@ -2031,15 +971,24 @@ impl Ui {
                 .min(editor_lines.len().saturating_sub(max_visible));
             let end = (self.editor_scroll + max_visible).min(editor_lines.len());
 
-            // Forgecode-style header:  dir   branch  <rprompt right-aligned>
+            // Separator line with the same bg inversion as phi-mux's statusbar.
+            let sep_width = width;
+            let sep = "\u{2500}".repeat(sep_width);
+            lines.push(format!("{}{sep}{RESET}", &p.statusbar_bg));
+
+            // Forgecode-style header: all left-aligned.
+            //   PHI  dir  branch  model  effort
             let current_dir = self
                 .cwd
                 .file_name()
                 .and_then(|name| name.to_str())
                 .map(String::from)
                 .unwrap_or_else(|| ".".to_string());
-            let mut header =
-                format!("{BOLD}{LIGHT_GREEN}{} {current_dir}{RESET}", dir_symbol());
+            let mut header = self.render_chrome_agent();
+            header.push_str(&format!(
+                "  {BOLD}{LIGHT_GREEN}{} {current_dir}{RESET}",
+                dir_symbol()
+            ));
             if let Some(branch) = &self.branch
                 && branch != &current_dir
             {
@@ -2048,14 +997,7 @@ impl Ui {
                     branch_symbol()
                 ));
             }
-            let rprompt = self.render_chrome_rprompt();
-            let left_w = visible_width(&header);
-            let right_w = visible_width(&rprompt);
-            let pad = width.saturating_sub(left_w + right_w);
-            if pad > 0 {
-                header.push_str(&" ".repeat(pad));
-            }
-            header.push_str(&rprompt);
+            header.push_str(&format!("  {}", self.render_chrome_model()));
             lines.push(header);
 
             // Editor prompt: chevron on row 0, 2-space indent on continuation.
@@ -4933,13 +3875,15 @@ match1
             .collect();
         assert!(box_lines.is_empty(), "box lines should be gone: {plain:?}");
 
-        // First line is the header (dir + rprompt); second line is the
+        // Line 0 is the separator, line 1 is the header, line 2 is the
         // chevron prompt with "hi".
-        assert!(plain.len() >= 2, "{plain:?}");
+        assert!(plain.len() >= 3, "{plain:?}");
+        // Separator line is all box-drawing chars.
+        assert!(plain[0].chars().all(|c| c == '\u{2500}'), "separator line: {plain:?}");
         // Header contains the agent symbol text "PHI"
-        assert!(plain[0].contains("PHI"), "header should contain agent: {plain:?}");
+        assert!(plain[1].contains("PHI"), "header should contain agent: {plain:?}");
         // Input line contains the editor text
-        assert!(plain[1].contains("hi"), "input line should contain 'hi': {plain:?}");
+        assert!(plain[2].contains("hi"), "input line should contain 'hi': {plain:?}");
 
         // Cursor is present (the editor has text).
         assert!(cursor.is_some(), "{plain:?}");
@@ -4956,12 +3900,12 @@ match1
         let (lines, _cursor) = ui.chrome_lines();
         let plain: Vec<String> = lines.iter().map(|line| phi_tui::strip_ansi(line)).collect();
 
-        // The header line (line 0) should contain:
+        // The header line (line 1, after separator) should contain:
         //  - the directory name "phi" (last path component, not full path)
         //  - the branch "main"
         //  - the agent label "PHI"
         //  - the model id (stripped of provider prefix)
-        let header = &plain[0];
+        let header = &plain[1];
         assert!(header.contains("phi"), "header should contain dir name: {header:?}");
         assert!(header.contains("main"), "header should contain branch: {header:?}");
         assert!(header.contains("PHI"), "header should contain agent: {header:?}");
@@ -4985,7 +3929,7 @@ match1
 
         // In ASCII fallback mode the chevron is ">" and there are no Nerd
         // Font PUA codepoints in the output.
-        assert!(plain[1].starts_with(">"), "ASCII chevron: {plain:?}");
+        assert!(plain[2].starts_with(">"), "ASCII chevron: {plain:?}");
         assert!(!plain.iter().any(|l| l.contains('\u{ea83}')), "no nerd folder icon: {plain:?}");
         assert!(!plain.iter().any(|l| l.contains('\u{f013e}')), "no nerd chevron: {plain:?}");
         unsafe { std::env::remove_var("PHI_NO_NERD_FONTS"); };

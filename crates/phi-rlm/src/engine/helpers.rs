@@ -31,6 +31,10 @@ pub(super) fn prompt_preview(text: &str, max: usize) -> String {
     truncate_preview(&flat, max)
 }
 
+/// Routes subcall frames from the REPL: `llm_query` to the handler's sub
+/// model, `rlm_query` to a child `Rlm` at `depth + 1` (falling back to a
+/// plain completion at max depth, matching upstream), host fns to the
+
 pub(super) fn usage_breakdowns_for_model(model: String, usage: Usage) -> Vec<UsageBreakdown> {
     if usage.total_tokens == 0
         && usage.input == 0
@@ -44,6 +48,10 @@ pub(super) fn usage_breakdowns_for_model(model: String, usage: Usage) -> Vec<Usa
         vec![UsageBreakdown { model, usage }]
     }
 }
+
+/// A persistent multi-turn RLM conversation. The REPL env survives across
+/// turns (variables persist); each completed exchange is exposed in the env
+/// as `history_N`. Usage accumulates across the whole session.
 
 pub(super) fn history_snippet(index: usize, history: &[ChatMessage], response: &str) -> String {
     let mut messages: Vec<Value> = history
@@ -124,3 +132,4 @@ pub(super) fn dispatch_event(runtime: &Option<Arc<AppRuntime>>, event: Lifecycle
         });
     }
 }
+

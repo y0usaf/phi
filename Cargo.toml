@@ -59,6 +59,7 @@ phi-repl = { path = "crates/phi-repl" }
 phi-mux = { path = "crates/phi-mux" }
 phi-rlm = { path = "crates/phi-rlm" }
 phi-session = { path = "crates/phi-session" }
+phi-session-tui = { path = "crates/phi-session-tui" }
 phi-runtime = { path = "crates/phi-runtime" }
 phi-tui = { path = "crates/phi-tui" }
 phi-lua = { path = "crates/phi-lua" }

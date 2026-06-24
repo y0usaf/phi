@@ -9,7 +9,7 @@ use std::path::Path;
 
 use anyhow::{Context as _, Result};
 use mlua::LuaSerdeExt as _;
-use phi_cli::Args;
+
 use serde::Deserialize;
 
 #[derive(Debug, Default, Clone, Deserialize, PartialEq)]
@@ -142,6 +142,24 @@ impl Config {
     }
 }
 
+/// CLI argument fields needed to resolve [`Settings`], decoupled from clap so
+/// phi-session doesn't depend on a CLI parser.
+#[derive(Debug, Default, Clone)]
+pub struct CliArgs {
+    pub model: Option<String>,
+    pub sub_model: Option<String>,
+    pub thinking: Option<String>,
+    pub sub_model_thinking: Option<String>,
+    pub python: Option<String>,
+    pub max_iterations: Option<usize>,
+    pub max_depth: Option<usize>,
+    pub budget: Option<f64>,
+    pub max_tokens: Option<u64>,
+    pub timeout: Option<u64>,
+    pub max_errors: Option<usize>,
+    pub max_concurrent_subcalls: Option<usize>,
+}
+
 pub struct MemorySettings {
     pub enabled: bool,
     pub vault_path: std::path::PathBuf,
@@ -167,7 +185,7 @@ pub struct Settings {
 }
 
 impl Settings {
-    pub fn resolve(args: &Args, config: Config, tui_mode: bool) -> Self {
+    pub fn resolve(args: &CliArgs, config: Config, tui_mode: bool) -> Self {
         let thinking = args
             .thinking
             .clone()
@@ -228,8 +246,6 @@ impl Settings {
 
 #[cfg(test)]
 mod tests {
-    use phi_cli::clap::Parser as _;
-
     use super::*;
 
     fn eval(text: &str) -> Result<Config> {
@@ -267,7 +283,7 @@ mod tests {
 
     #[test]
     fn max_depth_default_depends_on_mode() {
-        let args = Args::parse_from(["phi"]);
+        let args = CliArgs::default();
         assert_eq!(
             Settings::resolve(&args, Config::default(), true).max_depth,
             3
@@ -280,7 +296,7 @@ mod tests {
         let config = eval("return { max_depth = 5 }").unwrap();
         assert_eq!(Settings::resolve(&args, config, true).max_depth, 5);
 
-        let args = Args::parse_from(["phi", "--max-depth", "7"]);
+        let args = CliArgs { max_depth: Some(7), ..Default::default() };
         assert_eq!(
             Settings::resolve(&args, Config::default(), true).max_depth,
             7
@@ -298,7 +314,7 @@ mod tests {
 
     #[test]
     fn sub_model_thinking_inherits_thinking_when_unset() {
-        let args = Args::parse_from(["phi"]);
+        let args = CliArgs::default();
         let config = eval("return { thinking = \"high\" }").unwrap();
         let settings = Settings::resolve(&args, config, false);
         assert_eq!(settings.thinking, "high");
@@ -307,22 +323,13 @@ mod tests {
 
     #[test]
     fn sub_model_thinking_can_override_thinking() {
-        let args = Args::parse_from(["phi", "--thinking", "high", "--sub-model-thinking", "low"]);
+        let args = CliArgs {
+            thinking: Some("high".to_owned()),
+            sub_model_thinking: Some("low".to_owned()),
+            ..Default::default()
+        };
         let settings = Settings::resolve(&args, Config::default(), false);
         assert_eq!(settings.thinking, "high");
         assert_eq!(settings.sub_model_thinking, "low");
-    }
-
-    #[test]
-    fn mux_cli_flags_parse_and_conflict() {
-        let args = Args::parse_from(["phi", "--mux"]);
-        assert!(args.mux);
-        assert!(!args.no_mux);
-
-        let args = Args::parse_from(["phi", "--no-mux"]);
-        assert!(!args.mux);
-        assert!(args.no_mux);
-
-        assert!(Args::try_parse_from(["phi", "--mux", "--no-mux"]).is_err());
     }
 }

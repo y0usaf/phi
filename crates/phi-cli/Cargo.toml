@@ -6,4 +6,5 @@ license.workspace = true
 
 [dependencies]
 clap.workspace = true
+phi-session.workspace = true
 

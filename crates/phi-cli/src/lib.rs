@@ -113,4 +113,21 @@ impl Args {
             Some(self.prompt.join(" "))
         }
     }
+
+    pub fn to_session_args(&self) -> phi_session::config::CliArgs {
+        phi_session::config::CliArgs {
+            model: self.model.clone(),
+            sub_model: self.sub_model.clone(),
+            thinking: self.thinking.clone(),
+            sub_model_thinking: self.sub_model_thinking.clone(),
+            python: self.python.clone(),
+            max_iterations: self.max_iterations,
+            max_depth: self.max_depth,
+            budget: self.budget,
+            max_tokens: self.max_tokens,
+            timeout: self.timeout,
+            max_errors: self.max_errors,
+            max_concurrent_subcalls: self.max_concurrent_subcalls,
+        }
+    }
 }

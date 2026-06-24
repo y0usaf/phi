@@ -8,23 +8,13 @@ license.workspace = true
 anyhow.workspace = true
 directories.workspace = true
 dirs.workspace = true
-futures.workspace = true
 ignore.workspace = true
 jiff.workspace = true
 mlua.workspace = true
-phi-ai.workspace = true
-phi-builtins.workspace = true
-phi-cli.workspace = true
-phi-ext.workspace = true
-phi-lua.workspace = true
-phi-memory.workspace = true
 phi-rlm.workspace = true
-phi-runtime.workspace = true
-phi-tui.workspace = true
+unicode-width.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tokio.workspace = true
-tokio-util.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
