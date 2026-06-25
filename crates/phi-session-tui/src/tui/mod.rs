@@ -16,8 +16,7 @@ use phi_ai::{
 };
 use phi_rlm::{
     ContextPayload, ProviderLm, ReplResult, RestoredExchange, RestoredRepl, Rlm, RlmCompletion,
-    RlmEvent, StopCause, could_open_block, find_code_blocks, split_at_first_block, split_prose,
-};
+    RlmEvent, StopCause, could_open_block, find_code_blocks, split_at_first_block, split_prose, RlmSession};
 use phi_tui::crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers};
 use phi_tui::{
     Editor, EditorAction, LiveCursor, RawModeGuard, Selector, SelectorItem,
@@ -47,6 +46,15 @@ mod palette;
 mod render;
 mod tool_display;
 mod popup;
+mod chat;
+mod editor;
+mod navigation;
+mod events;
+mod composition;
+mod toolbar;
+
+use events::LoginState;
+use events::python_quote;
 
 pub use palette::InlinePalette;
 pub(crate) use render::{OpenToolRow, OpenSubcallRow, TranscriptBlock};
@@ -57,7 +65,7 @@ use render::*;
 use tool_display::*;
 use popup::*;
 
-enum Cmd {
+pub(super) enum Cmd {
     Prompt {
         text: String,
         cancel: CancellationToken,
@@ -77,7 +85,7 @@ enum Cmd {
     Shutdown,
 }
 
-enum Done {
+pub(super) enum Done {
     Run(RlmCompletion),
     Shell {
         code: String,
@@ -88,24 +96,8 @@ enum Done {
 }
 
 /// Quote `s` as a Python string literal.
-fn python_quote(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push('"');
-    for c in s.chars() {
-        match c {
-            '\\' => out.push_str("\\\\"),
-            '"' => out.push_str("\\\""),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
-}
 
-enum LoginMsg {
+pub(super) enum LoginMsg {
     Info(String),
     Done {
         provider: &'static str,
@@ -151,7 +143,7 @@ pub struct HostModalRequest {
     pub response_tx: oneshot::Sender<std::result::Result<Option<String>, String>>,
 }
 
-struct PendingHostModal {
+pub(super) struct PendingHostModal {
     kind: HostModalKind,
     response_rx: oneshot::Receiver<std::result::Result<Option<String>, String>>,
 }
@@ -214,7 +206,7 @@ pub async fn run(setup: TuiSetup, mut io: SessionIo) -> Result<()> {
     let (login_tx, mut login_rx) = mpsc::unbounded_channel::<LoginMsg>();
 
     let session_task = tokio::spawn(async move {
-        let mut session = rlm.into_session(payload);
+        let mut session = RlmSession::new(rlm, payload);
         while let Some(cmd) = cmd_rx.recv().await {
             match cmd {
                 Cmd::Prompt { text, cancel } => {
@@ -461,170 +453,120 @@ pub fn external_editor(text: &str) -> Result<Option<String>, String> {
     result
 }
 
-struct LoginState {
-    code_tx: mpsc::UnboundedSender<String>,
-    cancel: CancellationToken,
-}
 
-struct TuiLoginCallbacks {
-    msg_tx: mpsc::UnboundedSender<LoginMsg>,
-    code_rx: tokio::sync::Mutex<mpsc::UnboundedReceiver<String>>,
-}
 
-impl LoginCallbacks for TuiLoginCallbacks {
-    fn on_auth_url(&self, url: &str, instructions: &str) {
-        let _ = self.msg_tx.send(LoginMsg::Info(instructions.to_owned()));
-        let _ = self.msg_tx.send(LoginMsg::Info(format!("  {url}")));
-    }
-
-    fn on_device_code(&self, user_code: &str, verification_uri: &str, expires_in: Duration) {
-        let _ = self.msg_tx.send(LoginMsg::Info(format!(
-            "Visit {verification_uri} and enter code: {user_code} (expires in {} minutes)",
-            expires_in.as_secs() / 60
-        )));
-    }
-
-    fn on_progress(&self, message: &str) {
-        let _ = self.msg_tx.send(LoginMsg::Info(message.to_owned()));
-    }
-
-    fn manual_code(&self) -> std::pin::Pin<Box<dyn Future<Output = Option<String>> + Send + '_>> {
-        Box::pin(async move { self.code_rx.lock().await.recv().await })
-    }
-}
 
 struct Ui {
-    term: Terminal<Box<dyn std::io::Write + Send>>,
-    editor: Editor,
-    spinner: Spinner,
-    palette: InlinePalette,
+    pub(super) term: Terminal<Box<dyn std::io::Write + Send>>,
+    pub(super) editor: Editor,
+    pub(super) spinner: Spinner,
+    pub(super) palette: InlinePalette,
     /// Cancel token of the in-flight turn, if any.
-    running: Option<CancellationToken>,
+    pub(super) running: Option<CancellationToken>,
     /// In-flight /login flow, if any. The editor feeds it pasted codes.
-    login: Option<LoginState>,
+    pub(super) login: Option<LoginState>,
     /// Slash command autocomplete, shown below the editor.
-    popup: Option<Popup>,
+    pub(super) popup: Option<Popup>,
     /// Active full-width selector (model/resume/fork/tree); replaces the
     /// editor area and captures all keys until confirmed or cancelled.
-    selector: Option<(SelectorKind, Selector)>,
+    pub(super) selector: Option<(SelectorKind, Selector)>,
     /// On-disk session store recording the conversation tree.
-    store: SessionStore,
+    pub(super) store: SessionStore,
     /// Time of the last esc on an idle, empty editor; a second one within
     /// 500ms opens the session tree (pi's double-escape).
-    last_esc: Option<std::time::Instant>,
+    pub(super) last_esc: Option<std::time::Instant>,
     /// Worktree file search backing `@` completion.
-    files: FileSearcher,
-    cwd: std::path::PathBuf,
+    pub(super) files: FileSearcher,
+    pub(super) cwd: std::path::PathBuf,
     /// First visible logical editor line (viewport scrolling).
-    editor_scroll: usize,
+    pub(super) editor_scroll: usize,
     /// Set by ctrl+g; the run loop opens $VISUAL/$EDITOR on the buffer.
-    external_edit: bool,
+    pub(super) external_edit: bool,
     /// ctrl+o: show full code/output instead of previews across the
     /// transcript by rebuilding retained history, pi-style.
-    expand_tools: bool,
+    pub(super) expand_tools: bool,
     /// ctrl+t: show provider thinking across the transcript by rebuilding
     /// retained history, pi-style.
-    expand_thinking: bool,
+    pub(super) expand_thinking: bool,
     /// Follow-up prompts queued while a turn is in flight; sent FIFO as
     /// turns complete.
-    queued: Vec<String>,
+    pub(super) queued: Vec<String>,
     /// Time of the last ctrl-c; a second one within 500ms quits.
-    last_ctrl_c: Option<std::time::Instant>,
+    pub(super) last_ctrl_c: Option<std::time::Instant>,
     /// Lines staged by event handlers since the last draw; each draw folds
     /// them into a retained transcript block before rendering.
-    pending: Vec<String>,
+    pub(super) pending: Vec<String>,
     /// Retained transcript renderer/commit seam, restored from the archived
     /// Phi transcript-block model.
-    transcript: Transcript,
+    pub(super) transcript: Transcript,
     /// Finalized transcript blocks retained across frames.
-    transcript_blocks: Vec<TranscriptBlock>,
+    pub(super) transcript_blocks: Vec<TranscriptBlock>,
     /// Monotonic key source for finalized transcript blocks.
-    next_transcript_block_id: u64,
+    pub(super) next_transcript_block_id: u64,
     /// Rows of the in-flight depth-0 ```repl``` block (with everything nested in
     /// it), shown live and then committed to scrollback verbatim.
-    block: Vec<String>,
-    block_active: bool,
+    pub(super) block: Vec<String>,
+    pub(super) block_active: bool,
     /// Code of the in-flight depth-0 agent ```repl``` block, stashed at
     /// `CodeExecStart` and persisted to the session store at `CodeExecEnd`.
-    live_code: Option<String>,
+    pub(super) live_code: Option<String>,
     /// Tool calls observed inside the in-flight depth-0 ```repl``` block; args
     /// stashed at `ToolStart`, completed at `ToolEnd`, persisted with the
     /// block at `CodeExecEnd` so resume re-renders the same tool cards.
-    live_tools: Vec<session::ToolCall>,
+    pub(super) live_tools: Vec<session::ToolCall>,
     /// Args of tools still executing inside the buffered depth-0 REPL block,
     /// keyed by (RLM event depth, engine call_id). Child REPLs have their own
     /// call-id spaces, so depth is part of the key.
-    open_tool_args: std::collections::HashMap<(usize, u64), serde_json::Value>,
+    pub(super) open_tool_args: std::collections::HashMap<(usize, u64), serde_json::Value>,
     /// Live tool status rows inside the buffered block.
-    open_tool_rows: std::collections::HashMap<(usize, u64), OpenToolRow>,
+    pub(super) open_tool_rows: std::collections::HashMap<(usize, u64), OpenToolRow>,
     /// Sub-LLM calls observed inside the in-flight depth-0 ```repl``` block.
-    live_subcalls: Vec<session::SubcallRecord>,
+    pub(super) live_subcalls: Vec<session::SubcallRecord>,
     /// Live subcall status rows inside the buffered block.
-    open_subcall_rows: std::collections::VecDeque<OpenSubcallRow>,
+    pub(super) open_subcall_rows: std::collections::VecDeque<OpenSubcallRow>,
 
     /// Prose flushed while a block is active; committed after the block so
     /// scrollback stays chronological.
-    after_block: Vec<String>,
+    pub(super) after_block: Vec<String>,
     /// Whether the last scrollback line was nested activity; a blank line is
     /// inserted before a depth-0 action that follows prose.
-    last_activity: bool,
+    pub(super) last_activity: bool,
     /// Streamed root-model text for the current iteration, minus the
     /// paragraphs/fences already flushed to scrollback.
-    stream: String,
+    pub(super) stream: String,
     /// Streamed provider thinking for the current iteration.
-    thinking: String,
+    pub(super) thinking: String,
     /// Provider thinking captured across the whole in-flight turn so replay
     /// can re-render historical thinking blocks under the current toggle.
-    thinking_log: String,
+    pub(super) thinking_log: String,
     /// Whether any `RootDelta` arrived this iteration; when false the model
     /// did not stream and `RootText` carries the only copy of the text.
-    streamed: bool,
-    status: String,
-    turn: usize,
-    model_label: String,
-    storage: Arc<AuthStorage>,
-    registry: Arc<Registry>,
-    root_lm: Arc<ProviderLm>,
-    sub_lm: Arc<ProviderLm>,
-    runtime: Arc<AppRuntime>,
+    pub(super) streamed: bool,
+    pub(super) status: String,
+    pub(super) turn: usize,
+    pub(super) model_label: String,
+    pub(super) storage: Arc<AuthStorage>,
+    pub(super) registry: Arc<Registry>,
+    pub(super) root_lm: Arc<ProviderLm>,
+    pub(super) sub_lm: Arc<ProviderLm>,
+    pub(super) runtime: Arc<AppRuntime>,
     /// Qualified `provider/id` names offered by /model completion.
-    model_names: Vec<String>,
-    login_tx: mpsc::UnboundedSender<LoginMsg>,
-    host_modal_tx: Option<mpsc::UnboundedSender<HostModalRequest>>,
-    pending_host_modal: Option<PendingHostModal>,
+    pub(super) model_names: Vec<String>,
+    pub(super) login_tx: mpsc::UnboundedSender<LoginMsg>,
+    pub(super) host_modal_tx: Option<mpsc::UnboundedSender<HostModalRequest>>,
+    pub(super) pending_host_modal: Option<PendingHostModal>,
     /// Usage of the most recent completed run (footer stats).
-    usage: Usage,
+    pub(super) usage: Usage,
     /// Cached git branch for the footer, refreshed on a short TTL.
-    branch: Option<String>,
-    branch_at: std::time::Instant,
+    pub(super) branch: Option<String>,
+    pub(super) branch_at: std::time::Instant,
 }
 
 /// Current git branch of `cwd` (or a short detached-HEAD hash), following a
 /// worktree `gitdir:` redirect.
-fn git_branch(cwd: &std::path::Path) -> Option<String> {
-    let dotgit = cwd.join(".git");
-    let git_dir = if dotgit.is_file() {
-        let redirect = std::fs::read_to_string(&dotgit).ok()?;
-        let path = redirect.trim().strip_prefix("gitdir: ")?.to_owned();
-        let path = std::path::PathBuf::from(path);
-        if path.is_absolute() {
-            path
-        } else {
-            cwd.join(path)
-        }
-    } else {
-        dotgit
-    };
-    let head = std::fs::read_to_string(git_dir.join("HEAD")).ok()?;
-    let head = head.trim();
-    match head.strip_prefix("ref: ") {
-        Some(reference) => Some(reference.rsplit('/').next()?.to_owned()),
-        None => Some(head.get(..8)?.to_owned()),
-    }
-}
 
 /// Abbreviate `$HOME` to `~` for display.
-fn display_path(path: &std::path::Path) -> String {
+pub(super) fn display_path(path: &std::path::Path) -> String {
     let s = path.display().to_string();
     match std::env::var("HOME") {
         Ok(home) if !home.is_empty() && s.starts_with(&home) => format!("~{}", &s[home.len()..]),
@@ -632,7 +574,7 @@ fn display_path(path: &std::path::Path) -> String {
     }
 }
 
-fn model_label(root: &Model, sub: &Model) -> String {
+pub(super) fn model_label(root: &Model, sub: &Model) -> String {
     if root.provider == sub.provider && root.id == sub.id {
         root.id.clone()
     } else {
@@ -716,11 +658,11 @@ impl Ui {
         }
     }
 
-    fn err(&self, msg: &impl std::fmt::Display) -> String {
+    pub(super) fn err(&self, msg: &impl std::fmt::Display) -> String {
         format!("{}error:{RESET} {msg}", &self.palette.error_fg)
     }
 
-    fn warn(&self, msg: &impl std::fmt::Display) -> String {
+    pub(super) fn warn(&self, msg: &impl std::fmt::Display) -> String {
         format!("{}{msg}{RESET}", &self.palette.warning_fg)
     }
 
@@ -737,2474 +679,166 @@ impl Ui {
         }
     }
 
-    fn draw(&mut self) -> std::io::Result<()> {
-        self.flush_pending_to_transcript();
 
-        let (chrome, chrome_cursor) = self.chrome_lines();
-        let transcript_height = self.term.height().saturating_sub(chrome.len()).max(1);
-        let live_blocks = self.current_live_transcript_blocks();
 
-        let mut specs = Vec::with_capacity(self.transcript_blocks.len() + live_blocks.len());
-        for block in &self.transcript_blocks {
-            specs.push(BlockSpec {
-                key: &block.key,
-                lines: &block.lines,
-                finalized: true,
-                max_height: None,
-            });
-        }
-        for block in &live_blocks {
-            specs.push(BlockSpec {
-                key: &block.key,
-                lines: &block.lines,
-                finalized: block.finalized,
-                max_height: block.max_height,
-            });
-        }
 
-        let frame = self
-            .transcript
-            .render(transcript_height, &specs);
-
-        let transcript_live_len = frame.live.len();
-        let mut live = frame.live;
-        live.extend(chrome);
-        let cursor = chrome_cursor.map(|mut cursor| {
-            cursor.line += transcript_live_len;
-            cursor
-        });
-        self.term.render(&frame.scrollback, &live, cursor)
-    }
-
-    fn flush_pending_to_transcript(&mut self) {
-        let pending = std::mem::take(&mut self.pending);
-        if pending.is_empty() {
-            return;
-        }
-        self.transcript_blocks.push(TranscriptBlock {
-            key: format!("tx:{}", self.next_transcript_block_id),
-            lines: pending,
-            finalized: true,
-            max_height: None,
-        });
-        self.next_transcript_block_id += 1;
-    }
-
-    fn clear_transcript(&mut self) {
-        self.transcript.reset();
-        self.transcript_blocks.clear();
-        self.next_transcript_block_id = 0;
-        self.pending.clear();
-        self.block.clear();
-        self.after_block.clear();
-        self.last_activity = false;
-    }
-
-    fn current_live_transcript_blocks(&self) -> Vec<TranscriptBlock> {
-        let mut blocks = Vec::new();
-
-        if self.running.is_some() {
-            let thinking = self.live_thinking_lines();
-            if !thinking.is_empty() {
-                blocks.push(TranscriptBlock {
-                    key: "live:thinking".to_owned(),
-                    lines: thinking,
-                    finalized: false,
-                    max_height: Some(LIVE_THINKING_MAX_HEIGHT),
-                });
-            }
-
-            if self.block_active {
-                blocks.push(TranscriptBlock {
-                    key: "live:repl-block".to_owned(),
-                    lines: render_repl_block(&self.block, Some(self.turn)),
-                    finalized: false,
-                    max_height: Some(CODE_PREVIEW_LINES),
-                });
-
-                if !self.after_block.is_empty() {
-                    blocks.push(TranscriptBlock {
-                        key: "live:after-block".to_owned(),
-                        lines: self.after_block.clone(),
-                        finalized: true,
-                        max_height: Some(OUTPUT_PREVIEW_LINES),
-                    });
-                }
-            }
-
-            let visible = self.stream[..first_block_start(&self.stream)].trim();
-            if !visible.is_empty() {
-                blocks.push(TranscriptBlock {
-                    key: "live:stream-prose".to_owned(),
-                    lines: self.assistant_card_lines(visible),
-                    finalized: false,
-                    max_height: Some(LIVE_PROSE_MAX_HEIGHT),
-                });
-            }
-
-            if let Some(block) = live_block_body(&self.stream) {
-                blocks.push(TranscriptBlock {
-                    key: "live:preview-repl".to_owned(),
-                    lines: render_repl_block(
-                        &self.repl_code_lines(0, block, self.code_limit()),
-                        None,
-                    ),
-                    finalized: false,
-                    max_height: Some(CODE_PREVIEW_LINES),
-                });
-            }
-        }
-
-        blocks
-    }
 
 
     /// Agent + usage segment for the chrome header: " PHI  1.2k  $0.01".
-    fn render_chrome_agent(&self) -> String {
-        let active = self.usage.total_tokens > 0;
-        let mut result = String::with_capacity(64);
-
-        let agent_str = format!("{} PHI", agent_symbol());
-        result.push_str(&format!("{}{agent_str}{RESET}", &self.palette.chrome_agent_fg));
-
-        if active {
-            let tokens = format_tokens(self.usage.total_tokens);
-            result.push_str(&format!(" {}{tokens}{RESET}", &self.palette.chrome_agent_fg));
-        }
-
-        if active && self.usage.cost.total > 0.0 {
-            result.push_str(&format!(
-                " {}{}{:.2}{RESET}",
-                &self.palette.chrome_cost_fg,
-                cost_symbol(),
-                self.usage.cost.total
-            ));
-        }
-
-        result
-    }
 
     /// Model + effort segment for the chrome header: "  glm-5.2 XHIGH".
-    fn render_chrome_model(&self) -> String {
-        let mut result = String::with_capacity(64);
 
-        let model_id = &self.root_lm.model().id;
-        let short_model = model_id.rsplit('/').next().unwrap_or(model_id);
-        result.push_str(&format!(
-            "{}{} {short_model}{RESET}",
-            &self.palette.chrome_model_fg,
-            model_symbol()
-        ));
-
-        if let Some(effort) = effort_label(self.root_lm.thinking(), self.term.width()) {
-            let thinking_fg = thinking_level_color(self.root_lm.thinking(), &self.palette);
-            result.push_str(&format!(" {}{effort}{RESET}", thinking_fg));
-        }
-
-        result
-    }
-
-    fn chrome_lines(&mut self) -> (Vec<String>, Option<LiveCursor>) {
-        let mut lines: Vec<String> = Vec::new();
-        let width = self.term.width().max(12);
-        let p = &self.palette;
-
-        if self.running.is_some() {
-            lines.push(format!(
-                "{CYAN}{}{RESET} {DIM}{} · turn {}{RESET}",
-                self.spinner.frame(),
-                self.status,
-                self.turn
-            ));
-        }
-
-        if self.branch_at.elapsed() > Duration::from_secs(5) {
-            self.branch = git_branch(&self.cwd);
-            self.branch_at = std::time::Instant::now();
-        }
-        let pwd = display_path(&self.cwd);
-
-        let framed = self.selector.is_some();
-        if framed {
-            let header_plain = "φ";
-            let header_fill = width
-                .saturating_sub(header_plain.chars().count() + 5)
-                .max(1);
-            lines.push(format!(
-                "{chrome_border}┌─ {BOLD}φ{RESET} {}┐{RESET}",
-                "─".repeat(header_fill),
-                chrome_border = &p.chrome_border,
-            ));
-        }
-
-        let cursor;
-        if let Some((_, widget)) = &self.selector {
-            let avail = self.term.height().saturating_sub(lines.len() + 2).max(1);
-            let (sel_lines, sel_cursor) = widget.render(width, avail);
-            let top = lines.len();
-            cursor = sel_cursor.map(|(line, col)| LiveCursor {
-                line: top + line,
-                col,
-            });
-            lines.extend(sel_lines);
-            let hint = if widget.searchable() {
-                "type to filter · up/down select · enter confirm · esc cancel"
-            } else {
-                "up/down select · enter confirm · esc cancel"
-            };
-            lines.push(format!("{muted_fg}{hint}{RESET}", muted_fg = &p.muted_fg));
-        } else {
-            let (editor_lines, (row, col)) = self.editor.render();
-            let max_visible = (self.term.height() * 3 / 10).max(5);
-            if row < self.editor_scroll {
-                self.editor_scroll = row;
-            } else if row + 1 > self.editor_scroll + max_visible {
-                self.editor_scroll = row + 1 - max_visible;
-            }
-            self.editor_scroll = self
-                .editor_scroll
-                .min(editor_lines.len().saturating_sub(max_visible));
-            let end = (self.editor_scroll + max_visible).min(editor_lines.len());
-
-            // Separator line with the same bg inversion as phi-mux's statusbar.
-            let sep_width = width;
-            let sep = "\u{2500}".repeat(sep_width);
-            lines.push(format!("{}{sep}{RESET}", &p.statusbar_bg));
-
-            // Forgecode-style header: all left-aligned.
-            //   PHI  dir  branch  model  effort
-            let current_dir = self
-                .cwd
-                .file_name()
-                .and_then(|name| name.to_str())
-                .map(String::from)
-                .unwrap_or_else(|| ".".to_string());
-            let mut header = self.render_chrome_agent();
-            header.push_str(&format!(
-                "  {}{} {current_dir}{RESET}",
-                &self.palette.chrome_dir_fg,
-                dir_symbol()
-            ));
-            if let Some(branch) = &self.branch
-                && branch != &current_dir
-            {
-                header.push_str(&format!(
-                    "  {}{} {branch}{RESET}",
-                    &self.palette.chrome_dir_fg,
-                    branch_symbol()
-                ));
-            }
-            header.push_str(&format!("  {}", self.render_chrome_model()));
-            lines.push(header);
-
-            // Editor prompt: chevron on row 0, 2-space indent on continuation.
-            let editor_top = lines.len();
-            let input_inner = width.saturating_sub(2).max(1);
-            let mut input_cursor = None;
-            let mut rendered_rows_before_cursor = 0usize;
-            for (i, line) in editor_lines[self.editor_scroll..end].iter().enumerate() {
-                let absolute_row = i + self.editor_scroll;
-                let content = if absolute_row == 0 {
-                    if line.is_empty() {
-                        format!("{}{}{RESET} ", &self.palette.chrome_dir_fg, success_symbol())
-                    } else {
-                        format!("{}{}{RESET} {line}", &self.palette.chrome_dir_fg, success_symbol())
-                    }
-                } else {
-                    format!("  {line}")
-                };
-                let avail_inner = if absolute_row == 0 { input_inner } else { width };
-                if absolute_row == row {
-                    let source_col = if absolute_row == 0 {
-                        if line.is_empty() { 2 } else { 2 + col }
-                    } else {
-                        2 + col
-                    };
-                    let (wrapped, (cursor_row, cursor_col)) =
-                        wrap_ansi_locate(&content, avail_inner, source_col);
-                    input_cursor = Some(LiveCursor {
-                        line: editor_top + rendered_rows_before_cursor + cursor_row,
-                        col: cursor_col,
-                    });
-                    rendered_rows_before_cursor += wrapped.len();
-                    for r in wrapped {
-                        lines.push(r);
-                    }
-                } else {
-                    let wrapped = wrap_ansi(&content, avail_inner);
-                    rendered_rows_before_cursor += wrapped.len();
-                    for r in wrapped {
-                        lines.push(r);
-                    }
-                }
-            }
-            if end < editor_lines.len() {
-                let below = editor_lines.len() - end;
-                lines.push(format!("{muted_fg}  \u{2193} {below} more{RESET}", muted_fg = &p.muted_fg));
-            }
-            cursor = input_cursor;
-
-            if let Some(text) = self.queued.first() {
-                let first = text.lines().next().unwrap_or("");
-                let more = if text.lines().count() > 1 { " \u{2026}" } else { "" };
-                let count = if self.queued.len() > 1 {
-                    format!(" \u{00d7}{}", self.queued.len())
-                } else {
-                    String::new()
-                };
-                lines.push(format!("{muted_fg}queued{count} > {first}{more}{RESET}", muted_fg = &p.muted_fg));
-            }
-
-            if let Some(popup) = &self.popup {
-                lines.extend(render_popup(popup));
-            }
-
-            let hints: &[&str] = if self.login.is_some() {
-                &[
-                    "finish login in the browser, or paste the redirect URL and press enter \u{00b7} esc cancels",
-                ]
-            } else if self.popup.is_some() {
-                &["tab complete \u{00b7} up/down select \u{00b7} enter accept \u{00b7} esc dismiss"]
-            } else if self.running.is_some() {
-                &["enter queue follow-up", "alt+up edit queued \u{00b7} esc cancel"]
-            } else {
-                &[]
-            };
-            for hint in hints {
-                lines.push(format!("{muted_fg}{hint}{RESET}", muted_fg = &p.muted_fg));
-            }
-        }
-
-
-        // Footer: only rendered in framed (selector) mode.  The non-framed
-        // REPL path puts all metadata in the forgecode-style header above.
-        let footer = if !framed {
-            String::new()
-        } else {
-            let left = if self.usage.total_tokens > 0 {
-                format!(
-                    "\u{2191}{} \u{2193}{} ${:.4}",
-                    format_tokens(self.usage.input),
-                    format_tokens(self.usage.output),
-                    self.usage.cost.total
-                )
-            } else {
-                String::new()
-            };
-            let mut right = format!(
-                "phi \u{00b7} {} \u{00b7} thinking:{}",
-                self.model_label,
-                self.root_lm.thinking().as_str()
-            );
-            right.push_str(" \u{00b7} ");
-            right.push_str(&pwd);
-            if let Some(branch) = &self.branch {
-                right.push_str(" \u{00b7} ");
-                right.push_str(branch);
-            }
-            match (left.is_empty(), right.is_empty()) {
-                (true, true) => String::new(),
-                (true, false) => right,
-                (false, true) => left,
-                (false, false) => format!("{left} \u{00b7} {right}"),
-            }
-        };
-        if framed {
-            let footer_fill = width.saturating_sub(footer.chars().count() + 5).max(1);
-            lines.push(format!(
-                "{chrome_border}\u{2514}\u{2500} {muted_fg}{footer}{RESET} {}\u{2518}{RESET}",
-                "\u{2500}".repeat(footer_fill),
-                chrome_border = &p.chrome_border,
-                muted_fg = &p.muted_fg,
-            ));
-        }
-        (lines, cursor)
-    }
 
     /// Popup key handling; pi-style: up/down select, tab applies, enter
     /// applies (and for command names falls through to submit), esc
     /// dismisses. Returns the action the caller should take.
-    fn handle_popup_key(&mut self, key: phi_tui::crossterm::event::KeyEvent) -> PopupOutcome {
-        let Some(popup) = &mut self.popup else {
-            return PopupOutcome::Pass;
-        };
-        match key.code {
-            KeyCode::Esc => {
-                self.popup = None;
-                PopupOutcome::Handled
-            }
-            KeyCode::Up | KeyCode::BackTab => {
-                popup.selected = popup
-                    .selected
-                    .checked_sub(1)
-                    .unwrap_or(popup.items.len() - 1);
-                PopupOutcome::Handled
-            }
-            KeyCode::Down => {
-                popup.selected = (popup.selected + 1) % popup.items.len();
-                PopupOutcome::Handled
-            }
-            KeyCode::Tab => {
-                self.apply_completion();
-                PopupOutcome::Handled
-            }
-            KeyCode::Enter if !key.modifiers.contains(KeyModifiers::ALT) => {
-                let kind = popup.kind;
-                self.apply_completion();
-                match kind {
-                    PopupKind::Command => PopupOutcome::Pass,
-                    PopupKind::Argument | PopupKind::File | PopupKind::Path => {
-                        PopupOutcome::Handled
-                    }
-                }
-            }
-            _ => PopupOutcome::Pass,
-        }
-    }
 
-    fn apply_completion(&mut self) {
-        let Some(popup) = self.popup.take() else {
-            return;
-        };
-        let item = &popup.items[popup.selected];
-        // Directory completions stay open for further completion (pi-style);
-        // file completions get a trailing space to end the token.
-        let is_dir = item.value.trim_end_matches('"').ends_with('/');
-        let replacement = match popup.kind {
-            PopupKind::Command => format!("/{} ", item.value),
-            PopupKind::Argument => item.value.clone(),
-            PopupKind::File if !is_dir => format!("{} ", item.value),
-            PopupKind::File | PopupKind::Path => item.value.clone(),
-        };
-        let kind = popup.kind;
-        self.editor.replace_prefix(&popup.prefix, &replacement);
-        if is_dir {
-            match kind {
-                PopupKind::File => self.refresh_popup(),
-                PopupKind::Path => self.open_path_popup(),
-                _ => {}
-            }
-        }
-    }
 
     /// Tab with no popup open: complete the path-like token at the cursor.
-    fn open_path_popup(&mut self) {
-        let before = self.editor.before_cursor().to_owned();
-        let prefix = extract_path_token(&before);
-        let items: Vec<Suggestion> = files::complete_path(&self.cwd, &prefix)
-            .into_iter()
-            .map(|(value, label)| Suggestion {
-                value,
-                label,
-                desc: String::new(),
-            })
-            .collect();
-        if !items.is_empty() {
-            self.popup = Some(Popup {
-                items,
-                selected: 0,
-                prefix,
-                kind: PopupKind::Path,
-            });
-        }
-    }
 
-    fn open_selector(&mut self, kind: SelectorKind, widget: Selector) {
-        self.popup = None;
-        self.selector = Some((kind, widget));
-    }
 
-    fn request_host_model_modal(&mut self, root: bool) -> bool {
-        let Some(host_modal_tx) = &self.host_modal_tx else {
-            return false;
-        };
-        let current = {
-            let m = if root {
-                self.root_lm.model()
-            } else {
-                self.sub_lm.model()
-            };
-            format!("{}/{}", m.provider, m.id)
-        };
-        let kind = HostModalKind::Model {
-            root,
-            current: current.clone(),
-        };
-        let (response_tx, response_rx) = oneshot::channel();
-        if host_modal_tx
-            .send(HostModalRequest {
-                kind: kind.clone(),
-                response_tx,
-            })
-            .is_err()
-        {
-            return false;
-        }
-        self.pending_host_modal = Some(PendingHostModal { kind, response_rx });
-        true
-    }
 
-    fn request_host_usage_modal(&mut self) -> bool {
-        let Some(host_modal_tx) = &self.host_modal_tx else {
-            return false;
-        };
-        let kind = HostModalKind::Usage;
-        let (response_tx, response_rx) = oneshot::channel();
-        if host_modal_tx
-            .send(HostModalRequest {
-                kind: kind.clone(),
-                response_tx,
-            })
-            .is_err()
-        {
-            return false;
-        }
-        self.pending_host_modal = Some(PendingHostModal { kind, response_rx });
-        true
-    }
 
-    fn open_usage_selector(&mut self) {
-        let report = load_usage_report();
-        let mut items = vec![SelectorItem::new(
-            "__usage_total__",
-            format!(
-                "entries {} · files {} · total {} tok · ${:.4}",
-                report.entries,
-                report.files_scanned,
-                format_tokens(report.totals.total_tokens()),
-                report.totals.total_cost
-            ),
-        )];
-        for (index, line) in usage_overlay_lines(&report).into_iter().enumerate() {
-            items.push(SelectorItem::new(format!("usage-{index}"), line));
-        }
-        let widget = Selector::new(format!("Usage · {} entries", report.entries), items, false);
-        self.open_selector(SelectorKind::Usage, widget);
-    }
 
     /// /model, /submodel, ctrl-l: full-width model selector (pi-style),
     /// preselected at the active model.
-    fn open_model_selector(&mut self, root: bool) {
-        if self.model_names.is_empty() {
-            return;
-        }
-        let current = {
-            let m = if root {
-                self.root_lm.model()
-            } else {
-                self.sub_lm.model()
-            };
-            format!("{}/{}", m.provider, m.id)
-        };
-        let items = self
-            .model_names
-            .iter()
-            .map(|name| {
-                let (provider, id) = name.split_once('/').unwrap_or(("", name));
-                let detail = self
-                    .registry
-                    .find(name)
-                    .map(|model| format!("[{provider}] {}", format_model_pricing(model)))
-                    .unwrap_or_else(|| format!("[{provider}]"));
-                SelectorItem::new(name.clone(), id.to_owned())
-                    .detail(detail)
-                    .current(*name == current)
-            })
-            .collect();
-        let title = if root {
-            "Switch Model"
-        } else {
-            "Switch Sub Model"
-        };
-        let mut widget = Selector::new(title, items, true);
-        widget.preselect(&current);
-        self.open_selector(SelectorKind::Model { root }, widget);
-    }
 
     /// Guard for session selectors: they rebuild env history, which would
     /// race an in-flight turn or login.
-    fn session_idle(&mut self) -> bool {
-        if self.running.is_some() || self.login.is_some() {
-            self.pending
-                .push(format!("{DIM}[wait for the current run to finish]{RESET}"));
-            return false;
-        }
-        true
-    }
 
     /// /resume: pick a past session of this directory.
-    fn open_resume_selector(&mut self) {
-        if !self.session_idle() {
-            return;
-        }
-        let current = self.store.path().to_owned();
-        let items: Vec<SelectorItem> = SessionStore::list(&self.cwd)
-            .into_iter()
-            .filter(|s| s.path != current)
-            .map(|s| {
-                SelectorItem::new(s.path.display().to_string(), single_line(&s.first_message))
-                    .detail(format!(
-                        "{} msgs · {}",
-                        s.message_count,
-                        session::age(s.modified)
-                    ))
-            })
-            .collect();
-        if items.is_empty() {
-            self.pending.push(format!(
-                "{DIM}[no saved sessions for this directory]{RESET}"
-            ));
-            return;
-        }
-        self.open_selector(
-            SelectorKind::Resume,
-            Selector::new("Resume Session", items, true),
-        );
-    }
 
     /// /fork: pick a prior user message (any branch) to fork into a new
     /// session; its text returns to the editor.
-    fn open_fork_selector(&mut self) {
-        if !self.session_idle() {
-            return;
-        }
-        let messages = self.store.user_messages();
-        if messages.is_empty() {
-            self.pending
-                .push(format!("{DIM}[no messages to fork from]{RESET}"));
-            return;
-        }
-        let total = messages.len();
-        let items = messages
-            .iter()
-            .enumerate()
-            .map(|(i, e)| {
-                SelectorItem::new(e.id.clone(), single_line(&e.text))
-                    .detail(format!("{}/{total}", i + 1))
-            })
-            .collect();
-        let last = messages.last().expect("non-empty").id.clone();
-        let mut widget = Selector::new("Fork from Message", items, false);
-        widget.preselect(&last);
-        self.open_selector(SelectorKind::Fork, widget);
-    }
 
     /// /tree (or esc esc): navigate the whole session tree.
-    fn open_tree_selector(&mut self) {
-        if !self.session_idle() {
-            return;
-        }
-        let leaf = self.store.leaf().map(str::to_owned);
-        let items: Vec<SelectorItem> = self
-            .store
-            .tree_rows()
-            .into_iter()
-            .map(|(depth, entry)| {
-                let marker = match entry.role {
-                    session::Role::User => "›",
-                    session::Role::Assistant => "·",
-                };
-                SelectorItem::new(
-                    entry.id.clone(),
-                    format!(
-                        "{}{marker} {}",
-                        "  ".repeat(depth),
-                        single_line(&entry.text)
-                    ),
-                )
-                .current(Some(entry.id.as_str()) == leaf.as_deref())
-            })
-            .collect();
-        if items.is_empty() {
-            self.pending
-                .push(format!("{DIM}[no entries in this session]{RESET}"));
-            return;
-        }
-        let mut widget = Selector::new("Session Tree", items, false);
-        if let Some(leaf) = &leaf {
-            widget.preselect(leaf);
-        }
-        self.open_selector(SelectorKind::Tree, widget);
-    }
 
     /// Route a key to the open selector; consumes every key until the
     /// selector closes.
-    fn handle_selector_key(
-        &mut self,
-        key: phi_tui::crossterm::event::KeyEvent,
-        cmd_tx: &mpsc::UnboundedSender<Cmd>,
-    ) {
-        let Some((_, widget)) = self.selector.as_mut() else {
-            return;
-        };
-        match widget.handle_key(key) {
-            SelectorOutcome::Pending => {}
-            SelectorOutcome::Cancelled => self.selector = None,
-            SelectorOutcome::Confirmed(index) => {
-                let (kind, widget) = self.selector.take().expect("selector open");
-                let value = widget.items()[index].value.clone();
-                match kind {
-                    SelectorKind::Model { root } => self.switch_model(&value, root),
-                    SelectorKind::Usage => {}
-                    SelectorKind::Resume => self.resume_session(&value, cmd_tx),
-                    SelectorKind::Fork => self.fork_from(&value, cmd_tx),
-                    SelectorKind::Tree => self.navigate_tree(&value, cmd_tx),
-                }
-            }
-        }
-    }
 
-    fn resume_session(&mut self, path: &str, cmd_tx: &mpsc::UnboundedSender<Cmd>) {
-        match SessionStore::load(std::path::Path::new(path)) {
-            Ok(store) => {
-                self.store = store;
-                self.pending.push(String::new());
-                self.pending
-                    .push(format!("{DIM}[resumed session {}]{RESET}", self.store.id()));
-                self.replay_branch();
-                self.restore_rlm(cmd_tx);
-            }
-            Err(e) => self.pending.push(self.err(&e)),
-        }
-    }
 
-    fn fork_from(&mut self, entry_id: &str, cmd_tx: &mpsc::UnboundedSender<Cmd>) {
-        let text = self
-            .store
-            .entry(entry_id)
-            .map(|e| e.text.clone())
-            .unwrap_or_default();
-        match self.store.fork(entry_id) {
-            Ok(store) => {
-                self.store = store;
-                self.pending.push(String::new());
-                self.pending
-                    .push(format!("{DIM}[forked to new session]{RESET}"));
-                self.replay_branch();
-                self.restore_rlm(cmd_tx);
-                self.editor.set_text(&text);
-            }
-            Err(e) => self.pending.push(self.err(&e)),
-        }
-    }
 
     /// Move the active branch to `entry_id` (pi's navigateTree): selecting a
     /// user message rewinds to just before it and returns its text to the
     /// editor; anything else becomes the new branch tip.
-    fn navigate_tree(&mut self, entry_id: &str, cmd_tx: &mpsc::UnboundedSender<Cmd>) {
-        if self.store.leaf() == Some(entry_id) {
-            self.pending
-                .push(format!("{DIM}[already at this point]{RESET}"));
-            return;
-        }
-        let Some(entry) = self.store.entry(entry_id) else {
-            return;
-        };
-        let (leaf, editor_text) = match entry.role {
-            session::Role::User => (entry.parent_id.clone(), Some(entry.text.clone())),
-            session::Role::Assistant => (Some(entry.id.clone()), None),
-        };
-        let _ = self.store.set_leaf(leaf);
-        self.pending.push(String::new());
-        self.pending
-            .push(format!("{DIM}[navigated to selected point]{RESET}"));
-        self.replay_branch();
-        self.restore_rlm(cmd_tx);
-        if let Some(text) = editor_text
-            && self.editor.text().trim().is_empty()
-        {
-            self.editor.set_text(&text);
-        }
-    }
 
     /// Rebuild the REPL env history from the active branch.
-    fn restore_rlm(&mut self, cmd_tx: &mpsc::UnboundedSender<Cmd>) {
-        let (exchanges, pending) = self.store.branch_restore();
-        let _ = cmd_tx.send(Cmd::Restore { exchanges, pending });
-    }
 
     /// Re-render the active branch into scrollback, mirroring how prompts
     /// and responses looked live. The screen (and its scrollback) is wiped
     /// first so the replayed transcript replaces the old one instead of
     /// stacking below it.
-    fn replay_branch(&mut self) {
-        self.clear_transcript();
-        let _ = self.term.clear_all();
-        enum ReplayItem {
-            Message(session::Role, String),
-            Repl {
-                code: String,
-                stdout: String,
-                stderr: String,
-                duration_secs: f64,
-                tools: Vec<session::ToolCall>,
-                subcalls: Vec<session::SubcallRecord>,
-            },
-        }
-        let items: Vec<ReplayItem> = self
-            .store
-            .branch_items()
-            .into_iter()
-            .map(|item| match item {
-                session::BranchItem::Message(entry) => {
-                    let text = match entry.role {
-                        session::Role::Assistant => entry
-                            .display_text
-                            .clone()
-                            .unwrap_or_else(|| entry.text.clone()),
-                        session::Role::User => entry.text.clone(),
-                    };
-                    ReplayItem::Message(entry.role, text)
-                }
-                session::BranchItem::Repl(repl) => ReplayItem::Repl {
-                    code: repl.code.clone(),
-                    stdout: repl.stdout.clone(),
-                    stderr: repl.stderr.clone(),
-                    duration_secs: repl.duration_secs,
-                    tools: repl.tools.clone(),
-                    subcalls: repl.subcalls.clone(),
-                },
-            })
-            .collect();
-        for item in items {
-            match item {
-                ReplayItem::Message(role, text) => match role {
-                    session::Role::User => self.push_user_message(&text),
-                    session::Role::Assistant => self.push_assistant_message(&text),
-                },
-                ReplayItem::Repl {
-                    code,
-                    stdout,
-                    stderr,
-                    duration_secs,
-                    tools,
-                    subcalls,
-                } => {
-                    self.push_repl_replay(&code, &stdout, &stderr, duration_secs, &tools, &subcalls)
-                }
-            }
-        }
-        // A previous run died mid-turn (exchange_start without its
-        // exchange_end): say so instead of silently presenting a transcript
-        // that ends earlier than the user remembers, then durably close the
-        // exchange so the notice appears once.
-        if self.store.interrupted_exchange().is_some() {
-            self.pending.push(String::new());
-            self.pending.push(format!(
-                "{}previous run was interrupted mid-turn; completed work up to the last checkpoint is shown above{RESET}",
-                &self.palette.warning_fg
-            ));
-            self.last_activity = false;
-            let _ = self.store.acknowledge_interrupted();
-        }
-    }
 
-    fn push_repl_replay(
-        &mut self,
-        code: &str,
-        stdout: &str,
-        stderr: &str,
-        _duration_secs: f64,
-        tools: &[session::ToolCall],
-        subcalls: &[session::SubcallRecord],
-    ) {
-        self.begin_block();
-        self.push_repl_block(0, code, self.code_limit());
-        // Replay the persisted tool calls and sub-LLM calls nested in the
-        // block, mirroring the live ToolStart/ToolEnd rendering so a
-        // resumed session looks like the one the user actually saw.
-        for tool in tools {
-            let depth = tool.depth + 1;
-            match &tool.error {
-                Some(error) => {
-                    self.push_tool_result(
-                        depth,
-                        &tool.name,
-                        &tool.args,
-                        error,
-                        self.output_limit(),
-                        None,
-                        true,
-                    );
-                }
-                None => {
-                    self.push_tool_result(
-                        depth,
-                        &tool.name,
-                        &tool.args,
-                        &tool.result,
-                        self.output_limit(),
-                        tool_preview_lang(&tool.name, &tool.args),
-                        false,
-                    );
-                }
-            }
-        }
-        for subcall in subcalls {
-            let depth = subcall.depth;
-            let label = subcall_title(&subcall.model, &subcall.prompt_preview, &self.palette);
-            let content = subcall
-                .error
-                .as_deref()
-                .or(subcall.result_preview.as_deref());
-            let rows = self.subcall_result_rows(
-                depth,
-                &label,
-                content,
-                self.output_limit(),
-                subcall.error.is_some(),
-                None,
-            );
-            for row in rows {
-                self.push_row(row);
-            }
-            self.last_activity = true;
-        }
-        self.last_activity = true;
-        let filtered = strip_tool_echoes(stdout, tools, 0);
-        self.push_preview(0, &filtered, self.output_limit());
-        self.push_preview(0, stderr, self.output_limit());
-        self.commit_block();
-    }
 
     /// Render a persisted assistant message the way it looked live: optional
     /// provider thinking, prose as markdown, and each ```repl block shown as a
     /// committed repl container (code preview over the repl background)
     /// rather than raw fenced text.
-    fn push_assistant_message(&mut self, text: &str) {
-        let (thinking, text) = split_assistant_display_text(text);
-        if let Some(thinking) = thinking
-            && self.expand_thinking
-        {
-            self.push_dot(0, "thinking".to_owned());
-            self.push_preview(0, thinking, usize::MAX);
-        }
-
-        let blocks = find_code_blocks(text);
-        let segments = split_prose(text);
-        for (i, segment) in segments.iter().enumerate() {
-            self.push_prose(segment);
-            if let Some(code) = blocks.get(i) {
-                self.begin_block();
-                self.push_repl_block(0, code, self.code_limit());
-                self.commit_block();
-            }
-        }
-    }
 
     /// shift+tab: cycle the root model's thinking level (footer shows it).
-    fn cycle_thinking(&mut self) {
-        let current = self.root_lm.thinking();
-        let idx = ThinkingLevel::ALL
-            .iter()
-            .position(|l| *l == current)
-            .unwrap_or(0);
-        let next = ThinkingLevel::ALL[(idx + 1) % ThinkingLevel::ALL.len()];
-        self.root_lm.set_thinking(next);
-    }
 
-    fn replay_transcript_if_idle(&mut self) {
-        if self.running.is_none() && !self.block_active {
-            self.replay_branch();
-        }
-    }
 
     /// ctrl+t: collapse or expand provider thinking throughout the transcript.
-    fn toggle_thinking(&mut self) {
-        self.expand_thinking = !self.expand_thinking;
-        self.replay_transcript_if_idle();
-    }
 
-    fn toggle_tools(&mut self) {
-        self.expand_tools = !self.expand_tools;
-        self.replay_transcript_if_idle();
-        self.pending.push(format!(
-            "{DIM}[tool output {} throughout transcript]{RESET}",
-            if self.expand_tools {
-                "expanded"
-            } else {
-                "collapsed"
-            }
-        ));
-    }
 
     /// ctrl-p / ctrl-shift-p: cycle the root model through the registry.
-    fn cycle_model(&mut self, back: bool) {
-        if self.model_names.is_empty() {
-            return;
-        }
-        let current = {
-            let m = self.root_lm.model();
-            format!("{}/{}", m.provider, m.id)
-        };
-        let len = self.model_names.len();
-        let next = match self.model_names.iter().position(|n| *n == current) {
-            Some(i) if back => (i + len - 1) % len,
-            Some(i) => (i + 1) % len,
-            None => 0,
-        };
-        let name = self.model_names[next].clone();
-        self.switch_model(&name, true);
-    }
 
     /// Recompute suggestions from the editor; called after the text changes.
     /// Slash commands complete on the first line; `@` file tokens complete
     /// anywhere (pi-style).
-    fn refresh_popup(&mut self) {
-        self.popup = None;
-        if self.login.is_some() {
-            return;
-        }
-        let before = self.editor.before_cursor().to_owned();
-        if self.editor.cursor_row() == 0
-            && let Some(popup) = complete(
-                &before,
-                &self.model_names,
-                &self.runtime.list_extension_commands(),
-            )
-        {
-            self.popup = Some(popup);
-            return;
-        }
-        let Some(token) = extract_at_token(&before) else {
-            return;
-        };
-        let query = token.trim_start_matches('@').trim_start_matches('"');
-        let items: Vec<Suggestion> = self
-            .files
-            .search(query)
-            .into_iter()
-            .map(|c| Suggestion {
-                value: c.value,
-                label: c.label,
-                desc: c.desc,
-            })
-            .collect();
-        if !items.is_empty() {
-            self.popup = Some(Popup {
-                items,
-                selected: 0,
-                prefix: token,
-                kind: PopupKind::File,
-            });
-        }
-    }
 
     /// Move queued follow-ups back into the editor (above any draft text).
-    fn restore_queued(&mut self) {
-        if self.queued.is_empty() {
-            return;
-        }
-        let mut text = self.queued.join("\n");
-        let draft = self.editor.text();
-        if !draft.trim().is_empty() {
-            text.push('\n');
-            text.push_str(&draft);
-        }
-        self.queued.clear();
-        self.editor.set_text(&text);
-    }
 
     /// Returns true when the app should quit.
-    async fn handle_input(&mut self, event: Event, cmd_tx: &mpsc::UnboundedSender<Cmd>) -> bool {
-        match event {
-            Event::Key(key) if key.kind != KeyEventKind::Release => {
-                if self.selector.is_some() {
-                    self.handle_selector_key(key, cmd_tx);
-                    return false;
-                }
-                if self.login.is_none() && self.handle_popup_key(key) == PopupOutcome::Handled {
-                    return false;
-                }
-                if key.code == KeyCode::Esc {
-                    // Idle esc on an empty editor: a second esc within 500ms
-                    // opens the session tree (pi's double-escape).
-                    if self.running.is_none()
-                        && self.login.is_none()
-                        && self.editor.text().trim().is_empty()
-                    {
-                        let now = std::time::Instant::now();
-                        if self
-                            .last_esc
-                            .replace(now)
-                            .is_some_and(|t| now.duration_since(t) < Duration::from_millis(500))
-                        {
-                            self.last_esc = None;
-                            self.open_tree_selector();
-                        }
-                        return false;
-                    }
-                    if self.running.is_some() {
-                        self.restore_queued();
-                    }
-                    self.cancel_run();
-                    self.cancel_login();
-                    return false;
-                }
-                if key.code == KeyCode::Up && key.modifiers.contains(KeyModifiers::ALT) {
-                    self.restore_queued();
-                    return false;
-                }
-                let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-                if key.code == KeyCode::Char('c') && ctrl {
-                    let now = std::time::Instant::now();
-                    if self
-                        .last_ctrl_c
-                        .replace(now)
-                        .is_some_and(|t| now.duration_since(t) < Duration::from_millis(500))
-                    {
-                        return true;
-                    }
-                    if self.running.is_some() {
-                        self.cancel_run();
-                    } else if self.login.is_some() {
-                        self.cancel_login();
-                    } else {
-                        self.editor.clear();
-                        self.popup = None;
-                    }
-                    return false;
-                }
-                if let KeyCode::Char('p' | 'P') = key.code
-                    && ctrl
-                {
-                    self.cycle_model(key.modifiers.contains(KeyModifiers::SHIFT));
-                    return false;
-                }
-                if key.code == KeyCode::Char('l') && ctrl {
-                    if !self.request_host_model_modal(true) {
-                        self.open_model_selector(true);
-                    }
-                    return false;
-                }
-                if key.code == KeyCode::Char('t') && ctrl {
-                    self.toggle_thinking();
-                    return false;
-                }
-                if key.code == KeyCode::Char('g') && ctrl {
-                    self.external_edit = true;
-                    return false;
-                }
-                if key.code == KeyCode::Tab && self.login.is_none() {
-                    // handle_popup_key consumed Tab if a popup was open;
-                    // otherwise Tab force-triggers path completion (pi-style).
-                    self.open_path_popup();
-                    return false;
-                }
-                if key.code == KeyCode::BackTab {
-                    self.cycle_thinking();
-                    return false;
-                }
-                if key.code == KeyCode::Char('o') && ctrl {
-                    self.toggle_tools();
-                    return false;
-                }
-                if key.code == KeyCode::Enter
-                    && !key.modifiers.contains(KeyModifiers::ALT)
-                    && let Some(login) = &self.login
-                {
-                    let code = self.editor.text();
-                    if !code.trim().is_empty() {
-                        let _ = login.code_tx.send(code.trim().to_owned());
-                        self.editor.clear();
-                        self.pending.push(format!("{DIM}[code submitted]{RESET}"));
-                    }
-                    return false;
-                }
-                let before = self.editor.text();
-                match self.editor.handle_key(key) {
-                    EditorAction::Submit(text) => return self.submit(&text, cmd_tx),
-                    EditorAction::Quit => return true,
-                    EditorAction::Cancel | EditorAction::None => {}
-                }
-                if self.editor.text() != before {
-                    self.refresh_popup();
-                }
-            }
-            Event::Paste(text) => {
-                self.editor.insert_paste(&text);
-                self.refresh_popup();
-            }
-            Event::Resize(width, height) => self.term.resize(width, height),
-            _ => {}
-        }
-        false
-    }
 
-    fn cancel_run(&mut self) {
-        if let Some(cancel) = &self.running {
-            cancel.cancel();
-            self.status = "cancelling...".to_owned();
-        }
-    }
 
-    fn cancel_login(&mut self) {
-        if let Some(login) = &self.login {
-            login.cancel.cancel();
-        }
-    }
 
     /// Returns true when the app should quit.
-    fn submit(&mut self, text: &str, cmd_tx: &mpsc::UnboundedSender<Cmd>) -> bool {
-        let trimmed = text.trim();
-        match trimmed {
-            "/quit" | "/exit" => return true,
-            "/help" => {
-                for spec in COMMANDS {
-                    let usage = format!("/{} {}", spec.name, spec.args);
-                    self.pending
-                        .push(format!("{DIM}{:<20}{}{RESET}", usage.trim_end(), spec.desc));
-                }
-                self.pending.push(format!(
-                    "{DIM}!cmd                run bash(cmd) in the REPL; the model sees it next turn{RESET}"
-                ));
-                self.pending.push(format!(
-                    "{DIM}!!cmd               run bash(cmd) without showing the model{RESET}"
-                ));
-                self.pending.push(format!(
-                    "{DIM}keys: enter send (queues mid-run) · shift+enter newline · tab complete · up/down history{RESET}"
-                ));
-                self.pending.push(format!(
-                    "{DIM}      ctrl-y yank · ctrl-_ undo · ctrl-p cycle model · ctrl-l models · shift+tab thinking level{RESET}"
-                ));
-                self.pending.push(format!(
-                    "{DIM}      ctrl-t show/hide thinking · ctrl-o expand tool output · ctrl-g $EDITOR · ctrl-z suspend{RESET}"
-                ));
-                self.pending
-                    .push(format!("{DIM}      esc cancel · ctrl-c ctrl-c quit{RESET}"));
-                self.pending.push(format!(
-                    "{DIM}      esc esc session tree (empty editor){RESET}"
-                ));
-            }
-            "/new" => {
-                let _ = cmd_tx.send(Cmd::Reset);
-                self.clear_transcript();
-                let _ = self.term.clear_all();
-                match SessionStore::new(&self.cwd) {
-                    Ok(store) => self.store = store,
-                    Err(e) => self.pending.push(self.err(&e)),
-                }
-                self.pending.push(format!("{DIM}[session reset]{RESET}"));
-            }
-            "/resume" => self.open_resume_selector(),
-            "/tree" => self.open_tree_selector(),
-            "/fork" => self.open_fork_selector(),
-            "/usage" => {
-                if !self.request_host_usage_modal() {
-                    self.open_usage_selector();
-                }
-            }
-            _ if trimmed == "/model" || trimmed.starts_with("/model ") => {
-                let query = trimmed.strip_prefix("/model").unwrap().trim();
-                if query.is_empty() {
-                    if !self.request_host_model_modal(true) {
-                        self.open_model_selector(true);
-                    }
-                } else {
-                    self.switch_model(query, true);
-                }
-            }
-            _ if trimmed == "/submodel" || trimmed.starts_with("/submodel ") => {
-                let query = trimmed.strip_prefix("/submodel").unwrap().trim();
-                if query.is_empty() {
-                    if !self.request_host_model_modal(false) {
-                        self.open_model_selector(false);
-                    }
-                } else {
-                    self.switch_model(query, false);
-                }
-            }
-            _ if trimmed == "/login" || trimmed.starts_with("/login ") => {
-                let provider = trimmed.strip_prefix("/login").unwrap().trim().to_owned();
-                self.start_login(&provider);
-            }
-            _ if trimmed == "/logout" || trimmed.starts_with("/logout ") => {
-                let provider = trimmed.strip_prefix("/logout").unwrap().trim();
-                let provider = if provider.is_empty() {
-                    self.root_lm.model().provider
-                } else {
-                    provider.to_owned()
-                };
-                match self.storage.logout(&provider) {
-                    Ok(()) => self
-                        .pending
-                        .push(format!("{DIM}[logged out of {provider}]{RESET}")),
-                    Err(e) => self.pending.push(self.err(&e)),
-                }
-            }
-            _ if trimmed.starts_with('!') && trimmed.len() > 1 => {
-                // Shell escapes queue mid-run like prompts so they execute
-                // against the REPL in submission order.
-                if self.running.is_some() {
-                    self.queued.push(trimmed.to_owned());
-                } else {
-                    self.send_shell(trimmed, cmd_tx);
-                }
-            }
-            // Extension slash commands: dispatch to the registered handler
-            // via the runtime (e.g. /recall, /capture, /explore from
-            // builtin.memory). Anything that isn't a built-in or shell
-            // escape and starts with '/' lands here.
-            _ if trimmed.starts_with('/') => {
-                let (cmd_name, args) = match trimmed.split_once(' ') {
-                    Some((name, rest)) => (name, rest),
-                    None => (trimmed, ""),
-                };
-                // Normalize a leading run of slashes (e.g. `//memories`) down
-                // to a single slash so the command is looked up by the name
-                // it was registered with.
-                let cmd_name = {
-                    let bare = cmd_name.trim_start_matches('/');
-                    format!("/{bare}")
-                };
-                let args = args.to_owned();
-                let runtime = Arc::clone(&self.runtime);
-                let result = tokio::task::block_in_place(|| {
-                    let rt = runtime;
-                    let cn = cmd_name.clone();
-                    let ar = args.clone();
-                    tokio::runtime::Handle::current()
-                        .block_on(async move { rt.invoke_command(&cn, &ar).await })
-                });
-                match result {
-                    Ok(Some(output)) => {
-                        if let Some(msg) = output.message {
-                            self.pending.push(String::new());
-                            self.pending.push(msg);
-                        }
-                    }
-                    Ok(None) => {
-                        self.pending
-                            .push(self.warn(&format!("unknown command: {cmd_name}")));
-                    }
-                    Err(e) => {
-                        self.pending.push(self.err(&e));
-                    }
-                }
-            }
-            prompt => {
-                // Plain prompts submitted mid-run queue as follow-ups (slash
-                // commands above run immediately).
-                if self.running.is_some() {
-                    self.queued.push(prompt.to_owned());
-                } else {
-                    self.send_prompt(prompt, cmd_tx);
-                }
-            }
-        }
-        false
-    }
 
     /// `!cmd` runs bash(cmd) in the session REPL and replays it to the model
     /// as a repl turn; `!!cmd` runs the same way but stays out of context.
-    fn send_shell(&mut self, escape: &str, cmd_tx: &mpsc::UnboundedSender<Cmd>) {
-        let (record, cmd) = match escape.strip_prefix("!!") {
-            Some(rest) => (false, rest.trim()),
-            None => (true, escape[1..].trim()),
-        };
-        if cmd.is_empty() {
-            return;
-        }
-        let code = format!("print(bash({}))", python_quote(cmd));
-        if record {
-            self.begin_block();
-            self.push_repl_block(0, &code, self.code_limit());
-        } else {
-            self.pending.push(String::new());
-            self.pending
-                .push(format!("{tool}${RESET} {DIM}{cmd}{RESET}", tool = &self.palette.tool_accent));
-            self.last_activity = false;
-        }
-        let _ = cmd_tx.send(Cmd::Shell { code, record });
-    }
 
-    fn send_prompt(&mut self, prompt: &str, cmd_tx: &mpsc::UnboundedSender<Cmd>) {
-        self.push_user_message(prompt);
-        if let Err(e) = self.store.append(session::Role::User, prompt) {
-            self.pending
-                .push(format!("{}session not saved:{RESET} {e}", &self.palette.warning_fg));
-        }
-        // Durable turn boundary: an exchange_start without its exchange_end
-        // is how a crash mid-turn stays detectable after restart.
-        let _ = self.store.begin_exchange();
-        let cancel = CancellationToken::new();
-        self.running = Some(cancel.clone());
-        self.turn = 0;
-        self.stream.clear();
-        self.thinking.clear();
-        self.thinking_log.clear();
-        self.status = "thinking...".to_owned();
-        let _ = cmd_tx.send(Cmd::Prompt {
-            text: prompt.to_owned(),
-            cancel,
-        });
-    }
 
-    fn switch_model(&mut self, query: &str, root: bool) {
-        let Some(model) = self.registry.find(query).cloned() else {
-            self.pending.push(self.err(
-                &format!("unknown model '{query}' (tab after /model lists models)")
-            ));
-            return;
-        };
-        if !self.registry.is_supported(&model) {
-            self.pending.push(self.err(
-                &format!("model '{}/{}' is not supported", model.provider, model.id)
-            ));
-            return;
-        }
-        let (target, which) = if root {
-            (&self.root_lm, "model")
-        } else {
-            (&self.sub_lm, "sub model")
-        };
-        target.set_model(model.clone());
-        self.model_label = model_label(&self.root_lm.model(), &self.sub_lm.model());
-        self.pending.push(format!(
-            "{DIM}[{which} → {}/{}]{RESET}",
-            model.provider, model.id
-        ));
-        self.warn_if_missing_credentials(model.provider);
-    }
 
     /// Credential resolution is async; surface a warning through the login
     /// channel instead of blocking the UI.
-    fn warn_if_missing_credentials(&self, provider: String) {
-        let storage = self.storage.clone();
-        let tx = self.login_tx.clone();
-        tokio::spawn(async move {
-            if !matches!(storage.resolve(&provider).await, Ok(Some(_))) {
-                let _ = tx.send(LoginMsg::Info(format!(
-                    "no credentials for '{provider}' — type /login {provider}"
-                )));
-            }
-        });
-    }
 
-    fn start_login(&mut self, provider: &str) {
-        if self.login.is_some() {
-            self.pending
-                .push(format!("{DIM}[a login is already in progress]{RESET}"));
-            return;
-        }
-        let name = if provider.is_empty() {
-            self.root_lm.model().provider
-        } else {
-            provider.to_owned()
-        };
-        let Some(provider) = OAuthProviderId::parse(&name) else {
-            self.pending.push(self.err(
-                &format!("unknown provider '{name}' (expected: anthropic, openai)")
-            ));
-            return;
-        };
-        let (code_tx, code_rx) = mpsc::unbounded_channel();
-        let cancel = CancellationToken::new();
-        self.login = Some(LoginState {
-            code_tx,
-            cancel: cancel.clone(),
-        });
-        let storage = self.storage.clone();
-        let msg_tx = self.login_tx.clone();
-        tokio::spawn(async move {
-            let callbacks = TuiLoginCallbacks {
-                msg_tx: msg_tx.clone(),
-                code_rx: tokio::sync::Mutex::new(code_rx),
-            };
-            let result = storage
-                .login(provider, LoginMethod::Browser, &callbacks, &cancel)
-                .await;
-            let _ = msg_tx.send(LoginMsg::Done {
-                provider: provider.storage_key(),
-                result: result.map_err(|e| e.to_string()),
-            });
-        });
-    }
 
-    fn handle_login_msg(&mut self, msg: LoginMsg) {
-        match msg {
-            LoginMsg::Info(text) => {
-                for line in text.lines() {
-                    self.pending.push(format!("{DIM}{line}{RESET}"));
-                }
-            }
-            LoginMsg::Done { provider, result } => {
-                self.login = None;
-                match result {
-                    Ok(()) => self
-                        .pending
-                        .push(format!("{BOLD}logged in to {provider}{RESET}")),
-                    Err(e) if e.to_lowercase().contains("cancel") => {
-                        self.pending.push(format!("{DIM}[login cancelled]{RESET}"))
-                    }
-                    Err(e) => self
-                        .pending
-                        .push(format!("{}login failed:{RESET} {e}", &self.palette.error_fg)),
-                }
-            }
-        }
-    }
 
-    fn code_limit(&self) -> usize {
-        if self.expand_tools {
-            usize::MAX
-        } else {
-            CODE_PREVIEW_LINES
-        }
-    }
 
-    fn output_limit(&self) -> usize {
-        if self.expand_tools {
-            usize::MAX
-        } else {
-            OUTPUT_PREVIEW_LINES
-        }
-    }
 
-    fn panel_width(&self) -> usize {
-        self.term.width().max(1)
-    }
 
     /// Display columns available to rows inside the outer `repl` panel.
-    fn repl_body_width(&self) -> usize {
-        self.panel_width().saturating_sub(4).max(4)
-    }
 
     /// Display columns available to a flat row's result body at `depth`: the
     /// repl body minus the result-gutter width (`result_prefix_width` =
     /// `indent_width(depth) + 2`). Body content is wrapped to this so each
     /// indented result line fits within the repl body.
-    fn card_body_width(&self, depth: usize) -> usize {
-        self.repl_body_width()
-            .saturating_sub(result_prefix_width(depth))
-            .max(1)
-    }
 
     /// Assistant prose: a flat `Assistant` header + plain markdown body. No
     /// box, no result indent — prose is the model's primary output, not nested
     /// secondary content.
-    fn assistant_card_lines(&self, text: &str) -> Vec<String> {
-        let rendered = render_markdown(text, self.markdown_width(), &self.palette.markdown);
-        let mut out = vec![forge_title(0, None, "Assistant")];
-        for line in rendered {
-            out.push(if line.is_empty() {
-                String::new()
-            } else {
-                format!("{fg}{line}{RESET}", fg = &self.palette.assistant_fg)
-            });
-        }
-        out
-    }
 
     /// User echo: a flat `● You` header + plain body.
-    fn user_card_lines(&self, text: &str) -> Vec<String> {
-        let rendered = render_markdown(text, self.markdown_width(), &self.palette.markdown);
-        let mut out = vec![forge_title(0, None, "You")];
-        for line in rendered {
-            out.push(if line.is_empty() {
-                String::new()
-            } else {
-                format!("{fg}{line}{RESET}", fg = &self.palette.user_fg)
-            });
-        }
-        out
-    }
 
     /// Live/scrollback activity rows rendered as a flat `●`-titled unit
     /// nested under the repl block.
-    fn tool_lines(&self, depth: usize, title: &str, body: &str, max: usize) -> Vec<String> {
-        let mut rows = Vec::new();
-        let trimmed = body.trim_end();
-        if !trimmed.is_empty() {
-            let output_rows: Vec<String> = trimmed
-                .lines()
-                .flat_map(|line| wrap_ansi(line, self.card_body_width(depth)))
-                .collect();
-            let shown = output_rows.len().min(max);
-            for row in &output_rows[..shown] {
-                rows.push(format!("{DIM}{row}{RESET}"));
-            }
-            if output_rows.len() > max {
-                rows.push(format!(
-                    "{DIM}… ({} more lines){RESET}",
-                    output_rows.len() - max
-                ));
-            }
-        }
 
-        render_flat(None, title, depth, &rows)
-    }
 
-    fn repl_code_lines(&self, depth: usize, body: &str, max: usize) -> Vec<String> {
-        let trimmed = body.trim_end();
-        let mut rows = Vec::new();
-        if !trimmed.is_empty() {
-            rows = highlight_code(trimmed, Some("repl"), &self.palette.markdown)
-                .into_iter()
-                .flat_map(|line| wrap_ansi(&line, self.card_body_width(depth)))
-                .collect();
-            if rows.len() > max {
-                let hidden = rows.len() - max;
-                rows.truncate(max);
-                rows.push(format!("{DIM}… ({hidden} more lines){RESET}"));
-            }
-        }
-        let prefix = result_prefix(depth);
-        let blank = indent(depth);
-        rows.into_iter()
-            .map(|line| {
-                if line.is_empty() {
-                    blank.clone()
-                } else {
-                    format!("{prefix}{line}")
-                }
-            })
-            .collect()
-    }
 
-    fn live_thinking_lines(&self) -> Vec<String> {
-        if self.thinking.trim().is_empty() {
-            return Vec::new();
-        }
-        if self.expand_thinking {
-            self.tool_lines(
-                0,
-                &format!("{DIM}thinking{RESET}"),
-                &self.thinking,
-                usize::MAX,
-            )
-        } else {
-            Vec::new()
-        }
-    }
-
-    fn flush_thinking(&mut self) {
-        let thinking = std::mem::take(&mut self.thinking);
-        if thinking.trim().is_empty() {
-            return;
-        }
-        if self.expand_thinking {
-            self.push_dot(0, "thinking".to_owned());
-            self.push_preview(0, &thinking, usize::MAX);
-        }
-    }
 
     /// In-flight activity row: a single flat line prefixed by the nesting
     /// gutter, carrying the animated spinner + label (no `●` — the spinner is
     /// the live indicator; `●` is reserved for committed headers).
-    fn status_rows(&self, depth: usize, text: &str) -> Vec<String> {
-        vec![format!("{}{text}", indent(depth))]
-    }
 
-    fn push_status(&mut self, depth: usize, text: String) -> Option<(usize, usize)> {
-        if depth == 0 && !self.last_activity && !self.block_active {
-            self.pending.push(String::new());
-        }
-        let rows = self.status_rows(depth, &text);
-        let start = if self.block_active {
-            Some(self.block.len())
-        } else {
-            None
-        };
-        let len = rows.len();
-        for row in rows {
-            self.push_row(row);
-        }
-        self.last_activity = true;
-        start.map(|start| (start, len))
-    }
 
-    fn shift_open_row_starts(&mut self, after: usize, delta: isize) {
-        if delta == 0 {
-            return;
-        }
-        for row in self.open_tool_rows.values_mut() {
-            if row.start >= after {
-                row.start = ((row.start as isize) + delta) as usize;
-            }
-        }
-        for row in self.open_subcall_rows.iter_mut() {
-            if row.start >= after {
-                row.start = ((row.start as isize) + delta) as usize;
-            }
-        }
-    }
 
-    fn replace_block_rows(&mut self, start: usize, len: usize, rows: Vec<String>) -> usize {
-        if !self.block_active || start > self.block.len() {
-            return rows.len();
-        }
-        let end = (start + len).min(self.block.len());
-        let old_len = end.saturating_sub(start);
-        let new_len = rows.len();
-        self.block.splice(start..end, rows);
-        self.shift_open_row_starts(end, new_len as isize - old_len as isize);
-        new_len
-    }
 
-    fn refresh_open_activity_rows(&mut self) {
-        if !self.block_active {
-            return;
-        }
-        let spinner = self.spinner.frame().to_owned();
 
-        let mut tool_ids: Vec<((usize, u64), usize)> = self
-            .open_tool_rows
-            .iter()
-            .map(|(&id, row)| (id, row.start))
-            .collect();
-        tool_ids.sort_by_key(|(_, start)| std::cmp::Reverse(*start));
-        for (id, _) in tool_ids {
-            let Some(row) = self.open_tool_rows.get(&id).cloned() else {
-                continue;
-            };
-            let new_len = self.replace_block_rows(
-                row.start,
-                row.len,
-                self.status_rows(row.depth, &running_status_text(&row.label, &spinner)),
-            );
-            if let Some(open) = self.open_tool_rows.get_mut(&id) {
-                open.len = new_len;
-            }
-        }
-
-        let mut sub_idxs: Vec<(usize, usize)> = self
-            .open_subcall_rows
-            .iter()
-            .enumerate()
-            .map(|(idx, row)| (idx, row.start))
-            .collect();
-        sub_idxs.sort_by_key(|(_, start)| std::cmp::Reverse(*start));
-        for (idx, _) in sub_idxs {
-            let Some(row) = self.open_subcall_rows.get(idx).cloned() else {
-                continue;
-            };
-            let new_len = self.replace_block_rows(
-                row.start,
-                row.len,
-                self.status_rows(row.depth, &running_status_text(&row.label, &spinner)),
-            );
-            if let Some(open) = self.open_subcall_rows.get_mut(idx) {
-                open.len = new_len;
-            }
-        }
-    }
-
-    fn fail_open_activity_rows(&mut self) {
-        let mut tool_ids: Vec<((usize, u64), usize)> = self
-            .open_tool_rows
-            .iter()
-            .map(|(&id, row)| (id, row.start))
-            .collect();
-        tool_ids.sort_by_key(|(_, start)| std::cmp::Reverse(*start));
-        for (id, _) in tool_ids {
-            let Some(row) = self.open_tool_rows.remove(&id) else {
-                continue;
-            };
-            self.replace_block_rows(
-                row.start,
-                row.len,
-                self.status_rows(row.depth, &failed_status_text(&row.label, None, None, &self.palette)),
-            );
-        }
-        while let Some(row) = self.open_subcall_rows.pop_back() {
-            self.replace_block_rows(
-                row.start,
-                row.len,
-                self.status_rows(row.depth, &failed_status_text(&row.label, None, None, &self.palette)),
-            );
-        }
-    }
 
     /// Append an action row to the active block buffer, or straight to
     /// scrollback when no block is in flight.
-    fn push_row(&mut self, row: String) {
-        if self.block_active {
-            self.block.push(row);
-        } else {
-            self.pending.push(row);
-        }
-    }
 
     /// Start buffering the depth-0 REPL block that is about to execute. Rows
     /// pushed until `commit_block` render live as a grouped flat `● repl` unit.
-    fn begin_block(&mut self) {
-        if !self.last_activity {
-            self.pending.push(String::new());
-        }
-        self.block.clear();
-        self.open_tool_rows.clear();
-        self.open_subcall_rows.clear();
-        self.block_active = true;
-    }
 
     /// Commit the buffered block to scrollback as a flat `● repl` unit, followed
     /// by any prose that streamed in behind it.
-    fn commit_block(&mut self) {
-        if !self.block_active {
-            return;
-        }
-        self.block_active = false;
-        let body = std::mem::take(&mut self.block);
-        // The `repl · turn N` label belongs to the *live* action block built
-        // during an iteration (running is Some). Persisted assistant messages
-        // re-rendered as prose containers (`push_assistant_message`, during
-        // restore or after a run completes) are a different artifact with no
-        // meaningful per-block turn, so they stay at a plain `repl` label.
-        let turn = self.running.is_some().then_some(self.turn);
-        self.pending.extend(render_repl_block(&body, turn));
-        self.open_tool_rows.clear();
-        self.open_subcall_rows.clear();
-        let after = std::mem::take(&mut self.after_block);
-        self.pending.extend(after);
-    }
 
     /// First line of an action block — a flat `● [time] title` header, the
     /// forgecode-style anchor for a tool/thinking unit. A depth-0 action that
     /// follows prose gets a separating blank line first. `dot_color` carries
     /// the category; `title` is the already-styled text.
-    fn push_dot(&mut self, depth: usize, text: String) {
-        if depth == 0 && !self.last_activity && !self.block_active {
-            self.pending.push(String::new());
-        }
-        self.push_row(forge_title(
-            depth,
-            self.committed_ts().as_deref(),
-            &text,
-        ));
-        self.last_activity = true;
-    }
 
     /// Continuation/result line inside an action block, rendered as a flat
     /// `●`-prefixed line under the nesting gutter.
-    fn push_bar(&mut self, depth: usize, text: String) {
-        let rows = render_flat(None, &format!("{DIM}{text}{RESET}"), depth, &[]);
-        for row in rows {
-            self.push_row(row);
-        }
-        self.last_activity = true;
-    }
 
     /// Indented code/output preview inside an action block: at most `max`
     /// visual rows (counting wraps), then a `… (n more lines)` marker.
-    fn push_preview(&mut self, depth: usize, text: &str, max: usize) {
-        self.push_preview_with_lang(depth, text, max, None);
-    }
 
-    fn preview_rows_with_lang(
-        &self,
-        depth: usize,
-        text: &str,
-        max: usize,
-        lang: Option<&str>,
-    ) -> Vec<String> {
-        let trimmed = text.trim_end();
-        if trimmed.is_empty() {
-            return Vec::new();
-        }
-        let base_rows: Vec<String> = match lang {
-            Some(lang) => highlight_code(trimmed, Some(lang), &self.palette.markdown),
-            None => trimmed
-                .lines()
-                .map(|line| {
-                    highlight_diff_line(line, &self.palette.markdown)
-                        .unwrap_or_else(|| highlight_output(line, &self.palette.markdown))
-                })
-                .collect(),
-        };
-        let mut rows: Vec<String> = base_rows
-            .into_iter()
-            .flat_map(|line| wrap_ansi(&line, self.card_body_width(depth)))
-            .collect();
-        if rows.len() > max {
-            let hidden = rows.len() - max;
-            rows.truncate(max);
-            rows.push(format!("{DIM}… ({hidden} more lines){RESET}"));
-        }
-        rows
-    }
 
-    fn push_preview_with_lang(&mut self, depth: usize, text: &str, max: usize, lang: Option<&str>) {
-        let rows = self.preview_rows_with_lang(depth, text, max, lang);
-        if rows.is_empty() {
-            return;
-        }
-        let prefix = result_prefix(depth);
-        let blank = indent(depth);
-        for line in &rows {
-            self.push_row(if line.is_empty() {
-                blank.clone()
-            } else {
-                format!("{prefix}{line}")
-            });
-        }
-    }
 
     /// `Some` while a turn is live (so committed headers stamp a `[HH:MM:SS]`),
     /// `None` on replay/restore (no false replay-time clock). See `forge_title`.
-    fn committed_ts(&self) -> Option<String> {
-        self.running.is_some().then(now_hms)
-    }
 
     #[allow(clippy::too_many_arguments)]
-    fn tool_result_rows(
-        &self,
-        depth: usize,
-        name: &str,
-        args: &serde_json::Value,
-        output: &str,
-        max: usize,
-        lang: Option<&str>,
-        _failed: bool,
-        ts: Option<&str>,
-    ) -> Vec<String> {
-        let identity = tool_identity(name, args, &self.palette);
-        // The colored `●` carries success/failure (green/red); the in-flight
-        // spinner label uses the same anchor via `tool_title`, so running and
-        // committed render the same identity (no flicker on done). The header
-        // carries the canonical identity (path/command/pattern) once; the body
-        // folds multi-line detail (full bash command / repl code) under it. For
-        // tools whose identity IS the anchor, the body is empty and only the
-        // output preview shows.
-        let width = self.card_body_width(depth);
-        let mut body: Vec<String> = identity
-            .body
-            .into_iter()
-            .flat_map(|line| wrap_ansi(&line, width))
-            .collect();
-        body.extend(self.preview_rows_with_lang(depth, output, max, lang));
-        render_flat(ts, &identity.anchor, depth, &body)
-    }
 
     #[allow(clippy::too_many_arguments)]
-    fn subcall_result_rows(
-        &self,
-        depth: usize,
-        label: &str,
-        content: Option<&str>,
-        max: usize,
-        _failed: bool,
-        ts: Option<&str>,
-    ) -> Vec<String> {
-        let body = content
-            .map(|text| self.preview_rows_with_lang(depth, text, max, None))
-            .unwrap_or_default();
-        render_flat(ts, label, depth, &body)
-    }
 
     #[allow(clippy::too_many_arguments)]
-    fn push_tool_result(
-        &mut self,
-        depth: usize,
-        name: &str,
-        args: &serde_json::Value,
-        output: &str,
-        max: usize,
-        lang: Option<&str>,
-        failed: bool,
-    ) {
-        if depth == 0 && !self.last_activity && !self.block_active {
-            self.pending.push(String::new());
-        }
-        let rows = self.tool_result_rows(
-            depth,
-            name,
-            args,
-            output,
-            max,
-            lang,
-            failed,
-            self.committed_ts().as_deref(),
-        );
-        for row in rows {
-            self.push_row(row);
-        }
-        self.last_activity = true;
-    }
 
-    fn push_repl_block(&mut self, depth: usize, text: &str, max: usize) {
-        for row in self.repl_code_lines(depth, text, max) {
-            self.push_row(row);
-        }
-        self.last_activity = true;
-    }
 
     /// Echo a user message into scrollback as a pi-style container: full-width
     /// `userMessageBg` fill with one cell of padding on every side.
-    fn push_user_message(&mut self, text: &str) {
-        self.pending.push(String::new());
-        self.pending.extend(self.user_card_lines(text));
-        self.last_activity = false;
-    }
 
     /// Render finalized prose (markdown) into scrollback. While a block is
     /// in flight the prose waits behind it so scrollback stays chronological.
-    fn push_prose(&mut self, text: &str) {
-        let text = text.trim();
-        if text.is_empty() {
-            return;
-        }
-        let card = self.assistant_card_lines(text);
-        let sink = if self.block_active {
-            &mut self.after_block
-        } else {
-            &mut self.pending
-        };
-        sink.push(String::new());
-        sink.extend(card);
-        self.last_activity = false;
-    }
 
-    fn handle_rlm_event(&mut self, event: RlmEvent) {
-        match event {
-            RlmEvent::IterationStart {
-                depth: 0,
-                iteration,
-            } => {
-                self.turn = iteration + 1;
-                self.status = "thinking...".to_owned();
-                self.stream.clear();
-                self.thinking.clear();
-                if iteration == 0 {
-                    self.thinking_log.clear();
-                } else if !self.thinking_log.trim().is_empty() {
-                    self.thinking_log.push_str("\n\n");
-                }
-                self.streamed = false;
-            }
-            RlmEvent::RootDelta {
-                depth: 0, delta, ..
-            } => {
-                self.stream.push_str(&delta);
-                self.streamed = true;
-                // Keep streamed assistant prose live-only. The durable JSONL
-                // assistant message is appended at run completion, so the
-                // retained transcript must also commit prose at that message
-                // boundary instead of turning paragraph-stable deltas into
-                // separate Assistant cards.
-            }
-            RlmEvent::RootThinkingDelta {
-                depth: 0, delta, ..
-            } => {
-                self.thinking.push_str(&delta);
-                self.thinking_log.push_str(&delta);
-            }
-            RlmEvent::RootText { depth: 0, text, .. } => {
-                self.flush_thinking();
-                // Commit the iteration's prose as durable cards, splitting on
-                // fences so each becomes one assistant card (apart from the
-                // explicit REPL/code cards). Prose preceding each executed
-                // block was already committed eagerly by `CodeExecStart`, which
-                // consumed it from `stream` to keep it ordered above the block;
-                // for a streamed message only the uncommitted tail left in
-                // `stream` may be flushed here. Re-splitting the full `text`
-                // would re-render those earlier segments a second time, leaving
-                // duplicated prose trailing each code block. When the model did
-                // not stream, `stream` is empty and `RootText` carries the only
-                // copy, so fall back to `text`.
-                let source = if self.streamed {
-                    std::mem::take(&mut self.stream)
-                } else {
-                    text
-                };
-                for segment in split_prose(&source) {
-                    self.push_prose(segment);
-                }
-                self.stream.clear();
-                self.streamed = false;
-            }
-            RlmEvent::CodeExecStart { depth, code, .. } => {
-                if depth == 0 {
-                    // The fence just closed mid-stream: flush the prose before
-                    // it and consume both from the live tail.
-                    if let Some((prose, rest)) = split_at_first_block(&self.stream) {
-                        let (prose, rest) = (prose.to_owned(), rest.to_owned());
-                        self.push_prose(&prose);
-                        self.stream = rest;
-                    }
-                    self.status = "running code...".to_owned();
-                    self.live_tools.clear();
-                    self.live_subcalls.clear();
-                    self.open_tool_args.clear();
-                    self.open_tool_rows.clear();
-                    self.open_subcall_rows.clear();
-                    self.begin_block();
-                    self.live_code = Some(code.clone());
-                }
-                self.push_repl_block(depth, &code, self.code_limit());
-            }
-            RlmEvent::CodeExecEnd {
-                depth,
-                stdout,
-                stderr,
-                duration,
-                ..
-            } => {
-                if depth == 0 {
-                    // Checkpoint the completed step as it happens (not at
-                    // exchange end): a crash later in the turn must not lose
-                    // work already paid for. `branch_restore` replays these
-                    // to rebuild the REPL env.
-                    self.status = "thinking...".to_owned();
-                    self.open_tool_args.clear();
-                    self.open_tool_rows.clear();
-                    self.open_subcall_rows.clear();
-                    if let Some(code) = self.live_code.take() {
-                        let duration_secs = duration.as_secs_f64();
-                        let tools = std::mem::take(&mut self.live_tools);
-                        let subcalls = std::mem::take(&mut self.live_subcalls);
-                        let _ = self.store.append_repl(session::ReplRecord {
-                            code: code.clone(),
-                            stdout: stdout.clone(),
-                            stderr: stderr.clone(),
-                            duration_secs,
-                            kind: session::ReplKind::Agent,
-                            tools: tools.clone(),
-                            subcalls: subcalls.clone(),
-                        });
-                        // Discard the incrementally-built live block and rebuild
-                        // from the stored record so live and replay use the same
-                        // rendering path.
-                        self.block.clear();
-                        self.block_active = false;
-                        self.after_block.clear();
-                        self.push_repl_replay(
-                            &code,
-                            &stdout,
-                            &stderr,
-                            duration_secs,
-                            &tools,
-                            &subcalls,
-                        );
-                    } else {
-                        self.live_tools.clear();
-                        self.live_subcalls.clear();
-                        self.commit_block();
-                    }
-                } else {
-                    self.last_activity = true;
-                    let filtered = strip_tool_echoes(&stdout, &self.live_tools, depth);
-                    self.push_preview(depth, &filtered, self.output_limit());
-                    self.push_preview(depth, &stderr, self.output_limit());
-                }
-            }
-            // Prelude tools run inside the REPL block at `depth`, so they
-            // render one nested box level deeper, nested in that block.
-            RlmEvent::ToolStart {
-                depth,
-                call_id,
-                name,
-                args,
-            } => {
-                let key = (depth, call_id);
-                if self.live_code.is_some() {
-                    self.open_tool_args.insert(key, args.clone());
-                }
-                let label = tool_title(&name, &args, &self.palette);
-                if let Some((start, len)) =
-                    self.push_status(depth + 1, running_status_text(&label, self.spinner.frame()))
-                {
-                    self.open_tool_rows.insert(
-                        key,
-                        OpenToolRow {
-                            depth: depth + 1,
-                            label,
-                            start,
-                            len,
-                        },
-                    );
-                }
-                if depth == 0 {
-                    self.status = format!("{name}...");
-                }
-            }
-            RlmEvent::ToolEnd {
-                depth,
-                call_id,
-                name,
-                result,
-                error,
-                duration,
-            } => {
-                let key = (depth, call_id);
-                let args = self.open_tool_args.remove(&key).unwrap_or_default();
-                if self.live_code.is_some() {
-                    // Replay only ever renders a short preview, and the full
-                    // text already lands in the repl stdout payload, so cap
-                    // what gets persisted per tool call.
-                    self.live_tools.push(session::ToolCall {
-                        name: name.clone(),
-                        args: args.clone(),
-                        result: truncate_for_log(&result),
-                        error: error.as_deref().map(truncate_for_log),
-                        duration_secs: duration.as_secs_f64(),
-                        depth,
-                    });
-                }
-                let output = error.as_deref().unwrap_or(&result);
-                let lang = if error.is_some() {
-                    None
-                } else {
-                    tool_preview_lang(&name, &args)
-                };
-                let rows = self.tool_result_rows(
-                    depth + 1,
-                    &name,
-                    &args,
-                    output,
-                    self.output_limit(),
-                    lang,
-                    error.is_some(),
-                    self.committed_ts().as_deref(),
-                );
-                if let Some(row) = self.open_tool_rows.remove(&key) {
-                    self.replace_block_rows(row.start, row.len, rows);
-                    self.last_activity = true;
-                } else {
-                    for row in rows {
-                        self.push_row(row);
-                    }
-                    self.last_activity = true;
-                }
-                if depth == 0 {
-                    self.status = "running code...".to_owned();
-                }
-            }
-            RlmEvent::SubcallStart {
-                depth,
-                model,
-                prompt_preview,
-            } => {
-                let label = subcall_title(&model, &prompt_preview, &self.palette);
-                if let Some((start, len)) =
-                    self.push_status(depth, running_status_text(&label, self.spinner.frame()))
-                {
-                    self.open_subcall_rows.push_back(OpenSubcallRow {
-                        depth,
-                        prompt_preview: prompt_preview.clone(),
-                        label,
-                        start,
-                        len,
-                    });
-                }
-                if depth == 0 {
-                    self.status = format!("waiting on {model}...");
-                }
-            }
-            RlmEvent::SubcallEnd {
-                depth,
-                model,
-                result_preview,
-                duration,
-                error,
-            } => {
-                let open = self
-                    .open_subcall_rows
-                    .iter()
-                    .position(|row| row.depth == depth)
-                    .and_then(|idx| self.open_subcall_rows.remove(idx));
-                if self.live_code.is_some() {
-                    let prompt_preview = open
-                        .as_ref()
-                        .map(|row| row.prompt_preview.clone())
-                        .unwrap_or_default();
-                    self.live_subcalls.push(session::SubcallRecord {
-                        model: model.clone(),
-                        prompt_preview,
-                        result_preview: result_preview.clone(),
-                        error: error.clone(),
-                        duration_secs: duration.as_secs_f64(),
-                        depth,
-                    });
-                }
-                // Reuse the label formatted once at `SubcallStart` (stored on
-                // the open row) instead of recomputing it for the border.
-                let label = open
-                    .as_ref()
-                    .map(|row| row.label.clone())
-                    .unwrap_or_else(|| subcall_title(&model, "", &self.palette));
-                let content = error.as_deref().or(result_preview.as_deref());
-                let rows = self.subcall_result_rows(
-                    depth,
-                    &label,
-                    content,
-                    self.output_limit(),
-                    error.is_some(),
-                    self.committed_ts().as_deref(),
-                );
-                if let Some(row) = open {
-                    self.replace_block_rows(row.start, row.len, rows);
-                    self.last_activity = true;
-                } else {
-                    if depth == 0 && !self.last_activity && !self.block_active {
-                        self.pending.push(String::new());
-                    }
-                    for row in rows {
-                        self.push_row(row);
-                    }
-                    self.last_activity = true;
-                }
-            }
-            RlmEvent::RunEnd {
-                depth,
-                stop,
-                iterations,
-                duration,
-            } if depth > 0 => {
-                // A recursive subcall's header is the `SubcallStart` card; skip
-                // the redundant `RunStart` "rlm" card (it would double-mark the
-                // same nesting level). The run's outcome is summarized below.
-                self.push_bar(
-                    depth,
-                    format!(
-                        "{} · {} turn{} · {:.1}s",
-                        format!("{stop:?}").to_lowercase(),
-                        iterations,
-                        if iterations == 1 { "" } else { "s" },
-                        duration.as_secs_f64()
-                    ),
-                );
-            }
-            _ => {}
-        }
-    }
 
-    fn handle_done(&mut self, done: Done, cmd_tx: &mpsc::UnboundedSender<Cmd>) {
-        match done {
-            Done::Run(completion) => self.handle_run_done(completion),
-            Done::Shell {
-                code,
-                record,
-                result,
-            } => self.handle_shell_done(code, record, result),
-            Done::Restored(result) => {
-                if let Err(e) = result {
-                    self.pending
-                        .push(format!("{}restore failed:{RESET} {e}", &self.palette.error_fg));
-                }
-            }
-        }
-        self.drain_queue(cmd_tx);
-    }
 
     /// Send the next queued submission once nothing is in flight.
-    fn drain_queue(&mut self, cmd_tx: &mpsc::UnboundedSender<Cmd>) {
-        if self.running.is_some() || self.queued.is_empty() {
-            return;
-        }
-        let next = self.queued.remove(0);
-        if next.starts_with('!') {
-            self.send_shell(&next, cmd_tx);
-        } else {
-            self.send_prompt(&next, cmd_tx);
-        }
-    }
 
-    fn handle_shell_done(
-        &mut self,
-        code: String,
-        record: bool,
-        result: Result<ReplResult, String>,
-    ) {
-        match result {
-            Ok(res) if record => {
-                self.last_activity = true;
-                self.push_preview(0, &res.stdout, self.output_limit());
-                self.push_preview(0, &res.stderr, self.output_limit());
-                self.commit_block();
-                let _ = self.store.append_repl(session::ReplRecord {
-                    code,
-                    stdout: res.stdout,
-                    stderr: res.stderr,
-                    duration_secs: res.duration.as_secs_f64(),
-                    kind: session::ReplKind::Shell,
-                    tools: Vec::new(),
-                    subcalls: Vec::new(),
-                });
-            }
-            Ok(res) => {
-                let output = format!("{}{}", res.stdout, res.stderr);
-                if output.trim().is_empty() {
-                    self.pending.push(format!("{DIM}(no output){RESET}"));
-                } else {
-                    self.pending
-                        .extend(output.trim_end().lines().map(str::to_owned));
-                }
-                self.last_activity = false;
-            }
-            Err(e) => {
-                if self.block_active {
-                    self.push_bar(0, format!("failed: {e}"));
-                    self.commit_block();
-                } else {
-                    self.pending.push(self.err(&e));
-                    self.last_activity = false;
-                }
-            }
-        }
-    }
 
-    fn handle_run_done(&mut self, completion: RlmCompletion) {
-        // A block still open here never finished (cancel/failure mid-exec).
-        self.fail_open_activity_rows();
-        self.commit_block();
-        self.live_code = None;
-        self.running = None;
-        self.stream.clear();
-        self.thinking.clear();
-        let display_text = assistant_display_text(&completion.response, &self.thinking_log);
-        self.thinking_log.clear();
-        // Mirror the env's history condition so the store and the REPL's
-        // history_N variables stay aligned. Store before rendering so the
-        // log is durable before the display reflects it.
-        if completion.stop != StopCause::Failed && !completion.response.trim().is_empty() {
-            let usage = session::SessionUsage {
-                input: completion.usage.input,
-                output: completion.usage.output,
-                cache_read: completion.usage.cache_read,
-                cache_write: completion.usage.cache_write,
-                cost_total: completion.usage.cost.total,
-                model: "__total__".to_owned(),
-            };
-            let usage_by_model = completion
-                .usage_by_model
-                .iter()
-                .map(|breakdown| session::SessionUsage {
-                    input: breakdown.usage.input,
-                    output: breakdown.usage.output,
-                    cache_read: breakdown.usage.cache_read,
-                    cache_write: breakdown.usage.cache_write,
-                    cost_total: breakdown.usage.cost.total,
-                    model: breakdown.model.clone(),
-                })
-                .collect();
-            let _ = self.store.append_with_usage_breakdown_and_display(
-                session::Role::Assistant,
-                &completion.response,
-                display_text,
-                Some(usage),
-                usage_by_model,
-            );
-        }
-        self.pending.push(String::new());
-        if completion.stop == StopCause::Failed {
-            let error = completion.error.unwrap_or_else(|| "run failed".to_owned());
-            self.pending.push(self.err(&error));
-        } else if !completion.response.is_empty() {
-            self.push_assistant_message(&completion.response);
-        }
-        // Durably close the turn: completed, failed, or interrupted is a
-        // recorded fact, not an inference from a missing assistant message.
-        let status = match completion.stop {
-            StopCause::Failed => session::ExchangeStatus::Failed,
-            StopCause::Cancelled => session::ExchangeStatus::Interrupted,
-            _ => session::ExchangeStatus::Completed,
-        };
-        let _ = self.store.end_exchange(status);
-        self.usage = completion.usage;
-        self.pending.push(String::new());
-        self.last_activity = false;
-    }
 
     fn markdown_width(&self) -> usize {
         self.term.width().saturating_sub(6).min(100)
