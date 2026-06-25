@@ -233,8 +233,16 @@ impl MuxApp {
                     while let Ok(idx) = watcher_rx.try_recv() {
                         changed.insert(idx);
                     }
+                    let mut notes: Vec<String> = Vec::new();
                     for index in changed {
-                        self.workspace.refresh_project(index);
+                        let delta = self.workspace.refresh_project(index);
+                        notes.extend(delta.archived);
+                    }
+                    if !notes.is_empty() {
+                        self.set_note(
+                            format!("session archived externally: {}", notes.join(", ")),
+                            StatusNoteKind::Ok,
+                        );
                     }
                     dirty = true;
                 }
@@ -265,8 +273,16 @@ impl MuxApp {
                     changed.insert(idx);
                 }
                 if !changed.is_empty() {
+                    let mut notes: Vec<String> = Vec::new();
                     for index in changed {
-                        self.workspace.refresh_project(index);
+                        let delta = self.workspace.refresh_project(index);
+                        notes.extend(delta.archived);
+                    }
+                    if !notes.is_empty() {
+                        self.set_note(
+                            format!("session archived externally: {}", notes.join(", ")),
+                            StatusNoteKind::Ok,
+                        );
                     }
                     dirty = true;
                 }
@@ -346,7 +362,7 @@ impl MuxApp {
         // A draft's JSONL appears with its first message; rescan to pick the
         // file up (the running handle keeps its identity).
         if let Some(project_index) = materialized_project {
-            self.workspace.refresh_project(project_index);
+            let _ = self.workspace.refresh_project(project_index);
         }
     }
 
@@ -773,7 +789,7 @@ impl MuxApp {
             AppAction::RefreshSession => self.refresh_focused_session(),
             AppAction::RefreshAllSessions => {
                 for index in 0..self.workspace.projects.len() {
-                    self.workspace.refresh_project(index);
+                    let _ = self.workspace.refresh_project(index);
                 }
                 self.set_note("rescanned all projects", StatusNoteKind::Ok);
             }
@@ -830,7 +846,7 @@ impl MuxApp {
             self.set_note("session restarted", StatusNoteKind::Ok);
         } else {
             let index = self.workspace.selected_project;
-            self.workspace.refresh_project(index);
+            let _ = self.workspace.refresh_project(index);
             self.set_note("project rescanned", StatusNoteKind::Ok);
         }
     }
@@ -863,7 +879,7 @@ impl MuxApp {
                     session.store_path = None;
                 }
                 let index = self.workspace.selected_project;
-                self.workspace.refresh_project(index);
+                let _ = self.workspace.refresh_project(index);
                 self.workspace.normalize_visible_selection(index);
                 drain_pending_terminal_events();
                 self.ensure_focused_session().await;
@@ -882,7 +898,7 @@ impl MuxApp {
             Ok(target) => {
                 self.archive_viewer = None;
                 for index in 0..self.workspace.projects.len() {
-                    self.workspace.refresh_project(index);
+                    let _ = self.workspace.refresh_project(index);
                 }
                 self.set_note(format!("restored {}", target.display()), StatusNoteKind::Ok);
             }

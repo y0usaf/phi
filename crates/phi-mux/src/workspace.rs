@@ -49,6 +49,15 @@ impl MuxSession {
     }
 }
 
+/// Sessions whose backing files vanished during a refresh (archived or
+/// deleted by another process).  `titles` is populated for sessions that had
+/// a visible sidebar entry so the caller can surface a status-bar note.
+#[derive(Clone, Debug, Default)]
+pub struct RefreshDelta {
+    /// Sidebar titles of sessions dropped because their files no longer exist.
+    pub archived: Vec<String>,
+}
+
 impl Workspace {
     fn empty() -> Self {
         Self {
@@ -113,10 +122,12 @@ impl Workspace {
     }
 
     /// Rescan a project's session directory, keeping live handles, drafts,
-    /// and statuses for sessions that still exist.
-    pub fn refresh_project(&mut self, index: usize) {
+    /// and statuses for sessions that still exist.  Returns the titles of
+    /// sessions whose backing files vanished since the last scan (archived or
+    /// deleted by another process) so the caller can surface a status-bar note.
+    pub fn refresh_project(&mut self, index: usize) -> RefreshDelta {
         let Some(project) = self.projects.get_mut(index) else {
-            return;
+            return RefreshDelta::default();
         };
         let selected_key = project.sessions.get(project.selected).map(|s| s.key);
         let mut old = std::mem::take(&mut project.sessions);
@@ -147,15 +158,33 @@ impl Workspace {
                 }),
             }
         }
-        // Keep drafts and anything with a live handle (e.g. a session whose
-        // file was archived while running). A stale draft — no file, no live
-        // handle — means the session was archived or its file was removed
-        // externally, so drop it on refresh. The key-0 unmaterialized draft
-        // is retained so `new_draft` can reuse it.
-        fresh.extend(
-            old.into_iter()
-                .filter(|s| s.handle.is_some() || (s.is_draft() && s.key == 0)),
-        );
+        // Keep the key-0 unmaterialized draft (so `new_draft` can reuse it)
+        // and sessions whose backing file still exists.  A session whose
+        // file vanished (with or without a live handle) was archived or
+        // deleted by another process — drop it and report its title so the
+        // caller can notify the user via the status bar.
+        let mut delta = RefreshDelta::default();
+        fresh.extend(old.into_iter().filter(|s| {
+            // Always keep the reusable unmaterialized draft.
+            if s.is_draft() && s.key == 0 {
+                return true;
+            }
+            // A running draft with no store_path yet — keep it alive.
+            if s.handle.is_some() && s.store_path.is_none() {
+                return true;
+            }
+            // Keep sessions whose backing file still exists on disk.
+            if s.store_path.as_ref().is_some_and(|p| p.exists()) {
+                return true;
+            }
+            // File is gone (or never existed for a stale draft).  Report
+            // sessions that had a visible sidebar entry so the user knows
+            // why they disappeared.
+            if !s.is_draft() && !s.first_message.trim().is_empty() {
+                delta.archived.push(s.first_message.clone());
+            }
+            false
+        }));
         for s in &mut fresh {
             if s.key == 0 {
                 s.key = self.next_key;
@@ -166,6 +195,7 @@ impl Workspace {
         project.selected = selected_key
             .and_then(|key| project.sessions.iter().position(|s| s.key == key))
             .unwrap_or(0);
+        delta
     }
 
     /// New draft session at the top of the project; reuses an existing
@@ -558,11 +588,32 @@ mod tests {
         assert!(ws.projects[0].sessions[0].is_draft());
 
         // Ctrl+R / refresh should drop the stale draft — its file is gone.
-        ws.refresh_project(0);
+        let delta = ws.refresh_project(0);
         assert!(
             ws.projects[0].sessions.is_empty(),
             "stale draft should be dropped on refresh"
         );
+        // A draft with no handle has no sidebar title to report.
+        assert!(delta.archived.is_empty());
+    }
+
+    #[test]
+    fn refresh_project_drops_session_with_live_handle_but_missing_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut ws = Workspace::discover(vec![tmp.path().to_path_buf()]);
+        // Simulate a session that another process archived: it still has a
+        // store_path (now pointing at a non-existent file) and no handle. The
+        // session should be dropped on refresh and its title reported.
+        let gone = tmp.path().join("vanished.jsonl");
+        ws.projects[0].sessions = vec![test_session(1, Some(gone), "my session")];
+        assert!(!ws.projects[0].sessions[0].is_draft());
+
+        let delta = ws.refresh_project(0);
+        assert!(
+            ws.projects[0].sessions.is_empty(),
+            "session with missing file should be dropped on refresh"
+        );
+        assert_eq!(delta.archived, vec!["my session"]);
     }
 
     #[test]
