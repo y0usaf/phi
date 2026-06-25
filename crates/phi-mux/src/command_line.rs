@@ -2,8 +2,8 @@
 
 use phi_tui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use super::ui::cell_surface::display_cell_width;
-use super::ui::layout::CellLayout;
+use phi_mux_grid::cell_surface::display_cell_width;
+use phi_mux_grid::layout::CellLayout;
 
 /// Statusline mode-label width ("` NOR `" etc.), kept in sync with scene.rs.
 const MODE_LABEL_WIDTH: i32 = 5;

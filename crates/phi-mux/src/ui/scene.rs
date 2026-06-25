@@ -1,19 +1,19 @@
 //! Frame composition (port of pi-harness `app::scene`): sidebar, embedded
 //! terminal blit, and the bottom statusline.
 
-use super::super::status::SessionStatus;
-use super::cell_surface::{
+use phi_mux_status::SessionStatus;
+use phi_mux_grid::cell_surface::{
     CellSurface, display_cell_width, render_cell_scrollbar, truncate_to_cells,
 };
-use super::color::Color;
-use super::layout::{CellLayout, CellRect};
-use super::selection::SelectionRange;
+use phi_mux_grid::color::Color;
+use phi_mux_grid::layout::{CellLayout, CellRect};
+use phi_mux_grid::selection::SelectionRange;
 use super::sidebar::{
     SIDEBAR_ANIMATION_FRAME_MS, SidebarRow, SidebarRowKind, SidebarStatusKind, SidebarViewportItem,
     sidebar_status_glyph,
 };
 use super::terminal_view::for_each_terminal_screen_cell;
-use super::theme;
+use phi_mux_grid::theme;
 use phi_tui::palette::TerminalColors;
 
 const STATUSLINE_MODE_LABEL_WIDTH: i32 = 5;

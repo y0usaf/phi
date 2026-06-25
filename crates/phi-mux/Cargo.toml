@@ -6,19 +6,24 @@ license.workspace = true
 
 [dependencies]
 anyhow.workspace = true
-arboard.workspace = true
 directories.workspace = true
 futures.workspace = true
 jiff.workspace = true
-phi-rlm.workspace = true
 phi-session.workspace = true
 phi-session-tui.workspace = true
 phi-tui.workspace = true
+phi-mux-clipboard.workspace = true
+phi-mux-status.workspace = true
+phi-mux-persisted.workspace = true
+phi-mux-keys.workspace = true
+phi-mux-grid.workspace = true
+phi-mux-driver.workspace = true
+phi-mux-workspace.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
-unicode-width.workspace = true
 vt100.workspace = true
+unicode-width.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

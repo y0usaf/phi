@@ -4,9 +4,9 @@
 //! Ported from jcode's `ui_viewport.rs` and `app/navigation.rs` scroll logic,
 //! adapted to phi-mux's `CellSurface` drawing model instead of ratatui widgets.
 
-use super::cell_surface::{CellSurface, char_cell_width, truncate_to_cells};
-use super::layout::CellRect;
-use super::theme;
+use phi_mux_grid::cell_surface::{CellSurface, char_cell_width, truncate_to_cells};
+use phi_mux_grid::layout::CellRect;
+use phi_mux_grid::theme;
 
 // ---------------------------------------------------------------------------
 // ViewportState

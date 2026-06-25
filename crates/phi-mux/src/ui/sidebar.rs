@@ -2,10 +2,10 @@
 //! `app::sidebar`, with status derived from `SessionStatus` instead of the
 //! sidecar runtime flags).
 
-use super::super::status::SessionStatus;
-use super::super::workspace::{MuxProject, MuxSession};
-use super::color::Color;
-use super::theme::{HEADING, MUTED, TEXT};
+use phi_mux_status::SessionStatus;
+use phi_mux_workspace::{MuxProject, MuxSession};
+use phi_mux_grid::color::Color;
+use phi_mux_grid::theme::{HEADING, MUTED, TEXT};
 
 pub const SIDEBAR_ANIMATION_FRAME_MS: u64 = 40;
 pub const SIDEBAR_SPINNER_FRAME_TICKS: u64 = 2;

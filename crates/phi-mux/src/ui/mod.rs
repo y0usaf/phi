@@ -1,17 +1,11 @@
-//! Mux compositor UI, ported from pi-harness: a cell surface diffed to the
-//! real terminal, with sidebar, embedded terminal view, statusline, and
-//! overlays drawn on top.
+//! Mux compositor UI widgets, built on the phi-mux-grid rendering layer.
+//! Scene composition, sidebar, viewport, terminal view, overlays, and the
+//! `:` command-line widget live here. Cell-grid primitives (cell surfaces,
+//! color, packed cells, damage, layout, selection, ANSI, theme) are in the
+//! `phi-mux-grid` crate.
 
-pub mod ansi;
-pub mod cell_surface;
-pub mod color;
-pub mod damage;
-pub mod layout;
-pub mod overlays;
-pub mod packed;
 pub mod scene;
-pub mod selection;
 pub mod sidebar;
 pub mod terminal_view;
 pub mod viewport;
-pub mod theme;
+pub mod overlays;

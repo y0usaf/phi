@@ -1,0 +1,9 @@
+[package]
+name = "phi-rlm-prompts"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+phi-lm-core.workspace = true
+serde_json.workspace = true

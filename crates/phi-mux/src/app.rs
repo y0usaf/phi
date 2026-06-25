@@ -14,16 +14,15 @@ use phi_tui::crossterm::event::{
 };
 use tokio::sync::mpsc;
 
-use super::clipboard::MuxClipboard;
-use super::command::{MuxCommand, parse_command};
+use phi_mux_clipboard::MuxClipboard;
+use phi_mux_keys::{AppAction, KeyStroke, Keymap, KeymapMatch, MuxCommand, parse_command};
 use super::command_line::{CommandLineEvent, CommandLineState, command_line_start_col};
-use super::driver::{self, MuxChannels, SessionKey};
-use super::keymap::{AppAction, KeyStroke, Keymap, KeymapMatch};
-use super::persisted::{self, PersistedState};
-use super::status::SessionStatus;
-use super::ui::ansi::{AnsiRenderer, HardwareCursor};
-use super::ui::cell_surface::CellSurface;
-use super::ui::layout::{CellLayout, SIDEBAR_WIDTH_DEFAULT, compute_cell_layout};
+use phi_mux_driver::{self as driver, MuxChannels, SessionKey};
+use phi_mux_persisted::{self as persisted, PersistedState};
+use phi_mux_status::SessionStatus;
+use phi_mux_grid::ansi::{AnsiRenderer, HardwareCursor};
+use phi_mux_grid::cell_surface::CellSurface;
+use phi_mux_grid::layout::{CellLayout, SIDEBAR_WIDTH_DEFAULT, compute_cell_layout};
 use super::ui::overlays::archive::{ArchiveOutcome, ArchiveViewerState, render_archive_viewer};
 use super::ui::overlays::help::{HelpOverlayState, render_help_overlay};
 use super::ui::overlays::model::{ModelOverlayOutcome, ModelOverlayState, render_model_overlay};
@@ -31,13 +30,13 @@ use super::ui::overlays::usage::{UsageOverlayState, render_usage_overlay};
 use super::ui::scene::{
     Chrome, MuxMode, ScenePalette, StatusNoteKind, render_scene, statusline_status,
 };
-use super::ui::selection::{SelectionPoint, TerminalSelection, selected_text};
+use phi_mux_grid::selection::{SelectionPoint, TerminalSelection, selected_text};
 use super::ui::sidebar::{
     SidebarRowKind, build_sidebar_rows, ensure_sidebar_selection_visible, project_sidebar_title,
     scroll_sidebar_by_rows_value, selected_sidebar_selection_span, session_sidebar_title,
     sidebar_has_spinner, sidebar_viewport_items, sticky_sidebar_anchor_row,
 };
-use super::workspace::{self, Workspace};
+use phi_mux_workspace::{self as workspace, Workspace};
 use phi_session::config::MuxConfig;
 use phi_session_tui::session_builder::SharedResources;
 use phi_session_tui::tui::{self, HostModalKind, HostModalRequest};

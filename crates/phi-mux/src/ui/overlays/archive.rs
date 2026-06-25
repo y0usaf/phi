@@ -6,11 +6,11 @@ use std::time::SystemTime;
 use phi_tui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::dialog::render_dialog_title_line;
-use crate::ui::cell_surface::{CellSurface, draw_box, render_cell_scrollbar, truncate_to_cells};
-use crate::ui::layout::CellRect as Rect;
+use phi_mux_grid::cell_surface::{CellSurface, draw_box, render_cell_scrollbar, truncate_to_cells};
+use phi_mux_grid::layout::CellRect as Rect;
 use crate::ui::scene::ScenePalette;
-use crate::ui::theme;
-use crate::workspace::{self, ArchivedSession};
+use phi_mux_grid::theme;
+use phi_mux_workspace::{self as workspace, ArchivedSession};
 
 /// What the mux loop should do after the archive viewer consumed a key.
 #[derive(Clone, Debug, PartialEq, Eq)]

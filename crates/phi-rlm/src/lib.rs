@@ -1,41 +1,23 @@
-//! RLM engine: LanguageModel trait, root loop, limits, sub-call routing.
+//! RLM engine — thin umbrella re-exporting the focused sub-crates.
+//!
+//! Each concern lives in its own crate:
+//! - `phi-lm-core`: message types + LanguageModel trait
+//! - `phi-llm-parse`: code-block extraction and prose splitting
+//! - `phi-rlm-prompts`: system/user prompt rendering
+//! - `phi-rlm-config`: config, limits, events, EnvFactory
+//! - `phi-rlm-engine`: single-turn completion loop + sub-calls + harness state types
+//! - `phi-provider`: concrete ProviderLm impl
+//! - `phi-rlm-session`: multi-turn persistence + compaction
+//!
+//! This crate re-exports the full public API so downstream consumers
+//! (phi-app, phi-harness, phi-session) need no changes.
 
-pub mod engine;
-pub mod handler;
-pub mod parsing;
-pub mod prompts;
-pub mod provider;
-pub mod turn;
-
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
-
-pub use engine::{RestoredExchange, RestoredRepl, Rlm, RlmCompletion,
-    RlmConfig, RlmEvent, RlmSession, StopCause,
-};
-pub use handler::{Completion, DeltaSink, LanguageModel, LmHandler, ThinkingSink, UsageBreakdown};
-pub use parsing::{could_open_block, find_code_blocks, split_at_first_block, split_prose};
+pub use phi_lm_core::{ChatMessage, Completion, ContextPayload, DeltaSink,
+    LanguageModel, LmHandler, Role, ThinkingSink, UsageBreakdown};
+pub use phi_llm_parse::{could_open_block, find_code_blocks, split_at_first_block, split_prose};
+pub use phi_provider::ProviderLm;
 pub use phi_repl::ReplResult;
-pub use provider::ProviderLm;
-pub use turn::{HarnessError, HarnessPhase, TurnState};
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Role {
-    System,
-    User,
-    Assistant,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ChatMessage {
-    pub role: Role,
-    pub content: String,
-}
-
-/// The long context injected into the REPL as `context`.
-#[derive(Clone, Debug)]
-pub enum ContextPayload {
-    Str(String),
-    Json(Value),
-}
+pub use phi_rlm_engine::{HarnessError, HarnessPhase, TurnState};
+pub use phi_rlm_config::{RlmConfig, RlmCompletion, RlmEvent, StopCause};
+pub use phi_rlm_engine::{Rlm, RestoredExchange, RestoredRepl};
+pub use phi_rlm_session::RlmSession;

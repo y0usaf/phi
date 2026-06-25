@@ -1,0 +1,14 @@
+[package]
+name = "phi-mux-workspace"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+phi-mux-driver.workspace = true
+phi-mux-status.workspace = true
+phi-session.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
