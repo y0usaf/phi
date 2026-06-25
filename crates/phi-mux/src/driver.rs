@@ -10,7 +10,7 @@ use phi_tui::crossterm::event::Event;
 use tokio::sync::mpsc::{self, UnboundedSender};
 use tokio::task::JoinHandle;
 
-use phi_mux_status::{self as status, SessionStatus};
+use crate::status::{self as status, SessionStatus};
 use phi_session_tui::session_builder::{self, SharedResources};
 use phi_session_tui::tui::{self, HostModalRequest, SessionIo, SuspendRequest};
 

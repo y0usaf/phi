@@ -12,7 +12,7 @@ use phi_ext::LifecycleEvent;
 use phi_runtime::AppRuntime;
 
 use phi_lm_core::UsageBreakdown;
-use phi_llm_parse::{ExecutedBlock, format_iteration};
+use crate::llm_parse::{ExecutedBlock, format_iteration};
 use phi_lm_core::{ChatMessage, Role};
 
 pub fn truncate_preview(text: &str, max: usize) -> String {

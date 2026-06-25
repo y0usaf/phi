@@ -10,10 +10,10 @@ use phi_repl::{SubcallHandler, SubcallRequest, SubcallResponse, ToolEvent};
 use phi_lm_core::LmHandler;
 use phi_lm_core::ContextPayload;
 
-use phi_rlm_config::{RlmEvent, StopCause};
-use crate::helpers::{prompt_preview, truncate_preview};
-use crate::rlm::Rlm;
-use crate::state::RunState;
+use crate::config::{RlmEvent, StopCause};
+use super::helpers::{prompt_preview, truncate_preview};
+use super::rlm::Rlm;
+use super::state::RunState;
 
 pub struct EngineSubcalls {
     pub rlm: Rlm,

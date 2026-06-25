@@ -1,15 +1,6 @@
-// Integration tests for the RLM engine — moved from phi-rlm-engine to avoid
-// circular dev-dependency. The umbrella phi-rlm depends on both engine and
-// session, so Rlm types match.
+// Integration tests for the RLM engine.
 
 use phi_rlm::*;
-use phi_rlm_engine::*;
-use phi_rlm_engine::helpers::*;
-use phi_lm_core::*;
-use phi_rlm_prompts::*;
-use phi_rlm_config::LimitKind;
-use phi_rlm_session::RlmSession;
-use phi_rlm::TurnState;
 use async_trait::async_trait;
 use phi_ai::Usage;
 use std::sync::Arc;

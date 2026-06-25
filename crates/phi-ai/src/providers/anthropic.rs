@@ -174,16 +174,20 @@ fn convert_messages(messages: &[Message]) -> Vec<Value> {
         }
     }
 
-    // Anthropic allows up to 4 cache breakpoints total. The system prompt
-    // already uses one (see build_body), leaving 3 for conversation messages.
-    // We place breakpoints on the last content block of the last 2 messages so
-    // that the stable conversation prefix gets cache-read pricing (10x cheaper
-    // than full input) on subsequent turns.
-    for msg in out.iter_mut().rev().take(2) {
-        if let Some(content) = msg.get_mut("content").and_then(|c| c.as_array_mut()) {
-            if let Some(last_block) = content.last_mut() {
+    // Place a single cache breakpoint on the last content block of the last
+    // *user* message. This matches pi's strategy: only user messages get
+    // cache_control, and only the single most-recent user turn. The system
+    // prompt already uses one breakpoint (see build_body); Anthropic allows 4
+    // total, so we keep one on the conversation for cache-read pricing (10x
+    // cheaper than full input) on subsequent turns.
+    for msg in out.iter_mut().rev() {
+        if msg.get("role").and_then(|r| r.as_str()) == Some("user") {
+            if let Some(content) = msg.get_mut("content").and_then(|c| c.as_array_mut())
+                && let Some(last_block) = content.last_mut()
+            {
                 last_block["cache_control"] = json!({ "type": "ephemeral" });
             }
+            break;
         }
     }
 
@@ -413,6 +417,7 @@ mod tests {
     use crate::types::{Api, Auth, Context, CostRates, Message, Model, StreamOptions, UserMessage};
 
     use super::{CLAUDE_CODE_IDENTITY, build_body, convert_messages};
+    use crate::types::{AssistantContent, AssistantMessage};
 
     /// Minimal Anthropic model for exercising `build_body`'s system-block
     /// assembly (no reasoning, no thinking levels).
@@ -497,10 +502,10 @@ mod tests {
     }
 
     /// `convert_messages` must place `cache_control: ephemeral` on the last
-    /// content block of the last 2 messages so the stable conversation prefix
-    /// benefits from cache-read pricing on subsequent turns.
+    /// content block of the last *user* message only — matching pi's strategy
+    /// of a single breakpoint on the most-recent user turn.
     #[test]
-    fn convert_messages_places_cache_breakpoints_on_last_two() {
+    fn convert_messages_places_cache_breakpoint_on_last_user_message() {
         let messages = vec![
             Message::User(UserMessage::new("hello")),
             Message::User(UserMessage::new("world")),
@@ -510,20 +515,23 @@ mod tests {
         let result = convert_messages(&messages);
         assert_eq!(result.len(), 3);
 
-        // First message: no cache_control.
-        let first_content = result[0]["content"].as_array().unwrap();
-        assert!(first_content[0].get("cache_control").is_none());
-
-        // Last 2 messages: last content block has cache_control.
-        for i in [1, 2] {
+        // First two messages: no cache_control.
+        for i in [0, 1] {
             let content = result[i]["content"].as_array().unwrap();
-            let last_block = content.last().unwrap();
-            assert_eq!(
-                last_block["cache_control"]["type"].as_str(),
-                Some("ephemeral"),
-                "message {i} last block must be cached"
+            assert!(
+                content[0].get("cache_control").is_none(),
+                "message {i} must not be cached"
             );
         }
+
+        // Only the last (third) user message: last content block has cache_control.
+        let content = result[2]["content"].as_array().unwrap();
+        let last_block = content.last().unwrap();
+        assert_eq!(
+            last_block["cache_control"]["type"].as_str(),
+            Some("ephemeral"),
+            "last user message must be cached"
+        );
     }
 
     /// With a single message, only that message gets a cache breakpoint.
@@ -543,5 +551,74 @@ mod tests {
     fn convert_messages_empty() {
         let result = convert_messages(&[]);
         assert!(result.is_empty());
+    }
+
+    /// When the last message is an assistant message (e.g. the conversation
+    /// ends with an assistant turn), no cache breakpoint is placed — matching
+    /// pi's `lastMessage.role === "user"` guard.
+    #[test]
+    fn convert_messages_no_breakpoint_when_last_message_is_assistant() {
+        let mut assistant = AssistantMessage::empty(&model());
+        assistant.content.push(AssistantContent::Text {
+            text: "hi there".to_owned(),
+        });
+        let messages = vec![
+            Message::User(UserMessage::new("hello")),
+            Message::Assistant(assistant),
+        ];
+
+        let result = convert_messages(&messages);
+        assert_eq!(result.len(), 2);
+
+        // The last user message (message 0) gets the cache breakpoint.
+        let user_content = result[0]["content"].as_array().unwrap();
+        assert_eq!(
+            user_content[0]["cache_control"]["type"].as_str(),
+            Some("ephemeral"),
+            "the last user message gets cached even when followed by assistant"
+        );
+
+        // Assistant message (second): no cache_control.
+        let asst_content = result[1]["content"].as_array().unwrap();
+        assert!(
+            asst_content[0].get("cache_control").is_none(),
+            "assistant messages never get cache_control"
+        );
+    }
+
+    /// When the conversation ends with [user, assistant, user], only the
+    /// final user message gets the breakpoint — not the assistant or the
+    /// first user.
+    #[test]
+    fn convert_messages_only_last_user_gets_breakpoint() {
+        let mut assistant = AssistantMessage::empty(&model());
+        assistant.content.push(AssistantContent::Text {
+            text: "response".to_owned(),
+        });
+        let messages = vec![
+            Message::User(UserMessage::new("first")),
+            Message::Assistant(assistant),
+            Message::User(UserMessage::new("second")),
+        ];
+
+        let result = convert_messages(&messages);
+        assert_eq!(result.len(), 3);
+
+        // First user: no cache_control.
+        assert!(result[0]["content"].as_array().unwrap()[0]
+            .get("cache_control")
+            .is_none());
+
+        // Assistant: no cache_control.
+        assert!(result[1]["content"].as_array().unwrap()[0]
+            .get("cache_control")
+            .is_none());
+
+        // Last user: has cache_control.
+        assert_eq!(
+            result[2]["content"].as_array().unwrap()[0]["cache_control"]["type"]
+                .as_str(),
+            Some("ephemeral")
+        );
     }
 }

@@ -14,12 +14,12 @@ use phi_tui::crossterm::event::{
 };
 use tokio::sync::mpsc;
 
-use phi_mux_clipboard::MuxClipboard;
-use phi_mux_keys::{AppAction, KeyStroke, Keymap, KeymapMatch, MuxCommand, parse_command};
+use crate::clipboard::MuxClipboard;
+use crate::keys::{AppAction, KeyStroke, Keymap, KeymapMatch, MuxCommand, parse_command};
 use super::command_line::{CommandLineEvent, CommandLineState, command_line_start_col};
-use phi_mux_driver::{self as driver, MuxChannels, SessionKey};
-use phi_mux_persisted::{self as persisted, PersistedState};
-use phi_mux_status::SessionStatus;
+use crate::driver::{self as driver, MuxChannels, SessionKey};
+use crate::persisted::{self as persisted, PersistedState};
+use crate::status::SessionStatus;
 use phi_mux_grid::ansi::{AnsiRenderer, HardwareCursor};
 use phi_mux_grid::cell_surface::CellSurface;
 use phi_mux_grid::layout::{CellLayout, SIDEBAR_WIDTH_DEFAULT, compute_cell_layout};
@@ -36,7 +36,7 @@ use super::ui::sidebar::{
     scroll_sidebar_by_rows_value, selected_sidebar_selection_span, session_sidebar_title,
     sidebar_has_spinner, sidebar_viewport_items, sticky_sidebar_anchor_row,
 };
-use phi_mux_workspace::{self as workspace, Workspace};
+use crate::workspace::{self as workspace, Workspace};
 use phi_session::config::MuxConfig;
 use phi_session_tui::session_builder::SharedResources;
 use phi_session_tui::tui::{self, HostModalKind, HostModalRequest};

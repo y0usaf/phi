@@ -1699,14 +1699,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "phi-llm-parse"
-version = "0.1.0"
-dependencies = [
- "phi-repl",
- "regex-lite",
-]
-
-[[package]]
 name = "phi-lm-core"
 version = "0.1.0"
 dependencies = [
@@ -1748,16 +1740,12 @@ name = "phi-mux"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "arboard",
  "directories",
  "futures",
  "jiff",
- "phi-mux-clipboard",
- "phi-mux-driver",
  "phi-mux-grid",
- "phi-mux-keys",
- "phi-mux-persisted",
- "phi-mux-status",
- "phi-mux-workspace",
+ "phi-rlm",
  "phi-session",
  "phi-session-tui",
  "phi-tui",
@@ -1766,26 +1754,6 @@ dependencies = [
  "tempfile",
  "tokio",
  "unicode-width",
- "vt100",
-]
-
-[[package]]
-name = "phi-mux-clipboard"
-version = "0.1.0"
-dependencies = [
- "arboard",
-]
-
-[[package]]
-name = "phi-mux-driver"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "futures",
- "phi-mux-status",
- "phi-session-tui",
- "phi-tui",
- "tokio",
  "vt100",
 ]
 
@@ -1796,53 +1764,6 @@ dependencies = [
  "phi-tui",
  "unicode-width",
  "vt100",
-]
-
-[[package]]
-name = "phi-mux-keys"
-version = "0.1.0"
-dependencies = [
- "phi-tui",
-]
-
-[[package]]
-name = "phi-mux-persisted"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "directories",
- "serde",
- "serde_json",
- "tempfile",
-]
-
-[[package]]
-name = "phi-mux-status"
-version = "0.1.0"
-dependencies = [
- "phi-rlm",
- "serde_json",
-]
-
-[[package]]
-name = "phi-mux-workspace"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "phi-mux-driver",
- "phi-mux-status",
- "phi-session",
- "tempfile",
-]
-
-[[package]]
-name = "phi-provider"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "phi-ai",
- "phi-lm-core",
- "tokio",
 ]
 
 [[package]]
@@ -1861,36 +1782,6 @@ dependencies = [
 name = "phi-rlm"
 version = "0.1.0"
 dependencies = [
- "async-trait",
- "phi-ai",
- "phi-llm-parse",
- "phi-lm-core",
- "phi-provider",
- "phi-repl",
- "phi-rlm-config",
- "phi-rlm-engine",
- "phi-rlm-prompts",
- "phi-rlm-session",
- "tokio",
- "tokio-util",
-]
-
-[[package]]
-name = "phi-rlm-config"
-version = "0.1.0"
-dependencies = [
- "phi-ai",
- "phi-lm-core",
- "phi-repl",
- "serde",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "phi-rlm-engine"
-version = "0.1.0"
-dependencies = [
  "anyhow",
  "async-trait",
  "base64",
@@ -1898,47 +1789,13 @@ dependencies = [
  "jiff",
  "phi-ai",
  "phi-ext",
- "phi-llm-parse",
  "phi-lm-core",
  "phi-repl",
- "phi-rlm-config",
- "phi-rlm-prompts",
  "phi-runtime",
  "regex-lite",
  "serde",
  "serde_json",
  "sha2",
- "thiserror 2.0.18",
- "tokio",
- "tokio-util",
- "uuid",
-]
-
-[[package]]
-name = "phi-rlm-prompts"
-version = "0.1.0"
-dependencies = [
- "phi-lm-core",
- "serde_json",
-]
-
-[[package]]
-name = "phi-rlm-session"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "jiff",
- "phi-ai",
- "phi-ext",
- "phi-llm-parse",
- "phi-lm-core",
- "phi-repl",
- "phi-rlm-config",
- "phi-rlm-engine",
- "phi-rlm-prompts",
- "phi-runtime",
- "serde",
- "serde_json",
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",

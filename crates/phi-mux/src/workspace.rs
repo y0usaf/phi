@@ -8,8 +8,8 @@ use std::time::{Duration, SystemTime};
 
 use anyhow::{Context as _, Result};
 
-use phi_mux_driver::{SessionHandle, SessionKey};
-use phi_mux_status::SessionStatus;
+use crate::driver::{SessionHandle, SessionKey};
+use crate::status::SessionStatus;
 use phi_session::session::{self, SessionStore};
 
 pub struct Workspace {

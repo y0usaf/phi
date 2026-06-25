@@ -11,15 +11,15 @@ use phi_ext::{EventKind, EventPayload, LifecycleEvent};
 use phi_runtime::AppRuntime;
 
 use phi_lm_core::LmHandler;
-use phi_llm_parse::{ExecutedBlock, format_iteration};
-use phi_rlm_prompts::QueryMetadata;
+use crate::llm_parse::{ExecutedBlock, format_iteration};
+use crate::prompts::QueryMetadata;
 use phi_lm_core::{ChatMessage, ContextPayload, Role};
 
-use phi_rlm_config::{RlmCompletion, RlmConfig, RlmEvent, StopCause};
-use phi_rlm_engine::helpers::{context_snippet, dispatch_event, history_snippet, push_repl_turns, RestoredExchange, RestoredRepl};
-use phi_rlm_engine::Rlm;
-use phi_rlm_engine::state::RunState;
-use phi_rlm_engine::subcalls::Outcome;
+use crate::config::{RlmCompletion, RlmConfig, RlmEvent, StopCause};
+use crate::engine::helpers::{context_snippet, dispatch_event, history_snippet, push_repl_turns, RestoredExchange, RestoredRepl};
+use crate::engine::Rlm;
+use crate::engine::state::RunState;
+use crate::engine::subcalls::Outcome;
 
 pub struct RlmSession {
     pub rlm: Rlm,

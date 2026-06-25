@@ -1,8 +1,8 @@
 //! Harness-phase / turn-snapshot types.
 //!
-//! These live in `phi-rlm-engine` (rather than `phi-harness`) to avoid a
-//! dependency cycle: `phi-harness` depends on `phi-rlm` → `phi-rlm-engine`,
-//! so types referenced by `Rlm::completion_with` must be defined here.
+//! These live in the `engine` module (rather than `phi-harness`) to avoid
+//! a dependency cycle: `phi-harness` depends on `phi-rlm`, so types referenced
+//! by `Rlm::completion_with` must be defined here.
 
 use std::fmt;
 use std::sync::Arc;
@@ -10,6 +10,7 @@ use std::sync::Arc;
 use phi_ai::ThinkingLevel;
 
 use phi_lm_core::{ChatMessage, ContextPayload, LanguageModel};
+use crate::config::RlmConfig;
 
 /// Operational phase of the harness.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -104,4 +105,4 @@ pub use helpers::{RestoredExchange, RestoredRepl};
 pub use rlm::Rlm;
 
 // Re-export config types for convenience
-pub use phi_rlm_config::{RlmConfig, RlmCompletion, RlmEvent, StopCause};
+pub use crate::config::{RlmCompletion, RlmEvent, StopCause};

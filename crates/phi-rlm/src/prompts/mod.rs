@@ -1,8 +1,3 @@
-//! Pi-style composable system-prompt builder for RLM.
-//!
-//! The monolithic `RLM_SYSTEM_PROMPT` template has been decomposed into named,
-//! overridable sections assembled by `SystemPromptOptions` + `build_system_prompt`.
-
 mod builder;
 mod constants;
 mod metadata;

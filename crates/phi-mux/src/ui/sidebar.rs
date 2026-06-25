@@ -2,8 +2,8 @@
 //! `app::sidebar`, with status derived from `SessionStatus` instead of the
 //! sidecar runtime flags).
 
-use phi_mux_status::SessionStatus;
-use phi_mux_workspace::{MuxProject, MuxSession};
+use crate::status::SessionStatus;
+use crate::workspace::{MuxProject, MuxSession};
 use phi_mux_grid::color::Color;
 use phi_mux_grid::theme::{HEADING, MUTED, TEXT};
 

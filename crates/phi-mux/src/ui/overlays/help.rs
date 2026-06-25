@@ -4,7 +4,7 @@
 use phi_tui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::dialog::render_dialog_title_line;
-use phi_mux_keys::{AppAction, Keymap};
+use crate::keys::{AppAction, Keymap};
 use phi_mux_grid::cell_surface::{CellSurface, draw_box, render_cell_scrollbar, truncate_to_cells};
 use phi_mux_grid::layout::CellRect as Rect;
 use crate::ui::scene::ScenePalette;

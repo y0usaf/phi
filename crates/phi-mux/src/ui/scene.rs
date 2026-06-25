@@ -1,7 +1,7 @@
 //! Frame composition (port of pi-harness `app::scene`): sidebar, embedded
 //! terminal blit, and the bottom statusline.
 
-use phi_mux_status::SessionStatus;
+use crate::status::SessionStatus;
 use phi_mux_grid::cell_surface::{
     CellSurface, display_cell_width, render_cell_scrollbar, truncate_to_cells,
 };

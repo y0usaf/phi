@@ -14,15 +14,15 @@ use phi_ext::{EventKind, EventPayload, LifecycleEvent};
 use phi_runtime::AppRuntime;
 
 use phi_lm_core::{DeltaSink, LanguageModel, LmHandler, ThinkingSink, UsageBreakdown};
-use phi_llm_parse::{ExecutedBlock, could_open_block, find_code_blocks, format_iteration, last_block_end};
-use phi_rlm_prompts::{DEFAULT_ANSWER_NUDGE, PROSE_NUDGE, QueryMetadata, SystemPromptOptions, build_system_prompt, build_user_prompt, metadata_user_prompt};
+use crate::llm_parse::{ExecutedBlock, could_open_block, find_code_blocks, format_iteration, last_block_end};
+use crate::prompts::{DEFAULT_ANSWER_NUDGE, PROSE_NUDGE, QueryMetadata, SystemPromptOptions, build_system_prompt, build_user_prompt, metadata_user_prompt};
 use phi_lm_core::{ChatMessage, ContextPayload, Role};
 
-use phi_rlm_config::{EnvFactory, Events, LimitKind, PythonEnvFactory, RlmCompletion, RlmConfig, RlmEvent, SavePointFn, StopCause};
-use crate::helpers::{dispatch_event, usage_breakdowns_for_model};
-use crate::state::RunState;
-use crate::TurnState;
-use crate::subcalls::{EngineSubcalls, Outcome};
+use crate::config::{EnvFactory, Events, LimitKind, PythonEnvFactory, RlmCompletion, RlmConfig, RlmEvent, SavePointFn, StopCause};
+use super::helpers::{dispatch_event, usage_breakdowns_for_model};
+use super::state::RunState;
+use super::TurnState;
+use super::subcalls::{EngineSubcalls, Outcome};
 
 #[derive(Clone)]
 pub struct Rlm {

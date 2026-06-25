@@ -5,7 +5,7 @@ use phi_tui::fuzzy_filter;
 use tokio::sync::oneshot;
 
 use super::dialog::render_dialog_title_line;
-use phi_mux_driver::SessionKey;
+use crate::driver::SessionKey;
 use phi_mux_grid::cell_surface::{CellSurface, draw_box, render_cell_scrollbar, truncate_to_cells};
 use phi_mux_grid::layout::CellRect as Rect;
 use crate::ui::scene::ScenePalette;
