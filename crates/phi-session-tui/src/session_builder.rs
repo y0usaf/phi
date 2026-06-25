@@ -368,21 +368,16 @@ mod env_info_tests {
     }
 }
 
-/// Track 3 (plans/prompt-content-port.md): kill tool-name drift between the
-/// ported prompt sections and the actual coding prelude. The prompt's hand-
-/// written helper recommendations (`coding_tools_section()`-derived roster)
-/// are the only thing tying the model's `read_file`/`edit_file`/... references
-/// to real REPL functions. This test parses the real roster out of
-/// `coding_tools_section()` and asserts every helper the ported sections name
-/// in backticks exists there (or is an allowlisted core REPL builtin), and
-/// that the dedicated file helpers are still both documented and recommended.
+/// Track 3: kill tool-name drift between the coding prelude and the model's
+/// reachable tool surface. The handwritten `coding_tools_section()` roster is
+/// the only thing tying the model's `read_file`/`edit_file`/... references to
+/// real REPL functions. This test parses the real roster out of
+/// `coding_tools_section()` and asserts every documented helper is present.
 #[cfg(test)]
 mod prompt_drift_tests {
     use std::collections::HashSet;
 
     use phi_builtins::prelude::coding_tools_section;
-    use phi_rlm::prompts::{DEFAULT_ACTIONS, DEFAULT_DOING_TASKS, DEFAULT_TONE_AND_STYLE,
-                           DEFAULT_USING_YOUR_TOOLS};
 
     /// Parse the helper function names out of `coding_tools_section()`, whose
     /// roster lines look like `- bash(cmd: str, ...) -> str — ...`.
@@ -406,28 +401,6 @@ mod prompt_drift_tests {
         set
     }
 
-    /// Backticked identifiers in a prompt section (e.g. `` `read_file` `` or
-    /// `` `bash()` ``), skipping triple-backtick ```repl``` fences.
-    fn backticked_helpers(text: &str) -> Vec<String> {
-        let stripped = text.replace("```", "");
-        let parts: Vec<&str> = stripped.split('`').collect();
-        let mut out = Vec::new();
-        for (i, part) in parts.iter().enumerate() {
-            if i % 2 == 1 {
-                let name: String = part
-                    .chars()
-                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
-                    .collect();
-                if let Some(first) = name.chars().next()
-                    && (first.is_ascii_alphabetic() || first == '_')
-                {
-                    out.push(name);
-                }
-            }
-        }
-        out
-    }
-
     #[test]
     fn coding_roster_lists_expected_file_helpers() {
         let roster = coding_roster(&coding_tools_section());
@@ -435,47 +408,6 @@ mod prompt_drift_tests {
             assert!(
                 roster.contains(expected),
                 "coding_tools_section() no longer documents `{expected}` — prompt/prelude drift"
-            );
-        }
-    }
-
-    #[test]
-    fn ported_sections_only_name_real_prelude_helpers() {
-        let roster = coding_roster(&coding_tools_section());
-        // Core REPL builtins the prompt legitimately references (from
-        // DEFAULT_REPL_TOOLS, not the coding prelude) — allowlisted so they
-        // don't trip the "must be a coding helper" assertion.
-        let allowlist: HashSet<&str> = [
-            "rlm_query",
-            "rlm_query_batched",
-            "llm_query",
-            "llm_query_batched",
-        ]
-        .iter()
-        .copied()
-        .collect();
-
-        for (label, section) in [
-            ("DOING_TASKS", DEFAULT_DOING_TASKS),
-            ("USING_YOUR_TOOLS", DEFAULT_USING_YOUR_TOOLS),
-            ("TONE_AND_STYLE", DEFAULT_TONE_AND_STYLE),
-            ("ACTIONS", DEFAULT_ACTIONS),
-        ] {
-            for helper in backticked_helpers(section) {
-                assert!(
-                    roster.contains(&helper) || allowlist.contains(helper.as_str()),
-                    "{label} references `{helper}` which is neither a coding prelude helper \
-                     nor an allowlisted core REPL builtin — prompt/prelude drift"
-                );
-            }
-        }
-
-        // The dedicated file helpers must still be recommended (no accidental
-        // removal), not merely rostered.
-        for expected in ["read_file", "write_file", "edit_file", "grep", "find", "bash"] {
-            assert!(
-                DEFAULT_USING_YOUR_TOOLS.contains(expected),
-                "USING_YOUR_TOOLS no longer names `{expected}`"
             );
         }
     }

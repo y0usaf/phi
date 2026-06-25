@@ -15,7 +15,7 @@ use phi_runtime::AppRuntime;
 
 use crate::handler::{DeltaSink, LanguageModel, LmHandler, ThinkingSink, UsageBreakdown};
 use crate::parsing::{ExecutedBlock, could_open_block, find_code_blocks, format_iteration, last_block_end};
-use crate::prompts::{DEFAULT_ANSWER_NUDGE, DEFAULT_ACTIONS, DEFAULT_DOING_TASKS, DEFAULT_TONE_AND_STYLE, DEFAULT_USING_YOUR_TOOLS, PROSE_NUDGE, QueryMetadata, SystemPromptOptions, build_system_prompt, build_user_prompt, metadata_user_prompt};
+use crate::prompts::{DEFAULT_ANSWER_NUDGE, PROSE_NUDGE, QueryMetadata, SystemPromptOptions, build_system_prompt, build_user_prompt, metadata_user_prompt};
 use crate::{ChatMessage, ContextPayload, Role};
 
 use super::config::{EnvFactory, Events, LimitKind, PythonEnvFactory, RlmCompletion, RlmConfig, RlmEvent, SavePointFn, StopCause};
@@ -259,28 +259,18 @@ impl Rlm {
     }
 
     /// Build the `SystemPromptOptions` for this RLM from its config. The
-    /// coding-agent sections (`doing_tasks`, `actions`, `using_your_tools`,
-    /// `tone_and_style`) are gated on `user_prologue`: they default to off for
-    /// the bare-RLM identity and turn on only in coding-agent mode. The
-    /// identity-neutral sections (`cyber_risk`, `output_efficiency`,
-    /// `system_reminder_semantics`, `summarize_tool_results`) fall back to
-    /// their `DEFAULT_*` const inside `build_system_prompt`, so they are left
-    /// `None` here. `env_info` is caller-supplied data threaded from
-    /// `RlmConfig::env_info`.
+    /// identity-neutral section `cyber_risk` falls back to its `DEFAULT_*`
+    /// const inside `build_system_prompt`, so it is left `None` here.
+    /// `env_info` is caller-supplied data threaded from `RlmConfig::env_info`.
     ///
     /// The gate is re-evaluated every build (cold root and each warm `send`),
     /// not once: `user_prologue` persists on the root config across warm turns
-    /// (only `recurse` clears it for child RLMs), so gated content survives
-    /// the whole session.
+    /// (only `recurse` clears it for child RLMs), so it survives the whole
+    /// session.
     pub(super) fn system_prompt_options(&self) -> SystemPromptOptions<'_> {
-        let coding = self.config.user_prologue.is_some();
         SystemPromptOptions {
             identity: self.config.custom_system_prompt.as_deref(),
             custom_tools: self.config.tools_section.as_deref(),
-            doing_tasks: coding.then_some(DEFAULT_DOING_TASKS),
-            actions: coding.then_some(DEFAULT_ACTIONS),
-            using_your_tools: coding.then_some(DEFAULT_USING_YOUR_TOOLS),
-            tone_and_style: coding.then_some(DEFAULT_TONE_AND_STYLE),
             env_info: self.config.env_info.as_deref(),
             append: self.config.append_system_prompt.as_deref(),
             cwd: self.config.cwd.as_deref(),

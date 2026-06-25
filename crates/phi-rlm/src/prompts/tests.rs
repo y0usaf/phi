@@ -176,60 +176,12 @@ fn query_metadata_counts_message_lists() {
     assert_eq!(metadata.context_total_length, 5);
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
-// Ported claude-code content (plans/prompt-content-port.md).
-// ──────────────────────────────────────────────────────────────────────────────
-
-/// Coding-agent `SystemPromptOptions` (all gated sections set to their
-/// `DEFAULT_*` consts + an env_info block), mirroring what
-/// `Rlm::system_prompt_options` produces when `user_prologue` is set.
-fn coding_options<'a>(env_info: &'a str) -> SystemPromptOptions<'a> {
-    SystemPromptOptions {
-        doing_tasks: Some(DEFAULT_DOING_TASKS),
-        actions: Some(DEFAULT_ACTIONS),
-        using_your_tools: Some(DEFAULT_USING_YOUR_TOOLS),
-        tone_and_style: Some(DEFAULT_TONE_AND_STYLE),
-        env_info: Some(env_info),
-        ..Default::default()
-    }
-}
-
 #[test]
-fn identity_neutral_sections_default_on_for_bare_rlm() {
-    // A bare-RLM build (no user_prologue, no gated sections set) still emits
-    // the identity-neutral guardrails via const fallback (Decision 3).
+fn identity_neutral_cyber_risk_default_on() {
+    // A bare-RLM build still emits the cyber_risk guardrail via const fallback.
     let prompt = build_system_prompt(&SystemPromptOptions::default());
-    assert!(prompt.contains("Assist with authorized security testing")); // cyber_risk
-    assert!(prompt.contains("# Output efficiency"));
-    assert!(prompt.contains("<system-reminder> tags")); // system_reminder folded into mechanics
-    assert!(prompt.contains("may be cleared later")); // summarize_tool_results
-    assert!(prompt.contains("NEVER generate or guess URLs")); // URL restriction folded into cyber_risk
-}
-
-#[test]
-fn bare_rlm_omits_coding_agent_sections() {
-    // The coding-agent sections are gated: absent from a bare-RLM build.
-    let prompt = build_system_prompt(&SystemPromptOptions::default());
-    assert!(!prompt.contains("# Doing tasks"));
-    assert!(!prompt.contains("# Executing actions with care"));
-    assert!(!prompt.contains("# Using your REPL helpers"));
-    assert!(!prompt.contains("# Tone and style"));
-}
-
-#[test]
-fn coding_mode_emits_all_sections_including_env_info() {
-    let prompt = build_system_prompt(&coding_options(
-        "# Environment\n - Primary working directory: /home/user/proj",
-    ));
-    assert!(prompt.contains("# Doing tasks"));
-    assert!(prompt.contains("# Executing actions with care"));
-    assert!(prompt.contains("# Using your REPL helpers"));
-    assert!(prompt.contains("# Tone and style"));
-    assert!(prompt.contains("# Output efficiency"));
-    assert!(prompt.contains("# Environment"));
-    assert!(prompt.contains("Primary working directory: /home/user/proj"));
-    // Identity-neutral guardrails are still present in coding mode.
     assert!(prompt.contains("Assist with authorized security testing"));
+    assert!(prompt.contains("NEVER generate or guess URLs"));
 }
 
 #[test]
@@ -243,25 +195,6 @@ fn cyber_risk_section_sits_between_identity_and_core_tools() {
 }
 
 #[test]
-fn mechanics_precedes_output_efficiency() {
-    // RLM turn-protocol compatibility (plans/prompt-content-port.md "Identity/
-    // RLM-model compatibility"): DEFAULT_MECHANICS' "don't finalize on turn 1"
-    // must appear before output-efficiency's "lead with the answer" so the two
-    // don't collide.
-    let prompt = build_system_prompt(&SystemPromptOptions::default());
-    let mech = prompt
-        .find("Do not flip `answer[\"ready\"] = True` on turn 1")
-        .unwrap_or_else(|| panic!("mechanics turn-1 text missing"));
-    let oe = prompt
-        .find("# Output efficiency")
-        .unwrap_or_else(|| panic!("output efficiency section missing"));
-    assert!(
-        mech < oe,
-        "mechanics turn-1 guard must precede output efficiency (mech@{mech} oe@{oe})"
-    );
-}
-
-#[test]
 fn env_info_precedes_cwd_line() {
     let opts = SystemPromptOptions {
         env_info: Some("# Environment\n - Primary working directory: /x"),
@@ -272,61 +205,4 @@ fn env_info_precedes_cwd_line() {
     let env = prompt.find("# Environment").unwrap();
     let cwd = prompt.find("Working directory: /x").unwrap();
     assert!(env < cwd, "env_info block must precede the cwd line");
-}
-
-#[test]
-fn summarize_tool_results_follows_cwd() {
-    let opts = SystemPromptOptions {
-        cwd: Some("/x"),
-        ..Default::default()
-    };
-    let prompt = build_system_prompt(&opts);
-    let cwd = prompt.find("Working directory: /x").unwrap();
-    let summarize = prompt.find("may be cleared later").unwrap();
-    assert!(cwd < summarize, "summarize_tool_results must follow cwd");
-}
-
-#[test]
-fn ported_sections_use_repl_fences_not_native_tool_framing() {
-    // Decision 2: no native provider tool_use framing survives the port.
-    let sections = [
-        DEFAULT_CYBER_RISK,
-        DEFAULT_DOING_TASKS,
-        DEFAULT_ACTIONS,
-        DEFAULT_USING_YOUR_TOOLS,
-        DEFAULT_TONE_AND_STYLE,
-        DEFAULT_OUTPUT_EFFICIENCY,
-        DEFAULT_SYSTEM_REMINDER_SEMANTICS,
-        DEFAULT_SUMMARIZE_TOOL_RESULTS,
-    ];
-    for (i, section) in sections.iter().enumerate() {
-        for banned in [
-            "tool call",
-            "tool calls",
-            "tool use",
-            "tool results",
-            "parallel tool call",
-            "call the Read tool",
-            "call the Edit tool",
-        ] {
-            assert!(
-                !section.contains(banned),
-                "section #{i} still contains native-tool framing `{banned}`: {section:?}"
-            );
-        }
-    }
-    // The dedicated-helper guidance must reference repl fences and the helpers.
-    assert!(DEFAULT_USING_YOUR_TOOLS.contains("```repl```"));
-    assert!(DEFAULT_USING_YOUR_TOOLS.contains("`read_file`"));
-    assert!(DEFAULT_USING_YOUR_TOOLS.contains("`bash()`"));
-}
-
-#[test]
-fn coding_prompt_does_not_duplicate_claude_code_identity() {
-    // Track 0: no ported section reinforces the OAuth "Claude Code" / "interactive
-    // agent" identity — the RLM identity owns the system blocks, the coding-agent
-    // identity lives in `user_prologue` (user-message channel), not here.
-    let prompt = build_system_prompt(&coding_options("# Environment\n - x"));
-    assert!(!prompt.contains("Claude Code, Anthropic's official CLI"));
-    assert!(!prompt.contains("interactive agent that helps"));
 }

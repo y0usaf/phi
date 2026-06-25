@@ -94,11 +94,12 @@ mod tests {
     }
 
     #[test]
-    fn system_prompt_gate_bare_vs_coding() {
-        // Track 2 gate: coding-agent sections (`doing_tasks`, `actions`,
-        // `using_your_tools`, `tone_and_style`) emit only when `user_prologue`
-        // is set; identity-neutral guardrails are always on. The gate is re-read
-        // from config each build (cold root and every warm send).
+    fn system_prompt_structure() {
+        // The prompt is now minimal (ref/rlm style): identity + cyber_risk +
+        // core_tools + mechanics + orchestrator; no ported coding-agent
+        // sections (# Doing tasks / # Executing actions / # Using your REPL
+        // helpers / # Tone and style / # Output efficiency). The gate on
+        // `user_prologue` is gone.
         let bare = rlm(
             RlmConfig {
                 env_info: Some("# Environment\n - Primary working directory: /x".into()),
@@ -112,10 +113,14 @@ mod tests {
         assert!(!bare_prompt.contains("# Executing actions with care"));
         assert!(!bare_prompt.contains("# Using your REPL helpers"));
         assert!(!bare_prompt.contains("# Tone and style"));
+        assert!(!bare_prompt.contains("# Output efficiency"));
         assert!(bare_prompt.contains("Assist with authorized security testing"));
-        assert!(bare_prompt.contains("# Output efficiency"));
+        assert!(bare_prompt.contains("Available in the REPL:"));
         assert!(bare_prompt.contains("# Environment"));
+        assert!(bare_prompt.contains("As an RLM, you should act as an orchestrator"));
 
+        // `user_prologue` no longer toggles any system-prompt section; it is
+        // only inserted as a user message in `initial_history`.
         let coding = rlm(
             RlmConfig {
                 env_info: Some("# Environment\n - Primary working directory: /x".into()),
@@ -126,10 +131,7 @@ mod tests {
             quiet_sub(),
         );
         let coding_prompt = build_system_prompt(&coding.system_prompt_options());
-        assert!(coding_prompt.contains("# Doing tasks"));
-        assert!(coding_prompt.contains("# Executing actions with care"));
-        assert!(coding_prompt.contains("# Using your REPL helpers"));
-        assert!(coding_prompt.contains("# Tone and style"));
+        assert_eq!(bare_prompt, coding_prompt, "user_prologue must not change the system prompt");
     }
 
     #[tokio::test]
@@ -496,14 +498,8 @@ mod tests {
         let root = Arc::new(ScriptedLm::new(
             "root-model",
             &[
-                "thinking 1
-```repl
-print('hi')
-```",
-                "thinking 2
-```repl
-print('hi')
-```",
+                "thinking 1\n```repl\nprint('hi')\n```",
+                "thinking 2\n```repl\nprint('hi')\n```",
                 "the synthesized final",
             ],
         ));
