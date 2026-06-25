@@ -15,7 +15,20 @@ use phi_runtime::AppRuntime;
 
 use phi_lm_core::{DeltaSink, LanguageModel, LmHandler, ThinkingSink, UsageBreakdown};
 use crate::llm_parse::{ExecutedBlock, could_open_block, find_code_blocks, format_iteration, last_block_end};
-use crate::prompts::{DEFAULT_ANSWER_NUDGE, PROSE_NUDGE, QueryMetadata, SystemPromptOptions, build_system_prompt, build_user_prompt, metadata_user_prompt};
+use crate::prompts::{DEFAULT_ANSWER_NUDGE, QueryMetadata, SystemPromptOptions, build_system_prompt, build_user_prompt, metadata_user_prompt};
+use std::sync::LazyLock;
+use regex_lite::Regex;
+
+static TASK_COMPLETE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?s)<task_complete\s+output="(?P<output>.*?)"\s*/>"#)
+        .expect("task_complete regex")
+});
+
+/// Maximum consecutive block-free turns (no ```repl``` block, no
+/// `<task_complete>` token) before the prose-safety-valve fires. High enough
+/// that a verbally-planning model won't trip it, low enough to catch a
+/// genuinely stuck model before exhausting `max_iterations`.
+const MAX_CONSECUTIVE_PROSE: usize = 4;
 use phi_lm_core::{ChatMessage, ContextPayload, Role};
 
 use crate::config::{EnvFactory, Events, LimitKind, PythonEnvFactory, RlmCompletion, RlmConfig, RlmEvent, SavePointFn, StopCause};
@@ -484,17 +497,63 @@ impl Rlm {
                 };
             }
 
-            // Prose-bounce: a block-free turn executes nothing. The first
-            // gets a corrective `PROSE_NUDGE` reminder so the model can
-            // either submit its prose as the answer or get back to work. A
-            // second consecutive block-free turn is accepted as the final
-            // answer (`StopCause::Prose`), matching `DEFAULT_MECHANICS`.
+            // Prose handling: a block-free turn executes nothing. We check
+            // for an explicit `<task_complete output="..."/>` token first —
+            // this is the model's deterministic way to signal completion
+            // without a ```repl``` block (replacing the API-native
+            // `stop_reason: end_turn` that Phi can't use because it uses
+            // text-based ```repl``` blocks, not native tool calling). If no
+            // token is found, we silently bank the prose and continue — no
+            // nudge injection, no 2-strike termination. A high-threshold
+            // safety valve (`MAX_CONSECUTIVE_PROSE`) catches genuinely stuck
+            // models without burning the entire iteration budget.
             let had_code = !find_code_blocks(&response).is_empty();
             if had_code {
                 consecutive_prose = 0;
             } else {
+                // Priority 1: Explicit completion token. Parse the `output`
+                // attribute and accept it as the final answer.
+                if let Some(caps) = TASK_COMPLETE_RE.captures(&response) {
+                    let final_answer = caps
+                        .name("output")
+                        .map(|m| m.as_str().to_owned())
+                        .unwrap_or_else(|| response.trim().to_owned());
+                    self.events.emit(RlmEvent::AnswerSubmitted {
+                        depth: self.depth,
+                        content: final_answer.clone(),
+                    });
+                    dispatch_event(
+                        &self.runtime,
+                        LifecycleEvent {
+                            kind: EventKind::TurnEnd,
+                            payload: EventPayload::TurnEnd {
+                                turn: i as u32,
+                                had_code: false,
+                            },
+                        },
+                    );
+                    self.events.emit(RlmEvent::IterationEnd {
+                        depth: self.depth,
+                        iteration: i,
+                        duration: iter_start.elapsed(),
+                    });
+                    return Outcome {
+                        stop: StopCause::Prose,
+                        response: final_answer,
+                        error: None,
+                        iterations,
+                    };
+                }
+
+                // Priority 2: Silent banking — no nudge, no interruption.
+                // The model is likely planning in prose. Let it work.
                 consecutive_prose += 1;
-                if consecutive_prose >= 2 {
+
+                // Priority 3: High-threshold safety valve. Only fire after
+                // `MAX_CONSECUTIVE_PROSE` consecutive block-free turns,
+                // accepting the prose as the final answer to avoid burning
+                // the entire iteration budget.
+                if consecutive_prose >= MAX_CONSECUTIVE_PROSE {
                     let prose = response.trim().to_owned();
                     self.events.emit(RlmEvent::AnswerSubmitted {
                         depth: self.depth,
@@ -522,10 +581,10 @@ impl Rlm {
                         iterations,
                     };
                 }
-                // First block-free turn: emit the turn-end, push the
-                // assistant prose (so the model sees its own last message
-                // is the thing being bounced), then the nudge as a user
-                // message. Continue to the next iteration.
+
+                // Bank the prose silently and continue — no PROSE_NUDGE
+                // injection. The model sees its own last message in history
+                // and can decide to code or complete on the next turn.
                 dispatch_event(
                     &self.runtime,
                     LifecycleEvent {
@@ -544,10 +603,6 @@ impl Rlm {
                 history.push(ChatMessage {
                     role: Role::Assistant,
                     content: response,
-                });
-                history.push(ChatMessage {
-                    role: Role::User,
-                    content: PROSE_NUDGE.to_owned(),
                 });
                 i += 1;
                 continue;

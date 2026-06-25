@@ -89,8 +89,10 @@ pub enum StopCause {
     Fallback,
     Limit(LimitKind),
     Cancelled,
-    /// The prose-bounce fired: a second consecutive assistant turn with
-    /// no ```repl``` block. The prose is accepted as the final answer.
+    /// The model signalled completion without a ```repl``` block: either an
+    /// explicit `<task_complete output="..."/>` token, or the
+    /// `MAX_CONSECUTIVE_PROSE` safety valve fired after several consecutive
+    /// block-free turns. The prose/answer is accepted as the final answer.
     Prose,
     /// Root model or environment failure.
     Failed,

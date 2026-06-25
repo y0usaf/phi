@@ -320,12 +320,10 @@ const TRANSCRIPT_COMPACTION_THRESHOLD: usize = 20;
     }
 
     #[tokio::test]
-    async fn first_turn_plain_prose_gets_bounced_then_repl_answer() {
-        // Prose-bounce: a block-free turn executes nothing. The first gets a
-        // corrective `PROSE_NUDGE` user reminder; a second consecutive
-        // block-free turn would be accepted as the final answer
-        // (`StopCause::Prose`). Here the model heeds the nudge on turn 2 and
-        // submits via the REPL on turn 3.
+    async fn prose_silently_banked_then_repl_answer() {
+        // Silent banking: a block-free turn executes nothing, but instead of
+        // injecting a PROSE_NUDGE, the prose is silently banked into history
+        // and the loop continues. The model proceeds to code on the next turn.
         let root = Arc::new(ScriptedLm::new(
             "root-model",
             &[
@@ -348,7 +346,7 @@ const TRANSCRIPT_COMPACTION_THRESHOLD: usize = 20;
 
         let prompts = root.recorded_prompts();
         // Turn 2's prompt must contain the banked prose-only assistant message
-        // from turn 1, and the PROSE_NUDGE user reminder injected after it.
+        // from turn 1, but NO PROSE_NUDGE user reminder (silent banking).
         let second = &prompts[1];
         assert!(
             second
@@ -356,20 +354,24 @@ const TRANSCRIPT_COMPACTION_THRESHOLD: usize = 20;
                 .any(|m| m.role == Role::Assistant && m.content.contains("without using the REPL"))
         );
         assert!(
-            second
+            !second
                 .iter()
-                .any(|m| m.role == Role::User && m.content.contains("Your previous message contained no ```repl``` block"))
+                .any(|m| m.role == Role::User && m.content.contains("Your previous message contained no")),
+            "silent banking must not inject a PROSE_NUDGE"
         );
     }
 
     #[tokio::test]
-    async fn second_consecutive_prose_turn_accepted_as_answer() {
-        // Two consecutive block-free turns → the second is accepted as the
-        // final answer via `StopCause::Prose` (no nudge on the second, no
-        // further iteration).
+    async fn explicit_task_complete_token_ends_session() {
+        // A block-free turn with `<task_complete output="..."/>` is accepted
+        // as the final answer via `StopCause::Prose`. The `output` attribute
+        // is extracted as the response.
         let root = Arc::new(ScriptedLm::new(
             "root-model",
-            &["The answer is 42, clearly.", "I'm confident: 42."],
+            &[
+                "Let me think about this.\n```repl\nprint('checking')\n```",
+                "The answer is clear now. <task_complete output=\"42 is the magic number\"/>",
+            ],
         ));
         let engine = rlm(RlmConfig::default(), root.clone(), quiet_sub());
         let result = engine
@@ -380,26 +382,61 @@ const TRANSCRIPT_COMPACTION_THRESHOLD: usize = 20;
             )
             .await;
         assert_eq!(result.stop, StopCause::Prose, "{:?}", result.error);
-        assert_eq!(result.response, "I'm confident: 42.");
+        assert_eq!(result.response, "42 is the magic number");
         assert_eq!(result.iterations, 2);
+    }
+
+    #[tokio::test]
+    async fn max_consecutive_prose_safety_valve_fires() {
+        // After MAX_CONSECUTIVE_PROSE (4) consecutive block-free turns
+        // without a <task_complete> token, the safety valve fires and the
+        // prose is accepted as the final answer.
+        let root = Arc::new(ScriptedLm::new(
+            "root-model",
+            &[
+                "Thinking about it.",
+                "Still thinking.",
+                "Almost there.",
+                "The answer is 42.",
+            ],
+        ));
+        let engine = rlm(RlmConfig::default(), root.clone(), quiet_sub());
+        let result = engine
+            .completion(
+                ContextPayload::Str("ctx".into()),
+                Some("What is the magic number?"),
+                &CancellationToken::new(),
+            )
+            .await;
+        assert_eq!(result.stop, StopCause::Prose, "{:?}", result.error);
+        assert_eq!(result.response, "The answer is 42.");
+        assert_eq!(result.iterations, 4);
 
         let prompts = root.recorded_prompts();
-        // Turn 1 prose is banked, followed by the PROSE_NUDGE reminder. Turn
-        // 2 has no nudge after it — the prose is accepted directly.
-        let second = &prompts[1];
-        assert!(
-            second
-                .iter()
-                .any(|m| m.role == Role::User && m.content.contains("Your previous message contained no ```repl``` block"))
-        );
+        // No PROSE_NUDGE should be injected on any turn, pure silent banking
+        // until the threshold fires.
+        for prompt in &prompts {
+            assert!(
+                !prompt
+                    .iter()
+                    .any(|m| m.role == Role::User && m.content.contains("Your previous message contained no")),
+                "no PROSE_NUDGE should be injected during silent banking"
+            );
+        }
     }
+
+    // (second_consecutive_prose_turn_accepted_as_answer removed: the
+    //  2-strike prose-bounce is replaced by silent banking + task_complete
+    //  token + MAX_CONSECUTIVE_PROSE safety valve. See
+    //  explicit_task_complete_token_ends_session and
+    //  max_consecutive_prose_safety_valve_fires above.)
 
     #[tokio::test]
     async fn prose_counter_resets_after_code_turn() {
         // prose → code → prose → repl-answer: the `consecutive_prose` counter
-        // must reset to 0 when a turn contains a ```repl``` block, so the third
-        // turn (prose) is treated as a *first* prose (nudge, not accept). The
-        // model heeds the nudge on turn 4 and submits via the REPL.
+        // must reset to 0 when a turn contains a ```repl``` block. With silent
+        // banking (no nudge), both prose turns are banked silently and the
+        // model proceeds to the REPL on turn 4.
         let root = Arc::new(ScriptedLm::new(
             "root-model",
             &[
@@ -422,21 +459,22 @@ const TRANSCRIPT_COMPACTION_THRESHOLD: usize = 20;
         assert_eq!(result.iterations, 4);
 
         let prompts = root.recorded_prompts();
-        // Turn 1 (prose) is banked with a PROSE_NUDGE after it.
+        // Turn 1 (prose) is banked silently, no PROSE_NUDGE.
         let second = &prompts[1];
         assert!(
-            second
+            !second
                 .iter()
-                .any(|m| m.role == Role::User && m.content.contains("Your previous message contained no ```repl``` block"))
+                .any(|m| m.role == Role::User && m.content.contains("Your previous message contained no")),
+            "silent banking: no PROSE_NUDGE after first prose"
         );
-        // Turn 3 (the second prose, after the code turn reset) must also get a
-        // PROSE_NUDGE — proving the counter reset, not carried over from turn 1.
+        // Turn 3 (the second prose, after the code turn reset) is also banked
+        // silently, proving the counter reset, no nudge carried over.
         let fourth = &prompts[3];
         assert!(
-            fourth
+            !fourth
                 .iter()
-                .any(|m| m.role == Role::User && m.content.contains("Your previous message contained no ```repl``` block")),
-            "prose after a code turn must be treated as a first prose (counter reset)"
+                .any(|m| m.role == Role::User && m.content.contains("Your previous message contained no")),
+            "prose after a code turn must be silently banked (counter reset, no nudge)"
         );
     }
 
