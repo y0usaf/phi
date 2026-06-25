@@ -36,6 +36,7 @@ use super::ui::sidebar::{
     scroll_sidebar_by_rows_value, selected_sidebar_selection_span, session_sidebar_title,
     sidebar_has_spinner, sidebar_viewport_items, sticky_sidebar_anchor_row,
 };
+use crate::watcher::SessionWatcher;
 use crate::workspace::{self as workspace, Workspace};
 use phi_session::config::MuxConfig;
 use phi_session_tui::session_builder::SharedResources;
@@ -74,6 +75,14 @@ pub async fn run(shared: SharedResources, mux_config: MuxConfig, cwd: PathBuf) -
     }
 
     let _ = workspace.ensure_project_session(workspace.selected_project);
+
+    // Start filesystem watchers on each project's session directory so the
+    // sidebar auto-refreshes when session files change (the filesystem is
+    // the source of truth; the sidebar is a view over it).
+    let (mut session_watcher, watcher_rx) = SessionWatcher::new();
+    for (i, project) in workspace.projects.iter().enumerate() {
+        session_watcher.add_watch(i, &project.cwd);
+    }
 
     let guard = RawModeGuard::new().context("mux requires a tty")?;
     let mut stdout = std::io::stdout();
@@ -119,11 +128,12 @@ pub async fn run(shared: SharedResources, mux_config: MuxConfig, cwd: PathBuf) -
             suspend_tx,
             host_modal_tx,
         },
+        session_watcher,
         quit: false,
     };
 
     let result = app
-        .main_loop(&guard, status_rx, redraw_rx, suspend_rx, host_modal_rx)
+        .main_loop(&guard, status_rx, redraw_rx, suspend_rx, host_modal_rx, watcher_rx)
         .await;
 
     app.persist_now();
@@ -165,6 +175,7 @@ struct MuxApp {
     sidebar_scroll: usize,
     note: Option<(String, StatusNoteKind, Instant)>,
     channels: MuxChannels,
+    session_watcher: SessionWatcher,
     quit: bool,
 }
 
@@ -176,6 +187,7 @@ impl MuxApp {
         mut redraw_rx: mpsc::UnboundedReceiver<()>,
         mut suspend_rx: mpsc::UnboundedReceiver<(SessionKey, tui::SuspendRequest)>,
         mut host_modal_rx: mpsc::UnboundedReceiver<(SessionKey, HostModalRequest)>,
+        mut watcher_rx: mpsc::UnboundedReceiver<usize>,
     ) -> Result<()> {
         use futures::StreamExt as _;
         let mut events = EventStream::new();
@@ -212,6 +224,20 @@ impl MuxApp {
                     self.handle_host_modal_request(key, request);
                     dirty = true;
                 }
+                Some(project_index) = watcher_rx.recv() => {
+                    // Coalesce all pending watcher events: collect the set
+                    // of project indices that changed, then refresh each.
+                    // This naturally debounces bursts of writes.
+                    let mut changed = std::collections::HashSet::new();
+                    changed.insert(project_index);
+                    while let Ok(idx) = watcher_rx.try_recv() {
+                        changed.insert(idx);
+                    }
+                    for index in changed {
+                        self.workspace.refresh_project(index);
+                    }
+                    dirty = true;
+                }
                 _ = ticker.tick() => {
                     if let Some((_, _, at)) = &self.note
                         && at.elapsed() > NOTE_TTL {
@@ -231,6 +257,19 @@ impl MuxApp {
             while let Ok((key, status)) = status_rx.try_recv() {
                 self.apply_status(key, status);
                 dirty = true;
+            }
+            // Drain any queued watcher events and refresh affected projects.
+            {
+                let mut changed = std::collections::HashSet::new();
+                while let Ok(idx) = watcher_rx.try_recv() {
+                    changed.insert(idx);
+                }
+                if !changed.is_empty() {
+                    for index in changed {
+                        self.workspace.refresh_project(index);
+                    }
+                    dirty = true;
+                }
             }
 
             if dirty {
@@ -261,6 +300,19 @@ impl MuxApp {
             || self.usage_overlay.is_some()
             || self.model_overlay.is_some()
             || self.archive_viewer.is_some()
+    }
+
+    /// Sync filesystem watchers to match the current workspace projects.
+    /// Adds watchers for new projects, removes watchers for dropped ones.
+    fn sync_watchers(&mut self) {
+        let projects: Vec<(usize, &PathBuf)> = self
+            .workspace
+            .projects
+            .iter()
+            .enumerate()
+            .map(|(i, p)| (i, &p.cwd))
+            .collect();
+        self.session_watcher.sync(&projects);
     }
 
     fn persist_now(&self) {
@@ -731,6 +783,7 @@ impl MuxApp {
                 if let Some(project) = self.workspace.projects.get(index) {
                     let title = project_sidebar_title(project);
                     self.workspace.remove_project(index);
+                    self.sync_watchers();
                     self.set_note(format!("removed {title}"), StatusNoteKind::Ok);
                     self.on_focus_changed();
                     self.ensure_focused_session().await;
@@ -877,6 +930,7 @@ impl MuxApp {
                     let index = self.workspace.add_project(path);
                     self.workspace.selected_project = index;
                     let _ = self.workspace.ensure_project_session(index);
+                    self.sync_watchers();
                     self.on_focus_changed();
                 } else {
                     self.set_note(

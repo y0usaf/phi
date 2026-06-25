@@ -8,6 +8,7 @@ pub mod persisted;
 pub mod driver;
 pub mod keys;
 pub mod workspace;
+pub mod watcher;
 
 pub mod app;
 pub mod command_line;

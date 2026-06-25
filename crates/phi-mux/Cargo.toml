@@ -8,6 +8,7 @@ license.workspace = true
 anyhow.workspace = true
 arboard.workspace = true
 directories.workspace = true
+notify.workspace = true
 futures.workspace = true
 jiff.workspace = true
 phi-rlm.workspace = true
