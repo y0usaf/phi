@@ -28,6 +28,13 @@ pub const TURN_SCARCITY_NUDGE: &str = "If you are running out of turns without a
 pub const DEFAULT_ANSWER_NUDGE: &str =
     "Please provide a final answer to the user's question based on the information provided.";
 
+/// Injected as a user message after the first consecutive assistant turn
+/// that contains no ```repl``` block. If the *next* assistant turn is also
+/// block-free, the prose is accepted as the final answer (`StopCause::Prose`).
+/// Wrapped in `<system-reminder>` so it reads as a system injection, not a
+/// user-authored message.
+pub const PROSE_NUDGE: &str = "<system-reminder>Your previous message contained no ```repl``` block, so nothing was executed and no answer was submitted. If it was meant as your final answer, submit it now: set answer[\"content\"] to it and answer[\"ready\"] = True in a ```repl``` block. Otherwise, continue working in ```repl``` blocks. If your next message also contains no ```repl``` block, it will be accepted as your final answer as written.</system-reminder>";
+
 // ──────────────────────────────────────────────────────────────────────────────
 // Ported claude-code system-prompt *content* (plans/prompt-content-port.md).
 //

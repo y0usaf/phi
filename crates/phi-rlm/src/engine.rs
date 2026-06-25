@@ -337,7 +337,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn first_turn_plain_prose_is_banked_until_answer() {
+    async fn first_turn_plain_prose_gets_bounced_then_repl_answer() {
+        // Prose-bounce: a block-free turn executes nothing. The first gets a
+        // corrective `PROSE_NUDGE` user reminder; a second consecutive
+        // block-free turn would be accepted as the final answer
+        // (`StopCause::Prose`). Here the model heeds the nudge on turn 2 and
+        // submits via the REPL on turn 3.
         let root = Arc::new(ScriptedLm::new(
             "root-model",
             &[
@@ -358,10 +363,9 @@ mod tests {
         assert_eq!(result.response, "42");
         assert_eq!(result.iterations, 3);
 
-        // The prose-only first turn is banked into history (not bounced with a
-        // corrective reminder), and the loop continues until the model
-        // submits an answer via the REPL.
         let prompts = root.recorded_prompts();
+        // Turn 2's prompt must contain the banked prose-only assistant message
+        // from turn 1, and the PROSE_NUDGE user reminder injected after it.
         let second = &prompts[1];
         assert!(
             second
@@ -369,12 +373,87 @@ mod tests {
                 .any(|m| m.role == Role::Assistant && m.content.contains("without using the REPL"))
         );
         assert!(
-            !second.iter().any(|m| {
-                m.role == Role::User
-                    && m.content
-                        .contains("You must inspect the `context` via the REPL")
-            }),
-            "prose-only turn must not produce a bounce reminder"
+            second
+                .iter()
+                .any(|m| m.role == Role::User && m.content.contains("Your previous message contained no ```repl``` block"))
+        );
+    }
+
+    #[tokio::test]
+    async fn second_consecutive_prose_turn_accepted_as_answer() {
+        // Two consecutive block-free turns → the second is accepted as the
+        // final answer via `StopCause::Prose` (no nudge on the second, no
+        // further iteration).
+        let root = Arc::new(ScriptedLm::new(
+            "root-model",
+            &["The answer is 42, clearly.", "I'm confident: 42."],
+        ));
+        let engine = rlm(RlmConfig::default(), root.clone(), quiet_sub());
+        let result = engine
+            .completion(
+                ContextPayload::Str("ctx".into()),
+                Some("What is the magic number?"),
+                &CancellationToken::new(),
+            )
+            .await;
+        assert_eq!(result.stop, StopCause::Prose, "{:?}", result.error);
+        assert_eq!(result.response, "I'm confident: 42.");
+        assert_eq!(result.iterations, 2);
+
+        let prompts = root.recorded_prompts();
+        // Turn 1 prose is banked, followed by the PROSE_NUDGE reminder. Turn
+        // 2 has no nudge after it — the prose is accepted directly.
+        let second = &prompts[1];
+        assert!(
+            second
+                .iter()
+                .any(|m| m.role == Role::User && m.content.contains("Your previous message contained no ```repl``` block"))
+        );
+    }
+
+    #[tokio::test]
+    async fn prose_counter_resets_after_code_turn() {
+        // prose → code → prose → repl-answer: the `consecutive_prose` counter
+        // must reset to 0 when a turn contains a ```repl``` block, so the third
+        // turn (prose) is treated as a *first* prose (nudge, not accept). The
+        // model heeds the nudge on turn 4 and submits via the REPL.
+        let root = Arc::new(ScriptedLm::new(
+            "root-model",
+            &[
+                "Let me think about this without using the REPL.",
+                "Actually, let me check.\n```repl\nprint('checking')\n```",
+                "So the answer is clear now, without needing more code.",
+                "Here it is.\n```repl\nanswer['content'] = 'done'\nanswer['ready'] = True\n```",
+            ],
+        ));
+        let engine = rlm(RlmConfig::default(), root.clone(), quiet_sub());
+        let result = engine
+            .completion(
+                ContextPayload::Str("ctx".into()),
+                Some("What is the magic number?"),
+                &CancellationToken::new(),
+            )
+            .await;
+        assert_eq!(result.response, "done", "{:?}", result.error);
+        assert_eq!(result.stop, StopCause::Answer, "{:?}", result.error);
+        assert_eq!(result.iterations, 4);
+
+        let prompts = root.recorded_prompts();
+        // Turn 1 (prose) is banked with a PROSE_NUDGE after it.
+        let second = &prompts[1];
+        assert!(
+            second
+                .iter()
+                .any(|m| m.role == Role::User && m.content.contains("Your previous message contained no ```repl``` block"))
+        );
+        // Turn 3 (the second prose, after the code turn reset) must also get a
+        // PROSE_NUDGE — proving the counter reset, not carried over from turn 1.
+        let fourth = &prompts[3];
+        assert!(
+            fourth
+                .iter()
+                .any(|m| m.role == Role::User && m.content.contains("Your previous message contained no ```repl``` block")),
+            "prose after a code turn must be treated as a first prose (counter reset)"
         );
     }
 
@@ -411,9 +490,22 @@ mod tests {
 
     #[tokio::test]
     async fn recursive_child_default_answer_on_iteration_exhaustion() {
+        // The child runs repl blocks each turn (so the prose-bounce does not
+        // fire) and exhausts its turn cap; the parent then synthesizes a
+        // final answer via the `DEFAULT_ANSWER_NUDGE` injection.
         let root = Arc::new(ScriptedLm::new(
             "root-model",
-            &["thinking 1", "thinking 2", "the synthesized final"],
+            &[
+                "thinking 1
+```repl
+print('hi')
+```",
+                "thinking 2
+```repl
+print('hi')
+```",
+                "the synthesized final",
+            ],
         ));
         let config = RlmConfig {
             max_depth: 2,

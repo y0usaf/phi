@@ -15,7 +15,7 @@ use phi_runtime::AppRuntime;
 
 use crate::handler::{DeltaSink, LanguageModel, LmHandler, ThinkingSink, UsageBreakdown};
 use crate::parsing::{ExecutedBlock, could_open_block, find_code_blocks, format_iteration, last_block_end};
-use crate::prompts::{DEFAULT_ANSWER_NUDGE, DEFAULT_ACTIONS, DEFAULT_DOING_TASKS, DEFAULT_TONE_AND_STYLE, DEFAULT_USING_YOUR_TOOLS, QueryMetadata, SystemPromptOptions, build_system_prompt, build_user_prompt, metadata_user_prompt};
+use crate::prompts::{DEFAULT_ANSWER_NUDGE, DEFAULT_ACTIONS, DEFAULT_DOING_TASKS, DEFAULT_TONE_AND_STYLE, DEFAULT_USING_YOUR_TOOLS, PROSE_NUDGE, QueryMetadata, SystemPromptOptions, build_system_prompt, build_user_prompt, metadata_user_prompt};
 use crate::{ChatMessage, ContextPayload, Role};
 
 use super::config::{EnvFactory, Events, LimitKind, PythonEnvFactory, RlmCompletion, RlmConfig, RlmEvent, SavePointFn, StopCause};
@@ -305,6 +305,7 @@ impl Rlm {
         let start = Instant::now();
         let mut best_partial: Option<String> = None;
         let mut consecutive_errors = 0usize;
+        let mut consecutive_prose = 0usize;
         let mut iterations = 0usize;
 
         let iteration_limit = self.iteration_limit();
@@ -506,6 +507,75 @@ impl Rlm {
                     error: None,
                     iterations,
                 };
+            }
+
+            // Prose-bounce: a block-free turn executes nothing. The first
+            // gets a corrective `PROSE_NUDGE` reminder so the model can
+            // either submit its prose as the answer or get back to work. A
+            // second consecutive block-free turn is accepted as the final
+            // answer (`StopCause::Prose`), matching `DEFAULT_MECHANICS`.
+            let had_code = !find_code_blocks(&response).is_empty();
+            if had_code {
+                consecutive_prose = 0;
+            } else {
+                consecutive_prose += 1;
+                if consecutive_prose >= 2 {
+                    let prose = response.trim().to_owned();
+                    self.events.emit(RlmEvent::AnswerSubmitted {
+                        depth: self.depth,
+                        content: prose.clone(),
+                    });
+                    dispatch_event(
+                        &self.runtime,
+                        LifecycleEvent {
+                            kind: EventKind::TurnEnd,
+                            payload: EventPayload::TurnEnd {
+                                turn: i as u32,
+                                had_code: false,
+                            },
+                        },
+                    );
+                    self.events.emit(RlmEvent::IterationEnd {
+                        depth: self.depth,
+                        iteration: i,
+                        duration: iter_start.elapsed(),
+                    });
+                    return Outcome {
+                        stop: StopCause::Prose,
+                        response: prose,
+                        error: None,
+                        iterations,
+                    };
+                }
+                // First block-free turn: emit the turn-end, push the
+                // assistant prose (so the model sees its own last message
+                // is the thing being bounced), then the nudge as a user
+                // message. Continue to the next iteration.
+                dispatch_event(
+                    &self.runtime,
+                    LifecycleEvent {
+                        kind: EventKind::TurnEnd,
+                        payload: EventPayload::TurnEnd {
+                            turn: i as u32,
+                            had_code: false,
+                        },
+                    },
+                );
+                self.events.emit(RlmEvent::IterationEnd {
+                    depth: self.depth,
+                    iteration: i,
+                    duration: iter_start.elapsed(),
+                });
+                history.push(ChatMessage {
+                    role: Role::Assistant,
+                    content: response,
+                });
+                history.push(ChatMessage {
+                    role: Role::User,
+                    content: PROSE_NUDGE.to_owned(),
+                });
+                i += 1;
+                continue;
             }
 
             // Bank the assistant turn up to the last closing fence: trailing

@@ -89,6 +89,9 @@ pub enum StopCause {
     Fallback,
     Limit(LimitKind),
     Cancelled,
+    /// The prose-bounce fired: a second consecutive assistant turn with
+    /// no ```repl``` block. The prose is accepted as the final answer.
+    Prose,
     /// Root model or environment failure.
     Failed,
 }
