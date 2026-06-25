@@ -21,20 +21,6 @@ impl Transcript {
         Self::default()
     }
 
-    fn cap_lines(contribution: Vec<String>, max_height: Option<usize>) -> Vec<String> {
-        let Some(cap) = max_height else {
-            return contribution;
-        };
-        if contribution.len() <= cap {
-            return contribution;
-        }
-        let hidden = contribution.len() - cap;
-        let mut result = Vec::with_capacity(cap + 1);
-        result.push(format!("\x1b[2m… ({hidden} earlier lines)\x1b[0m"));
-        result.extend(contribution.into_iter().rev().take(cap).rev());
-        result
-    }
-
     pub fn reset(&mut self) {
         self.committed_rows = 0;
     }
@@ -67,7 +53,6 @@ impl Transcript {
 
         for (i, block) in blocks.iter().enumerate() {
             let contribution = strip_plain_blank_edges(block.lines);
-            let contribution = Self::cap_lines(contribution, block.max_height);
             if contribution.is_empty() {
                 continue;
             }

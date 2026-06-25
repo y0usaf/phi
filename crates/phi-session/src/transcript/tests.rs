@@ -12,7 +12,6 @@ fn render(
             key,
             lines,
             finalized: *finalized,
-            max_height: None,
         })
         .collect();
     tx.render(viewport_height, &specs)
@@ -91,52 +90,4 @@ fn viewport_commits_scrolled_finalized_rows() {
     assert_eq!(frame.scrollback, vec!["a", "", "b", ""]);
     assert_eq!(frame.live, vec!["c", "", "d"]);
     assert_eq!(frame.committed_rows, 4);
-}
-
-#[test]
-fn max_height_truncates_live_block_to_tail() {
-    let mut tx = Transcript::new();
-    let lines: Vec<String> = (1..=20).map(|n| format!("line {n}")).collect();
-    let specs: Vec<BlockSpec<'_>> = vec![BlockSpec {
-        key: "live:stream-prose",
-        lines: &lines,
-        finalized: false,
-        max_height: Some(5),
-    }];
-    let frame = tx.render(20, &specs);
-    assert_eq!(frame.full.len(), 6);
-    assert!(frame.full[0].contains("15 earlier lines"));
-    assert_eq!(frame.full[1], "line 16");
-    assert_eq!(frame.full[5], "line 20");
-}
-
-#[test]
-fn max_height_none_shows_all_lines() {
-    let mut tx = Transcript::new();
-    let lines: Vec<String> = (1..=20).map(|n| format!("line {n}")).collect();
-    let specs: Vec<BlockSpec<'_>> = vec![BlockSpec {
-        key: "live:stream-prose",
-        lines: &lines,
-        finalized: false,
-        max_height: None,
-    }];
-    let frame = tx.render(20, &specs);
-    assert_eq!(frame.full.len(), 20);
-    assert_eq!(frame.full[0], "line 1");
-    assert_eq!(frame.full[19], "line 20");
-}
-
-#[test]
-fn max_height_under_cap_shows_all_lines() {
-    let mut tx = Transcript::new();
-    let lines: Vec<String> = (1..=3).map(|n| format!("line {n}")).collect();
-    let specs: Vec<BlockSpec<'_>> = vec![BlockSpec {
-        key: "live:stream-prose",
-        lines: &lines,
-        finalized: false,
-        max_height: Some(5),
-    }];
-    let frame = tx.render(20, &specs);
-    assert_eq!(frame.full.len(), 3);
-    assert_eq!(frame.full[0], "line 1");
 }

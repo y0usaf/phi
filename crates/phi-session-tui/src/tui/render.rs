@@ -42,10 +42,6 @@ pub(crate) fn thinking_level_color(level: ThinkingLevel, palette: &super::Inline
 
 pub(crate) const CODE_PREVIEW_LINES: usize = 8;
 pub(crate) const OUTPUT_PREVIEW_LINES: usize = 5;
-/// Max visible lines for a live streaming-prose block (scrolls internally).
-pub(crate) const LIVE_PROSE_MAX_HEIGHT: usize = 12;
-/// Max visible lines for a live thinking block (scrolls internally).
-pub(crate) const LIVE_THINKING_MAX_HEIGHT: usize = 6;
 
 pub(crate) const ASSISTANT_THINKING_DISPLAY_OPEN: &str = "<phi-thinking>\n";
 pub(crate) const ASSISTANT_THINKING_DISPLAY_CLOSE: &str = "\n</phi-thinking>\n";
@@ -320,5 +316,4 @@ pub(crate) struct TranscriptBlock {
     pub(crate) key: String,
     pub(crate) lines: Vec<String>,
     pub(crate) finalized: bool,
-    pub(crate) max_height: Option<usize>,
 }

@@ -37,7 +37,6 @@ impl Ui {
                 key: &block.key,
                 lines: &block.lines,
                 finalized: true,
-                max_height: None,
             });
         }
         for block in &live_blocks {
@@ -45,7 +44,6 @@ impl Ui {
                 key: &block.key,
                 lines: &block.lines,
                 finalized: block.finalized,
-                max_height: block.max_height,
             });
         }
 
@@ -72,7 +70,6 @@ impl Ui {
             key: format!("tx:{}", self.next_transcript_block_id),
             lines: pending,
             finalized: true,
-            max_height: None,
         });
         self.next_transcript_block_id += 1;
     }
@@ -97,7 +94,6 @@ impl Ui {
                     key: "live:thinking".to_owned(),
                     lines: thinking,
                     finalized: false,
-                    max_height: Some(LIVE_THINKING_MAX_HEIGHT),
                 });
             }
 
@@ -106,7 +102,6 @@ impl Ui {
                     key: "live:repl-block".to_owned(),
                     lines: render_repl_block(&self.block, Some(self.turn)),
                     finalized: false,
-                    max_height: Some(CODE_PREVIEW_LINES),
                 });
 
                 if !self.after_block.is_empty() {
@@ -114,7 +109,6 @@ impl Ui {
                         key: "live:after-block".to_owned(),
                         lines: self.after_block.clone(),
                         finalized: true,
-                        max_height: Some(OUTPUT_PREVIEW_LINES),
                     });
                 }
             }
@@ -125,7 +119,6 @@ impl Ui {
                     key: "live:stream-prose".to_owned(),
                     lines: self.assistant_card_lines(visible),
                     finalized: false,
-                    max_height: Some(LIVE_PROSE_MAX_HEIGHT),
                 });
             }
 
@@ -137,7 +130,6 @@ impl Ui {
                         None,
                     ),
                     finalized: false,
-                    max_height: Some(CODE_PREVIEW_LINES),
                 });
             }
         }
