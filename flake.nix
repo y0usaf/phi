@@ -46,9 +46,19 @@
           inherit src;
           pname = "phi-app";
           version = "0.1.0";
+          # Clear rustup env vars so nix's rustc-wrapper doesn't pick up
+          # the user's rustup-managed toolchain, which causes "cannot find ld"
+          # in the sandbox.
+          RUSTUP_HOME = "";
+          RUSTUP_TOOLCHAIN = "";
+          # Provide lld (the linker rustc uses with -fuse-ld=lld) in the build env
+          nativeBuildInputs = [ pkgs.llvmPackages.bintools ];
           cargoArtifacts = craneLib.buildDepsOnly {
             inherit src;
             pname = "phi-deps";
+            RUSTUP_HOME = "";
+            RUSTUP_TOOLCHAIN = "";
+            nativeBuildInputs = [ pkgs.llvmPackages.bintools ];
           };
           cargoExtraArgs = "-p phi-app";
           meta.mainProgram = "phi";
