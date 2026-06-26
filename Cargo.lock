@@ -1845,6 +1845,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "phi-protocol"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "libc",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "phi-repl"
 version = "0.1.0"
 dependencies = [
