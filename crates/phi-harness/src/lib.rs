@@ -3,15 +3,16 @@
 //! Owns the phase state machine, turn snapshots, save points, queues, hooks,
 //! loop detection, observability, and hooks.
 
-pub mod error;
+pub mod config;
 pub mod hooks;
 pub mod observe;
+pub mod redaction;
 pub mod phase;
 pub mod queue;
 pub mod save_point;
-pub mod snapshot;
 
-pub use error::HarnessError;
+pub use phi_rlm::HarnessError;
+pub use config::HarnessConfig;
 pub use hooks::{
     BeforeAgentStartEvent, BeforeAgentStartResult, ContextEvent, ContextResult, HookEvent,
     HookHandler, HookObserver, HookScope, PhiHooks, RunEndEvent, RunStartEvent, SourceInfo,
@@ -19,61 +20,24 @@ pub use hooks::{
 };
 pub use observe::{
     ErrorInfo, ObservabilityContext, ObservabilityEvent, ObservabilityEventType,
-    ObservabilitySubscriber, safe_payload, subscribe_observability, trace_operation,
+    ObservabilitySubscriber, subscribe_observability, trace_operation,
 };
+pub use redaction::safe_payload;
 pub use phase::HarnessPhase;
-pub use queue::{QueueMode, QueueSource, QueuedMessage, Queues};
+pub use queue::{QueueSource, QueuedMessage, Queues};
 pub use save_point::SavePoint;
-pub use snapshot::TurnState;
+pub use phi_rlm::TurnState;
 
 use std::sync::Arc;
 
 use phi_ai::ThinkingLevel;
 use phi_ext::ToolSpec;
-use phi_rlm::{ContextPayload, LanguageModel, Rlm, RlmCompletion, RlmConfig};
+use phi_rlm::{ContextPayload, LanguageModel, Rlm, RlmCompletion};
 use phi_runtime::AppRuntime;
 use phi_session::session::SessionStore;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::{Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
-
-/// Live (non-snapshotted) harness configuration. Updated by `set_model`,
-/// `set_thinking`, `set_tools`; read when creating a fresh [`TurnState`].
-pub struct HarnessConfig {
-    /// Root model for completions.
-    pub root_model: Arc<dyn LanguageModel>,
-    /// Sub model for sub-calls.
-    pub sub_model: Arc<dyn LanguageModel>,
-    /// Thinking level override.
-    pub thinking: Option<ThinkingLevel>,
-    /// Base RLM config (limits, timeouts, etc).
-    pub config: RlmConfig,
-    /// Custom system prompt override.
-    pub system_prompt: Option<String>,
-    /// Active tool specs.
-    pub tools: Vec<ToolSpec>,
-    /// Active tool names.
-    pub active_tools: Vec<String>,
-}
-
-impl HarnessConfig {
-    /// Construct from the models and base config.
-    pub fn new(
-        root_model: Arc<dyn LanguageModel>,
-        sub_model: Arc<dyn LanguageModel>,
-        config: RlmConfig,
-    ) -> Self {
-        Self {
-            root_model,
-            sub_model,
-            thinking: None,
-            config,
-            system_prompt: None,
-            tools: Vec::new(),
-            active_tools: Vec::new(),
-        }
-    }
-}
 
 /// Orchestration layer wrapping an [`Rlm`] engine.
 pub struct PhiHarness {

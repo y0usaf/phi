@@ -10,16 +10,15 @@ use crate::PhiHarness;
 use crate::queue::QueuedMessage;
 use phi_rlm::ChatMessage;
 
-/// A save point bound to a harness and an iteration number.
+/// A save point bound to a harness.
 pub struct SavePoint<'a> {
     harness: &'a PhiHarness,
-    iteration: usize,
 }
 
 impl<'a> SavePoint<'a> {
-    /// Construct a save point for the given iteration.
-    pub fn new(harness: &'a PhiHarness, iteration: usize) -> Self {
-        Self { harness, iteration }
+    /// Construct a save point for the given harness.
+    pub fn new(harness: &'a PhiHarness) -> Self {
+        Self { harness }
     }
 
     /// Run the save point: drain queues and return messages to inject
@@ -55,8 +54,4 @@ impl<'a> SavePoint<'a> {
         })
     }
 
-    /// The iteration this save point follows.
-    pub fn iteration(&self) -> usize {
-        self.iteration
-    }
 }

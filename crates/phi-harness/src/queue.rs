@@ -27,28 +27,16 @@ pub struct QueuedMessage {
     pub source: QueueSource,
 }
 
-/// Queue drain mode (default `Interleave`).
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum QueueMode {
-    /// Inject at the next save point (default).
-    #[default]
-    Interleave,
-    /// Accumulate until the run ends, then inject as one message.
-    Accumulate,
-}
-
 /// The three harness queues.
 #[derive(Default)]
 pub struct Queues {
     steer: tokio::sync::Mutex<Vec<QueuedMessage>>,
     follow_up: tokio::sync::Mutex<Vec<QueuedMessage>>,
     next_turn: tokio::sync::Mutex<Vec<QueuedMessage>>,
-    steer_mode: tokio::sync::RwLock<QueueMode>,
-    follow_up_mode: tokio::sync::RwLock<QueueMode>,
 }
 
 impl Queues {
-    /// Construct empty queues with default (Interleave) modes.
+    /// Construct empty queues.
     pub fn new() -> Self {
         Self::default()
     }
@@ -114,16 +102,6 @@ impl Queues {
     pub async fn clear_runtime_queues(&self) {
         self.steer.lock().await.clear();
         self.follow_up.lock().await.clear();
-    }
-
-    /// Set the steer drain mode.
-    pub async fn set_steer_mode(&self, mode: QueueMode) {
-        *self.steer_mode.write().await = mode;
-    }
-
-    /// Set the follow-up drain mode.
-    pub async fn set_follow_up_mode(&self, mode: QueueMode) {
-        *self.follow_up_mode.write().await = mode;
     }
 
     /// Snapshot the steer queue (for recovery / inspection).

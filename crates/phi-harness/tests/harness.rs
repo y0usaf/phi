@@ -66,15 +66,6 @@ async fn queue_next_turn_survives_clear_runtime() {
     assert_eq!(next[0].source, QueueSource::NextTurn);
 }
 
-#[tokio::test]
-async fn queue_mode_setters() {
-    let q = Queues::new();
-    q.set_steer_mode(phi_harness::QueueMode::Accumulate).await;
-    q.set_follow_up_mode(phi_harness::QueueMode::Interleave)
-        .await;
-    // Modes are set; no panic.
-}
-
 // ── Hooks tests ─────────────────────────────────────────────────────────────
 
 #[tokio::test]
