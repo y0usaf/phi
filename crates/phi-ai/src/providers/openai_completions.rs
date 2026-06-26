@@ -230,7 +230,10 @@ impl Parser {
         sorted_tools.sort_by_key(|(idx, _)| *idx);
         for (idx, tool) in sorted_tools {
             let arguments = serde_json::from_str(&tool.arguments)
-                .unwrap_or(Value::Object(Default::default()));
+                .unwrap_or_else(|e| {
+                    eprintln!("openai-completions: malformed tool-call arguments for index {idx}: {e}");
+                    Value::Object(Default::default())
+                });
             let call = crate::types::ToolCall {
                 id: tool.id.clone(),
                 name: tool.name.clone(),
@@ -465,11 +468,12 @@ impl SseHandler for Parser {
 mod tests {
     use std::collections::BTreeMap;
 
-    use super::{build_body, convert_messages};
+    use super::{build_body, convert_messages, openai_tool_schema};
     use crate::types::{
         Api, AssistantContent, AssistantMessage, Auth, Context, CostRates, Message, Model,
-        StreamOptions, UserMessage,
+        StreamOptions, ToolDefinition, ToolResultMessage, UserMessage,
     };
+    use serde_json::json;
 
     fn model() -> Model {
         Model {
@@ -607,5 +611,109 @@ line2");
         let m = model();
         let url = super::endpoint_url(&m);
         assert_eq!(url, "https://api.test.com/v1/chat/completions");
+    }
+
+    // --- Tool schema tests ---
+
+    #[test]
+    fn openai_tool_schema_nests_under_function() {
+        let tool = ToolDefinition {
+            name: "repl".to_owned(),
+            description: "Execute Python code".to_owned(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "code": { "type": "string" }
+                },
+                "required": ["code"]
+            }),
+        };
+        let schema = openai_tool_schema(&tool);
+        assert_eq!(schema["type"], "function");
+        assert_eq!(schema["function"]["name"], "repl");
+        assert_eq!(schema["function"]["description"], "Execute Python code");
+        assert_eq!(schema["function"]["parameters"]["type"], "object");
+        assert_eq!(
+            schema["function"]["parameters"]["properties"]["code"]["type"],
+            "string"
+        );
+        assert!(schema.get("name").is_none(), "completions schema must not have name at root");
+    }
+
+    #[test]
+    fn build_body_includes_tools_array_when_tools_present() {
+        let ctx = Context {
+            system_prompt: Some("sys".to_owned()),
+            messages: vec![Message::User(UserMessage::new("hi"))],
+            tools: vec![ToolDefinition {
+                name: "repl".to_owned(),
+                description: "Run code".to_owned(),
+                input_schema: json!({"type": "object"}),
+            }],
+            ..Default::default()
+        };
+        let opts = StreamOptions::new(Auth::ApiKey("k".to_owned()));
+        let body = build_body(&model(), &ctx, &opts);
+        let tools = body["tools"].as_array().expect("tools array");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0]["type"], "function");
+        assert_eq!(tools[0]["function"]["name"], "repl");
+    }
+
+    #[test]
+    fn build_body_omits_tools_array_when_empty() {
+        let ctx = Context {
+            system_prompt: Some("sys".to_owned()),
+            messages: vec![Message::User(UserMessage::new("hi"))],
+            ..Default::default()
+        };
+        let opts = StreamOptions::new(Auth::ApiKey("k".to_owned()));
+        let body = build_body(&model(), &ctx, &opts);
+        assert!(body.get("tools").is_none(), "no tools => no tools key");
+    }
+
+    // --- convert_messages with ToolResult ---
+
+    #[test]
+    fn convert_messages_serializes_tool_result_as_tool_role() {
+        let result = ToolResultMessage::new("call_123", "42");
+        let messages = vec![Message::ToolResult(result)];
+        let out = convert_messages(&messages, None);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0]["role"], "tool");
+        assert_eq!(out[0]["tool_call_id"], "call_123");
+        assert_eq!(out[0]["content"], "42");
+    }
+
+    #[test]
+    fn convert_messages_assistant_with_tool_calls_and_tool_result() {
+        let mut assistant = AssistantMessage::empty(&model());
+        assistant.content.push(AssistantContent::ToolCall(crate::types::ToolCall {
+            id: "call_456".to_owned(),
+            name: "repl".to_owned(),
+            arguments: json!({"code": "print(1)"}),
+        }));
+        let result = ToolResultMessage::new("call_456", "1");
+        let messages = vec![
+            Message::Assistant(assistant),
+            Message::ToolResult(result),
+            Message::User(UserMessage::new("thanks")),
+        ];
+        let out = convert_messages(&messages, None);
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[0]["role"], "assistant");
+        let tool_calls = out[0]["tool_calls"].as_array().unwrap();
+        assert_eq!(tool_calls.len(), 1);
+        assert_eq!(tool_calls[0]["id"], "call_456");
+        assert_eq!(tool_calls[0]["function"]["name"], "repl");
+        assert_eq!(
+            tool_calls[0]["function"]["arguments"].as_str(),
+            Some(r#"{"code":"print(1)"}"#)
+        );
+        assert_eq!(out[1]["role"], "tool");
+        assert_eq!(out[1]["tool_call_id"], "call_456");
+        assert_eq!(out[1]["content"], "1");
+        assert_eq!(out[2]["role"], "user");
+        assert_eq!(out[2]["content"], "thanks");
     }
 }

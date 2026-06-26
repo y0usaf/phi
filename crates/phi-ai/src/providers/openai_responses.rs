@@ -186,8 +186,12 @@ struct ToolBuffer {
 
 struct Parser {
     acc: Accumulator,
-    /// Responses item id -> our content index.
+    /// Responses item id -> our content index (for text/thinking blocks).
     items: HashMap<String, usize>,
+    /// Responses item id -> our content index (for tool-call blocks).
+    /// Kept separate from `items` because tool calls occupy their own
+    /// content-block slots and are looked up by call_id, not item_id.
+    tool_index_map: HashMap<String, usize>,
     /// Responses item id -> tool call buffer (function_call items).
     tools: HashMap<String, ToolBuffer>,
     stop_reason: StopReason,
@@ -201,6 +205,7 @@ impl Parser {
         Self {
             acc: Accumulator::new(model),
             items: HashMap::new(),
+            tool_index_map: HashMap::new(),
             tools: HashMap::new(),
             stop_reason: StopReason::Stop,
             usage_seen: false,
@@ -269,6 +274,7 @@ impl SseHandler for Parser {
     fn reset(&mut self, model: &Model) {
         self.acc = Accumulator::new(model);
         self.items.clear();
+        self.tool_index_map.clear();
         self.tools.clear();
         self.stop_reason = StopReason::Stop;
         self.usage_seen = false;
@@ -366,6 +372,9 @@ impl SseHandler for Parser {
                     // via the `.delta` events below; buffer either way.
                     let arguments = item["arguments"].as_str().unwrap_or_default().to_owned();
                     let ours = self.acc.message().content.len();
+                    // Record the content-block index for this tool call so
+                    // later delta/done events can find it without scanning.
+                    self.tool_index_map.insert(item_id.clone(), ours);
                     self.tools.insert(
                         item_id.clone(),
                         ToolBuffer {
@@ -393,17 +402,12 @@ impl SseHandler for Parser {
                 if let Some(tool) = self.tools.get_mut(&item_id) {
                     tool.arguments.push_str(&delta);
                 }
-                // Find the content index for this item and emit delta.
-                if let Some(idx) = self.tools.get(&item_id) {
-                    let ours = self
-                        .acc
-                        .message()
-                        .content
-                        .iter()
-                        .position(|b| {
-                            matches!(b, AssistantContent::ToolCall(c) if c.id == idx.id)
-                        })
-                        .unwrap_or_else(|| self.acc.message().content.len().saturating_sub(1));
+                // Use the recorded content-block index from tool_index_map
+                // (set in output_item.added) rather than scanning the
+                // accumulator — the tool call may not be in the accumulator
+                // yet, so the old `content.len().saturating_sub(1)` fallback
+                // could attach the delta to the wrong block.
+                if let Some(&ours) = self.tool_index_map.get(&item_id) {
                     sink.push(AssistantEvent::ToolCallDelta {
                         index: ours,
                         delta,
@@ -434,20 +438,21 @@ impl SseHandler for Parser {
                         .to_owned();
                     if let Some(tool) = self.tools.remove(&item_id) {
                         let arguments = serde_json::from_str(&tool.arguments)
-                            .unwrap_or(Value::Object(Default::default()));
+                            .unwrap_or_else(|e| {
+                                eprintln!("openai-responses: malformed tool-call arguments for {item_id}: {e}");
+                                Value::Object(Default::default())
+                            });
                         let call = crate::types::ToolCall {
                             id: tool.id.clone(),
                             name: tool.name.clone(),
                             arguments: arguments.clone(),
                         };
+                        // Use the recorded content-block index from
+                        // tool_index_map (set in output_item.added).
                         let ours = self
-                            .acc
-                            .message()
-                            .content
-                            .iter()
-                            .position(|b| {
-                                matches!(b, AssistantContent::ToolCall(c) if c.id == tool.id)
-                            })
+                            .tool_index_map
+                            .get(&item_id)
+                            .copied()
                             .unwrap_or_else(|| self.acc.message().content.len());
                         let event = AssistantEvent::ToolCallEnd {
                             index: ours,
@@ -462,5 +467,150 @@ impl SseHandler for Parser {
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use super::{build_body, convert_messages, openai_responses_tool_schema};
+    use crate::types::{
+        Api, AssistantContent, AssistantMessage, Auth, Context, CostRates, Message, Model,
+        StreamOptions, ToolDefinition, ToolResultMessage, UserMessage,
+    };
+    use serde_json::json;
+
+    fn model() -> Model {
+        Model {
+            id: "gpt-test".to_owned(),
+            name: "Test".to_owned(),
+            api: Api::OpenAiResponses,
+            provider: "test".to_owned(),
+            base_url: "https://api.test.com/v1".to_owned(),
+            reasoning: false,
+            input: vec![],
+            cost: CostRates::default(),
+            context_window: 8192,
+            max_tokens: 1024,
+            headers: BTreeMap::new(),
+            thinking_levels: None,
+        }
+    }
+
+    #[test]
+    fn openai_responses_tool_schema_has_name_at_root() {
+        let tool = ToolDefinition {
+            name: "repl".to_owned(),
+            description: "Execute Python code".to_owned(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "code": { "type": "string" }
+                },
+                "required": ["code"]
+            }),
+        };
+        let schema = openai_responses_tool_schema(&tool);
+        assert_eq!(schema["type"], "function");
+        assert_eq!(schema["name"], "repl");
+        assert_eq!(schema["description"], "Execute Python code");
+        assert_eq!(schema["parameters"]["type"], "object");
+        assert_eq!(schema["parameters"]["properties"]["code"]["type"], "string");
+        assert!(
+            schema.get("function").is_none(),
+            "responses schema must not nest under function"
+        );
+    }
+
+    #[test]
+    fn build_body_includes_tools_array_when_tools_present() {
+        let ctx = Context {
+            system_prompt: Some("sys".to_owned()),
+            messages: vec![Message::User(UserMessage::new("hi"))],
+            tools: vec![ToolDefinition {
+                name: "repl".to_owned(),
+                description: "Run code".to_owned(),
+                input_schema: json!({"type": "object"}),
+            }],
+            ..Default::default()
+        };
+        let opts = StreamOptions::new(Auth::ApiKey("k".to_owned()));
+        let body = build_body(&model(), &ctx, &opts);
+        let tools = body["tools"].as_array().expect("tools array");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0]["type"], "function");
+        assert_eq!(tools[0]["name"], "repl");
+    }
+
+    #[test]
+    fn build_body_omits_tools_array_when_empty() {
+        let ctx = Context {
+            system_prompt: Some("sys".to_owned()),
+            messages: vec![Message::User(UserMessage::new("hi"))],
+            ..Default::default()
+        };
+        let opts = StreamOptions::new(Auth::ApiKey("k".to_owned()));
+        let body = build_body(&model(), &ctx, &opts);
+        assert!(body.get("tools").is_none(), "no tools => no tools key");
+    }
+
+    #[test]
+    fn convert_messages_serializes_assistant_tool_call() {
+        let mut assistant = AssistantMessage::empty(&model());
+        assistant.content.push(AssistantContent::Text {
+            text: "let me check".to_owned(),
+        });
+        assistant.content.push(AssistantContent::ToolCall(crate::types::ToolCall {
+            id: "call_abc".to_owned(),
+            name: "repl".to_owned(),
+            arguments: json!({"code": "print(1)"}),
+        }));
+        let messages = vec![Message::Assistant(assistant)];
+        let out = convert_messages(&messages);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0]["role"], "assistant");
+        let content = out[0]["content"].as_array().unwrap();
+        assert_eq!(content.len(), 2);
+        assert_eq!(content[0]["type"], "output_text");
+        assert_eq!(content[1]["type"], "function_call");
+        assert_eq!(content[1]["call_id"], "call_abc");
+        assert_eq!(content[1]["name"], "repl");
+        assert_eq!(content[1]["arguments"]["code"], "print(1)");
+    }
+
+    #[test]
+    fn convert_messages_serializes_tool_result_as_function_call_output() {
+        let result = ToolResultMessage::new("call_abc", "1");
+        let messages = vec![Message::ToolResult(result)];
+        let out = convert_messages(&messages);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0]["type"], "function_call_output");
+        assert_eq!(out[0]["call_id"], "call_abc");
+        assert_eq!(out[0]["output"], "1");
+    }
+
+    #[test]
+    fn convert_messages_assistant_tool_call_then_tool_result() {
+        let mut assistant = AssistantMessage::empty(&model());
+        assistant.content.push(AssistantContent::ToolCall(crate::types::ToolCall {
+            id: "call_def".to_owned(),
+            name: "repl".to_owned(),
+            arguments: json!({"code": "x=1"}),
+        }));
+        let result = ToolResultMessage::new("call_def", "ok");
+        let messages = vec![
+            Message::User(UserMessage::new("test")),
+            Message::Assistant(assistant),
+            Message::ToolResult(result),
+        ];
+        let out = convert_messages(&messages);
+        assert_eq!(out.len(), 3);
+        let asst_content = out[1]["content"].as_array().unwrap();
+        assert_eq!(asst_content[0]["type"], "function_call");
+        assert_eq!(asst_content[0]["call_id"], "call_def");
+        assert_eq!(out[2]["type"], "function_call_output");
+        assert_eq!(out[2]["call_id"], "call_def");
+        assert_eq!(out[2]["output"], "ok");
     }
 }

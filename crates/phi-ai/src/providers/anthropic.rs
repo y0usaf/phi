@@ -399,22 +399,26 @@ impl SseHandler for Parser {
                 };
                 if let Some(tool) = self.tools.remove(&index) {
                     let arguments = serde_json::from_str(&tool.arguments)
-                        .unwrap_or(Value::Object(Default::default()));
-                    let call = crate::types::ToolCall {
-                        id: tool.id.clone(),
-                        name: tool.name.clone(),
-                        arguments: arguments.clone(),
-                    };
-                    let Some(&ours) = self.index_map.get(&index) else {
-                        self.acc.push_tool_call(call);
-                        return;
-                    };
+                        .unwrap_or_else(|e| {
+                            eprintln!("anthropic: malformed tool-call arguments for index {index}: {e}");
+                            Value::Object(Default::default())
+                        });
+                    // Resolve our content index; if the index_map is missing
+                    // the entry (unexpected), fall back to the current
+                    // content length so the ToolCallEnd is still emitted.
+                    let ours = self
+                        .index_map
+                        .get(&index)
+                        .copied()
+                        .unwrap_or_else(|| self.acc.message().content.len());
                     let event = AssistantEvent::ToolCallEnd {
                         index: ours,
                         id: tool.id,
                         name: tool.name,
                         arguments,
                     };
+                    // `apply` inserts the finalized ToolCall into the
+                    // accumulator's message content at `index`.
                     self.acc.apply(&event);
                     sink.push(event);
                     return;
@@ -462,10 +466,14 @@ impl SseHandler for Parser {
 mod tests {
     use std::collections::BTreeMap;
 
-    use crate::types::{Api, Auth, Context, CostRates, Message, Model, StreamOptions, UserMessage};
+    use crate::types::{
+        Api, Auth, Context, CostRates, Message, Model, StreamOptions, ToolDefinition,
+        ToolResultMessage, UserMessage,
+    };
 
     use super::{CLAUDE_CODE_IDENTITY, build_body, convert_messages};
     use crate::types::{AssistantContent, AssistantMessage};
+    use serde_json::json;
 
     /// Minimal Anthropic model for exercising `build_body`'s system-block
     /// assembly (no reasoning, no thinking levels).
@@ -668,6 +676,140 @@ mod tests {
         assert_eq!(
             result[2]["content"].as_array().unwrap()[0]["cache_control"]["type"]
                 .as_str(),
+            Some("ephemeral")
+        );
+    }
+
+    // --- Tool schema tests ---
+
+    #[test]
+    fn anthropic_tool_schema_emits_name_description_input_schema() {
+        let tool = ToolDefinition {
+            name: "repl".to_owned(),
+            description: "Execute Python code".to_owned(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "code": { "type": "string" }
+                },
+                "required": ["code"]
+            }),
+        };
+        let schema = super::anthropic_tool_schema(&tool);
+        assert_eq!(schema["name"], "repl");
+        assert_eq!(schema["description"], "Execute Python code");
+        assert_eq!(schema["input_schema"]["type"], "object");
+        assert_eq!(schema["input_schema"]["properties"]["code"]["type"], "string");
+        // Anthropic uses `input_schema` at the root (not nested under `function`).
+        assert!(schema.get("function").is_none(), "anthropic schema must not nest under function");
+    }
+
+    #[test]
+    fn build_body_includes_tools_array_when_tools_present() {
+        let ctx = Context {
+            system_prompt: Some("sys".to_owned()),
+            messages: vec![Message::User(UserMessage::new("hi"))],
+            tools: vec![ToolDefinition {
+                name: "repl".to_owned(),
+                description: "Run code".to_owned(),
+                input_schema: json!({"type": "object"}),
+            }],
+            ..Default::default()
+        };
+        let opts = StreamOptions::new(Auth::ApiKey("k".to_owned()));
+        let body = build_body(&model(), &ctx, &opts);
+        let tools = body["tools"].as_array().expect("tools array");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0]["name"], "repl");
+        assert_eq!(tools[0]["input_schema"]["type"], "object");
+    }
+
+    #[test]
+    fn build_body_omits_tools_array_when_empty() {
+        let ctx = Context {
+            system_prompt: Some("sys".to_owned()),
+            messages: vec![Message::User(UserMessage::new("hi"))],
+            ..Default::default()
+        };
+        let opts = StreamOptions::new(Auth::ApiKey("k".to_owned()));
+        let body = build_body(&model(), &ctx, &opts);
+        assert!(body.get("tools").is_none(), "no tools => no tools key");
+    }
+
+    // --- convert_messages with ToolCall and ToolResult ---
+
+    #[test]
+    fn convert_messages_serializes_assistant_tool_call() {
+        let mut assistant = AssistantMessage::empty(&model());
+        assistant.content.push(AssistantContent::Text {
+            text: "let me check".to_owned(),
+        });
+        assistant.content.push(AssistantContent::ToolCall(crate::types::ToolCall {
+            id: "toolu_123".to_owned(),
+            name: "repl".to_owned(),
+            arguments: json!({"code": "print(1+1)"}),
+        }));
+        let messages = vec![Message::Assistant(assistant)];
+        let out = convert_messages(&messages);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0]["role"], "assistant");
+        let content = out[0]["content"].as_array().unwrap();
+        assert_eq!(content.len(), 2);
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[1]["type"], "tool_use");
+        assert_eq!(content[1]["id"], "toolu_123");
+        assert_eq!(content[1]["name"], "repl");
+        assert_eq!(content[1]["input"]["code"], "print(1+1)");
+    }
+
+    #[test]
+    fn convert_messages_serializes_tool_result_as_user_tool_result() {
+        let result = ToolResultMessage::new("toolu_123", "2");
+        let messages = vec![Message::ToolResult(result)];
+        let out = convert_messages(&messages);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0]["role"], "user");
+        let content = out[0]["content"].as_array().unwrap();
+        assert_eq!(content[0]["type"], "tool_result");
+        assert_eq!(content[0]["tool_use_id"], "toolu_123");
+        assert_eq!(content[0]["content"], "2");
+        assert_eq!(content[0]["is_error"], false);
+    }
+
+    #[test]
+    fn convert_messages_serializes_tool_result_with_error_flag() {
+        let result = ToolResultMessage::new("toolu_456", "Error: bad code").with_error(true);
+        let messages = vec![Message::ToolResult(result)];
+        let out = convert_messages(&messages);
+        let content = out[0]["content"].as_array().unwrap();
+        assert_eq!(content[0]["is_error"], true);
+    }
+
+    #[test]
+    fn convert_messages_round_trips_assistant_tool_call_then_tool_result() {
+        let mut assistant = AssistantMessage::empty(&model());
+        assistant.content.push(AssistantContent::ToolCall(crate::types::ToolCall {
+            id: "toolu_789".to_owned(),
+            name: "repl".to_owned(),
+            arguments: json!({"code": "x = 1"}),
+        }));
+        let result = ToolResultMessage::new("toolu_789", "ok");
+        let messages = vec![
+            Message::User(UserMessage::new("what is 1+1?")),
+            Message::Assistant(assistant),
+            Message::ToolResult(result),
+            Message::User(UserMessage::new("thanks")),
+        ];
+        let out = convert_messages(&messages);
+        assert_eq!(out.len(), 4);
+        let asst_content = out[1]["content"].as_array().unwrap();
+        assert_eq!(asst_content[0]["type"], "tool_use");
+        assert_eq!(out[2]["role"], "user");
+        assert_eq!(out[2]["content"][0]["type"], "tool_result");
+        assert_eq!(out[2]["content"][0]["tool_use_id"], "toolu_789");
+        let last_user_content = out[3]["content"].as_array().unwrap();
+        assert_eq!(
+            last_user_content[0]["cache_control"]["type"].as_str(),
             Some("ephemeral")
         );
     }
