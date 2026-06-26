@@ -16,3 +16,6 @@ libc.workspace = true
 
 [dev-dependencies]
 vt100.workspace = true
+
+[lints]
+workspace = true

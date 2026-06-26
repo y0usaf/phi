@@ -8,3 +8,5 @@ license.workspace = true
 clap.workspace = true
 phi-session.workspace = true
 
+[lints]
+workspace = true

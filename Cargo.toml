@@ -98,3 +98,9 @@ opt-level = 3
 codegen-units = 16
 incremental = false
 lto = "thin"
+
+[workspace.lints.rust]
+dead_code = "warn"
+unused = "warn"
+unreachable_code = "warn"
+unreachable_patterns = "warn"

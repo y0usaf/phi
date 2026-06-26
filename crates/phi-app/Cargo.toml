@@ -35,3 +35,6 @@ jemalloc = [
     "dep:tikv-jemalloc-sys",
 ]
 jemalloc-prof = ["jemalloc"]
+
+[lints]
+workspace = true
