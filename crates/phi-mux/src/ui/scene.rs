@@ -52,19 +52,18 @@ impl Default for ScenePalette {
     fn default() -> Self {
         Self {
             fg: theme::TEXT,
-            // Grounded canvas: real surfaces instead of floating on whatever
-            // the host terminal happens to show through.
-            bg: theme::SURFACE,
+            // Transparent: let the host terminal's background show through.
+            bg: theme::TRANSPARENT,
             surface_raised: theme::SURFACE_RAISED,
             statusbar_fg: theme::STATUS_FG,
             statusbar_bg: theme::STATUS_BG,
-            // Keep the sidebar on the same plane as the rest of mux; row
-            // selection/focus should provide structure, not a slab background.
-            sidebar_bg: theme::SURFACE,
+            // Transparent sidebar: structure comes from row focus, not a
+            // slab background.
+            sidebar_bg: theme::TRANSPARENT,
             border: theme::BORDER,
             muted: theme::MUTED,
             term_fg: theme::TERM_FG,
-            term_bg: theme::SURFACE,
+            term_bg: theme::TRANSPARENT,
             accent: theme::ACCENT,
             accent_2: theme::ACCENT_2,
             ansi: theme::default_ansi_palette(),
@@ -85,15 +84,15 @@ impl ScenePalette {
         let g = theme::generate_system(colors);
         Self {
             fg: g.fg,
-            bg: g.bg,
+            bg: theme::TRANSPARENT,
             surface_raised: g.surface_raised,
             statusbar_bg: g.statusbar_bg,
             statusbar_fg: g.statusbar_fg,
-            sidebar_bg: g.sidebar_bg,
+            sidebar_bg: theme::TRANSPARENT,
             border: g.border,
             muted: g.muted,
             term_fg: g.term_fg,
-            term_bg: g.term_bg,
+            term_bg: theme::TRANSPARENT,
             accent: g.accent,
             accent_2: g.accent_2,
             ansi: g.ansi,

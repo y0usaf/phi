@@ -173,8 +173,8 @@ pub fn fade_toward(color: Color, target: Color, mix: u8) -> Color {
 // Derives a full mux palette from the host terminal's reported colors so the
 // chrome follows the user's terminal theme instead of forcing a fixed one.
 // Mirrors opencode's approach: ANSI-mapped accents/status, a background-derived
-// gray ramp, and a generated muted text color. Surfaces stay opaque (unlike
-// opencode's transparent background) because mux draws its own grounded canvas.
+// gray ramp, and a generated muted text color. Surfaces are transparent (like
+// opencode) — the host terminal's background shows through.
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {

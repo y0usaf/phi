@@ -171,7 +171,7 @@ impl ViewportState {
     pub fn render_indicators(&self, surface: &mut CellSurface, area: CellRect) {
         let muted = theme::MUTED;
         let accent = theme::ACCENT;
-        let bg = theme::SURFACE;
+        let bg = theme::TRANSPARENT;
 
         // Up indicator (top-right)
         if self.offscreen_above > 0 {
@@ -293,7 +293,7 @@ impl PromptPreview {
 
         let muted = theme::MUTED;
         let accent = theme::ACCENT;
-        let bg = theme::SURFACE;
+        let bg = theme::TRANSPARENT;
         let text_fg = theme::TEXT;
 
         let prefix = format!("{}\u{203a} ", self.prompt_number);
