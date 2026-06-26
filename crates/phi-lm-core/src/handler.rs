@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use phi_ai::Usage;
+use tokio_util::sync::CancellationToken;
 
 use crate::{ChatMessage, Role};
 
@@ -35,7 +36,7 @@ pub type ThinkingSink = Arc<dyn Fn(&str) + Send + Sync>;
 #[async_trait]
 pub trait LanguageModel: Send + Sync {
     fn name(&self) -> String;
-    async fn complete(&self, prompt: &[ChatMessage]) -> Result<Completion, String>;
+    async fn complete(&self, prompt: &[ChatMessage], cancel: &CancellationToken) -> Result<Completion, String>;
 
     /// Stream text deltas through `on_delta` while completing. Models without
     /// streaming support fall back to a single non-streamed completion.
@@ -44,9 +45,10 @@ pub trait LanguageModel: Send + Sync {
         prompt: &[ChatMessage],
         on_delta: DeltaSink,
         on_thinking: Option<ThinkingSink>,
+        cancel: &CancellationToken,
     ) -> Result<Completion, String> {
         let _ = (on_delta, on_thinking);
-        self.complete(prompt).await
+        self.complete(prompt, cancel).await
     }
 }
 
@@ -150,16 +152,17 @@ impl LmHandler {
         prompt: &[ChatMessage],
         on_delta: Option<DeltaSink>,
         on_thinking: Option<ThinkingSink>,
+        cancel: &CancellationToken,
     ) -> Result<Completion, String> {
         let model = self.root.name();
         let completion = match (on_delta, on_thinking) {
-            (Some(sink), thinking) => self.root.complete_streaming(prompt, sink, thinking).await?,
+            (Some(sink), thinking) => self.root.complete_streaming(prompt, sink, thinking, cancel).await?,
             (None, Some(thinking)) => {
                 self.root
-                    .complete_streaming(prompt, Arc::new(|_: &str| true), Some(thinking))
+                    .complete_streaming(prompt, Arc::new(|_: &str| true), Some(thinking), cancel)
                     .await?
             }
-            (None, None) => self.root.complete(prompt).await?,
+            (None, None) => self.root.complete(prompt, cancel).await?,
         };
         self.track_model(model, &completion.usage);
         Ok(completion)
@@ -171,6 +174,7 @@ impl LmHandler {
         &self,
         prompt: &str,
         model: Option<&str>,
+        cancel: &CancellationToken,
     ) -> Result<Completion, String> {
         let lm = model
             .and_then(|name| self.named.get(name))
@@ -180,7 +184,7 @@ impl LmHandler {
             role: Role::User,
             content: prompt.to_owned(),
         }];
-        let completion = lm.complete(&messages).await?;
+        let completion = lm.complete(&messages, cancel).await?;
         self.track_model(model_name, &completion.usage);
         Ok(completion)
     }

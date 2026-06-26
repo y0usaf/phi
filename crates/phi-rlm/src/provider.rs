@@ -8,6 +8,7 @@ use phi_ai::{
     AssistantContent, AssistantEvent, AssistantMessage, AuthStorage, Context, Message, Model,
     Registry, StreamOptions, ThinkingLevel, UserMessage,
 };
+use tokio_util::sync::CancellationToken;
 
 use phi_lm_core::{Completion, DeltaSink, LanguageModel, ThinkingSink};
 use phi_lm_core::{ChatMessage, Role};
@@ -113,8 +114,8 @@ impl LanguageModel for ProviderLm {
         format!("{}/{}", model.provider, model.id)
     }
 
-    async fn complete(&self, prompt: &[ChatMessage]) -> Result<Completion, String> {
-        self.complete_streaming(prompt, std::sync::Arc::new(|_: &str| true), None)
+    async fn complete(&self, prompt: &[ChatMessage], cancel: &CancellationToken) -> Result<Completion, String> {
+        self.complete_streaming(prompt, std::sync::Arc::new(|_: &str| true), None, cancel)
             .await
     }
 
@@ -123,6 +124,7 @@ impl LanguageModel for ProviderLm {
         prompt: &[ChatMessage],
         on_delta: DeltaSink,
         on_thinking: Option<ThinkingSink>,
+        cancel: &CancellationToken,
     ) -> Result<Completion, String> {
         // Retry-with-backoff on transient faults (429/5xx/transport), but
         // only while nothing has streamed: once deltas reached the caller,
@@ -137,7 +139,7 @@ impl LanguageModel for ProviderLm {
                 inner(delta)
             });
             match self
-                .attempt_streaming(prompt, wrapped, on_thinking.clone())
+                .attempt_streaming(prompt, wrapped, on_thinking.clone(), cancel)
                 .await
             {
                 Ok(completion) => return Ok(completion),
@@ -146,9 +148,14 @@ impl LanguageModel for ProviderLm {
                         && is_transient(&e)
                         && !streamed.load(std::sync::atomic::Ordering::Relaxed) =>
                 {
+                    // Race backoff against cancel so a stop request
+                    // doesn't wait out the retry sleep.
                     let backoff = BASE_BACKOFF_MS << attempt;
                     attempt += 1;
-                    tokio::time::sleep(std::time::Duration::from_millis(backoff)).await;
+                    tokio::select! {
+                        () = tokio::time::sleep(std::time::Duration::from_millis(backoff)) => {}
+                        () = cancel.cancelled() => return Err("aborted".to_owned()),
+                    }
                 }
                 Err(e) => return Err(e),
             }
@@ -162,50 +169,68 @@ impl ProviderLm {
         prompt: &[ChatMessage],
         on_delta: DeltaSink,
         on_thinking: Option<ThinkingSink>,
+        cancel: &CancellationToken,
     ) -> Result<Completion, String> {
         let model = self.model();
-        let auth = self
-            .auth
-            .resolve(&model.provider)
-            .await
-            .map_err(|e| format!("auth resolution failed for '{}': {e}", model.provider))?
-            .ok_or_else(|| {
-                format!(
-                    "no credentials for provider '{}' (use --login, --api-key, or env)",
-                    model.provider
-                )
-            })?;
+        let auth = tokio::select! {
+            auth = self.auth.resolve(&model.provider) => {
+                auth.map_err(|e| format!("auth resolution failed for '{}': {e}", model.provider))?
+                    .ok_or_else(|| {
+                        format!(
+                            "no credentials for provider '{}' (use --login, --api-key, or env)",
+                            model.provider
+                        )
+                    })?
+            }
+            () = cancel.cancelled() => return Err("aborted".to_owned()),
+        };
 
         let mut opts = StreamOptions::new(auth);
         opts.thinking = self.thinking();
         opts.max_tokens = self.max_tokens;
+        // Wire the session's cancel token into the provider stream so
+        // `run_sse` can tear down the HTTP connection instantly.
+        opts.cancel = cancel.clone();
 
         let context = Self::context(&model, prompt);
         let mut stream = self.registry.stream(&model, &context, opts);
         let mut terminal = None;
         let mut accumulated = String::new();
-        while let Some(event) = stream.next().await {
-            match event {
-                AssistantEvent::TextDelta { delta, .. } => {
-                    accumulated.push_str(&delta);
-                    if !on_delta(&delta) {
-                        // Early stop: dropping the stream aborts the request.
-                        // Usage is unknown for aborted completions.
-                        return Ok(Completion {
-                            text: accumulated,
-                            usage: phi_ai::Usage::default(),
-                        });
+        loop {
+            tokio::select! {
+                () = cancel.cancelled() => {
+                    // Dropping `stream` closes the channel; the spawned
+                    // `run_sse` task sees `sink.is_closed()` and returns.
+                    return Err("aborted".to_owned());
+                }
+                event = stream.next() => {
+                    let event = match event {
+                        Some(event) => event,
+                        None => break,
+                    };
+                    match event {
+                        AssistantEvent::TextDelta { delta, .. } => {
+                            accumulated.push_str(&delta);
+                            if !on_delta(&delta) {
+                                // Early stop: dropping the stream aborts the request.
+                                // Usage is unknown for aborted completions.
+                                return Ok(Completion {
+                                    text: accumulated,
+                                    usage: phi_ai::Usage::default(),
+                                });
+                            }
+                        }
+                        AssistantEvent::ThinkingDelta { delta, .. } => {
+                            if let Some(sink) = &on_thinking {
+                                sink(&delta);
+                            }
+                        }
+                        AssistantEvent::Done { message } | AssistantEvent::Error { message } => {
+                            terminal = Some(message);
+                        }
+                        _ => {}
                     }
                 }
-                AssistantEvent::ThinkingDelta { delta, .. } => {
-                    if let Some(sink) = &on_thinking {
-                        sink(&delta);
-                    }
-                }
-                AssistantEvent::Done { message } | AssistantEvent::Error { message } => {
-                    terminal = Some(message);
-                }
-                _ => {}
             }
         }
         let message = terminal.ok_or_else(|| "stream ended without a terminal event".to_owned())?;

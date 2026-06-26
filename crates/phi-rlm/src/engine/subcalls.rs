@@ -35,7 +35,8 @@ impl EngineSubcalls {
             prompt_preview: prompt_preview(&prompt, 80),
         });
         let start = Instant::now();
-        let result = self.handler.complete_sub(&prompt, model.as_deref()).await;
+        let cancel = self.run.cancel();
+        let result = self.handler.complete_sub(&prompt, model.as_deref(), &cancel).await;
         let (outcome, error, result_preview) = match result {
             Ok(completion) => {
                 let preview = truncate_preview(&completion.text, 240);

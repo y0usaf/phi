@@ -145,7 +145,7 @@ impl Rlm {
         let effective_config = turn_config.unwrap_or(&self.config);
 
         if self.depth >= effective_config.max_depth {
-            return self.fallback(payload, start).await;
+            return self.fallback(payload, start, cancel).await;
         }
 
         // Use snapshot models if provided, else fall back to engine models.
@@ -341,8 +341,8 @@ impl Rlm {
             let sink = self.eager_sink(i, code_tx.clone(), sent.clone());
 
             let stream = async {
-                let result = handler
-                    .complete_root(history, Some(sink), Some(self.thinking_sink(i)))
+                    let result = handler
+                    .complete_root(history, Some(sink), Some(self.thinking_sink(i)), cancel)
                     .await;
                 if let Ok(completion) = &result {
                     // Catch-up for non-streaming models (no deltas) and any
@@ -682,6 +682,7 @@ impl Rlm {
                 history,
                 Some(self.delta_sink(iterations)),
                 Some(self.thinking_sink(iterations)),
+                cancel,
             )
             .await
         {
@@ -782,7 +783,7 @@ impl Rlm {
     }
 
     /// `depth >= max_depth`: the RLM is just an LM.
-    pub async fn fallback(&self, payload: ContextPayload, start: Instant) -> RlmCompletion {
+    pub async fn fallback(&self, payload: ContextPayload, start: Instant, cancel: &CancellationToken) -> RlmCompletion {
         let content = match payload {
             ContextPayload::Str(s) => s,
             ContextPayload::Json(Value::String(s)) => s,
@@ -793,7 +794,7 @@ impl Rlm {
             content,
         }];
         let (response, usage, usage_by_model, stop, error) =
-            match self.root.complete(&messages).await {
+            match self.root.complete(&messages, cancel).await {
                 Ok(completion) => {
                     let usage_by_model =
                         usage_breakdowns_for_model(self.root.name(), completion.usage);

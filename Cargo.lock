@@ -1782,6 +1782,7 @@ dependencies = [
  "phi-ai",
  "serde",
  "serde_json",
+ "tokio-util",
 ]
 
 [[package]]

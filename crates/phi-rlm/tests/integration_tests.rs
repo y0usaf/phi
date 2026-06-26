@@ -51,7 +51,7 @@ const TRANSCRIPT_COMPACTION_THRESHOLD: usize = 20;
             self.name.clone()
         }
 
-        async fn complete(&self, prompt: &[ChatMessage]) -> Result<Completion, String> {
+        async fn complete(&self, prompt: &[ChatMessage], _cancel: &tokio_util::sync::CancellationToken) -> Result<Completion, String> {
             self.prompts.lock().unwrap_or_else(|e| e.into_inner()).push(prompt.to_vec());
             let text = self
                 .responses
@@ -203,7 +203,7 @@ const TRANSCRIPT_COMPACTION_THRESHOLD: usize = 20;
             "eager-model".into()
         }
 
-        async fn complete(&self, _prompt: &[ChatMessage]) -> Result<Completion, String> {
+        async fn complete(&self, _prompt: &[ChatMessage], _cancel: &tokio_util::sync::CancellationToken) -> Result<Completion, String> {
             Err("streaming expected".into())
         }
 
@@ -212,6 +212,7 @@ const TRANSCRIPT_COMPACTION_THRESHOLD: usize = 20;
             _prompt: &[ChatMessage],
             on_delta: DeltaSink,
             _on_thinking: Option<ThinkingSink>,
+            _cancel: &tokio_util::sync::CancellationToken,
         ) -> Result<Completion, String> {
             let head =
                 "Running.\n```repl\nanswer['content'] = 'done'\nanswer['ready'] = True\n```\n";
@@ -1083,4 +1084,62 @@ answer['ready'] = True
         );
 
         session.shutdown().await;
+    }
+
+    /// A model that blocks forever during streaming until the cancel token
+    /// fires. If the cancel token never reaches `complete_streaming`, the
+    /// test hangs and times out — proving the wiring is correct.
+    struct BlockingLm;
+
+    #[async_trait]
+    impl LanguageModel for BlockingLm {
+        fn name(&self) -> String {
+            "blocking-model".into()
+        }
+
+        async fn complete(&self, _prompt: &[ChatMessage], cancel: &CancellationToken) -> Result<Completion, String> {
+            cancel.cancelled().await;
+            Err("aborted".into())
+        }
+
+        async fn complete_streaming(
+            &self,
+            _prompt: &[ChatMessage],
+            _on_delta: DeltaSink,
+            _on_thinking: Option<ThinkingSink>,
+            cancel: &CancellationToken,
+        ) -> Result<Completion, String> {
+            cancel.cancelled().await;
+            Err("aborted".into())
+        }
+    }
+
+    #[tokio::test]
+    async fn cancel_returns_promptly_during_streaming() {
+        let root: Arc<dyn LanguageModel> = Arc::new(BlockingLm);
+        let sub: Arc<dyn LanguageModel> = Arc::new(BlockingLm);
+        let engine = Rlm::new(RlmConfig::default(), root, sub, "python3".to_owned());
+        let cancel = CancellationToken::new();
+
+        // Fire cancel after a short delay to simulate the user pressing Esc.
+        let fire = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            fire.cancel();
+        });
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            engine.completion(ContextPayload::Str("ctx".into()), None, &cancel),
+        )
+        .await;
+
+        let result = result.expect("completion should return within 5s, not hang");
+        assert_eq!(
+            result.stop,
+            StopCause::Cancelled,
+            "expected Cancelled, got {:?}: {:?}",
+            result.stop,
+            result.error,
+        );
     }
