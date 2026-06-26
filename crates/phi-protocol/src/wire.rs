@@ -302,4 +302,30 @@ mod tests {
         let back: HistoryMessage = serde_json::from_str(&json).unwrap();
         assert_eq!(msg, back);
     }
+
+    #[test]
+    fn peek_request_id_extracts_id_from_valid_json() {
+        let line = r#"{"type":"message","id":42,"content":"hi"}"#;
+        assert_eq!(crate::peek_request_id(line), 42);
+    }
+
+    #[test]
+    fn peek_request_id_returns_zero_for_garbage() {
+        assert_eq!(crate::peek_request_id("not json at all"), 0);
+    }
+
+    #[test]
+    fn peek_request_id_returns_zero_when_id_missing() {
+        let line = r#"{"type":"unknown_variant"}"#;
+        assert_eq!(crate::peek_request_id(line), 0);
+    }
+
+    #[test]
+    fn peek_request_id_extracts_id_from_malformed_request() {
+        // Unknown type variant but id is present — the whole point of
+        // peek_request_id is to extract the id even when decode_request
+        // would fail.
+        let line = r#"{"type":"unknown_variant","id":99}"#;
+        assert_eq!(crate::peek_request_id(line), 99);
+    }
 }

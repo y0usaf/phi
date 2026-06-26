@@ -134,3 +134,76 @@ pub fn cleanup_socket_pair(path: &std::path::Path) {
         let _ = std::fs::remove_file(sibling);
     }
 }
+
+// ─── Daemon singleton lock ──────────────────────────────────────────────
+
+/// An exclusive `flock` guard that is released when dropped.
+///
+/// Uses `libc::flock` with `LOCK_EX | LOCK_NB` so the attempt is non-blocking:
+/// if another daemon already holds the lock we get `EWOULDBLOCK` immediately
+/// rather than hanging.
+#[cfg(unix)]
+pub struct DaemonLock {
+    fd: std::os::fd::RawFd,
+    _file: std::fs::File,
+}
+
+#[cfg(unix)]
+impl DaemonLock {
+    /// Try to acquire an exclusive lock on `lock_path`.
+    ///
+    /// Returns `Ok` if we got the lock, or `Err` if another process holds it
+    /// (or the lock file cannot be created/opened).
+    pub fn acquire(lock_path: &std::path::Path) -> Result<Self> {
+        use std::os::fd::AsRawFd;
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .open(lock_path)?;
+        let fd = file.as_raw_fd();
+        let ret = unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) };
+        if ret != 0 {
+            let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+            if errno == libc::EWOULDBLOCK {
+                anyhow::bail!(
+                    "Another phi daemon already holds the lock at {}",
+                    lock_path.display()
+                );
+            }
+            anyhow::bail!("flock failed: {}", std::io::Error::last_os_error());
+        }
+        Ok(Self { fd, _file: file })
+    }
+}
+
+#[cfg(unix)]
+impl Drop for DaemonLock {
+    fn drop(&mut self) {
+        unsafe { libc::flock(self.fd, libc::LOCK_UN) };
+    }
+}
+
+/// Path for the daemon singleton lock file.
+///
+/// Derived from the main socket path so each custom `PHI_SOCKET` gets its
+/// own lock.
+pub fn daemon_lock_path() -> PathBuf {
+    let main = socket_path();
+    main.with_extension("lock")
+}
+
+/// Path for the daemon singleton lock file, derived from an explicit socket
+/// path (for testing).
+pub fn daemon_lock_path_for(socket: &std::path::Path) -> PathBuf {
+    socket.with_extension("lock")
+}
+
+/// Write a single zero byte to the given raw file descriptor.
+///
+/// Used for ready-pipe synchronisation: the parent process blocks on a
+/// `read()` from the pipe until the daemon signals it is ready.
+#[cfg(unix)]
+pub fn signal_ready(ready_fd: std::os::fd::RawFd) {
+    let buf = [0u8];
+    let _ = unsafe { libc::write(ready_fd, buf.as_ptr() as *const _, 1) };
+}

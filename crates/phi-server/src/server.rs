@@ -11,7 +11,10 @@ use anyhow::Result;
 use phi_protocol::{
     Listener, Request, ServerEvent, Stream, debug_socket_path, remove_socket,
     socket_has_live_listener, socket_path,
+    peek_request_id,
 };
+#[cfg(unix)]
+use phi_protocol::{DaemonLock, daemon_lock_path_for, signal_ready};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::{Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
@@ -24,10 +27,21 @@ const IDLE_TIMEOUT_SECS: u64 = 300;
 /// Exit code when server shuts down due to idle timeout.
 pub const EXIT_IDLE_TIMEOUT: i32 = 44;
 
+/// Timeout for writing a single event to a client socket (5 seconds).
+///
+/// If a client's TCP/Unix buffer is full (frozen TUI, slow consumer) we
+/// don't stall the forwarder indefinitely — we drop the connection after
+/// this timeout so the RLM turn can abort cleanly.
+const WRITE_TIMEOUT_SECS: u64 = 5;
+
 /// The server state.
 pub struct Server {
     socket_path: PathBuf,
     debug_socket_path: PathBuf,
+    lock_path: PathBuf,
+    /// Optional ready-pipe FD: when set, the server writes a single byte
+    /// to this FD after sockets are bound and listeners are spawned.
+    ready_fd: Option<std::os::fd::RawFd>,
     /// Active sessions (session_id -> ServerSession).
     sessions: Arc<RwLock<HashMap<String, Arc<Mutex<ServerSession>>>>>,
     /// Default session id.
@@ -48,9 +62,13 @@ impl Server {
     /// Create a new server.
     pub fn new() -> Self {
         let (shutdown_tx, _) = tokio::sync::broadcast::channel(16);
+        let socket_path = socket_path();
+        let lock_path = daemon_lock_path_for(&socket_path);
         Self {
-            socket_path: socket_path(),
+            socket_path,
             debug_socket_path: debug_socket_path(),
+            lock_path,
+            ready_fd: None,
             sessions: Arc::new(RwLock::new(HashMap::new())),
             session_id: Arc::new(RwLock::new(String::new())),
             client_count: Arc::new(RwLock::new(0)),
@@ -62,10 +80,30 @@ impl Server {
 
     /// Create a server with explicit socket paths (for testing).
     pub fn new_with_paths(socket_path: PathBuf, debug_socket_path: PathBuf) -> Self {
-        let mut server = Self::new();
-        server.socket_path = socket_path;
-        server.debug_socket_path = debug_socket_path;
-        server
+        let lock_path = daemon_lock_path_for(&socket_path);
+        let (shutdown_tx, _) = tokio::sync::broadcast::channel(16);
+        Self {
+            socket_path,
+            debug_socket_path,
+            lock_path,
+            ready_fd: None,
+            sessions: Arc::new(RwLock::new(HashMap::new())),
+            session_id: Arc::new(RwLock::new(String::new())),
+            client_count: Arc::new(RwLock::new(0)),
+            is_processing: Arc::new(RwLock::new(false)),
+            shutdown_tx,
+            current_cancel: Arc::new(RwLock::new(CancellationToken::new())),
+        }
+    }
+
+    /// Set a ready-pipe file descriptor.
+    ///
+    /// When set, the server writes a single zero byte to this FD after
+    /// sockets are bound and accept loops are spawned, eliminating startup
+    /// race conditions for the parent process that spawned the daemon.
+    #[cfg(unix)]
+    pub fn set_ready_fd(&mut self, fd: std::os::fd::RawFd) {
+        self.ready_fd = Some(fd);
     }
 
     /// Run the server: bind sockets, accept connections, dispatch requests.
@@ -76,6 +114,17 @@ impl Server {
         if let Some(parent) = self.socket_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
+
+        // Acquire the daemon singleton lock.  This prevents two daemons
+        // from binding the same socket pair even if the socket probing
+        // race condition fires.
+        #[cfg(unix)]
+        let _lock = {
+            if let Some(parent) = self.lock_path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            DaemonLock::acquire(&self.lock_path)?
+        };
 
         if socket_has_live_listener(&self.socket_path).await {
             anyhow::bail!(
@@ -122,6 +171,12 @@ impl Server {
         let main_handle = runtime.clone().spawn_main_accept_loop(main_listener);
         let debug_handle = runtime.clone().spawn_debug_accept_loop(debug_listener);
 
+        // Signal readiness to the parent process if a ready-pipe FD was set.
+        #[cfg(unix)]
+        if let Some(fd) = self.ready_fd {
+            signal_ready(fd);
+        }
+
         // Idle timeout monitor: shut down after no clients have been
         // connected for IDLE_TIMEOUT_SECS. Checks every 30 s so a brief
         // connect/disconnect doesn't trigger a false positive.
@@ -158,9 +213,10 @@ impl Server {
             _ = debug_handle => {}
         }
 
-        // Clean up: remove socket files.
+        // Clean up: remove socket files and the lock file.
         remove_socket(&self.socket_path);
         remove_socket(&self.debug_socket_path);
+        let _ = std::fs::remove_file(&self.lock_path);
 
         Ok(())
     }
@@ -252,10 +308,14 @@ impl ServerRuntime {
             let request = match phi_protocol::decode_request(&line) {
                 Ok(r) => r,
                 Err(e) => {
+                    // Peek the request id from the raw JSON so the client
+                    // can correlate the error even if the variant was
+                    // unknown or a field was missing.
+                    let id = peek_request_id(&line);
                     write_event(
                         &writer,
                         &ServerEvent::Error {
-                            id: 0,
+                            id,
                             message: format!("Invalid request: {e}"),
                             retry_after_secs: None,
                         },
@@ -310,6 +370,17 @@ impl ServerRuntime {
         use Request::*;
         match request {
             Message { id, content } => {
+                // Reject if another turn is already in progress.  Without
+                // this guard, two concurrent clients can both pass through
+                // and clobber each other's turn.
+                if *self.is_processing.read().await {
+                    write_event(writer, &ServerEvent::Error {
+                        id,
+                        message: "A turn is already in progress".to_string(),
+                        retry_after_secs: None,
+                    }).await;
+                    return;
+                }
                 write_event(writer, &ServerEvent::Ack { id }).await;
                 self.handle_message(id, content, writer).await;
             }
@@ -350,6 +421,9 @@ impl ServerRuntime {
             }
             ResumeSession { id, session_id } => {
                 write_event(writer, &ServerEvent::Ack { id }).await;
+                // Ensure the target session exists (load from disk if
+                // needed) and switch the active session id to it.
+                self.ensure_session(None, Some(session_id.clone())).await;
                 *self.session_id.write().await = session_id;
             }
             Shutdown { id } => {
@@ -359,8 +433,50 @@ impl ServerRuntime {
         }
     }
 
-    /// Ensure a default session exists, optionally rooted at `working_dir`.
-    async fn ensure_session(&self, working_dir: Option<String>, _target: Option<String>) {
+    /// Ensure a session exists, optionally rooted at `working_dir` or
+    /// resuming a specific `target` session id.
+    ///
+    /// If `target` is provided:
+    /// - If the session is already in the map, do nothing (it's loaded).
+    /// - If not in the map but a state file exists on disk, build a session
+    ///   and insert it.
+    /// - If neither, emit a warning (the session id is still set by the
+    ///   caller, but no session object is created).
+    ///
+    /// If `target` is `None`:
+    /// - If a default session already exists, do nothing.
+    /// - Otherwise build a fresh session from `working_dir` (or CWD).
+    async fn ensure_session(&self, working_dir: Option<String>, target: Option<String>) {
+        // If a target session id was specified, check if it already exists.
+        if let Some(tid) = &target {
+            if self.sessions.read().await.contains_key(tid) {
+                return; // already loaded
+            }
+            // Try to build a session — this will pick up the session id
+            // from the on-disk SessionStore if it exists.
+            let cwd = working_dir
+                .map(PathBuf::from)
+                .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+            match crate::session::build_server_session(&cwd).await {
+                Ok((id, session)) => {
+                    // Only insert if the built session's id matches the target.
+                    // If it doesn't match, the target session doesn't exist on
+                    // disk — insert under the target id anyway so the caller's
+                    // session_id assignment doesn't dangle.
+                    let insert_id = if id == *tid { id } else { tid.clone() };
+                    self.sessions
+                        .write()
+                        .await
+                        .insert(insert_id, Arc::new(Mutex::new(session)));
+                }
+                Err(e) => {
+                    eprintln!("Failed to build server session for resume: {e:?}");
+                }
+            }
+            return;
+        }
+
+        // No target: ensure the default session exists.
         let sid = self.session_id.read().await;
         if !sid.is_empty() {
             return; // session already initialized
@@ -436,7 +552,7 @@ impl ServerRuntime {
         // can fire it without holding the session mutex. We clone the shared
         // token into the session; cancel_current() fires the shared one.
         let turn_cancel = self.current_cancel.read().await.clone();
-        s.set_cancel(turn_cancel);
+        s.set_cancel(turn_cancel.clone());
         let events_rx = s.take_events_rx();
 
         let (done_tx, done_rx) = tokio::sync::oneshot::channel::<()>();
@@ -452,14 +568,28 @@ impl ServerRuntime {
                     return None;
                 }
             };
+            let mut write_failed = false;
             loop {
+                if write_failed {
+                    // Client is gone — drain events without writing, then
+                    // exit so the session lock is released promptly.
+                    while events_rx.try_recv().is_ok() {}
+                    break;
+                }
                 tokio::select! {
                     // A new RlmEvent arrived — bridge and write it.
                     event = events_rx.recv() => {
                         match event {
                             Some(ev) => {
                                 if let Some(se) = crate::session::bridge_event(&ev) {
-                                    write_event(&writer_clone, &se).await;
+                                    if try_write_event(&writer_clone, &se).await.is_err() {
+                                        // Client disconnected or write timed
+                                        // out — fire the cancel token so the
+                                        // upstream RLM generation stops
+                                        // immediately, saving API tokens.
+                                        turn_cancel.cancel();
+                                        write_failed = true;
+                                    }
                                 }
                             }
                             None => break, // channel closed
@@ -468,8 +598,12 @@ impl ServerRuntime {
                     // Turn finished — drain remaining events then exit.
                     _ = &mut done_rx => {
                         while let Ok(ev) = events_rx.try_recv() {
-                            if let Some(se) = crate::session::bridge_event(&ev) {
-                                write_event(&writer_clone, &se).await;
+                            if !write_failed {
+                                if let Some(se) = crate::session::bridge_event(&ev) {
+                                    if try_write_event(&writer_clone, &se).await.is_err() {
+                                        write_failed = true;
+                                    }
+                                }
                             }
                         }
                         break;
@@ -556,17 +690,44 @@ impl ServerRuntime {
 }
 
 /// Write a single ServerEvent as NDJSON to the (mutex-guarded) writer.
-async fn write_event(
+///
+/// Returns `Err` if the write fails (broken pipe, timeout) so the caller
+/// can abort the upstream generation and stop wasting API tokens.
+async fn try_write_event(
     writer: &Arc<Mutex<tokio::net::unix::OwnedWriteHalf>>,
     event: &ServerEvent,
-) {
+) -> std::result::Result<(), std::io::Error> {
     let json = match phi_protocol::encode_event(event) {
         Ok(j) => j,
         Err(e) => {
             eprintln!("Event encode error: {e}");
-            return;
+            return Ok(()); // encoding bug, not a transport error
         }
     };
     let mut w = writer.lock().await;
-    let _ = w.write_all(json.as_bytes()).await;
+    // Bounded write: if the client is frozen and its buffer is full, we
+    // time out after WRITE_TIMEOUT_SECS rather than stalling the forwarder
+    // indefinitely.
+    let write_result = tokio::time::timeout(
+        std::time::Duration::from_secs(WRITE_TIMEOUT_SECS),
+        w.write_all(json.as_bytes()),
+    )
+    .await;
+    match write_result {
+        Ok(inner) => inner,
+        Err(_) => Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "client write timeout",
+        )),
+    }
+}
+
+/// Best-effort write: ignores transport errors.  Used for acks, state
+/// responses, and terminal events where there is nothing more to do if
+/// the client has already disconnected.
+async fn write_event(
+    writer: &Arc<Mutex<tokio::net::unix::OwnedWriteHalf>>,
+    event: &ServerEvent,
+) {
+    let _ = try_write_event(writer, event).await;
 }

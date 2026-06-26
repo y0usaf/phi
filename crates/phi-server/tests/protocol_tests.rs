@@ -83,3 +83,44 @@ async fn clear_returns_no_error() {
     let mut client = Client::connect_with_path(sock).await.unwrap();
     client.clear().await.unwrap();
 }
+
+#[tokio::test]
+async fn malformed_request_returns_error_with_peeked_id() {
+    let (sock, _debug) = spawn_server("malformed").await;
+    let mut client = Client::connect_with_path(sock).await.unwrap();
+
+    // Send a request with an unknown type but a valid id.
+    // The server should peek the id and return it in the error.
+    let line = r#"{"type":"bogus","id":77}"#;
+    client.send_raw(line).await.unwrap();
+
+    let event = client.read_event().await.unwrap();
+    match event {
+        phi_protocol::ServerEvent::Error { id, .. } => {
+            assert_eq!(id, 77, "error should carry the peeked request id");
+        }
+        other => panic!("expected Error, got {other:?}"),
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn daemon_lock_prevents_double_bind() {
+    use phi_protocol::{DaemonLock, daemon_lock_path_for};
+    use std::path::PathBuf;
+
+    let lock_path: PathBuf = std::env::temp_dir().join(format!(
+        "phi-test-lock-{}.lock",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&lock_path);
+
+    // First acquisition succeeds.
+    let _lock1 = DaemonLock::acquire(&lock_path).unwrap();
+
+    // Second acquisition on the same path must fail.
+    let result = DaemonLock::acquire(&lock_path);
+    assert!(result.is_err(), "second daemon lock should be rejected");
+
+    let _ = std::fs::remove_file(&lock_path);
+}

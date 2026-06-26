@@ -55,6 +55,15 @@ impl Client {
         id
     }
 
+    /// Send a raw NDJSON line (for testing protocol robustness with
+    /// malformed or unknown request types).
+    pub async fn send_raw(&mut self, line: &str) -> Result<()> {
+        let json = line.to_string() + "
+";
+        self.writer.write_all(json.as_bytes()).await?;
+        Ok(())
+    }
+
     async fn send_request(&mut self, request: Request) -> Result<u64> {
         let json = serde_json::to_string(&request)? + "\n";
         self.writer.write_all(json.as_bytes()).await?;
