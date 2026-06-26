@@ -125,6 +125,13 @@ impl RlmSession {
                 .await;
         }
 
+        // Load the user's prompt as `context_N` into the REPL, mirroring
+        // upstream RLM persistent-mode `add_context(prompt)`. The model can
+        // slice and feed the prompt to sub-LLMs just like any other context.
+        // Best-effort: a failure here is non-fatal — the prompt is still in
+        // the transcript as "Answer the following: {prompt}".
+        let _ = self.add_context(prompt).await;
+
         let env = self.env.as_mut().expect("env started above");
         let metadata = QueryMetadata::from_payload(&self.payload);
         let mut history = if self.transcript.is_empty() {

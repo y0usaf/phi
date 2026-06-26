@@ -1027,14 +1027,16 @@ const TRANSCRIPT_COMPACTION_THRESHOLD: usize = 20;
         assert_eq!(result.stop, StopCause::Answer);
         assert_eq!(result.response, "EXTRA PAYLOAD");
 
-        // The per-turn prompt advertises both contexts.
+        // The per-turn prompt advertises all three contexts: context_0
+        // (payload), context_1 (manual add_context), context_2 (auto-loaded
+        // prompt from send).
         let prompts = root.recorded_prompts();
         let joined = prompts[0]
             .iter()
             .map(|m| m.content.clone())
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(joined.contains("2 contexts available"), "{joined}");
+        assert!(joined.contains("3 contexts available"), "{joined}");
 
         session.shutdown().await;
     }
