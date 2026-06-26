@@ -262,11 +262,6 @@ impl SseHandler for Parser {
     }
 
     fn on_event(&mut self, event_name: &str, data: &str, sink: &EventSink) {
-        // Transport already caps events at MAX_SSE_EVENT_BYTES; guard the parse
-        // defensively since serde_json bounds recursion depth, not total size.
-        if data.len() > super::MAX_SSE_EVENT_BYTES {
-            return;
-        }
         let Ok(value) = serde_json::from_str::<Value>(data) else {
             return;
         };

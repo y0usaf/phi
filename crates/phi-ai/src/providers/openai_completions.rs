@@ -59,7 +59,7 @@ async fn run(
     sink: EventSink,
 ) {
     let body = build_body(&model, &ctx, &opts);
-    let url = format!("{}/chat/completions", model.base_url.trim_end_matches('/'));
+    let url = endpoint_url(&model);
     let mut handler = Parser::new(&model);
 
     let build_request = |client: &reqwest::Client| {
@@ -76,6 +76,10 @@ async fn run(
     if run_sse(&client, build_request, &model, &opts, &sink, &mut handler).await {
         handler.finish(&model, &sink);
     }
+}
+
+fn endpoint_url(model: &Model) -> String {
+    format!("{}/chat/completions", model.base_url.trim_end_matches('/'))
 }
 
 fn build_body(model: &Model, ctx: &Context, opts: &StreamOptions) -> Value {
@@ -251,9 +255,6 @@ impl SseHandler for Parser {
     }
 
     fn on_event(&mut self, _event_name: &str, data: &str, sink: &EventSink) {
-        if data.len() > super::MAX_SSE_EVENT_BYTES {
-            return;
-        }
         // OpenAI sends "[DONE]" as the terminal marker.
         if data == "[DONE]" {
             return;
@@ -533,10 +534,8 @@ line2");
 
     #[test]
     fn build_url_targets_chat_completions() {
-        // The URL is built inside `run`; verify the format via the model's
-        // base_url trimming logic.
         let m = model();
-        let url = format!("{}/chat/completions", m.base_url.trim_end_matches('/'));
+        let url = super::endpoint_url(&m);
         assert_eq!(url, "https://api.test.com/v1/chat/completions");
     }
 }
