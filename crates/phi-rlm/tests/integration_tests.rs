@@ -62,6 +62,7 @@ const TRANSCRIPT_COMPACTION_THRESHOLD: usize = 20;
             Ok(Completion {
                 text,
                 usage: self.usage_per_call,
+                ..Default::default()
             })
         }
     }
@@ -212,6 +213,7 @@ const TRANSCRIPT_COMPACTION_THRESHOLD: usize = 20;
             _prompt: &[ChatMessage],
             on_delta: DeltaSink,
             _on_thinking: Option<ThinkingSink>,
+            _on_tool_call: Option<phi_rlm::ToolCallSink>,
             _cancel: &tokio_util::sync::CancellationToken,
         ) -> Result<Completion, String> {
             let head =
@@ -224,6 +226,7 @@ const TRANSCRIPT_COMPACTION_THRESHOLD: usize = 20;
             Ok(Completion {
                 text: format!("{head}tail"),
                 usage: Usage::default(),
+                ..Default::default()
             })
         }
     }
@@ -1109,6 +1112,7 @@ answer['ready'] = True
             _prompt: &[ChatMessage],
             _on_delta: DeltaSink,
             _on_thinking: Option<ThinkingSink>,
+            _on_tool_call: Option<phi_rlm::ToolCallSink>,
             cancel: &CancellationToken,
         ) -> Result<Completion, String> {
             cancel.cancelled().await;

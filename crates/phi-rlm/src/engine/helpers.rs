@@ -93,6 +93,7 @@ pub fn push_repl_turns(history: &mut Vec<ChatMessage>, repl: &RestoredRepl, max_
     history.push(ChatMessage {
         role: Role::Assistant,
         content: format!("```repl\n{}\n```", repl.code),
+    ..Default::default()
     });
     let block = ExecutedBlock {
         code: repl.code.clone(),
@@ -109,6 +110,7 @@ pub fn push_repl_turns(history: &mut Vec<ChatMessage>, repl: &RestoredRepl, max_
         history.push(ChatMessage {
             role: Role::User,
             content: outputs,
+        ..Default::default()
         });
     }
 }

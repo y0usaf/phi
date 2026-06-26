@@ -150,11 +150,13 @@ impl RlmSession {
                         "Session summary (older conversation compacted for context):
 {summary}"
                     ),
+                ..Default::default()
                 });
                 history.push(ChatMessage {
                     role: Role::Assistant,
                     content: "Understood — I have the session summary and will build on it."
                         .to_owned(),
+                ..Default::default()
                 });
             }
             history.extend(self.transcript.iter().cloned());
@@ -162,6 +164,7 @@ impl RlmSession {
             history.push(ChatMessage {
                 role: Role::User,
                 content: format!("Answer the following: {prompt}"),
+            ..Default::default()
             });
             history
         };
@@ -197,10 +200,12 @@ impl RlmSession {
             self.transcript.push(ChatMessage {
                 role: Role::User,
                 content: format!("Answer the following: {prompt}"),
+            ..Default::default()
             });
             self.transcript.push(ChatMessage {
                 role: Role::Assistant,
                 content: outcome.response.clone(),
+            ..Default::default()
             });
             // Compaction: once the in-band transcript exceeds the threshold,
             // fold the oldest exchange pairs into `session_summary` so the
@@ -235,6 +240,7 @@ impl RlmSession {
             self.pending_shell.push(ChatMessage {
                 role: Role::Assistant,
                 content: format!("```repl\n{code}\n```"),
+            ..Default::default()
             });
             let block = ExecutedBlock {
                 code: code.to_owned(),
@@ -247,6 +253,7 @@ impl RlmSession {
                 self.pending_shell.push(ChatMessage {
                     role: Role::User,
                     content: outputs,
+                ..Default::default()
                 });
             }
         }
@@ -306,6 +313,7 @@ impl RlmSession {
             history.push(ChatMessage {
                 role: Role::User,
                 content: format!("Answer the following: {}", exchange.prompt),
+            ..Default::default()
             });
             for repl in &exchange.repls {
                 push_repl_turns(&mut history, repl, self.rlm.config.max_output_chars);
@@ -318,10 +326,12 @@ impl RlmSession {
             self.transcript.push(ChatMessage {
                 role: Role::User,
                 content: format!("Answer the following: {}", exchange.prompt),
+            ..Default::default()
             });
             self.transcript.push(ChatMessage {
                 role: Role::Assistant,
                 content: exchange.response.clone(),
+            ..Default::default()
             });
         }
         for repl in pending {

@@ -15,7 +15,7 @@ pub mod lm_core;
 // Re-export lm_core and phi-repl types so downstream `use phi_rlm::*` works.
 pub use lm_core::{
     ChatMessage, Completion, ContextPayload, DeltaSink, LanguageModel, LmHandler, Role,
-    ThinkingSink, UsageBreakdown,
+    StopReason, ThinkingSink, ToolCall, ToolCallEvent, ToolCallSink, UsageBreakdown,
 };
 pub use phi_repl::ReplResult;
 

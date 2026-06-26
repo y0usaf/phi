@@ -6,11 +6,12 @@ use std::sync::{Arc, RwLock};
 use async_trait::async_trait;
 use phi_ai::{
     AssistantContent, AssistantEvent, AssistantMessage, AuthStorage, Context, Message, Model,
-    Registry, StreamOptions, ThinkingLevel, UserMessage,
+    Registry, StopReason as AiStopReason, StreamOptions, ThinkingLevel, ToolDefinition,
+    ToolResultMessage, UserMessage,
 };
 use tokio_util::sync::CancellationToken;
 
-use crate::lm_core::{Completion, DeltaSink, LanguageModel, ThinkingSink};
+use crate::lm_core::{Completion, DeltaSink, LanguageModel, StopReason, ThinkingSink, ToolCall, ToolCallEvent, ToolCallSink};
 use crate::lm_core::{ChatMessage, Role};
 
 pub struct ProviderLm {
@@ -23,6 +24,8 @@ pub struct ProviderLm {
     /// wrong — e.g. neuralwatt advertises 1M for glm-5.2 but only serves
     /// 200k). `None` falls back to `model.max_tokens`.
     max_tokens: Option<u64>,
+    /// Tool definitions sent to the API so the model can call them natively.
+    tools: RwLock<Vec<ToolDefinition>>,
 }
 
 /// Transient-looking provider failures are retried; auth/4xx errors are not.
@@ -57,7 +60,18 @@ impl ProviderLm {
             auth,
             thinking: RwLock::new(thinking),
             max_tokens,
+            tools: RwLock::new(Vec::new()),
         }
+    }
+
+    /// Set the tool definitions the model can call natively.
+    pub fn set_tools(&self, tools: Vec<ToolDefinition>) {
+        *self.tools.write().unwrap() = tools;
+    }
+
+    /// Whether any tool definitions are registered.
+    pub fn has_tools(&self) -> bool {
+        !self.tools.read().unwrap().is_empty()
     }
 
     pub fn model(&self) -> Model {
@@ -95,10 +109,33 @@ impl ProviderLm {
                     .push(Message::User(UserMessage::new(message.content.clone()))),
                 Role::Assistant => {
                     let mut assistant = AssistantMessage::empty(model);
-                    assistant.content.push(AssistantContent::Text {
-                        text: message.content.clone(),
-                    });
+                    if !message.content.is_empty() {
+                        assistant.content.push(AssistantContent::Text {
+                            text: message.content.clone(),
+                        });
+                    }
+                    for tc in &message.tool_calls {
+                        assistant.content.push(AssistantContent::ToolCall(
+                            phi_ai::ToolCall {
+                                id: tc.id.clone(),
+                                name: tc.name.clone(),
+                                arguments: tc.arguments.clone(),
+                            },
+                        ));
+                    }
                     ctx.messages.push(Message::Assistant(assistant));
+                }
+                Role::Tool => {
+                    if let Some(tool_call_id) = &message.tool_call_id {
+                        let mut result = ToolResultMessage::new(
+                            tool_call_id.clone(),
+                            message.content.clone(),
+                        );
+                        if message.content.starts_with("Error:") {
+                            result = result.with_error(true);
+                        }
+                        ctx.messages.push(Message::ToolResult(result));
+                    }
                 }
             }
         }
@@ -115,7 +152,7 @@ impl LanguageModel for ProviderLm {
     }
 
     async fn complete(&self, prompt: &[ChatMessage], cancel: &CancellationToken) -> Result<Completion, String> {
-        self.complete_streaming(prompt, std::sync::Arc::new(|_: &str| true), None, cancel)
+        self.complete_streaming(prompt, std::sync::Arc::new(|_: &str| true), None, None, cancel)
             .await
     }
 
@@ -124,6 +161,7 @@ impl LanguageModel for ProviderLm {
         prompt: &[ChatMessage],
         on_delta: DeltaSink,
         on_thinking: Option<ThinkingSink>,
+        on_tool_call: Option<ToolCallSink>,
         cancel: &CancellationToken,
     ) -> Result<Completion, String> {
         // Retry-with-backoff on transient faults (429/5xx/transport), but
@@ -139,7 +177,7 @@ impl LanguageModel for ProviderLm {
                 inner(delta)
             });
             match self
-                .attempt_streaming(prompt, wrapped, on_thinking.clone(), cancel)
+                .attempt_streaming(prompt, wrapped, on_thinking.clone(), on_tool_call.clone(), cancel)
                 .await
             {
                 Ok(completion) => return Ok(completion),
@@ -169,6 +207,7 @@ impl ProviderLm {
         prompt: &[ChatMessage],
         on_delta: DeltaSink,
         on_thinking: Option<ThinkingSink>,
+        on_tool_call: Option<ToolCallSink>,
         cancel: &CancellationToken,
     ) -> Result<Completion, String> {
         let model = self.model();
@@ -192,7 +231,11 @@ impl ProviderLm {
         // `run_sse` can tear down the HTTP connection instantly.
         opts.cancel = cancel.clone();
 
-        let context = Self::context(&model, prompt);
+        let mut context = Self::context(&model, prompt);
+        // Copy registered tool definitions into the context so the API
+        // request includes the native `tools` array.
+        context.tools = self.tools.read().unwrap().clone();
+
         let mut stream = self.registry.stream(&model, &context, opts);
         let mut terminal = None;
         let mut accumulated = String::new();
@@ -217,12 +260,35 @@ impl ProviderLm {
                                 return Ok(Completion {
                                     text: accumulated,
                                     usage: phi_ai::Usage::default(),
+                                    ..Default::default()
                                 });
                             }
                         }
                         AssistantEvent::ThinkingDelta { delta, .. } => {
                             if let Some(sink) = &on_thinking {
                                 sink(&delta);
+                            }
+                        }
+                        AssistantEvent::ToolCallStart { id, name, .. } => {
+                            if let Some(sink) = &on_tool_call {
+                                sink(ToolCallEvent::Start { id, name });
+                            }
+                        }
+                        AssistantEvent::ToolCallDelta { delta, .. } => {
+                            // We don't have the id here in the generic event;
+                            // providers that need it include it in End.
+                            // Delta is best-effort for live streaming UI.
+                            if let Some(sink) = &on_tool_call {
+                                sink(ToolCallEvent::Delta { id: String::new(), delta });
+                            }
+                        }
+                        AssistantEvent::ToolCallEnd { id, name, arguments, .. } => {
+                            if let Some(sink) = &on_tool_call {
+                                sink(ToolCallEvent::End {
+                                    id: id.clone(),
+                                    name: name.clone(),
+                                    arguments: arguments.clone(),
+                                });
                             }
                         }
                         AssistantEvent::Done { message } | AssistantEvent::Error { message } => {
@@ -239,9 +305,34 @@ impl ProviderLm {
                 .error_message
                 .unwrap_or_else(|| "provider error".to_owned()));
         }
+        // Extract tool calls from the assistant message content blocks.
+        let tool_calls: Vec<ToolCall> = message
+            .content
+            .iter()
+            .filter_map(|block| {
+                if let AssistantContent::ToolCall(call) = block {
+                    Some(ToolCall {
+                        id: call.id.clone(),
+                        name: call.name.clone(),
+                        arguments: call.arguments.clone(),
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let stop_reason = match message.stop_reason {
+            AiStopReason::ToolUse => StopReason::ToolUse,
+            AiStopReason::Length => StopReason::Length,
+            AiStopReason::Error => StopReason::Error,
+            AiStopReason::Aborted => StopReason::Error,
+            AiStopReason::Stop => StopReason::Stop,
+        };
         Ok(Completion {
             text: message.text(),
             usage: message.usage,
+            tool_calls,
+            stop_reason,
         })
     }
 }

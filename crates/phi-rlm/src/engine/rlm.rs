@@ -240,16 +240,19 @@ impl Rlm {
             ChatMessage {
                 role: Role::System,
                 content: build_system_prompt(&self.system_prompt_options()),
+            ..Default::default()
             },
             ChatMessage {
                 role: Role::User,
                 content: metadata_user_prompt(metadata, root_prompt),
+            ..Default::default()
             },
         ];
         if let Some(prologue) = &self.config.user_prologue {
             history.push(ChatMessage {
                 role: Role::User,
                 content: prologue.clone(),
+            ..Default::default()
             });
         }
         history
@@ -315,6 +318,7 @@ impl Rlm {
             history.push(ChatMessage {
                 role: Role::User,
                 content: build_user_prompt(i, iteration_limit, context_count, history_count, warm),
+            ..Default::default()
             });
 
             self.events.emit(RlmEvent::IterationStart {
@@ -341,7 +345,7 @@ impl Rlm {
 
             let stream = async {
                     let result = handler
-                    .complete_root(history, Some(sink), Some(self.thinking_sink(i)), cancel)
+                    .complete_root(history, Some(sink), Some(self.thinking_sink(i)), None, cancel)
                     .await;
                 if let Ok(completion) = &result {
                     // Catch-up for non-streaming models (no deltas) and any
@@ -602,6 +606,7 @@ impl Rlm {
                 history.push(ChatMessage {
                     role: Role::Assistant,
                     content: response,
+                ..Default::default()
                 });
                 i += 1;
                 continue;
@@ -618,11 +623,13 @@ impl Rlm {
             history.push(ChatMessage {
                 role: Role::Assistant,
                 content: banked,
+            ..Default::default()
             });
             if let Some(outputs) = format_iteration(&blocks, self.config.max_output_chars) {
                 history.push(ChatMessage {
                     role: Role::User,
                     content: outputs,
+                ..Default::default()
                 });
             }
             dispatch_event(
@@ -657,6 +664,7 @@ impl Rlm {
 
 ",
                             ),
+                    ..Default::default()
                     });
                 }
             }
@@ -675,12 +683,14 @@ impl Rlm {
         history.push(ChatMessage {
             role: Role::Assistant,
             content: DEFAULT_ANSWER_NUDGE.to_owned(),
+        ..Default::default()
         });
         match handler
             .complete_root(
                 history,
                 Some(self.delta_sink(iterations)),
                 Some(self.thinking_sink(iterations)),
+                None,
                 cancel,
             )
             .await
@@ -791,6 +801,7 @@ impl Rlm {
         let messages = [ChatMessage {
             role: Role::User,
             content,
+        ..Default::default()
         }];
         let (response, usage, usage_by_model, stop, error) =
             match self.root.complete(&messages, cancel).await {

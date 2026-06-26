@@ -78,6 +78,7 @@ async fn hooks_emit_context_chains_messages() {
                 msgs.push(phi_rlm::ChatMessage {
                     role: phi_rlm::Role::User,
                     content: "from handler1".to_owned(),
+                    ..Default::default()
                 });
                 msgs
             }),
@@ -90,6 +91,7 @@ async fn hooks_emit_context_chains_messages() {
                 msgs.push(phi_rlm::ChatMessage {
                     role: phi_rlm::Role::User,
                     content: "from handler2".to_owned(),
+                    ..Default::default()
                 });
                 msgs
             }),
@@ -106,6 +108,7 @@ async fn hooks_emit_context_chains_messages() {
         messages: vec![phi_rlm::ChatMessage {
             role: phi_rlm::Role::User,
             content: "initial".to_owned(),
+            ..Default::default()
         }],
     };
     let result = hooks.emit_context(event).await.unwrap();

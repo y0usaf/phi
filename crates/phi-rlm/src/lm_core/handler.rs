@@ -8,12 +8,26 @@ use async_trait::async_trait;
 use phi_ai::Usage;
 use tokio_util::sync::CancellationToken;
 
-use super::{ChatMessage, Role};
+use super::{ChatMessage, Role, ToolCall};
+
+/// Why the model stopped generating.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum StopReason {
+    #[default]
+    Stop,
+    Length,
+    ToolUse,
+    Error,
+}
 
 #[derive(Clone, Debug, Default)]
 pub struct Completion {
     pub text: String,
     pub usage: Usage,
+    /// Tool calls the model emitted (native `tool_use` blocks), if any.
+    pub tool_calls: Vec<ToolCall>,
+    /// Why the model stopped generating.
+    pub stop_reason: StopReason,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -31,6 +45,29 @@ pub type DeltaSink = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 /// Observational only: thinking never affects generation control flow.
 pub type ThinkingSink = Arc<dyn Fn(&str) + Send + Sync>;
 
+/// Receives streamed tool-call events during a completion.
+/// `ToolCallStart` fires when a tool call begins, `ToolCallDelta` streams
+/// partial argument JSON, and `ToolCallEnd` fires when arguments are complete.
+pub type ToolCallSink = Arc<dyn Fn(ToolCallEvent) + Send + Sync>;
+
+/// A streamed tool-call event.
+#[derive(Clone, Debug)]
+pub enum ToolCallEvent {
+    Start {
+        id: String,
+        name: String,
+    },
+    Delta {
+        id: String,
+        delta: String,
+    },
+    End {
+        id: String,
+        name: String,
+        arguments: serde_json::Value,
+    },
+}
+
 /// Implemented by plain provider-backed models (phi-runtime wires phi-ai in)
 /// and by `Rlm` itself — recursion is just trait recursion.
 #[async_trait]
@@ -38,16 +75,18 @@ pub trait LanguageModel: Send + Sync {
     fn name(&self) -> String;
     async fn complete(&self, prompt: &[ChatMessage], cancel: &CancellationToken) -> Result<Completion, String>;
 
-    /// Stream text deltas through `on_delta` while completing. Models without
-    /// streaming support fall back to a single non-streamed completion.
+    /// Stream text deltas through `on_delta` and tool-call events through
+    /// `on_tool_call` while completing. Models without streaming support fall
+    /// back to a single non-streamed completion.
     async fn complete_streaming(
         &self,
         prompt: &[ChatMessage],
         on_delta: DeltaSink,
         on_thinking: Option<ThinkingSink>,
+        on_tool_call: Option<ToolCallSink>,
         cancel: &CancellationToken,
     ) -> Result<Completion, String> {
-        let _ = (on_delta, on_thinking);
+        let _ = (on_delta, on_thinking, on_tool_call);
         self.complete(prompt, cancel).await
     }
 }
@@ -152,17 +191,18 @@ impl LmHandler {
         prompt: &[ChatMessage],
         on_delta: Option<DeltaSink>,
         on_thinking: Option<ThinkingSink>,
+        on_tool_call: Option<ToolCallSink>,
         cancel: &CancellationToken,
     ) -> Result<Completion, String> {
         let model = self.root.name();
-        let completion = match (on_delta, on_thinking) {
-            (Some(sink), thinking) => self.root.complete_streaming(prompt, sink, thinking, cancel).await?,
-            (None, Some(thinking)) => {
+        let completion = match (on_delta, on_thinking, on_tool_call) {
+            (Some(sink), thinking, tool_call) => self.root.complete_streaming(prompt, sink, thinking, tool_call, cancel).await?,
+            (None, None, None) => self.root.complete(prompt, cancel).await?,
+            (None, thinking, tool_call) => {
                 self.root
-                    .complete_streaming(prompt, Arc::new(|_: &str| true), Some(thinking), cancel)
+                    .complete_streaming(prompt, Arc::new(|_: &str| true), thinking, tool_call, cancel)
                     .await?
             }
-            (None, None) => self.root.complete(prompt, cancel).await?,
         };
         self.track_model(model, &completion.usage);
         Ok(completion)
@@ -183,6 +223,7 @@ impl LmHandler {
         let messages = [ChatMessage {
             role: Role::User,
             content: prompt.to_owned(),
+        ..Default::default()
         }];
         let completion = lm.complete(&messages, cancel).await?;
         self.track_model(model_name, &completion.usage);

@@ -51,6 +51,7 @@ impl<'a> SavePoint<'a> {
         Some(ChatMessage {
             role: phi_rlm::Role::User,
             content: combined,
+            ..Default::default()
         })
     }
 
