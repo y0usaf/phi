@@ -179,14 +179,10 @@ async fn run_connect() -> Result<()> {
                                 print!("{text}");
                                 let _ = io::stdout().flush();
                             }
-                            ServerEvent::Done { id, error } if id == msg_id => {
-                                if let Some(e) = error {
-                                    eprintln!("
-Error: {e}");
-                                }
+                            ServerEvent::Done { id } if id == msg_id => {
                                 break;
                             }
-                            ServerEvent::Error { message, .. } => {
+                            ServerEvent::Error { id, message, .. } if id == msg_id => {
                                 eprintln!("
 Error: {message}");
                                 break;
