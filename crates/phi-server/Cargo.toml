@@ -15,7 +15,6 @@ phi-session-tui.workspace = true
 phi-cli.workspace = true
 phi-lua.workspace = true
 phi-builtins.workspace = true
-phi-memory.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 serde.workspace = true

@@ -13,8 +13,6 @@ use phi_cli::Args;
 use phi_rlm::{ContextPayload, ProviderLm, Rlm, RlmConfig};
 use phi_runtime::RuntimeBuilder;
 
-use phi_memory::{MemoryConfig, MemoryExtension};
-
 use phi_session::config::{Config, Settings};
 use phi_session::session::SessionStore;
 use crate::tui::{TuiSetup, UiSetup};
@@ -78,7 +76,7 @@ async fn resolve_models(
 
 /// Discover and load Lua extensions and config.lua files, then build and boot
 /// the AppRuntime with all extensions registered.
-async fn build_runtime(cwd: &Path, settings: &Settings) -> Result<Arc<phi_runtime::AppRuntime>> {
+async fn build_runtime(cwd: &Path) -> Result<Arc<phi_runtime::AppRuntime>> {
     let ext_paths = phi_lua::discover_extensions(cwd);
     let lua_exts = phi_lua::load_extensions(&ext_paths);
 
@@ -91,18 +89,6 @@ async fn build_runtime(cwd: &Path, settings: &Settings) -> Result<Arc<phi_runtim
     }
     for ext in config_exts {
         rt_builder = rt_builder.register_boxed_extension(ext);
-    }
-    let memory_cfg = MemoryConfig {
-        enabled: settings.memory.enabled,
-        vault_path: settings.memory.vault_path.clone(),
-        recall_limit: settings.memory.recall_limit,
-        auto_inject: settings.memory.auto_inject,
-    };
-    match MemoryExtension::with_config(memory_cfg) {
-        Ok(ext) => {
-            rt_builder = rt_builder.register_boxed_extension(Box::new(ext));
-        }
-        Err(e) => eprintln!("[memory] {e}"),
     }
     for ext in lua_exts {
         rt_builder = rt_builder.register_boxed_extension(ext);
@@ -179,7 +165,7 @@ pub async fn build_session(
     let settings = Settings::resolve(&args.to_session_args(), Config::load(cwd)?, true);
 
     let models = resolve_models(&settings, registry, storage).await?;
-    let runtime = build_runtime(cwd, &settings).await?;
+    let runtime = build_runtime(cwd).await?;
     let config = build_rlm_config(cwd, &settings, &runtime);
     let (root, sub) = build_providers(registry, storage, &models, settings.max_tokens);
 

@@ -52,8 +52,6 @@ webbrowser = "1.0.4"
 
 phi-ai = { path = "crates/phi-ai" }
 phi-builtins = { path = "crates/phi-builtins" }
-phi-memory = { path = "crates/phi-memory" }
-rusqlite = { version = "0.32", features = ["bundled"] }
 phi-cli = { path = "crates/phi-cli" }
 phi-ext = { path = "crates/phi-ext" }
 phi-repl = { path = "crates/phi-repl" }
