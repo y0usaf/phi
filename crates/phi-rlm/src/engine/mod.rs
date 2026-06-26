@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use phi_ai::ThinkingLevel;
 
-use phi_lm_core::{ChatMessage, ContextPayload, LanguageModel};
+use crate::lm_core::{ChatMessage, ContextPayload, LanguageModel};
 use crate::config::RlmConfig;
 
 /// Operational phase of the harness.

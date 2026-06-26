@@ -20,9 +20,9 @@ use super::command_line::{CommandLineEvent, CommandLineState, command_line_start
 use crate::driver::{self as driver, MuxChannels, SessionKey};
 use crate::persisted::{self as persisted, PersistedState};
 use crate::status::SessionStatus;
-use phi_mux_grid::ansi::{AnsiRenderer, HardwareCursor};
-use phi_mux_grid::cell_surface::CellSurface;
-use phi_mux_grid::layout::{CellLayout, SIDEBAR_WIDTH_DEFAULT, compute_cell_layout};
+use crate::grid::ansi::{AnsiRenderer, HardwareCursor};
+use crate::grid::cell_surface::CellSurface;
+use crate::grid::layout::{CellLayout, SIDEBAR_WIDTH_DEFAULT, compute_cell_layout};
 use super::ui::overlays::archive::{ArchiveOutcome, ArchiveViewerState, render_archive_viewer};
 use super::ui::overlays::help::{HelpOverlayState, render_help_overlay};
 use super::ui::overlays::model::{ModelOverlayOutcome, ModelOverlayState, render_model_overlay};
@@ -30,7 +30,7 @@ use super::ui::overlays::usage::{UsageOverlayState, render_usage_overlay};
 use super::ui::scene::{
     Chrome, MuxMode, ScenePalette, StatusNoteKind, render_scene, statusline_status,
 };
-use phi_mux_grid::selection::{SelectionPoint, TerminalSelection, selected_text};
+use crate::grid::selection::{SelectionPoint, TerminalSelection, selected_text};
 use super::ui::sidebar::{
     SidebarRowKind, build_sidebar_rows, ensure_sidebar_selection_visible, project_sidebar_title,
     scroll_sidebar_by_rows_value, selected_sidebar_selection_span, session_sidebar_title,
@@ -881,7 +881,7 @@ impl MuxApp {
                 let index = self.workspace.selected_project;
                 let _ = self.workspace.refresh_project(index);
                 self.workspace.normalize_visible_selection(index);
-                drain_pending_terminal_events();
+                crate::driver::drain_pending_terminal_events();
                 self.ensure_focused_session().await;
                 self.set_note("session archived", StatusNoteKind::Ok);
                 self.on_focus_changed();
@@ -1197,24 +1197,6 @@ impl MuxApp {
                     .unwrap_or_default(),
                 status_kind: None,
             },
-        }
-    }
-}
-
-fn drain_pending_terminal_events() {
-    use phi_tui::crossterm::event::{self, Event};
-
-    while event::poll(Duration::from_millis(0)).unwrap_or(false) {
-        match event::read() {
-            Ok(
-                Event::Key(_)
-                | Event::Mouse(_)
-                | Event::Paste(_)
-                | Event::Resize(_, _)
-                | Event::FocusGained
-                | Event::FocusLost,
-            ) => {}
-            Err(_) => break,
         }
     }
 }

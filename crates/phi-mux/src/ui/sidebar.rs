@@ -4,8 +4,8 @@
 
 use crate::status::SessionStatus;
 use crate::workspace::{MuxProject, MuxSession};
-use phi_mux_grid::color::Color;
-use phi_mux_grid::theme::{HEADING, MUTED, TEXT};
+use crate::grid::color::Color;
+use crate::grid::theme::{HEADING, MUTED, TEXT};
 
 pub const SIDEBAR_ANIMATION_FRAME_MS: u64 = 40;
 pub const SIDEBAR_SPINNER_FRAME_TICKS: u64 = 2;

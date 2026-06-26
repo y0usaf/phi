@@ -171,3 +171,25 @@ pub async fn spawn(
         store_path,
     })
 }
+
+/// Drain any pending terminal events (key, mouse, resize, etc.) that may
+/// have accumulated during a suspend or mode switch, discarding them so
+/// they don't fire as phantom input on resume.
+pub fn drain_pending_terminal_events() {
+    use std::time::Duration;
+    use phi_tui::crossterm::event::{self, Event};
+
+    while event::poll(Duration::from_millis(0)).unwrap_or(false) {
+        match event::read() {
+            Ok(
+                Event::Key(_)
+                | Event::Mouse(_)
+                | Event::Paste(_)
+                | Event::Resize(_, _)
+                | Event::FocusGained
+                | Event::FocusLost,
+            ) => {}
+            Err(_) => break,
+        }
+    }
+}

@@ -2,7 +2,7 @@
 //! and multi-turn sessions.
 //!
 //! Modules:
-//! - `lm_core`: message types + `LanguageModel` trait (re-exported from `phi-lm-core`)
+//! - `lm_core`: message types + `LanguageModel` trait
 //! - `llm_parse`: code-block extraction and prose splitting
 //! - `provider`: concrete `ProviderLm` impl
 //! - `prompts`: system/user prompt rendering
@@ -10,8 +10,10 @@
 //! - `engine`: single-turn completion loop + sub-calls + harness state types
 //! - `session`: multi-turn persistence + compaction
 
-// Re-export phi-lm-core and phi-repl types so downstream `use phi_rlm::*` works.
-pub use phi_lm_core::{
+pub mod lm_core;
+
+// Re-export lm_core and phi-repl types so downstream `use phi_rlm::*` works.
+pub use lm_core::{
     ChatMessage, Completion, ContextPayload, DeltaSink, LanguageModel, LmHandler, Role,
     ThinkingSink, UsageBreakdown,
 };
@@ -37,7 +39,7 @@ pub use prompts::{
     ContextFile, QueryMetadata, Skill, SystemPromptOptions, build_system_prompt,
     build_user_prompt, metadata_user_prompt, DEFAULT_ANSWER_NUDGE, DEFAULT_CYBER_RISK,
     DEFAULT_IDENTITY, DEFAULT_MECHANICS, DEFAULT_REPL_TOOLS, ORCHESTRATOR_ADDENDUM,
-    PROSE_NUDGE, TURN_SCARCITY_NUDGE,
+    TURN_SCARCITY_NUDGE,
 };
 pub use engine::{HarnessError, HarnessPhase, Rlm, TurnState, RestoredExchange, RestoredRepl};
 pub use session::RlmSession;

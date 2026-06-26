@@ -2,21 +2,20 @@
 //! terminal blit, and the bottom statusline.
 
 use crate::status::SessionStatus;
-use phi_mux_grid::cell_surface::{
+use crate::grid::cell_surface::{
     CellSurface, display_cell_width, render_cell_scrollbar, truncate_to_cells,
 };
-use phi_mux_grid::color::Color;
-use phi_mux_grid::layout::{CellLayout, CellRect};
-use phi_mux_grid::selection::SelectionRange;
+use crate::grid::color::Color;
+use crate::grid::layout::{CellLayout, CellRect};
+use crate::grid::selection::SelectionRange;
 use super::sidebar::{
     SIDEBAR_ANIMATION_FRAME_MS, SidebarRow, SidebarRowKind, SidebarStatusKind, SidebarViewportItem,
     sidebar_status_glyph,
 };
 use super::terminal_view::for_each_terminal_screen_cell;
-use phi_mux_grid::theme;
+use crate::grid::theme;
 use phi_tui::palette::TerminalColors;
 
-const STATUSLINE_MODE_LABEL_WIDTH: i32 = 5;
 const SCROLLBAR_TRACK_GLYPH: &str = "│";
 const SCROLLBAR_THUMB_GLYPH: &str = "┃";
 const STATUS_SEPARATOR_GLYPH: &str = "│";
@@ -327,12 +326,12 @@ fn render_statusbar_sidebar_segment(
         surface.put_text_bold(
             panel.col,
             row,
-            STATUSLINE_MODE_LABEL_WIDTH,
+            crate::MODE_LABEL_WIDTH,
             fg,
             status_bg,
             &mode_label,
         );
-        return STATUSLINE_MODE_LABEL_WIDTH.min(panel.cols);
+        return crate::MODE_LABEL_WIDTH.min(panel.cols);
     };
 
     let sidebar_cols = sidebar_panel.cols.min(panel.cols).max(0);
@@ -344,7 +343,7 @@ fn render_statusbar_sidebar_segment(
     surface.put_text_bold(
         panel.col,
         row,
-        STATUSLINE_MODE_LABEL_WIDTH.min(sidebar_cols),
+        crate::MODE_LABEL_WIDTH.min(sidebar_cols),
         fg,
         status_bg,
         &mode_label,

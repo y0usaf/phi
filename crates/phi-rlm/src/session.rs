@@ -10,10 +10,10 @@ use tokio_util::sync::CancellationToken;
 use phi_ext::{EventKind, EventPayload, LifecycleEvent};
 use phi_runtime::AppRuntime;
 
-use phi_lm_core::LmHandler;
+use crate::lm_core::LmHandler;
 use crate::llm_parse::{ExecutedBlock, format_iteration};
 use crate::prompts::QueryMetadata;
-use phi_lm_core::{ChatMessage, ContextPayload, Role};
+use crate::lm_core::{ChatMessage, ContextPayload, Role};
 
 use crate::config::{RlmCompletion, RlmConfig, RlmEvent, StopCause};
 use crate::engine::helpers::{context_snippet, dispatch_event, history_snippet, push_repl_turns, RestoredExchange, RestoredRepl};
@@ -136,13 +136,13 @@ impl RlmSession {
         let metadata = QueryMetadata::from_payload(&self.payload);
         let mut history = if self.transcript.is_empty() {
             self.rlm
-                .initial_history(metadata, Some(prompt), self.exchanges)
+                .initial_history(metadata, Some(prompt))
         } else {
             // Warm send: replay the conversation so far in-band, then append
             // the new prompt as its own user message. If older exchanges were
             // compacted into `session_summary`, inject that summary first so
             // the model retains continuity without re-reading every old turn.
-            let mut history = self.rlm.initial_history(metadata, None, self.exchanges);
+            let mut history = self.rlm.initial_history(metadata, None);
             if let Some(summary) = &self.session_summary {
                 history.push(ChatMessage {
                     role: Role::User,

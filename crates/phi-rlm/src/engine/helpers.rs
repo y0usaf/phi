@@ -11,9 +11,9 @@ use serde_json::Value;
 use phi_ext::LifecycleEvent;
 use phi_runtime::AppRuntime;
 
-use phi_lm_core::UsageBreakdown;
+use crate::lm_core::UsageBreakdown;
 use crate::llm_parse::{ExecutedBlock, format_iteration};
-use phi_lm_core::{ChatMessage, Role};
+use crate::lm_core::{ChatMessage, Role};
 
 pub fn truncate_preview(text: &str, max: usize) -> String {
     if text.len() <= max {
@@ -30,10 +30,6 @@ pub fn prompt_preview(text: &str, max: usize) -> String {
     let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
     truncate_preview(&flat, max)
 }
-
-/// Routes subcall frames from the REPL: `llm_query` to the handler's sub
-/// model, `rlm_query` to a child `Rlm` at `depth + 1` (falling back to a
-/// plain completion at max depth, matching upstream), host fns to the
 
 pub fn usage_breakdowns_for_model(model: String, usage: Usage) -> Vec<UsageBreakdown> {
     if usage.total_tokens == 0

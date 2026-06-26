@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use crate::color::Color;
+use crate::grid::color::Color;
 
 // ---------------------------------------------------------------------------
 // PackedStyle

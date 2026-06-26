@@ -9,7 +9,6 @@ phi-ai.workspace = true
 phi-ext.workspace = true
 phi-repl.workspace = true
 phi-runtime.workspace = true
-phi-lm-core.workspace = true
 async-trait.workspace = true
 base64.workspace = true
 futures.workspace = true

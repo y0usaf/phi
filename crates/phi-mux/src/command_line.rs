@@ -2,11 +2,10 @@
 
 use phi_tui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use phi_mux_grid::cell_surface::display_cell_width;
-use phi_mux_grid::layout::CellLayout;
+use crate::grid::cell_surface::display_cell_width;
+use crate::grid::layout::CellLayout;
 
-/// Statusline mode-label width ("` NOR `" etc.), kept in sync with scene.rs.
-const MODE_LABEL_WIDTH: i32 = 5;
+
 
 /// What the mux loop should do after the command line consumed a key.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -265,7 +264,7 @@ pub fn command_line_start_col(layout: &CellLayout, surface_cols: i32) -> i32 {
     if layout.sidebar.cols > 0 {
         return layout.sidebar.cols.min(surface_cols).max(0);
     }
-    MODE_LABEL_WIDTH.min(surface_cols).max(0)
+    crate::MODE_LABEL_WIDTH.min(surface_cols).max(0)
 }
 
 #[cfg(test)]

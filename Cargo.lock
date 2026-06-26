@@ -1777,17 +1777,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "phi-lm-core"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "phi-ai",
- "serde",
- "serde_json",
- "tokio-util",
-]
-
-[[package]]
 name = "phi-lua"
 version = "0.1.0"
 dependencies = [
@@ -1824,7 +1813,6 @@ dependencies = [
  "futures",
  "jiff",
  "notify",
- "phi-mux-grid",
  "phi-rlm",
  "phi-session",
  "phi-session-tui",
@@ -1833,15 +1821,6 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
- "unicode-width",
- "vt100",
-]
-
-[[package]]
-name = "phi-mux-grid"
-version = "0.1.0"
-dependencies = [
- "phi-tui",
  "unicode-width",
  "vt100",
 ]
@@ -1880,7 +1859,6 @@ dependencies = [
  "jiff",
  "phi-ai",
  "phi-ext",
- "phi-lm-core",
  "phi-repl",
  "phi-runtime",
  "regex-lite",
@@ -1915,7 +1893,6 @@ dependencies = [
  "phi-ai",
  "phi-builtins",
  "phi-cli",
- "phi-lm-core",
  "phi-lua",
  "phi-memory",
  "phi-protocol",

@@ -13,7 +13,7 @@ use tokio_util::sync::CancellationToken;
 use phi_ext::{EventKind, EventPayload, LifecycleEvent};
 use phi_runtime::AppRuntime;
 
-use phi_lm_core::{DeltaSink, LanguageModel, LmHandler, ThinkingSink, UsageBreakdown};
+use crate::lm_core::{DeltaSink, LanguageModel, LmHandler, ThinkingSink, UsageBreakdown};
 use crate::llm_parse::{ExecutedBlock, could_open_block, find_code_blocks, format_iteration, last_block_end};
 use crate::prompts::{DEFAULT_ANSWER_NUDGE, QueryMetadata, SystemPromptOptions, build_system_prompt, build_user_prompt, metadata_user_prompt};
 use std::sync::LazyLock;
@@ -29,7 +29,7 @@ static TASK_COMPLETE_RE: LazyLock<Regex> = LazyLock::new(|| {
 /// that a verbally-planning model won't trip it, low enough to catch a
 /// genuinely stuck model before exhausting `max_iterations`.
 const MAX_CONSECUTIVE_PROSE: usize = 4;
-use phi_lm_core::{ChatMessage, ContextPayload, Role};
+use crate::lm_core::{ChatMessage, ContextPayload, Role};
 
 use crate::config::{EnvFactory, Events, LimitKind, PythonEnvFactory, RlmCompletion, RlmConfig, RlmEvent, SavePointFn, StopCause};
 use super::helpers::{dispatch_event, usage_breakdowns_for_model};
@@ -168,10 +168,10 @@ impl Rlm {
                     if !turn.messages.is_empty() {
                         turn.messages.clone()
                     } else {
-                        self.initial_history(metadata, root_prompt, 0)
+                        self.initial_history(metadata, root_prompt)
                     }
                 } else {
-                    self.initial_history(metadata, root_prompt, 0)
+                    self.initial_history(metadata, root_prompt)
                 };
                 if let Some(rt) = &self.runtime
                     && let Some(sys_msg) = history.iter_mut().find(|m| m.role == Role::System) {
@@ -235,7 +235,6 @@ impl Rlm {
         &self,
         metadata: QueryMetadata,
         root_prompt: Option<&str>,
-        _history_count: usize,
     ) -> Vec<ChatMessage> {
         let mut history = vec![
             ChatMessage {
@@ -582,7 +581,7 @@ impl Rlm {
                     };
                 }
 
-                // Bank the prose silently and continue — no PROSE_NUDGE
+                // Bank the prose silently and continue — no prose-nudge
                 // injection. The model sees its own last message in history
                 // and can decide to code or complete on the next turn.
                 dispatch_event(

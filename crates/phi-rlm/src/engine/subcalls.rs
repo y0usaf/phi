@@ -7,8 +7,8 @@ use std::time::Instant;
 use async_trait::async_trait;
 use phi_repl::{SubcallHandler, SubcallRequest, SubcallResponse, ToolEvent};
 
-use phi_lm_core::LmHandler;
-use phi_lm_core::ContextPayload;
+use crate::lm_core::LmHandler;
+use crate::lm_core::ContextPayload;
 
 use crate::config::{RlmEvent, StopCause};
 use super::helpers::{prompt_preview, truncate_preview};

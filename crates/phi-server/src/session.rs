@@ -10,7 +10,7 @@ use tokio_util::sync::CancellationToken;
 
 use phi_ai::{AuthStorage, Registry};
 use phi_cli::Args;
-use phi_lm_core::Role;
+use phi_rlm::Role;
 use phi_protocol::{HistoryMessage, ServerEvent};
 use phi_rlm::{RlmCompletion, RlmEvent, RlmSession};
 use phi_session_tui::session_builder;

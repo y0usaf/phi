@@ -1,9 +1,9 @@
 //! Visit visible vt100 screen cells with resolved colors (port of
 //! pi-harness `app::terminal_view`).
 
-use phi_mux_grid::color::Color;
-use phi_mux_grid::selection::{SelectionRange, selection_span};
-use phi_mux_grid::theme::screen_cell_colors;
+use crate::grid::color::Color;
+use crate::grid::selection::{SelectionRange, selection_span};
+use crate::grid::theme::screen_cell_colors;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TerminalCellView<'a> {

@@ -10,8 +10,8 @@ use phi_ai::{
 };
 use tokio_util::sync::CancellationToken;
 
-use phi_lm_core::{Completion, DeltaSink, LanguageModel, ThinkingSink};
-use phi_lm_core::{ChatMessage, Role};
+use crate::lm_core::{Completion, DeltaSink, LanguageModel, ThinkingSink};
+use crate::lm_core::{ChatMessage, Role};
 
 pub struct ProviderLm {
     registry: Arc<Registry>,

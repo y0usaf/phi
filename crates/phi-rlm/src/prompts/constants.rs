@@ -28,12 +28,6 @@ pub const TURN_SCARCITY_NUDGE: &str = "If you are running out of turns without a
 pub const DEFAULT_ANSWER_NUDGE: &str =
     "Please provide a final answer to the user's question based on the information provided.";
 
-/// Kept for backward compatibility; no longer injected by the engine. The
-/// old 2-strike prose-bounce has been replaced by silent banking + the
-/// `<task_complete>` token + a high-threshold `MAX_CONSECUTIVE_PROSE` safety
-/// valve.
-pub const PROSE_NUDGE: &str = "<system-reminder>Your previous message contained no ```repl``` block, so nothing was executed and no answer was submitted.</system-reminder>";
-
 /// Dual-use security boundary, ported from claude-code's
 /// `CYBER_RISK_INSTRUCTION` plus the URL-guessing restriction. Identity-neutral;
 /// default-on. The cyber-risk text is owned upstream by a Safeguards team —

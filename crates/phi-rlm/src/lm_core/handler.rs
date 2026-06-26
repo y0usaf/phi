@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use phi_ai::Usage;
 use tokio_util::sync::CancellationToken;
 
-use crate::{ChatMessage, Role};
+use super::{ChatMessage, Role};
 
 #[derive(Clone, Debug, Default)]
 pub struct Completion {

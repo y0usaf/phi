@@ -1,7 +1,7 @@
 
 
 use super::*;
-use phi_lm_core::ContextPayload;
+use crate::lm_core::ContextPayload;
 use serde_json::json;
 
 #[test]

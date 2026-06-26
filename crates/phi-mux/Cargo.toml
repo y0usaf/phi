@@ -15,7 +15,6 @@ phi-rlm.workspace = true
 phi-session.workspace = true
 phi-session-tui.workspace = true
 phi-tui.workspace = true
-phi-mux-grid.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true

@@ -9,8 +9,8 @@ use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::mpsc::UnboundedSender;
 
-use phi_lm_core::UsageBreakdown;
-use phi_lm_core::ChatMessage;
+use crate::lm_core::UsageBreakdown;
+use crate::lm_core::ChatMessage;
 
 pub type SavePointFn = dyn Fn(usize) -> Vec<ChatMessage> + Send + Sync;
 

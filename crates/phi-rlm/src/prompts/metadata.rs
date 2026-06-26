@@ -1,6 +1,6 @@
 use serde_json::Value;
 
-use phi_lm_core::ContextPayload;
+use crate::lm_core::ContextPayload;
 
 #[derive(Clone, Copy, Debug)]
 pub struct QueryMetadata {

@@ -323,7 +323,7 @@ const TRANSCRIPT_COMPACTION_THRESHOLD: usize = 20;
     #[tokio::test]
     async fn prose_silently_banked_then_repl_answer() {
         // Silent banking: a block-free turn executes nothing, but instead of
-        // injecting a PROSE_NUDGE, the prose is silently banked into history
+        // injecting a prose nudge, the prose is silently banked into history
         // and the loop continues. The model proceeds to code on the next turn.
         let root = Arc::new(ScriptedLm::new(
             "root-model",
@@ -347,7 +347,7 @@ const TRANSCRIPT_COMPACTION_THRESHOLD: usize = 20;
 
         let prompts = root.recorded_prompts();
         // Turn 2's prompt must contain the banked prose-only assistant message
-        // from turn 1, but NO PROSE_NUDGE user reminder (silent banking).
+        // from turn 1, but NO prose-nudge user reminder (silent banking).
         let second = &prompts[1];
         assert!(
             second
@@ -358,7 +358,7 @@ const TRANSCRIPT_COMPACTION_THRESHOLD: usize = 20;
             !second
                 .iter()
                 .any(|m| m.role == Role::User && m.content.contains("Your previous message contained no")),
-            "silent banking must not inject a PROSE_NUDGE"
+            "silent banking must not inject a prose nudge"
         );
     }
 
@@ -414,14 +414,14 @@ const TRANSCRIPT_COMPACTION_THRESHOLD: usize = 20;
         assert_eq!(result.iterations, 4);
 
         let prompts = root.recorded_prompts();
-        // No PROSE_NUDGE should be injected on any turn, pure silent banking
+        // No prose nudge should be injected on any turn, pure silent banking
         // until the threshold fires.
         for prompt in &prompts {
             assert!(
                 !prompt
                     .iter()
                     .any(|m| m.role == Role::User && m.content.contains("Your previous message contained no")),
-                "no PROSE_NUDGE should be injected during silent banking"
+                "no prose nudge should be injected during silent banking"
             );
         }
     }
@@ -460,13 +460,13 @@ const TRANSCRIPT_COMPACTION_THRESHOLD: usize = 20;
         assert_eq!(result.iterations, 4);
 
         let prompts = root.recorded_prompts();
-        // Turn 1 (prose) is banked silently, no PROSE_NUDGE.
+        // Turn 1 (prose) is banked silently, no prose nudge.
         let second = &prompts[1];
         assert!(
             !second
                 .iter()
                 .any(|m| m.role == Role::User && m.content.contains("Your previous message contained no")),
-            "silent banking: no PROSE_NUDGE after first prose"
+            "silent banking: no prose nudge after first prose"
         );
         // Turn 3 (the second prose, after the code turn reset) is also banked
         // silently, proving the counter reset, no nudge carried over.
