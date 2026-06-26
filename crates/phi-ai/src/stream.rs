@@ -11,6 +11,24 @@ pub enum AssistantEvent {
     ThinkingStart { index: usize },
     ThinkingDelta { index: usize, delta: String },
     ThinkingEnd { index: usize, content: String },
+    /// The model started a tool call; `index` is the content-block index.
+    ToolCallStart {
+        index: usize,
+        id: String,
+        name: String,
+    },
+    /// Streaming partial JSON for a tool call's arguments.
+    ToolCallDelta {
+        index: usize,
+        delta: String,
+    },
+    /// A tool call's arguments are fully assembled.
+    ToolCallEnd {
+        index: usize,
+        id: String,
+        name: String,
+        arguments: serde_json::Value,
+    },
     Done { message: AssistantMessage },
     Error { message: AssistantMessage },
     /// Sent before a mid-stream retry; the consumer should discard partial
@@ -164,11 +182,44 @@ impl Accumulator {
                     *thinking = content.clone();
                 }
             }
+            AssistantEvent::ToolCallStart { index, .. } => {
+                // Ensure the content block exists; the provider's
+                // `push_tool_call` finalizes it at `content_block_stop`.
+                while self.message.content.len() <= *index {
+                    self.message.content.push(AssistantContent::Text {
+                        text: String::new(),
+                    });
+                }
+            }
+            AssistantEvent::ToolCallEnd {
+                index,
+                id,
+                name,
+                arguments,
+            } => {
+                // Replace or insert the finalized tool call at `index`.
+                let call = ToolCall {
+                    id: id.clone(),
+                    name: name.clone(),
+                    arguments: arguments.clone(),
+                };
+                if *index < self.message.content.len() {
+                    self.message.content[*index] = AssistantContent::ToolCall(call);
+                } else {
+                    while self.message.content.len() < *index {
+                        self.message.content.push(AssistantContent::Text {
+                            text: String::new(),
+                        });
+                    }
+                    self.message.content.push(AssistantContent::ToolCall(call));
+                }
+            }
             AssistantEvent::Start
             | AssistantEvent::Done { .. }
             | AssistantEvent::Error { .. }
             | AssistantEvent::RetryRollback { .. }
-            | AssistantEvent::Pong => {}
+            | AssistantEvent::Pong
+            | AssistantEvent::ToolCallDelta { .. } => {}
         }
     }
 

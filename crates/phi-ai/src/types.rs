@@ -192,6 +192,15 @@ pub struct ToolCall {
     pub arguments: serde_json::Value,
 }
 
+/// A tool definition sent to the API so the model can call it natively.
+/// The `input_schema` is a JSON Schema object (e.g. `{"type": "object", "properties": {...}}`).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ToolDefinition {
+    pub name: String,
+    pub description: String,
+    pub input_schema: serde_json::Value,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AssistantContent {
@@ -218,6 +227,36 @@ impl UserMessage {
             content: content.into(),
             timestamp: now_ms(),
         }
+    }
+}
+
+/// A tool result returned to the model, paired by `tool_use_id` with the
+/// assistant's `ToolCall`. Carried as a user-role message in the API request.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ToolResultMessage {
+    /// Matches the `id` of the assistant `ToolCall` that produced this result.
+    pub tool_use_id: String,
+    /// The tool result content (stdout, return value, or error text).
+    pub content: String,
+    /// Whether the tool execution errored (providers may relay this to the model).
+    #[serde(default)]
+    pub is_error: bool,
+    pub timestamp: i64,
+}
+
+impl ToolResultMessage {
+    pub fn new(tool_use_id: impl Into<String>, content: impl Into<String>) -> Self {
+        Self {
+            tool_use_id: tool_use_id.into(),
+            content: content.into(),
+            is_error: false,
+            timestamp: now_ms(),
+        }
+    }
+
+    pub fn with_error(mut self, is_error: bool) -> Self {
+        self.is_error = is_error;
+        self
     }
 }
 
@@ -278,12 +317,20 @@ impl AssistantMessage {
 pub enum Message {
     User(UserMessage),
     Assistant(AssistantMessage),
+    /// A tool result returned to the model, paired by `tool_use_id`.
+    /// Serialized as a user-role message with `tool_result` content blocks
+    /// by each provider's `convert_messages`.
+    ToolResult(ToolResultMessage),
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Context {
     pub system_prompt: Option<String>,
     pub messages: Vec<Message>,
+    /// Tool definitions sent to the API so the model can call them natively
+    /// via `tool_use` blocks instead of text-based fences.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<ToolDefinition>,
 }
 
 #[derive(Clone, Debug)]

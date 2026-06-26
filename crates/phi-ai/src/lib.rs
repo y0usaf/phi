@@ -14,5 +14,6 @@ pub use registry::{ApiProvider, Registry};
 pub use stream::{Accumulator, AssistantEvent, AssistantEventStream, EventSink};
 pub use types::{
     Api, AssistantContent, AssistantMessage, Auth, Context, Cost, CostRates, Message, Modality,
-    Model, StopReason, StreamOptions, ThinkingLevel, ToolCall, Usage, UserMessage, now_ms,
+    Model, StopReason, StreamOptions, ThinkingLevel, ToolCall, ToolDefinition,
+    ToolResultMessage, Usage, UserMessage, now_ms,
 };

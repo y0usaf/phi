@@ -13,7 +13,7 @@ use crate::registry::ApiProvider;
 use crate::stream::{Accumulator, AssistantEvent, AssistantEventStream, EventSink};
 use crate::types::{
     Api, AssistantContent, AssistantMessage, Context, Message, Model, StopReason,
-    StreamOptions,
+    StreamOptions, ToolDefinition,
 };
 
 pub struct OpenAiCompletionsProvider {
@@ -103,7 +103,26 @@ fn build_body(model: &Model, ctx: &Context, opts: &StreamOptions) -> Value {
         body["temperature"] = json!(temperature);
     }
 
+    // Tool definitions: sent as the native OpenAI `tools` array so the model
+    // emits `tool_calls` instead of text-based fences.
+    if !ctx.tools.is_empty() {
+        body["tools"] = Value::Array(
+            ctx.tools.iter().map(openai_tool_schema).collect(),
+        );
+    }
+
     body
+}
+
+fn openai_tool_schema(tool: &ToolDefinition) -> Value {
+    json!({
+        "type": "function",
+        "function": {
+            "name": tool.name,
+            "description": tool.description,
+            "parameters": tool.input_schema,
+        },
+    })
 }
 
 fn convert_messages(messages: &[Message], system_prompt: Option<&str>) -> Vec<Value> {
@@ -163,6 +182,11 @@ fn convert_messages(messages: &[Message], system_prompt: Option<&str>) -> Vec<Va
                 }
                 out.push(msg);
             }
+            Message::ToolResult(result) => out.push(json!({
+                "role": "tool",
+                "tool_call_id": result.tool_use_id,
+                "content": result.content,
+            })),
         }
     }
 
@@ -198,6 +222,30 @@ impl Parser {
     fn finish(mut self, model: &Model, sink: &EventSink) {
         if self.errored {
             return;
+        }
+        // Emit ToolCallEnd for each buffered tool call before the final message.
+        // OpenAI Completions doesn't have a per-call done event, so we finalize
+        // all buffered calls here.
+        let mut sorted_tools: Vec<(u64, ToolBuffer)> = self.tools.into_iter().collect();
+        sorted_tools.sort_by_key(|(idx, _)| *idx);
+        for (idx, tool) in sorted_tools {
+            let arguments = serde_json::from_str(&tool.arguments)
+                .unwrap_or(Value::Object(Default::default()));
+            let call = crate::types::ToolCall {
+                id: tool.id.clone(),
+                name: tool.name.clone(),
+                arguments: arguments.clone(),
+            };
+            let ours = idx as usize;
+            // Ensure the tool call is in the accumulator's message.
+            self.acc.push_tool_call(call);
+            let event = AssistantEvent::ToolCallEnd {
+                index: ours,
+                id: tool.id,
+                name: tool.name,
+                arguments,
+            };
+            sink.push(event);
         }
         let mut message = self.acc.into_message();
         if self.tool_use_seen && self.stop_reason == StopReason::Stop {
@@ -372,6 +420,7 @@ impl SseHandler for Parser {
                 let Some(idx) = tc["index"].as_u64() else {
                     continue;
                 };
+                let is_new = !self.tools.contains_key(&idx);
                 let entry = self.tools.entry(idx).or_insert_with(|| {
                     ToolBuffer {
                         id: String::new(),
@@ -389,6 +438,24 @@ impl SseHandler for Parser {
                     entry.arguments.push_str(args);
                 }
                 self.tool_use_seen = true;
+
+                // Emit streaming events.
+                let ours = idx as usize;
+                if is_new {
+                    sink.push(AssistantEvent::ToolCallStart {
+                        index: ours,
+                        id: entry.id.clone(),
+                        name: entry.name.clone(),
+                    });
+                }
+                if let Some(args) = tc["function"]["arguments"].as_str() {
+                    if !args.is_empty() {
+                        sink.push(AssistantEvent::ToolCallDelta {
+                            index: ours,
+                            delta: args.to_owned(),
+                        });
+                    }
+                }
             }
         }
     }
@@ -426,6 +493,7 @@ mod tests {
         let ctx = Context {
             system_prompt: Some("be helpful".to_owned()),
             messages: vec![Message::User(UserMessage::new("hi"))],
+            ..Default::default()
         };
         let opts = StreamOptions::new(Auth::ApiKey("k".to_owned()));
         let body = build_body(&model(), &ctx, &opts);
@@ -453,6 +521,7 @@ mod tests {
         let ctx = Context {
             system_prompt: None,
             messages: vec![Message::User(UserMessage::new("hi"))],
+            ..Default::default()
         };
         let opts = StreamOptions::new(Auth::ApiKey("k".to_owned()));
         let body = build_body(&m, &ctx, &opts);
@@ -468,6 +537,7 @@ mod tests {
         let ctx = Context {
             system_prompt: None,
             messages: vec![Message::User(UserMessage::new("hi"))],
+            ..Default::default()
         };
         let mut opts = StreamOptions::new(Auth::ApiKey("k".to_owned()));
         opts.max_tokens = Some(20_000);

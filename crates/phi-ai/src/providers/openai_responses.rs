@@ -9,7 +9,7 @@ use crate::registry::ApiProvider;
 use crate::stream::{Accumulator, AssistantEvent, AssistantEventStream, EventSink};
 use crate::types::{
     Api, AssistantContent, AssistantMessage, Auth, Context, Message, Model, StopReason,
-    StreamOptions,
+    StreamOptions, ToolDefinition,
 };
 
 const CODEX_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
@@ -120,7 +120,24 @@ fn build_body(model: &Model, ctx: &Context, opts: &StreamOptions) -> Value {
         body["temperature"] = json!(temperature);
     }
 
+    // Tool definitions: sent as the native OpenAI Responses `tools` array so
+    // the model emits `function_call` items instead of text-based fences.
+    if !ctx.tools.is_empty() {
+        body["tools"] = Value::Array(
+            ctx.tools.iter().map(openai_responses_tool_schema).collect(),
+        );
+    }
+
     body
+}
+
+fn openai_responses_tool_schema(tool: &ToolDefinition) -> Value {
+    json!({
+        "type": "function",
+        "name": tool.name,
+        "description": tool.description,
+        "parameters": tool.input_schema,
+    })
 }
 
 fn convert_messages(messages: &[Message]) -> Vec<Value> {
@@ -151,6 +168,11 @@ fn convert_messages(messages: &[Message]) -> Vec<Value> {
                     out.push(json!({ "role": "assistant", "content": content }));
                 }
             }
+            Message::ToolResult(result) => out.push(json!({
+                "type": "function_call_output",
+                "call_id": result.tool_use_id,
+                "output": result.content,
+            })),
         }
     }
     out
@@ -343,15 +365,21 @@ impl SseHandler for Parser {
                     // Arguments may arrive in full on this event or stream in
                     // via the `.delta` events below; buffer either way.
                     let arguments = item["arguments"].as_str().unwrap_or_default().to_owned();
+                    let ours = self.acc.message().content.len();
                     self.tools.insert(
                         item_id.clone(),
                         ToolBuffer {
-                            id: item_id,
-                            name,
+                            id: item_id.clone(),
+                            name: name.clone(),
                             arguments,
                         },
                     );
                     self.tool_use_seen = true;
+                    sink.push(AssistantEvent::ToolCallStart {
+                        index: ours,
+                        id: item_id,
+                        name,
+                    });
                 }
             }
             // Tool call: streaming argument deltas.
@@ -364,6 +392,22 @@ impl SseHandler for Parser {
                 let delta = value["delta"].as_str().unwrap_or_default().to_owned();
                 if let Some(tool) = self.tools.get_mut(&item_id) {
                     tool.arguments.push_str(&delta);
+                }
+                // Find the content index for this item and emit delta.
+                if let Some(idx) = self.tools.get(&item_id) {
+                    let ours = self
+                        .acc
+                        .message()
+                        .content
+                        .iter()
+                        .position(|b| {
+                            matches!(b, AssistantContent::ToolCall(c) if c.id == idx.id)
+                        })
+                        .unwrap_or_else(|| self.acc.message().content.len().saturating_sub(1));
+                    sink.push(AssistantEvent::ToolCallDelta {
+                        index: ours,
+                        delta,
+                    });
                 }
             }
             // Tool call: arguments done — finalize the tool call.
@@ -391,11 +435,28 @@ impl SseHandler for Parser {
                     if let Some(tool) = self.tools.remove(&item_id) {
                         let arguments = serde_json::from_str(&tool.arguments)
                             .unwrap_or(Value::Object(Default::default()));
-                        self.acc.push_tool_call(crate::types::ToolCall {
+                        let call = crate::types::ToolCall {
+                            id: tool.id.clone(),
+                            name: tool.name.clone(),
+                            arguments: arguments.clone(),
+                        };
+                        let ours = self
+                            .acc
+                            .message()
+                            .content
+                            .iter()
+                            .position(|b| {
+                                matches!(b, AssistantContent::ToolCall(c) if c.id == tool.id)
+                            })
+                            .unwrap_or_else(|| self.acc.message().content.len());
+                        let event = AssistantEvent::ToolCallEnd {
+                            index: ours,
                             id: tool.id,
                             name: tool.name,
                             arguments,
-                        });
+                        };
+                        self.acc.push_tool_call(call);
+                        sink.push(event);
                     }
                 }
             }

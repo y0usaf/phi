@@ -9,7 +9,7 @@ use crate::registry::ApiProvider;
 use crate::stream::{Accumulator, AssistantEvent, AssistantEventStream, EventSink};
 use crate::types::{
     Api, AssistantContent, AssistantMessage, Auth, Context, Message, Model, StopReason,
-    StreamOptions,
+    StreamOptions, ToolDefinition,
 };
 
 const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -88,6 +88,14 @@ async fn run(
     }
 }
 
+fn anthropic_tool_schema(tool: &ToolDefinition) -> Value {
+    json!({
+        "name": tool.name,
+        "description": tool.description,
+        "input_schema": tool.input_schema,
+    })
+}
+
 fn build_body(model: &Model, ctx: &Context, opts: &StreamOptions) -> Value {
     let is_oauth = matches!(opts.auth, Auth::OAuthToken(_));
     // Cap to context_window defensively (see openai_completions::build_body).
@@ -117,6 +125,14 @@ fn build_body(model: &Model, ctx: &Context, opts: &StreamOptions) -> Value {
     }
     if !system.is_empty() {
         body["system"] = Value::Array(system);
+    }
+
+    // Tool definitions: sent as the native Anthropic `tools` array so the
+    // model emits `tool_use` content blocks instead of text-based fences.
+    if !ctx.tools.is_empty() {
+        body["tools"] = Value::Array(
+            ctx.tools.iter().map(anthropic_tool_schema).collect(),
+        );
     }
 
     let thinking_budget = model
@@ -171,6 +187,15 @@ fn convert_messages(messages: &[Message]) -> Vec<Value> {
                     out.push(json!({ "role": "assistant", "content": content }));
                 }
             }
+            Message::ToolResult(result) => out.push(json!({
+                "role": "user",
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": result.tool_use_id,
+                    "content": result.content,
+                    "is_error": result.is_error,
+                }],
+            })),
         }
     }
 
@@ -295,14 +320,24 @@ impl SseHandler for Parser {
                         sink.push(event);
                     }
                     Some("tool_use") => {
+                        let id = block["id"].as_str().unwrap_or_default().to_owned();
+                        let name = block["name"].as_str().unwrap_or_default().to_owned();
+                        let ours = self.acc.message().content.len();
+                        self.index_map.insert(index, ours);
                         self.tools.insert(
                             index,
                             ToolBuffer {
-                                id: block["id"].as_str().unwrap_or_default().to_owned(),
-                                name: block["name"].as_str().unwrap_or_default().to_owned(),
+                                id: id.clone(),
+                                name: name.clone(),
                                 arguments: String::new(),
                             },
                         );
+                        let event = AssistantEvent::ToolCallStart {
+                            index: ours,
+                            id,
+                            name,
+                        };
+                        sink.push(event);
                     }
                     _ => {}
                 }
@@ -344,9 +379,15 @@ impl SseHandler for Parser {
                         }
                     }
                     Some("input_json_delta") => {
+                        let partial = delta["partial_json"].as_str().unwrap_or_default();
                         if let Some(tool) = self.tools.get_mut(&index) {
-                            tool.arguments
-                                .push_str(delta["partial_json"].as_str().unwrap_or_default());
+                            tool.arguments.push_str(partial);
+                        }
+                        if let Some(&ours) = self.index_map.get(&index) {
+                            sink.push(AssistantEvent::ToolCallDelta {
+                                index: ours,
+                                delta: partial.to_owned(),
+                            });
                         }
                     }
                     _ => {}
@@ -359,11 +400,23 @@ impl SseHandler for Parser {
                 if let Some(tool) = self.tools.remove(&index) {
                     let arguments = serde_json::from_str(&tool.arguments)
                         .unwrap_or(Value::Object(Default::default()));
-                    self.acc.push_tool_call(crate::types::ToolCall {
+                    let call = crate::types::ToolCall {
+                        id: tool.id.clone(),
+                        name: tool.name.clone(),
+                        arguments: arguments.clone(),
+                    };
+                    let Some(&ours) = self.index_map.get(&index) else {
+                        self.acc.push_tool_call(call);
+                        return;
+                    };
+                    let event = AssistantEvent::ToolCallEnd {
+                        index: ours,
                         id: tool.id,
                         name: tool.name,
                         arguments,
-                    });
+                    };
+                    self.acc.apply(&event);
+                    sink.push(event);
                     return;
                 }
                 let Some(&ours) = self.index_map.get(&index) else {
@@ -446,6 +499,7 @@ mod tests {
         let ctx = Context {
             system_prompt: Some(RLM_IDENTITY.to_owned()),
             messages: vec![],
+            ..Default::default()
         };
         let opts = StreamOptions::new(Auth::ApiKey("k".to_owned()));
         let body = build_body(&model(), &ctx, &opts);
@@ -473,6 +527,7 @@ mod tests {
         let ctx = Context {
             system_prompt: Some(RLM_IDENTITY.to_owned()),
             messages: vec![],
+            ..Default::default()
         };
         let opts = StreamOptions::new(Auth::OAuthToken("token".to_owned()));
         let body = build_body(&model(), &ctx, &opts);
