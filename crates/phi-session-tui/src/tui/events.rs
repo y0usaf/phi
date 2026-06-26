@@ -880,7 +880,7 @@ impl Ui {
                     model: breakdown.model.clone(),
                 })
                 .collect();
-            let _ = self.store.append_with_usage_breakdown_and_display(
+            let _ = self.store.append_entry(
                 session::Role::Assistant,
                 &completion.response,
                 display_text,

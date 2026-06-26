@@ -43,6 +43,7 @@ pub(super) const CYAN: &str = "\x1b[36m";
 /// hardcoded values as the fallback. Basic ANSI colors (`RESET`, `BOLD`, etc.)
 /// stay as module-level `&str` since they already reference the terminal palette.
 mod palette;
+mod symbols;
 mod render;
 mod tool_display;
 mod popup;
@@ -54,13 +55,14 @@ mod composition;
 mod toolbar;
 
 use events::LoginState;
+#[cfg(test)]
 use events::python_quote;
 
 pub use palette::InlinePalette;
 pub(crate) use render::{OpenToolRow, OpenSubcallRow, TranscriptBlock};
 pub(crate) use tool_display::{format_model_pricing, format_tokens, tool_identity, tool_title};
 
-use palette::*;
+use symbols::*;
 use render::*;
 use tool_display::*;
 use popup::*;
@@ -94,8 +96,6 @@ pub(super) enum Done {
     },
     Restored(Result<(), String>),
 }
-
-/// Quote `s` as a Python string literal.
 
 pub(super) enum LoginMsg {
     Info(String),
@@ -678,167 +678,6 @@ impl Ui {
             ));
         }
     }
-
-
-
-
-
-
-    /// Agent + usage segment for the chrome header: " PHI  1.2k  $0.01".
-
-    /// Model + effort segment for the chrome header: "  glm-5.2 XHIGH".
-
-
-    /// Popup key handling; pi-style: up/down select, tab applies, enter
-    /// applies (and for command names falls through to submit), esc
-    /// dismisses. Returns the action the caller should take.
-
-
-    /// Tab with no popup open: complete the path-like token at the cursor.
-
-
-
-
-
-    /// /model, /submodel, ctrl-l: full-width model selector (pi-style),
-    /// preselected at the active model.
-
-    /// Guard for session selectors: they rebuild env history, which would
-    /// race an in-flight turn or login.
-
-    /// /resume: pick a past session of this directory.
-
-    /// /fork: pick a prior user message (any branch) to fork into a new
-    /// session; its text returns to the editor.
-
-    /// /tree (or esc esc): navigate the whole session tree.
-
-    /// Route a key to the open selector; consumes every key until the
-    /// selector closes.
-
-
-
-    /// Move the active branch to `entry_id` (pi's navigateTree): selecting a
-    /// user message rewinds to just before it and returns its text to the
-    /// editor; anything else becomes the new branch tip.
-
-    /// Rebuild the REPL env history from the active branch.
-
-    /// Re-render the active branch into scrollback, mirroring how prompts
-    /// and responses looked live. The screen (and its scrollback) is wiped
-    /// first so the replayed transcript replaces the old one instead of
-    /// stacking below it.
-
-
-    /// Render a persisted assistant message the way it looked live: optional
-    /// provider thinking, prose as markdown, and each ```repl block shown as a
-    /// committed repl container (code preview over the repl background)
-    /// rather than raw fenced text.
-
-    /// shift+tab: cycle the root model's thinking level (footer shows it).
-
-
-    /// ctrl+t: collapse or expand provider thinking throughout the transcript.
-
-
-    /// ctrl-p / ctrl-shift-p: cycle the root model through the registry.
-
-    /// Recompute suggestions from the editor; called after the text changes.
-    /// Slash commands complete on the first line; `@` file tokens complete
-    /// anywhere (pi-style).
-
-    /// Move queued follow-ups back into the editor (above any draft text).
-
-    /// Returns true when the app should quit.
-
-
-
-    /// Returns true when the app should quit.
-
-    /// `!cmd` runs bash(cmd) in the session REPL and replays it to the model
-    /// as a repl turn; `!!cmd` runs the same way but stays out of context.
-
-
-
-    /// Credential resolution is async; surface a warning through the login
-    /// channel instead of blocking the UI.
-
-
-
-
-
-
-    /// Display columns available to rows inside the outer `repl` panel.
-
-    /// Display columns available to a flat row's result body at `depth`: the
-    /// repl body minus the result-gutter width (`result_prefix_width` =
-    /// `indent_width(depth) + 2`). Body content is wrapped to this so each
-    /// indented result line fits within the repl body.
-
-    /// Assistant prose: a flat `Assistant` header + plain markdown body. No
-    /// box, no result indent — prose is the model's primary output, not nested
-    /// secondary content.
-
-    /// User echo: a flat `● You` header + plain body.
-
-    /// Live/scrollback activity rows rendered as a flat `●`-titled unit
-    /// nested under the repl block.
-
-
-
-
-    /// In-flight activity row: a single flat line prefixed by the nesting
-    /// gutter, carrying the animated spinner + label (no `●` — the spinner is
-    /// the live indicator; `●` is reserved for committed headers).
-
-
-
-
-
-
-    /// Append an action row to the active block buffer, or straight to
-    /// scrollback when no block is in flight.
-
-    /// Start buffering the depth-0 REPL block that is about to execute. Rows
-    /// pushed until `commit_block` render live as a grouped flat `● repl` unit.
-
-    /// Commit the buffered block to scrollback as a flat `● repl` unit, followed
-    /// by any prose that streamed in behind it.
-
-    /// First line of an action block — a flat `● [time] title` header, the
-    /// forgecode-style anchor for a tool/thinking unit. A depth-0 action that
-    /// follows prose gets a separating blank line first. `dot_color` carries
-    /// the category; `title` is the already-styled text.
-
-    /// Continuation/result line inside an action block, rendered as a flat
-    /// `●`-prefixed line under the nesting gutter.
-
-    /// Indented code/output preview inside an action block: at most `max`
-    /// visual rows (counting wraps), then a `… (n more lines)` marker.
-
-
-
-    /// `Some` while a turn is live (so committed headers stamp a `[HH:MM:SS]`),
-    /// `None` on replay/restore (no false replay-time clock). See `forge_title`.
-
-    #[allow(clippy::too_many_arguments)]
-
-    #[allow(clippy::too_many_arguments)]
-
-    #[allow(clippy::too_many_arguments)]
-
-
-    /// Echo a user message into scrollback as a pi-style container: full-width
-    /// `userMessageBg` fill with one cell of padding on every side.
-
-    /// Render finalized prose (markdown) into scrollback. While a block is
-    /// in flight the prose waits behind it so scrollback stays chronological.
-
-
-
-    /// Send the next queued submission once nothing is in flight.
-
-
 
     fn markdown_width(&self) -> usize {
         self.term.width().saturating_sub(6).min(100)
@@ -1779,11 +1618,12 @@ match1
         let mut ui = test_ui(80, 24);
         ui.store.append(session::Role::User, "q1").unwrap();
         ui.store
-            .append_with_usage_and_display(
+            .append_entry(
                 session::Role::Assistant,
                 "done",
                 assistant_display_text("done", "secret thought"),
                 None,
+                Vec::new(),
             )
             .unwrap();
 
