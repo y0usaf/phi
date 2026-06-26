@@ -22,7 +22,6 @@ pub enum Role {
 pub struct Entry {
     pub id: String,
     pub parent_id: Option<String>,
-    pub timestamp: String,
     pub role: Role,
     pub text: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -45,7 +44,6 @@ pub struct ReplEntry {
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_id: Option<String>,
-    pub timestamp: String,
     pub code: String,
     #[serde(default)]
     pub stdout: String,
@@ -145,7 +143,6 @@ pub struct SessionUsage {
 #[derive(Serialize, Deserialize, Clone)]
 struct Header {
     id: String,
-    timestamp: String,
     cwd: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     parent_session: Option<String>,
@@ -193,10 +190,6 @@ pub struct SessionMeta {
     pub first_message: String,
 }
 
-fn now() -> String {
-    jiff::Timestamp::now().to_string()
-}
-
 fn new_id() -> String {
     uuid::Uuid::now_v7().to_string()
 }
@@ -233,7 +226,6 @@ impl SessionStore {
             path,
             header: Header {
                 id,
-                timestamp: now(),
                 cwd: cwd.display().to_string(),
                 parent_session: None,
             },
@@ -418,7 +410,6 @@ impl SessionStore {
         let entry = Entry {
             id: new_id(),
             parent_id: self.leaf.clone(),
-            timestamp: now(),
             role,
             text: text.to_owned(),
             display_text,
@@ -444,7 +435,6 @@ impl SessionStore {
         let entry = ReplEntry {
             id: new_id(),
             parent_id: self.leaf.clone(),
-            timestamp: now(),
             code: record.code,
             stdout: record.stdout,
             stderr: record.stderr,
@@ -719,7 +709,6 @@ impl SessionStore {
             path: tmp_path.clone(),
             header: Header {
                 id,
-                timestamp: now(),
                 cwd: self.header.cwd.clone(),
                 parent_session: Some(self.path.display().to_string()),
             },

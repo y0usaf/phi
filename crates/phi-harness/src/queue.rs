@@ -8,8 +8,6 @@
 //! - **next_turn**: messages prepended before the NEXT user-initiated prompt.
 //!   Survives abort.
 
-use jiff::Timestamp;
-
 /// Source queue of a [`QueuedMessage`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum QueueSource {
@@ -18,12 +16,11 @@ pub enum QueueSource {
     NextTurn,
 }
 
-/// One enqueued message with provenance and timestamp.
+/// One enqueued message with provenance.
 #[derive(Clone, Debug)]
 pub struct QueuedMessage {
     pub id: String,
     pub text: String,
-    pub timestamp: Timestamp,
     pub source: QueueSource,
 }
 
@@ -45,17 +42,12 @@ impl Queues {
         uuid::Uuid::now_v7().to_string()
     }
 
-    fn now() -> Timestamp {
-        Timestamp::now()
-    }
-
     /// Enqueue a steer message; returns its id.
     pub async fn enqueue_steer(&self, text: &str) -> String {
         let id = Self::new_id();
         self.steer.lock().await.push(QueuedMessage {
             id: id.clone(),
             text: text.to_owned(),
-            timestamp: Self::now(),
             source: QueueSource::Steer,
         });
         id
@@ -67,7 +59,6 @@ impl Queues {
         self.follow_up.lock().await.push(QueuedMessage {
             id: id.clone(),
             text: text.to_owned(),
-            timestamp: Self::now(),
             source: QueueSource::FollowUp,
         });
         id
@@ -79,7 +70,6 @@ impl Queues {
         self.next_turn.lock().await.push(QueuedMessage {
             id: id.clone(),
             text: text.to_owned(),
-            timestamp: Self::now(),
             source: QueueSource::NextTurn,
         });
         id
