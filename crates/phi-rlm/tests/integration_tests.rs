@@ -8,6 +8,7 @@ use std::sync::Mutex;
 use std::collections::VecDeque;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
+use serde_json::json;
 
 const TRANSCRIPT_COMPACTION_THRESHOLD: usize = 20;
 
@@ -53,18 +54,82 @@ const TRANSCRIPT_COMPACTION_THRESHOLD: usize = 20;
 
         async fn complete(&self, prompt: &[ChatMessage], _cancel: &tokio_util::sync::CancellationToken) -> Result<Completion, String> {
             self.prompts.lock().unwrap_or_else(|e| e.into_inner()).push(prompt.to_vec());
-            let text = self
+            let raw = self
                 .responses
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .pop_front()
                 .unwrap_or_else(|| self.default.clone());
+            let (text, tool_calls, stop_reason) = parse_response(&raw);
             Ok(Completion {
                 text,
+                tool_calls,
+                stop_reason,
                 usage: self.usage_per_call,
-                ..Default::default()
             })
         }
+
+        async fn complete_streaming(
+            &self,
+            prompt: &[ChatMessage],
+            on_delta: DeltaSink,
+            _on_thinking: Option<ThinkingSink>,
+            on_tool_call: Option<ToolCallSink>,
+            _cancel: &tokio_util::sync::CancellationToken,
+        ) -> Result<Completion, String> {
+            self.prompts.lock().unwrap_or_else(|e| e.into_inner()).push(prompt.to_vec());
+            let raw = self
+                .responses
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .pop_front()
+                .unwrap_or_else(|| self.default.clone());
+            let (text, tool_calls, stop_reason) = parse_response(&raw);
+
+            // Emit text deltas.
+            if !text.is_empty() {
+                on_delta(&text);
+            }
+
+            // Emit tool call events.
+            if let Some(sink) = &on_tool_call {
+                for tc in &tool_calls {
+                    sink(ToolCallEvent::End {
+                        id: tc.id.clone(),
+                        name: tc.name.clone(),
+                        arguments: tc.arguments.clone(),
+                    });
+                }
+            }
+
+            Ok(Completion {
+                text,
+                tool_calls,
+                stop_reason,
+                usage: self.usage_per_call,
+            })
+        }
+    }
+
+    /// Parse a raw response string: extract ```repl fences as tool calls,
+    /// strip the fences from the text, and determine the stop reason.
+    fn parse_response(raw: &str) -> (String, Vec<ToolCall>, StopReason) {
+        let blocks = find_code_blocks(raw);
+        if blocks.is_empty() {
+            return (raw.to_owned(), Vec::new(), StopReason::Stop);
+        }
+        // Strip fences from the text, keeping surrounding prose.
+        let text = split_prose(raw).join("");
+        let tool_calls = blocks
+            .iter()
+            .enumerate()
+            .map(|(i, code)| ToolCall {
+                id: format!("call_{i}"),
+                name: "repl".to_owned(),
+                arguments: serde_json::json!({ "code": code }),
+            })
+            .collect();
+        (text, tool_calls, StopReason::ToolUse)
     }
 
     fn rlm(config: RlmConfig, root: Arc<ScriptedLm>, sub: Arc<ScriptedLm>) -> Rlm {
@@ -149,9 +214,9 @@ const TRANSCRIPT_COMPACTION_THRESHOLD: usize = 20;
                 .content
                 .starts_with("Answer the following: What is the magic number?")
         );
-        // Second turn sees the REPL output of the first.
+        // Second turn sees the tool result of the first.
         let second = &prompts[1];
-        assert!(second.iter().any(|m| m.content.contains("REPL output:")));
+        assert!(second.iter().any(|m| m.role == Role::Tool));
     }
 
     #[tokio::test]
@@ -193,7 +258,7 @@ const TRANSCRIPT_COMPACTION_THRESHOLD: usize = 20;
     }
 
     /// Streams a fence-closing chunk, then refuses to finish the stream until
-    /// the block starts executing — proving exec overlaps the stream.
+    /// Emits a tool call during the stream.
     struct EagerLm {
         exec_started: Arc<tokio::sync::Notify>,
     }
@@ -213,20 +278,29 @@ const TRANSCRIPT_COMPACTION_THRESHOLD: usize = 20;
             _prompt: &[ChatMessage],
             on_delta: DeltaSink,
             _on_thinking: Option<ThinkingSink>,
-            _on_tool_call: Option<phi_rlm::ToolCallSink>,
+            on_tool_call: Option<phi_rlm::ToolCallSink>,
             _cancel: &tokio_util::sync::CancellationToken,
         ) -> Result<Completion, String> {
-            let head =
-                "Running.\n```repl\nanswer['content'] = 'done'\nanswer['ready'] = True\n```\n";
-            assert!(on_delta(head), "no trailing prose yet: keep streaming");
-            tokio::time::timeout(Duration::from_secs(10), self.exec_started.notified())
-                .await
-                .map_err(|_| "block was not executed during the stream".to_owned())?;
-            assert!(!on_delta("tail"), "prose after a block must abort");
+            on_delta("Running.");
+            let code = "answer['content'] = 'done'\nanswer['ready'] = True";
+            let arguments = serde_json::json!({ "code": code });
+            if let Some(sink) = &on_tool_call {
+                sink(ToolCallEvent::End {
+                    id: "call_0".to_owned(),
+                    name: "repl".to_owned(),
+                    arguments: arguments.clone(),
+                });
+            }
+            tokio::task::yield_now().await;
             Ok(Completion {
-                text: format!("{head}tail"),
+                text: "Running.".to_owned(),
+                tool_calls: vec![ToolCall {
+                    id: "call_0".to_owned(),
+                    name: "repl".to_owned(),
+                    arguments,
+                }],
+                stop_reason: StopReason::ToolUse,
                 usage: Usage::default(),
-                ..Default::default()
             })
         }
     }
@@ -238,10 +312,11 @@ const TRANSCRIPT_COMPACTION_THRESHOLD: usize = 20;
             exec_started: exec_started.clone(),
         });
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let notify = exec_started.clone();
         tokio::spawn(async move {
             while let Some(event) = rx.recv().await {
                 if matches!(event, RlmEvent::CodeExecStart { .. }) {
-                    exec_started.notify_one();
+                    notify.notify_one();
                 }
             }
         });
@@ -282,24 +357,23 @@ const TRANSCRIPT_COMPACTION_THRESHOLD: usize = 20;
             .await;
         assert_eq!(result.stop, StopCause::Answer, "{:?}", result.error);
 
-        // Both block outputs land in one user message on the next turn.
+        // Both block outputs land as tool results on the next turn.
         let prompts = root.recorded_prompts();
-        let feedback = prompts[1]
+        let tool_results: Vec<_> = prompts[1]
             .iter()
-            .find(|m| m.role == Role::User && m.content.contains("REPL output"))
-            .expect("feedback message");
-        assert!(feedback.content.contains("REPL output (block 1):"));
-        assert!(feedback.content.contains("alpha"));
-        assert!(feedback.content.contains("REPL output (block 2):"));
-        assert!(feedback.content.contains("beta"));
+            .filter(|m| m.role == Role::Tool)
+            .collect();
+        assert_eq!(tool_results.len(), 2, "two tool results expected");
+        assert!(tool_results[0].content.contains("alpha"));
+        assert!(tool_results[1].content.contains("beta"));
     }
 
     #[tokio::test]
-    async fn trailing_prose_discarded_from_history() {
+    async fn prose_and_tool_call_in_same_turn() {
         let root = Arc::new(ScriptedLm::new(
             "root-model",
             &[
-                "Plan.\n```repl\nprint('x')\n```\nThis prose must vanish.",
+                "Plan.\n```repl\nprint('x')\n```",
                 "```repl\nanswer['content'] = 'ok'\nanswer['ready'] = True\n```",
             ],
         ));
@@ -313,14 +387,14 @@ const TRANSCRIPT_COMPACTION_THRESHOLD: usize = 20;
             .await;
         assert_eq!(result.stop, StopCause::Answer, "{:?}", result.error);
 
-        // The assistant turn in history ends at the closing fence.
+        // The assistant turn in history has the prose text and tool calls.
         let prompts = root.recorded_prompts();
         let assistant = prompts[1]
             .iter()
             .find(|m| m.role == Role::Assistant)
             .expect("assistant message");
-        assert!(assistant.content.ends_with("```"), "{}", assistant.content);
-        assert!(!assistant.content.contains("vanish"));
+        assert!(assistant.content.contains("Plan."), "{}", assistant.content);
+        assert!(!assistant.tool_calls.is_empty(), "should have tool calls");
     }
 
     #[tokio::test]

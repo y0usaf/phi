@@ -156,6 +156,10 @@ impl LanguageModel for ProviderLm {
             .await
     }
 
+    fn set_tools(&self, tools: Vec<ToolDefinition>) {
+        *self.tools.write().unwrap() = tools;
+    }
+
     async fn complete_streaming(
         &self,
         prompt: &[ChatMessage],

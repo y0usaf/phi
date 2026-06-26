@@ -1,20 +1,26 @@
 //! Rlm struct + impl: the main engine loop.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Instant;
 
-use phi_ai::Usage;
+use phi_ai::{ToolDefinition, Usage};
 use phi_repl::{EnvSetup, ReplEnv, ReplResult, SubcallHandler};
-use serde_json::Value;
+use serde_json::{Value, json};
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 use tokio_util::sync::CancellationToken;
 
 use phi_ext::{EventKind, EventPayload, LifecycleEvent};
 use phi_runtime::AppRuntime;
 
-use crate::lm_core::{DeltaSink, LanguageModel, LmHandler, ThinkingSink, UsageBreakdown};
-use crate::llm_parse::{ExecutedBlock, could_open_block, find_code_blocks, format_iteration, last_block_end};
+use crate::lm_core::{DeltaSink, LanguageModel, LmHandler, ThinkingSink, ToolCallEvent, ToolCallSink, UsageBreakdown};
+use crate::llm_parse::{ExecutedBlock, format_execution_result};
+
+/// A tool call result arriving from the streaming sink, carrying the code
+/// extracted from the tool call's arguments for eager execution.
+struct ToolCallResult {
+    code: Option<String>,
+}
 use crate::prompts::{DEFAULT_ANSWER_NUDGE, QueryMetadata, SystemPromptOptions, build_system_prompt, build_user_prompt, metadata_user_prompt};
 use std::sync::LazyLock;
 use regex_lite::Regex;
@@ -29,6 +35,27 @@ static TASK_COMPLETE_RE: LazyLock<Regex> = LazyLock::new(|| {
 /// that a verbally-planning model won't trip it, low enough to catch a
 /// genuinely stuck model before exhausting `max_iterations`.
 const MAX_CONSECUTIVE_PROSE: usize = 4;
+
+/// The native tool definition for the `repl` tool. The model calls this
+/// instead of writing ```repl fences; the `code` argument is executed in the
+/// Python REPL and the result is returned as a tool result.
+fn repl_tool_definition() -> ToolDefinition {
+    ToolDefinition {
+        name: "repl".to_owned(),
+        description: "Execute Python code in the REPL. The REPL persists across calls. Use print(...) to see output. Set answer['content'] and answer['ready'] = True to submit a final answer.".to_owned(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "string",
+                    "description": "Python code to execute in the REPL."
+                }
+            },
+            "required": ["code"]
+        }),
+    }
+}
+
 use crate::lm_core::{ChatMessage, ContextPayload, Role};
 
 use crate::config::{EnvFactory, Events, LimitKind, PythonEnvFactory, RlmCompletion, RlmConfig, RlmEvent, SavePointFn, StopCause};
@@ -93,6 +120,12 @@ impl Rlm {
     pub fn with_runtime(mut self, runtime: Arc<AppRuntime>) -> Self {
         self.runtime = Some(runtime);
         self
+    }
+
+    /// Register the `repl` tool definition on the root model, enabling
+    /// native tool-call-based REPL execution instead of text-based fences.
+    pub fn register_repl_tool(&self) {
+        self.root.set_tools(vec![repl_tool_definition()]);
     }
 
     pub fn at_depth(mut self, depth: usize) -> Self {
@@ -180,6 +213,7 @@ impl Rlm {
                             .await
                             .unwrap_or_else(|_| sys_msg.content.clone());
                     }
+                self.register_repl_tool();
                 let outcome = self
                     .run_loop(
                         &mut env,
@@ -318,7 +352,7 @@ impl Rlm {
             history.push(ChatMessage {
                 role: Role::User,
                 content: build_user_prompt(i, iteration_limit, context_count, history_count, warm),
-            ..Default::default()
+                ..Default::default()
             });
 
             self.events.emit(RlmEvent::IterationStart {
@@ -334,60 +368,60 @@ impl Rlm {
             );
             let iter_start = Instant::now();
 
-            // Stream the completion and execute ```repl blocks eagerly: the
-            // delta sink pushes each block into `code_tx` the moment its
-            // closing fence lands, so execution overlaps the rest of the
-            // stream. The iteration ends when both sides are done; outputs
-            // are still only fed back via the next user message.
-            let (code_tx, mut code_rx) = unbounded_channel::<Option<String>>();
-            let sent = Arc::new(Mutex::new(0usize));
-            let sink = self.eager_sink(i, code_tx.clone(), sent.clone());
+            // Channel for eagerly executing tool calls during the stream.
+            // The sender is cloned into the tool_sink closure; we drop our
+            // copy so the channel closes when the closure is dropped (after
+            // the stream completes), unblocking the exec receiver.
+            let (tool_tx, mut tool_rx) = unbounded_channel::<ToolCallResult>();
+            let tool_sink = self.tool_call_sink(i, tool_tx.clone());
+            drop(tool_tx);
 
             let stream = async {
-                    let result = handler
-                    .complete_root(history, Some(sink), Some(self.thinking_sink(i)), None, cancel)
-                    .await;
-                if let Ok(completion) = &result {
-                    // Catch-up for non-streaming models (no deltas) and any
-                    // trailing block: same regex, same order, deduped by count.
-                    let mut sent = sent.lock().unwrap_or_else(|e| e.into_inner());
-                    for code in find_code_blocks(&completion.text).into_iter().skip(*sent) {
-                        let _ = code_tx.send(Some(code));
-                        *sent += 1;
-                    }
-                }
-                let _ = code_tx.send(None);
-                result
+                handler
+                    .complete_root(
+                        history,
+                        Some(self.delta_sink(i)),
+                        Some(self.thinking_sink(i)),
+                        Some(tool_sink),
+                        cancel,
+                    )
+                    .await
             };
 
+            // Eagerly execute tool calls as they arrive during the stream.
             let exec = async {
                 let mut blocks = Vec::new();
-                while let Some(Some(code)) = code_rx.recv().await {
-                    self.events.emit(RlmEvent::CodeExecStart {
-                        depth: self.depth,
-                        iteration: i,
-                        code: code.clone(),
-                    });
-                    let exec_start = Instant::now();
-                    let result = env
-                        .exec(&code, self.config.exec_timeout)
-                        .await
-                        .unwrap_or_else(|e| ReplResult {
-                            stdout: String::new(),
-                            stderr: e.to_string(),
-                            vars: Vec::new(),
-                            final_answer: None,
-                            duration: exec_start.elapsed(),
-                            truncated: false,
+                while let Some(result) = tool_rx.recv().await {
+                    if let Some(code) = result.code {
+                        self.events.emit(RlmEvent::CodeExecStart {
+                            depth: self.depth,
+                            iteration: i,
+                            code: code.clone(),
                         });
-                    self.events.emit(RlmEvent::CodeExecEnd {
-                        depth: self.depth,
-                        iteration: i,
-                        stdout: result.stdout.clone(),
-                        stderr: result.stderr.clone(),
-                        duration: result.duration,
-                    });
-                    blocks.push(ExecutedBlock { code, result });
+                        let exec_start = Instant::now();
+                        let repl_result = env
+                            .exec(&code, self.config.exec_timeout)
+                            .await
+                            .unwrap_or_else(|e| ReplResult {
+                                stdout: String::new(),
+                                stderr: e.to_string(),
+                                vars: Vec::new(),
+                                final_answer: None,
+                                duration: exec_start.elapsed(),
+                                truncated: false,
+                            });
+                        self.events.emit(RlmEvent::CodeExecEnd {
+                            depth: self.depth,
+                            iteration: i,
+                            stdout: repl_result.stdout.clone(),
+                            stderr: repl_result.stderr.clone(),
+                            duration: repl_result.duration,
+                        });
+                        blocks.push(ExecutedBlock {
+                            code,
+                            result: repl_result,
+                        });
+                    }
                 }
                 blocks
             };
@@ -398,8 +432,8 @@ impl Rlm {
                     return self.cancelled_outcome(best_partial, iterations);
                 }
             };
-            let response = match completion {
-                Ok(completion) => completion.text,
+            let completion = match completion {
+                Ok(completion) => completion,
                 Err(e) => {
                     let message = format!("Error: root completion failed - {e}");
                     return match best_partial {
@@ -413,6 +447,7 @@ impl Rlm {
                     };
                 }
             };
+            let response = completion.text;
             iterations = i + 1;
             self.events.emit(RlmEvent::RootText {
                 depth: self.depth,
@@ -500,94 +535,89 @@ impl Rlm {
                 };
             }
 
-            // Prose handling: a block-free turn executes nothing. We check
-            // for an explicit `<task_complete output="..."/>` token first —
-            // this is the model's deterministic way to signal completion
-            // without a ```repl``` block (replacing the API-native
-            // `stop_reason: end_turn` that Phi can't use because it uses
-            // text-based ```repl``` blocks, not native tool calling). If no
-            // token is found, we silently bank the prose and continue — no
-            // nudge injection, no 2-strike termination. A high-threshold
-            // safety valve (`MAX_CONSECUTIVE_PROSE`) catches genuinely stuck
-            // models without burning the entire iteration budget.
-            let had_code = !find_code_blocks(&response).is_empty();
-            if had_code {
+            let had_tool_calls = !completion.tool_calls.is_empty() && !blocks.is_empty();
+
+            if had_tool_calls {
                 consecutive_prose = 0;
-            } else {
-                // Priority 1: Explicit completion token. Parse the `output`
-                // attribute and accept it as the final answer.
-                if let Some(caps) = TASK_COMPLETE_RE.captures(&response) {
-                    let final_answer = caps
-                        .name("output")
-                        .map(|m| m.as_str().to_owned())
-                        .unwrap_or_else(|| response.trim().to_owned());
-                    self.events.emit(RlmEvent::AnswerSubmitted {
-                        depth: self.depth,
-                        content: final_answer.clone(),
-                    });
-                    dispatch_event(
-                        &self.runtime,
-                        LifecycleEvent {
-                            kind: EventKind::TurnEnd,
-                            payload: EventPayload::TurnEnd {
-                                turn: i as u32,
-                                had_code: false,
-                            },
-                        },
-                    );
-                    self.events.emit(RlmEvent::IterationEnd {
-                        depth: self.depth,
-                        iteration: i,
-                        duration: iter_start.elapsed(),
-                    });
-                    return Outcome {
-                        stop: StopCause::Prose,
-                        response: final_answer,
-                        error: None,
-                        iterations,
-                    };
+
+                // Bank the assistant message with its tool calls.
+                let tool_calls: Vec<crate::lm_core::ToolCall> = completion
+                    .tool_calls
+                    .iter()
+                    .map(|tc| crate::lm_core::ToolCall {
+                        id: tc.id.clone(),
+                        name: tc.name.clone(),
+                        arguments: tc.arguments.clone(),
+                    })
+                    .collect();
+                history.push(ChatMessage::assistant_with_tools(response, tool_calls));
+
+                // Feed each tool result back as a Role::Tool message.
+                for block in &blocks {
+                    let tool_call_id = completion
+                        .tool_calls
+                        .iter()
+                        .zip(blocks.iter())
+                        .find_map(|(tc, b)| {
+                            if b.code == block.code {
+                                Some(tc.id.clone())
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or_default();
+                    let output = format_execution_result(&block.result);
+                    history.push(ChatMessage::tool_result(tool_call_id, output));
                 }
 
-                // Priority 2: Silent banking — no nudge, no interruption.
-                // The model is likely planning in prose. Let it work.
-                consecutive_prose += 1;
-
-                // Priority 3: High-threshold safety valve. Only fire after
-                // `MAX_CONSECUTIVE_PROSE` consecutive block-free turns,
-                // accepting the prose as the final answer to avoid burning
-                // the entire iteration budget.
-                if consecutive_prose >= MAX_CONSECUTIVE_PROSE {
-                    let prose = response.trim().to_owned();
-                    self.events.emit(RlmEvent::AnswerSubmitted {
-                        depth: self.depth,
-                        content: prose.clone(),
-                    });
-                    dispatch_event(
-                        &self.runtime,
-                        LifecycleEvent {
-                            kind: EventKind::TurnEnd,
-                            payload: EventPayload::TurnEnd {
-                                turn: i as u32,
-                                had_code: false,
-                            },
+                dispatch_event(
+                    &self.runtime,
+                    LifecycleEvent {
+                        kind: EventKind::TurnEnd,
+                        payload: EventPayload::TurnEnd {
+                            turn: i as u32,
+                            had_code: true,
                         },
-                    );
-                    self.events.emit(RlmEvent::IterationEnd {
-                        depth: self.depth,
-                        iteration: i,
-                        duration: iter_start.elapsed(),
-                    });
-                    return Outcome {
-                        stop: StopCause::Prose,
-                        response: prose,
-                        error: None,
-                        iterations,
-                    };
+                    },
+                );
+                self.events.emit(RlmEvent::IterationEnd {
+                    depth: self.depth,
+                    iteration: i,
+                    duration: iter_start.elapsed(),
+                });
+
+                // Save Point: flush pending writes and drain queues.
+                if let Some(sp) = save_point {
+                    let queued = sp(i);
+                    if !queued.is_empty() {
+                        history.push(ChatMessage {
+                            role: Role::User,
+                            content: queued
+                                .iter()
+                                .map(|m| m.content.clone())
+                                .collect::<Vec<_>>()
+                                .join("\n\n"),
+                            ..Default::default()
+                        });
+                    }
                 }
 
-                // Bank the prose silently and continue — no prose-nudge
-                // injection. The model sees its own last message in history
-                // and can decide to code or complete on the next turn.
+                i += 1;
+                continue;
+            }
+
+            // No tool calls: the model emitted pure text (prose).
+            // Check for explicit <task_complete> token (fallback for models
+            // that don't support native tool calls).
+            if let Some(caps) = TASK_COMPLETE_RE.captures(&response) {
+                let final_answer = caps
+                    .name("output")
+                    .map(|m| m.as_str().to_owned())
+                    .unwrap_or_else(|| response.trim().to_owned());
+                self.events.emit(RlmEvent::AnswerSubmitted {
+                    depth: self.depth,
+                    content: final_answer.clone(),
+                });
                 dispatch_event(
                     &self.runtime,
                     LifecycleEvent {
@@ -603,42 +633,54 @@ impl Rlm {
                     iteration: i,
                     duration: iter_start.elapsed(),
                 });
-                history.push(ChatMessage {
-                    role: Role::Assistant,
-                    content: response,
-                ..Default::default()
-                });
-                i += 1;
-                continue;
+                return Outcome {
+                    stop: StopCause::Prose,
+                    response: final_answer,
+                    error: None,
+                    iterations,
+                };
             }
 
-            // Bank the assistant turn up to the last closing fence: trailing
-            // prose after the final block is dead weight in history (the
-            // streaming sink already aborts there; this covers non-streamed
-            // completions).
-            let banked = match last_block_end(&response) {
-                Some(end) => response[..end].to_owned(),
-                None => response,
-            };
-            history.push(ChatMessage {
-                role: Role::Assistant,
-                content: banked,
-            ..Default::default()
-            });
-            if let Some(outputs) = format_iteration(&blocks, self.config.max_output_chars) {
-                history.push(ChatMessage {
-                    role: Role::User,
-                    content: outputs,
-                ..Default::default()
+            // Safety valve: after MAX_CONSECUTIVE_PROSE block-free turns,
+            // accept the prose as the final answer.
+            consecutive_prose += 1;
+            if consecutive_prose >= MAX_CONSECUTIVE_PROSE {
+                let prose = response.trim().to_owned();
+                self.events.emit(RlmEvent::AnswerSubmitted {
+                    depth: self.depth,
+                    content: prose.clone(),
                 });
+                dispatch_event(
+                    &self.runtime,
+                    LifecycleEvent {
+                        kind: EventKind::TurnEnd,
+                        payload: EventPayload::TurnEnd {
+                            turn: i as u32,
+                            had_code: false,
+                        },
+                    },
+                );
+                self.events.emit(RlmEvent::IterationEnd {
+                    depth: self.depth,
+                    iteration: i,
+                    duration: iter_start.elapsed(),
+                });
+                return Outcome {
+                    stop: StopCause::Prose,
+                    response: prose,
+                    error: None,
+                    iterations,
+                };
             }
+
+            // Bank the prose silently and continue.
             dispatch_event(
                 &self.runtime,
                 LifecycleEvent {
                     kind: EventKind::TurnEnd,
                     payload: EventPayload::TurnEnd {
                         turn: i as u32,
-                        had_code: !blocks.is_empty(),
+                        had_code: false,
                     },
                 },
             );
@@ -647,28 +689,11 @@ impl Rlm {
                 iteration: i,
                 duration: iter_start.elapsed(),
             });
-
-            // SAVE POINT: flush pending writes and drain queues (steer,
-            // follow-up) so they land in the next iteration's history.
-            if let Some(sp) = save_point {
-                let queued = sp(i);
-                if !queued.is_empty() {
-                    history.push(ChatMessage {
-                        role: Role::User,
-                        content: queued
-                            .iter()
-                            .map(|m| m.content.clone())
-                            .collect::<Vec<_>>()
-                            .join(
-                                "
-
-",
-                            ),
-                    ..Default::default()
-                    });
-                }
-            }
-
+            history.push(ChatMessage {
+                role: Role::Assistant,
+                content: response,
+                ..Default::default()
+            });
             i += 1;
         }
 
@@ -683,7 +708,7 @@ impl Rlm {
         history.push(ChatMessage {
             role: Role::Assistant,
             content: DEFAULT_ANSWER_NUDGE.to_owned(),
-        ..Default::default()
+            ..Default::default()
         });
         match handler
             .complete_root(
@@ -748,45 +773,23 @@ impl Rlm {
         })
     }
 
-    /// Delta sink that, besides emitting `RootDelta`, watches the
-    /// accumulating text for completed ```repl fences and pushes each new
-    /// block into `code_tx` for immediate execution. `sent` counts blocks
-    /// already pushed so the post-completion catch-up can dedupe.
-    ///
-    /// Implements the turn boundary: once at least one block is complete,
-    /// only whitespace or the opening of another ```repl fence may follow.
-    /// Anything else is prose written after a "tool call" — the sink returns
-    /// `false` to abort generation, and the loop feeds the block outputs
-    /// back immediately instead.
-    fn eager_sink(
+    /// Tool-call sink that executes code eagerly during the stream. When a
+    /// `ToolCallEnd` event fires, the `code` argument is extracted from the
+    /// tool call's arguments and pushed into `tool_tx` for immediate execution
+    /// by the `exec` task in `run_loop`.
+    fn tool_call_sink(
         &self,
-        iteration: usize,
-        code_tx: UnboundedSender<Option<String>>,
-        sent: Arc<Mutex<usize>>,
-    ) -> DeltaSink {
-        let events = self.events.clone();
-        let depth = self.depth;
-        let buffer = Mutex::new(String::new());
-        Arc::new(move |delta: &str| {
-            events.emit(RlmEvent::RootDelta {
-                depth,
-                iteration,
-                delta: delta.to_owned(),
-            });
-            let mut buffer = buffer.lock().unwrap_or_else(|e| e.into_inner());
-            buffer.push_str(delta);
-            let blocks = find_code_blocks(&buffer);
-            let mut sent = sent.lock().unwrap_or_else(|e| e.into_inner());
-            for code in blocks.into_iter().skip(*sent) {
-                let _ = code_tx.send(Some(code));
-                *sent += 1;
-            }
-            match last_block_end(&buffer) {
-                Some(end) => {
-                    let tail = buffer[end..].trim_start();
-                    tail.is_empty() || could_open_block(tail)
-                }
-                None => true,
+        _iteration: usize,
+        tool_tx: UnboundedSender<ToolCallResult>,
+    ) -> ToolCallSink {
+        let tx = tool_tx.clone();
+        Arc::new(move |event: ToolCallEvent| {
+            if let ToolCallEvent::End { arguments, .. } = &event {
+                let code = arguments
+                    .get("code")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_owned());
+                let _ = tx.send(ToolCallResult { code });
             }
         })
     }

@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use phi_ai::Usage;
+use phi_ai::{ToolDefinition, Usage};
 use tokio_util::sync::CancellationToken;
 
 use super::{ChatMessage, Role, ToolCall};
@@ -88,6 +88,12 @@ pub trait LanguageModel: Send + Sync {
     ) -> Result<Completion, String> {
         let _ = (on_delta, on_thinking, on_tool_call);
         self.complete(prompt, cancel).await
+    }
+
+    /// Set the tool definitions the model can call natively. Models that
+    /// don't support native tool calls (e.g. scripted test models) ignore this.
+    fn set_tools(&self, _tools: Vec<ToolDefinition>) {
+        // Default: no-op. Overridden by ProviderLm.
     }
 }
 

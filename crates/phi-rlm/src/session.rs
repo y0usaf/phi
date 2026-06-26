@@ -179,6 +179,7 @@ impl RlmSession {
         // branch drained them above, before the prompt).
         history.append(&mut self.pending_shell);
         let warm = !self.transcript.is_empty();
+        self.rlm.register_repl_tool();
         let outcome = self
             .rlm
             .run_loop(
