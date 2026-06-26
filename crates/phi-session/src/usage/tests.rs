@@ -1,6 +1,6 @@
 
 
-use super::loading::usage_entries_from_value;
+use super::loading::usage_entries_from_json;
 use super::rendering::format_model_name;
 use super::*;
 use super::rendering::display_cell_width;
@@ -23,7 +23,7 @@ fn usage_entry_parses_phi_session_shape() {
         0.05,
     ))
     .unwrap();
-    let entry = usage_entries_from_value(&value, &jiff::tz::TimeZone::UTC)
+    let entry = usage_entries_from_json(&value, &jiff::tz::TimeZone::UTC)
         .pop()
         .unwrap();
     assert_eq!(entry.date, "2026-01-01");
@@ -40,12 +40,12 @@ fn usage_entry_rejects_user_and_usage_less_entries() {
             r#"{"type":"message","id":"x","timestamp":"2026-01-01T00:00:01Z","role":"user","text":"hi"}"#,
         )
         .unwrap();
-    assert!(usage_entries_from_value(&user, &jiff::tz::TimeZone::UTC).is_empty());
+    assert!(usage_entries_from_json(&user, &jiff::tz::TimeZone::UTC).is_empty());
     let no_usage: Value = serde_json::from_str(
             r#"{"type":"message","id":"x","timestamp":"2026-01-01T00:00:01Z","role":"assistant","text":"hi"}"#,
         )
         .unwrap();
-    assert!(usage_entries_from_value(&no_usage, &jiff::tz::TimeZone::UTC).is_empty());
+    assert!(usage_entries_from_json(&no_usage, &jiff::tz::TimeZone::UTC).is_empty());
 }
 
 #[test]
@@ -55,7 +55,7 @@ fn usage_entries_expand_per_model_breakdowns() {
         )
         .unwrap();
 
-    let entries = usage_entries_from_value(&value, &jiff::tz::TimeZone::UTC);
+    let entries = usage_entries_from_json(&value, &jiff::tz::TimeZone::UTC);
 
     assert_eq!(entries.len(), 2);
     assert_eq!(entries[0].model, "anthropic/claude-sonnet-4");

@@ -402,36 +402,12 @@ impl SessionStore {
 
     /// Append a message on the active branch and persist it.
     pub fn append(&mut self, role: Role, text: &str) -> Result<String> {
-        self.append_with_usage(role, text, None)
+        self.append_entry(role, text, None, None, Vec::new())
     }
 
-    pub fn append_with_usage(
-        &mut self,
-        role: Role,
-        text: &str,
-        usage: Option<SessionUsage>,
-    ) -> Result<String> {
-        self.append_with_usage_and_display(role, text, None, usage)
-    }
-
-    pub fn append_with_usage_and_display(
-        &mut self,
-        role: Role,
-        text: &str,
-        display_text: Option<String>,
-        usage: Option<SessionUsage>,
-    ) -> Result<String> {
-        let usage_by_model = usage.iter().cloned().collect();
-        self.append_with_usage_breakdown_and_display(
-            role,
-            text,
-            display_text,
-            usage,
-            usage_by_model,
-        )
-    }
-
-    pub fn append_with_usage_breakdown_and_display(
+    /// Append a message on the active branch and persist it, with optional
+    /// display text, usage, and per-model usage breakdown.
+    pub fn append_entry(
         &mut self,
         role: Role,
         text: &str,
@@ -1148,7 +1124,7 @@ mod tests {
             })
             .unwrap();
         store
-            .append_with_usage_and_display(
+            .append_entry(
                 Role::Assistant,
                 "done",
                 Some(
@@ -1156,6 +1132,7 @@ mod tests {
                         .to_owned(),
                 ),
                 None,
+                Vec::new(),
             )
             .unwrap();
 

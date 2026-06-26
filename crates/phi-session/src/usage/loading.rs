@@ -145,7 +145,7 @@ pub(super) fn parse_usage_entries_from_file(path: &Path) -> Vec<UsageEntry> {
         let Ok(value) = serde_json::from_str::<Value>(line) else {
             continue;
         };
-        entries.extend(usage_entries_from_value(
+        entries.extend(usage_entries_from_json(
             &value,
             &jiff::tz::TimeZone::system(),
         ));
@@ -154,7 +154,7 @@ pub(super) fn parse_usage_entries_from_file(path: &Path) -> Vec<UsageEntry> {
     entries
 }
 
-pub(crate) fn usage_entries_from_value(
+pub(crate) fn usage_entries_from_json(
     value: &Value,
     time_zone: &jiff::tz::TimeZone,
 ) -> Vec<UsageEntry> {
@@ -181,7 +181,7 @@ pub(crate) fn usage_entries_from_value(
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .filter_map(|usage| usage_entry_from_usage(timestamp, &date, source_id, usage))
+        .filter_map(|usage| usage_entry_from_json_usage(timestamp, &date, source_id, usage))
         .collect::<Vec<_>>();
 
     if !usage_by_model.is_empty() {
@@ -190,12 +190,12 @@ pub(crate) fn usage_entries_from_value(
 
     value
         .get("usage")
-        .and_then(|usage| usage_entry_from_usage(timestamp, &date, source_id, usage))
+        .and_then(|usage| usage_entry_from_json_usage(timestamp, &date, source_id, usage))
         .into_iter()
         .collect()
 }
 
-pub(super) fn usage_entry_from_usage(
+pub(super) fn usage_entry_from_json_usage(
     timestamp: jiff::Timestamp,
     date: &str,
     source_id: Option<&str>,
