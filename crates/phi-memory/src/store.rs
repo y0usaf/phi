@@ -244,18 +244,6 @@ impl MemoryStore {
         Ok(memories)
     }
 
-    /// Async wrapper for [`recall`](Self::recall) that offloads synchronous
-    /// SQLite work to a blocking thread so the async executor is not stalled.
-    pub async fn recall_async(
-        self: std::sync::Arc<Self>,
-        query: String,
-        limit: usize,
-    ) -> Result<Vec<Memory>> {
-        let store = self;
-        tokio::task::spawn_blocking(move || store.recall(&query, limit))
-            .await?
-    }
-
     /// Raw FTS5 BM25 candidate fetch. Tokens are OR-joined so a natural-language
     /// prompt like "tell me about sqlite search" still matches relevant rows.
     fn bm25_candidates(&self, query: &str, limit: usize) -> Result<Vec<i64>> {
@@ -606,15 +594,6 @@ impl MemoryStore {
             *v /= max;
         }
         Ok(pr)
-    }
-
-    /// Async wrapper for [`pagerank_map`](Self::pagerank_map) that offloads
-    /// synchronous SQLite work to a blocking thread.
-    #[allow(dead_code)]
-    async fn pagerank_map_async(self: std::sync::Arc<Self>) -> Result<HashMap<i64, f64>> {
-        let store = self;
-        tokio::task::spawn_blocking(move || store.pagerank_map())
-            .await?
     }
 
     /// Collect the graph neighborhood up to `depth` hops from `seeds`.
