@@ -711,6 +711,7 @@ impl MuxApp {
                 self.selection.update_focus(point);
             }
             MouseEventKind::Up(MouseButton::Left) if self.selection.is_active() => {
+                self.selection.end_drag();
                 self.copy_selection(false);
             }
             _ => {}
@@ -750,11 +751,26 @@ impl MuxApp {
     }
 
     fn scroll_terminal(&mut self, delta_up: i32) {
-        if let Some(handle) = self.focused_session().and_then(|s| s.handle.as_ref()) {
+        // Compute the new scrollback and the delta, then drop the parser guard
+        // before touching `self.selection` (avoids borrow-conflict with the
+        // immutable `focused_session` borrow).
+        let scrolled = {
+            let Some(handle) = self.focused_session().and_then(|s| s.handle.as_ref()) else {
+                return;
+            };
             let mut parser = driver::lock_parser(&handle.parser);
             let current = parser.screen().scrollback() as i32;
             let next = (current + delta_up).max(0) as usize;
             parser.screen_mut().set_scrollback(next);
+            next as i32 - current
+        };
+
+        // Shift the selection's row coordinates by the scroll delta so the
+        // highlight tracks the same content (zellij's move_up/move_down
+        // pattern). `delta_up > 0` means we scrolled up (into history), so
+        // visible content moved down — the selection rows shift down too.
+        if self.selection.is_active() && scrolled != 0 {
+            self.selection.shift_rows(scrolled);
         }
     }
 
