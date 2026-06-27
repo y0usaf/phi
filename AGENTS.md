@@ -1,0 +1,79 @@
+# AGENTS.md
+
+Guide for AI coding agents working in the `phi` repository.
+
+## Project Overview
+
+`phi` is a Rust workspace (edition 2024) built with [crane](https://github.com/ipetkov/crane) via Nix flakes. The binary entrypoint is `crates/phi-app` (produces the `phi` binary). There are ~15 workspace crates under `crates/`.
+
+## Build System — Nix is the Source of Truth
+
+This project is built with Nix flakes (`flake.nix`) using crane. **Always compile and test through Nix, not through `cargo` directly.** This ensures the Nix store has up-to-date build artifacts so `nix run` is instant after a change — no recompilation needed.
+
+### Why Nix instead of cargo
+
+When you run `cargo build` or `cargo test`, artifacts go into `target/` — a separate build tree from the Nix store. After a `cargo`-based build, `nix run` must recompile everything from scratch because the Nix store is untouched.
+
+When you build through Nix (`nix build` / `nix flake check`), artifacts land in the Nix store and are cached. `nix run` reuses them instantly.
+
+### Commands
+
+| Goal | Command | What it does |
+|------|---------|--------------|
+| **Compile the binary** | `nix build .#phi-app` | Builds `phi` into the Nix store; creates `result/` symlink |
+| **Run the binary** | `nix run` | Runs `phi` — instant if `nix build` already ran |
+| **Run tests** | `nix build .#checks.x86_64-linux.workspace-test` | Compiles + runs `cargo test` for the entire workspace through Nix |
+| **Run all checks** | `nix flake check` | Evaluates and builds all `checks` outputs (tests, etc.) |
+| **Format Nix** | `nix fmt` | Runs `nixfmt` on `.nix` files |
+| **Format Rust** | `cargo fmt` | Formats `.rs` files (safe; does not affect Nix store) |
+| **Lint Rust** | `cargo clippy --workspace` | Run clippy (safe; does not affect Nix store) |
+
+### Verification workflow after making a change
+
+```bash
+# 1. Run tests through Nix (compiles + tests the whole workspace):
+nix build .#checks.x86_64-linux.workspace-test --print-build-logs
+
+# 2. Build the binary through Nix:
+nix build .#phi-app
+
+# 3. Run instantly — no recompilation:
+nix run
+```
+
+If tests pass and the binary builds, `nix run` will be instant because the Nix store already has the compiled artifacts.
+
+### When cargo is acceptable
+
+`cargo fmt` and `cargo clippy` are fine to run directly — they don't produce build artifacts that `nix run` depends on, and they're faster for iterative lint/format cycles. But for **compilation** and **tests**, always use the Nix commands above.
+
+## Code Conventions
+
+- **Rust edition**: 2024
+- **Workspace lints**: `dead_code`, `unused`, `unreachable_code`, `unreachable_patterns` are set to `warn` (see `[workspace.lints.rust]` in `Cargo.toml`)
+- **Formatting**: `cargo fmt` for Rust, `nix fmt` for Nix files
+- **Crates**: all under `crates/`, auto-discovered via `members = ["crates/*"]`
+- **Non-Rust files in src**: the Nix source filter includes `.py` and `.json` files (needed for `include_str!()` macros in `phi-repl`, `phi-ai`, and `phi-builtins`). If you add new non-Rust file types that are `include_str!`'d, update the filter in `flake.nix`.
+
+## Architecture
+
+See `README.md` for the crate layout. Key crates:
+
+- `phi-app`: binary entrypoint
+- `phi-ai`: provider abstraction, model registry, streaming, auth
+- `phi-rlm`: Recursive Language Model engine
+- `phi-tui`: terminal frontend primitives
+- `phi-mux`: session multiplexer (cell-grid, UI, keys, workspace)
+- `phi-session`: session config, transcript, usage, JSONL store
+- `phi-harness`: orchestration between RLM engine and frontends
+
+## Checklist
+
+Before finishing a change:
+
+1. `cargo fmt` — format Rust code
+2. `nix build .#checks.x86_64-linux.workspace-test --print-build-logs` — run tests through Nix
+3. `nix build .#phi-app` — compile the binary through Nix
+4. Verify `nix run` works
+
+Do **not** use `cargo build` or `cargo test` for verification — use the Nix commands above so the Nix store stays warm.
