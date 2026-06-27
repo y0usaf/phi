@@ -1,8 +1,8 @@
 use std::env;
 use std::path::{Path, PathBuf};
 
+use crate::Extension;
 use anyhow::Result;
-use phi_ext::Extension;
 
 use crate::host::RegistryHost;
 use crate::runtime::AppRuntime;

@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
+use crate::{CommandSpec, EventHandlerRegistration, ExtensionHost, ToolSpec};
 use anyhow::{Result, bail};
-use phi_ext::{CommandSpec, EventHandlerRegistration, ExtensionHost, ToolSpec};
 
 #[derive(Default)]
 pub(crate) struct RegistryHost {

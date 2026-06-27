@@ -8,6 +8,8 @@ license.workspace = true
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+phi-event.workspace = true
+tokio.workspace = true
 
 [lints]
 workspace = true

@@ -4,11 +4,11 @@ use std::sync::Mutex;
 
 use tokio::sync::Mutex as TokioMutex;
 
-use anyhow::{Result, anyhow};
-use phi_ext::{
+use crate::{
     CommandInvocation, CommandOutput, CommandSpec, EventHandlerRegistration, EventKind,
     EventPayload, EventReturn, ExtensionManifest, LifecycleEvent, ToolSpec,
 };
+use anyhow::{Result, anyhow};
 
 use crate::snapshot::{EventHandlerSummary, RuntimeSnapshot, command_summary, tool_summary};
 
@@ -205,16 +205,12 @@ impl AppRuntime {
 
     // ── Tool invocation ───────────────────────────────────────────────────────
 
-    pub fn invoke_tool_sync(
-        &self,
-        name: &str,
-        input: &str,
-    ) -> Result<Option<phi_ext::ToolOutput>> {
+    pub fn invoke_tool_sync(&self, name: &str, input: &str) -> Result<Option<crate::ToolOutput>> {
         let Some(tool) = self.tools.get(name) else {
             return Ok(None);
         };
         let h = tool.handler.clone();
-        let inv = phi_ext::ToolInvocation {
+        let inv = crate::ToolInvocation {
             input: input.to_owned(),
         };
         Ok(Some(h(inv)?))
@@ -284,7 +280,7 @@ pub fn missing_named_item(kind: &str, name: &str) -> anyhow::Error {
 mod tests {
     use std::sync::Arc;
 
-    use phi_ext::{
+    use crate::{
         EventHandlerRegistration, EventKind, EventReturn, Extension, ExtensionHost,
         ExtensionManifest, LifecycleEvent,
     };

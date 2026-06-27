@@ -1,4 +1,4 @@
-use phi_ext::{CommandSpec, EventKind, ExtensionManifest, ToolSpec};
+use crate::{CommandSpec, EventKind, ExtensionManifest, ToolSpec};
 use serde::Serialize;
 
 #[derive(Clone, Debug, Serialize)]
