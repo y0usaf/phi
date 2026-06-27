@@ -233,18 +233,23 @@ impl Ui {
             return;
         }
         match self.send_mode {
-            SendMode::Queue | SendMode::Interleave => {
-                // Both modes queue for now; Interleave will inject at the
-                // next safe point once the runtime supports soft-interrupt
-                // injection points.
+            SendMode::Queue => {
                 self.queued.push(text.to_owned());
             }
-            SendMode::CancelSend => {
+            SendMode::Interleave | SendMode::CancelSend => {
+                // Cancel the in-flight turn so it completes at the next
+                // iteration boundary (the run loop checks the cancel token
+                // at the top of each iteration — the "next safe point").
+                // Then queue the message; drain_queue sends it once the
+                // cancelled turn's Done::Run clears self.running.
+                //
+                // We do NOT call send() directly here. Doing so would
+                // overwrite self.running with a new token while the old
+                // turn is still in flight, and the old turn's Done::Run
+                // would then wipe the new token — a race that leaves the
+                // UI in a wrong idle state mid-turn.
                 self.cancel_run();
-                // Send immediately as a fresh turn. The cancel token fires
-                // and the run loop will complete before this new Cmd::Prompt
-                // is processed (cmds are consumed in order).
-                send(self, text, cmd_tx);
+                self.queued.push(text.to_owned());
             }
         }
     }

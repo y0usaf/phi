@@ -91,13 +91,18 @@ pub(super) enum Cmd {
 /// Cycled with Tab (empty editor) or Ctrl+X.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) enum SendMode {
-    /// Queue: wait for the full turn to finish, then send FIFO (current default).
+    /// Queue: wait for the full turn to finish naturally, then send FIFO.
     #[default]
     Queue,
-    /// Interleave: inject at the next safe point mid-turn (placeholder: still
-    /// queues until the runtime supports soft-interrupt injection points).
+    /// Interleave: cancel the in-flight turn at the next iteration boundary
+    /// (the run loop checks the cancel token at the top of each iteration),
+    /// then send the message immediately after the cancelled turn completes.
+    /// This is the closest local equivalent to "inject at the next safe
+    /// point" — the turn is interrupted at a clean boundary, not mid-stream.
     Interleave,
     /// Cancel the in-flight turn, then send immediately as a fresh prompt.
+    /// Same mechanism as Interleave (cancel + queue), but signals user
+    /// intent to fully discard the current turn rather than build on it.
     CancelSend,
 }
 
