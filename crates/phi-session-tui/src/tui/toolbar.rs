@@ -1,6 +1,5 @@
 use super::*;
 
-
 impl Ui {
     pub(super) fn request_host_model_modal(&mut self, root: bool) -> bool {
         let Some(host_modal_tx) = &self.host_modal_tx else {
@@ -127,15 +126,16 @@ impl Ui {
 
     pub(super) fn switch_model(&mut self, query: &str, root: bool) {
         let Some(model) = self.registry.find(query).cloned() else {
-            self.pending.push(self.err(
-                &format!("unknown model '{query}' (tab after /model lists models)")
-            ));
+            self.pending.push(self.err(&format!(
+                "unknown model '{query}' (tab after /model lists models)"
+            )));
             return;
         };
         if !self.registry.is_supported(&model) {
-            self.pending.push(self.err(
-                &format!("model '{}/{}' is not supported", model.provider, model.id)
-            ));
+            self.pending.push(self.err(&format!(
+                "model '{}/{}' is not supported",
+                model.provider, model.id
+            )));
             return;
         }
         let (target, which) = if root {

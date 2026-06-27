@@ -66,7 +66,8 @@ pub fn discover_skills(cwd: &Path, extra_paths: &[String]) -> Vec<Skill> {
         let mut dirs = Vec::new();
 
         // Global: ~/.config/phi/skills/
-        if let Some(config_dir) = dirs::config_dir() {
+        if let Some(config_dir) = directories::BaseDirs::new().map(|b| b.config_dir().to_path_buf())
+        {
             dirs.push(config_dir.join("phi").join("skills"));
         }
 
@@ -324,12 +325,12 @@ fn parse_frontmatter(content: &str) -> Option<SkillFrontmatter> {
 /// Expand `~` to home and resolve relative paths against `cwd`.
 fn expand_path(raw: &str, cwd: &Path) -> String {
     if let Some(rest) = raw.strip_prefix("~/")
-        && let Some(home) = dirs::home_dir()
+        && let Some(home) = directories::BaseDirs::new().map(|b| b.home_dir().to_path_buf())
     {
         return home.join(rest).display().to_string();
     }
     if raw == "~"
-        && let Some(home) = dirs::home_dir()
+        && let Some(home) = directories::BaseDirs::new().map(|b| b.home_dir().to_path_buf())
     {
         return home.display().to_string();
     }
@@ -461,10 +462,7 @@ mod tests {
         let content = "---\nname: test\ndescription:\n  First part.\n  Second part.\n---\n";
         let fm = parse_frontmatter(content).unwrap();
         assert_eq!(fm.name.as_deref(), Some("test"));
-        assert_eq!(
-            fm.description.as_deref(),
-            Some("First part. Second part.")
-        );
+        assert_eq!(fm.description.as_deref(), Some("First part. Second part."));
     }
 
     #[test]

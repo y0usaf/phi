@@ -94,12 +94,10 @@ impl InlinePalette {
     /// Derive from terminal-reported colors (OSC 10/11/4), mirroring opencode's
     /// `generateSystem`: ANSI palette → UI roles.
     pub fn from_terminal_colors(colors: &phi_tui::TerminalColors) -> Self {
-        let col = |i: usize| {
-            colors.palette[i].map(|c| format!("\x1b[38;2;{};{};{}m", c.0, c.1, c.2))
-        };
+        let col =
+            |i: usize| colors.palette[i].map(|c| format!("\x1b[38;2;{};{};{}m", c.0, c.1, c.2));
         let col_bold = |i: usize| {
-            colors.palette[i]
-                .map(|c| format!("\x1b[1m\x1b[38;2;{};{};{}m", c.0, c.1, c.2))
+            colors.palette[i].map(|c| format!("\x1b[1m\x1b[38;2;{};{};{}m", c.0, c.1, c.2))
         };
         let fallback = Self::default_const();
         Self {
@@ -184,4 +182,3 @@ pub(crate) fn statusbar_bg_from_terminal(
     };
     format!("\x1b[48;2;{r};{g};{b}m")
 }
-

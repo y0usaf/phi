@@ -22,6 +22,8 @@ pub fn load_usage_report_from_path(root: &Path) -> UsageReport {
         return UsageReport::default();
     }
 
+    let mut loader = UsageLoader::new();
+
     let mut files = Vec::new();
     collect_jsonl_files(root, &mut files);
     files.sort();
@@ -34,7 +36,7 @@ pub fn load_usage_report_from_path(root: &Path) -> UsageReport {
     let mut by_day = BTreeMap::<String, DayAccumulator>::new();
 
     for file in files {
-        for entry in usage_entries_from_file(&file).iter() {
+        for entry in loader.usage_entries_from_file(&file).iter() {
             if !processed.insert(entry.dedupe_key.clone()) {
                 report.skipped_duplicates = report.skipped_duplicates.saturating_add(1);
                 continue;
@@ -101,33 +103,31 @@ pub(super) fn file_cache_key(path: &Path) -> Option<FileCacheKey> {
     })
 }
 
-pub(super) fn usage_entries_from_file(path: &Path) -> Arc<[UsageEntry]> {
-    let cache_key = file_cache_key(path);
-    if let Some(cache_key) = cache_key.as_ref()
-        && let Some(cached) = usage_entries_cache()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .get(path)
-            .filter(|cached| cached.key == *cache_key)
-            .cloned()
-    {
-        return cached.entries;
-    }
+impl UsageLoader {
+    pub(super) fn usage_entries_from_file(&mut self, path: &Path) -> Arc<[UsageEntry]> {
+        let cache_key = file_cache_key(path);
+        if let Some(cache_key) = cache_key.as_ref()
+            && let Some(cached) = self
+                .cache
+                .get(path)
+                .filter(|cached| cached.key == *cache_key)
+                .cloned()
+        {
+            return cached.entries;
+        }
 
-    let entries: Arc<[UsageEntry]> = parse_usage_entries_from_file(path).into();
-    if let Some(cache_key) = cache_key {
-        usage_entries_cache()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(
+        let entries: Arc<[UsageEntry]> = parse_usage_entries_from_file(path).into();
+        if let Some(cache_key) = cache_key {
+            self.cache.insert(
                 path.to_path_buf(),
                 CachedUsageEntries {
                     key: cache_key,
                     entries: entries.clone(),
                 },
             );
+        }
+        entries
     }
-    entries
 }
 
 pub(super) fn parse_usage_entries_from_file(path: &Path) -> Vec<UsageEntry> {

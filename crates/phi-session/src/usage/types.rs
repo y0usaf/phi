@@ -1,9 +1,8 @@
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::Arc;
 use std::time::SystemTime;
-
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct UsageTotals {
@@ -78,11 +77,19 @@ pub(super) struct CachedUsageEntries {
     pub(super) entries: Arc<[UsageEntry]>,
 }
 
-pub(super) static USAGE_ENTRIES_CACHE: OnceLock<Mutex<HashMap<PathBuf, CachedUsageEntries>>> =
-    OnceLock::new();
+/// Instance-scoped usage loader that replaces the former global
+/// `USAGE_ENTRIES_CACHE` static. Creating a fresh `UsageLoader` per
+/// report build avoids cross-invocation state leakage and makes the
+/// cache lifetime explicit.
+#[derive(Default)]
+pub struct UsageLoader {
+    pub(super) cache: HashMap<PathBuf, CachedUsageEntries>,
+}
 
-pub(super) fn usage_entries_cache() -> &'static Mutex<HashMap<PathBuf, CachedUsageEntries>> {
-    USAGE_ENTRIES_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+impl UsageLoader {
+    pub fn new() -> Self {
+        Self::default()
+    }
 }
 
 #[derive(Default)]

@@ -25,7 +25,7 @@ fn discover_file(cwd: &Path, name: &str) -> Option<String> {
 }
 
 fn discover_global_file(name: &str) -> Option<String> {
-    let config_dir = dirs::config_dir()?;
+    let config_dir = directories::BaseDirs::new().map(|b| b.config_dir().to_path_buf())?;
     let path = config_dir.join("phi").join(name);
     std::fs::read_to_string(&path).ok()
 }

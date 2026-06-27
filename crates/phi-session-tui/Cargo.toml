@@ -7,19 +7,15 @@ license.workspace = true
 [dependencies]
 anyhow.workspace = true
 directories.workspace = true
-dirs.workspace = true
 futures.workspace = true
-ignore.workspace = true
 mlua.workspace = true
 phi-ai.workspace = true
 phi-builtins.workspace = true
-phi-cli.workspace = true
 phi-ext.workspace = true
 phi-lua.workspace = true
 phi-rlm.workspace = true
-phi-runtime.workspace = true
 phi-session.workspace = true
-phi-tui.workspace = true
+phi-tui = { workspace = true, features = ["markdown"] }
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true

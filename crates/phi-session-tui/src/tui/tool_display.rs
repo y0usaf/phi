@@ -337,4 +337,3 @@ pub(crate) fn format_model_pricing(model: &Model) -> String {
     }
     parts.join(" · ")
 }
-

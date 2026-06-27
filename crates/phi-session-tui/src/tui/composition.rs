@@ -22,7 +22,6 @@ fn git_branch(cwd: &std::path::Path) -> Option<String> {
     }
 }
 
-
 impl Ui {
     pub(super) fn draw(&mut self) -> std::io::Result<()> {
         self.flush_pending_to_transcript();
@@ -47,9 +46,7 @@ impl Ui {
             });
         }
 
-        let frame = self
-            .transcript
-            .render(transcript_height, &specs);
+        let frame = self.transcript.render(transcript_height, &specs);
 
         let transcript_live_len = frame.live.len();
         let mut live = frame.live;
@@ -172,11 +169,17 @@ impl Ui {
         let mut result = String::with_capacity(64);
 
         let agent_str = format!("{} phi", agent_symbol());
-        result.push_str(&format!("{}{agent_str}{RESET}", &self.palette.chrome_agent_fg));
+        result.push_str(&format!(
+            "{}{agent_str}{RESET}",
+            &self.palette.chrome_agent_fg
+        ));
 
         if active {
             let tokens = format_tokens(self.usage.total_tokens);
-            result.push_str(&format!(" {}{tokens}{RESET}", &self.palette.chrome_agent_fg));
+            result.push_str(&format!(
+                " {}{tokens}{RESET}",
+                &self.palette.chrome_agent_fg
+            ));
         }
 
         if active && self.usage.cost.total > 0.0 {
@@ -294,14 +297,26 @@ impl Ui {
                 let absolute_row = i + self.editor_scroll;
                 let content = if absolute_row == 0 {
                     if line.is_empty() {
-                        format!("{}{}{RESET} ", &self.palette.chrome_dir_fg, success_symbol())
+                        format!(
+                            "{}{}{RESET} ",
+                            &self.palette.chrome_dir_fg,
+                            success_symbol()
+                        )
                     } else {
-                        format!("{}{}{RESET} {line}", &self.palette.chrome_dir_fg, success_symbol())
+                        format!(
+                            "{}{}{RESET} {line}",
+                            &self.palette.chrome_dir_fg,
+                            success_symbol()
+                        )
                     }
                 } else {
                     format!("  {line}")
                 };
-                let avail_inner = if absolute_row == 0 { input_inner } else { width };
+                let avail_inner = if absolute_row == 0 {
+                    input_inner
+                } else {
+                    width
+                };
                 if absolute_row == row {
                     let source_col = if absolute_row == 0 {
                         if line.is_empty() { 2 } else { 2 + col }
@@ -328,7 +343,10 @@ impl Ui {
             }
             if end < editor_lines.len() {
                 let below = editor_lines.len() - end;
-                lines.push(format!("{muted_fg}  \u{2193} {below} more{RESET}", muted_fg = &p.muted_fg));
+                lines.push(format!(
+                    "{muted_fg}  \u{2193} {below} more{RESET}",
+                    muted_fg = &p.muted_fg
+                ));
             }
             cursor = input_cursor;
 

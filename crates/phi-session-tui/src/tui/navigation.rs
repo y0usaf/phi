@@ -1,6 +1,5 @@
 use super::*;
 
-
 impl Ui {
     pub(super) fn open_selector(&mut self, kind: SelectorKind, widget: Selector) {
         self.popup = None;

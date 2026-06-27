@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use phi_runtime::AppRuntime;
+use phi_ext::AppRuntime;
 
 use anyhow::Result;
 use phi_ai::{
@@ -16,13 +16,14 @@ use phi_ai::{
 };
 use phi_rlm::{
     ContextPayload, ProviderLm, ReplResult, RestoredExchange, RestoredRepl, Rlm, RlmCompletion,
-    RlmEvent, StopCause, could_open_block, find_code_blocks, split_at_first_block, split_prose, RlmSession};
+    RlmEvent, RlmSession, StopCause, could_open_block, find_code_blocks, split_at_first_block,
+    split_prose,
+};
 use phi_tui::crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers};
 use phi_tui::{
-    Editor, EditorAction, LiveCursor, RawModeGuard, Selector, SelectorItem,
-    SelectorOutcome, Spinner, Terminal, detect_terminal_colors, fuzzy_filter, highlight_code,
-    highlight_diff_line, highlight_output, render_markdown, wrap_ansi,
-    wrap_ansi_locate,
+    Editor, EditorAction, LiveCursor, RawModeGuard, Selector, SelectorItem, SelectorOutcome,
+    Spinner, Terminal, detect_terminal_colors, fuzzy_filter, highlight_code, highlight_diff_line,
+    highlight_output, render_markdown, wrap_ansi, wrap_ansi_locate,
 };
 
 use phi_session::files::FileSearcher;
@@ -37,21 +38,21 @@ pub(super) const RESET: &str = "\x1b[0m";
 pub(super) const BOLD: &str = "\x1b[1m";
 pub(super) const DIM: &str = "\x1b[2m";
 pub(super) const CYAN: &str = "\x1b[36m";
+mod chat;
+mod composition;
+mod editor;
+mod events;
+mod navigation;
 /// Truecolor ANSI escapes for the inline TUI's transcript/chrome rendering,
 /// derived from the host terminal's reported colors when available. Mirrors
 /// opencode's `generateSystem` mapping. `default_const()` returns the previous
 /// hardcoded values as the fallback. Basic ANSI colors (`RESET`, `BOLD`, etc.)
 /// stay as module-level `&str` since they already reference the terminal palette.
 mod palette;
-mod symbols;
-mod render;
-mod tool_display;
 mod popup;
-mod chat;
-mod editor;
-mod navigation;
-mod events;
-mod composition;
+mod render;
+mod symbols;
+mod tool_display;
 mod toolbar;
 
 use events::LoginState;
@@ -59,13 +60,13 @@ use events::LoginState;
 use events::python_quote;
 
 pub use palette::InlinePalette;
-pub(crate) use render::{OpenToolRow, OpenSubcallRow, SubagentBox, TranscriptBlock};
+pub(crate) use render::{OpenSubcallRow, OpenToolRow, SubagentBox, TranscriptBlock};
 pub(crate) use tool_display::{format_model_pricing, format_tokens, tool_identity, tool_title};
 
-use symbols::*;
-use render::*;
-use tool_display::*;
 use popup::*;
+use render::*;
+use symbols::*;
+use tool_display::*;
 
 pub(super) enum Cmd {
     Prompt {
@@ -452,9 +453,6 @@ pub fn external_editor(text: &str) -> Result<Option<String>, String> {
     result
 }
 
-
-
-
 struct Ui {
     pub(super) term: Terminal<Box<dyn std::io::Write + Send>>,
     pub(super) editor: Editor,
@@ -736,7 +734,7 @@ mod tests {
         // phi-mux's `write_session`).
         store.set_test_path(cwd.join(format!("{}.jsonl", store.id())));
         let runtime = Arc::new(
-            phi_runtime::RuntimeBuilder::new()
+            phi_ext::RuntimeBuilder::new()
                 .with_cwd(&cwd)
                 .build()
                 .unwrap(),
@@ -766,12 +764,15 @@ mod tests {
 
     #[test]
     fn subcall_title_flattens_multiline_preview() {
-        let title = subcall_title("model-x", "first line\n\nsecond\tline", &InlinePalette::default_const());
+        let title = subcall_title(
+            "model-x",
+            "first line\n\nsecond\tline",
+            &InlinePalette::default_const(),
+        );
         assert!(title.contains("\"first line second line\""), "{title}");
         assert!(!title.contains('\n'), "{title}");
         assert!(!title.contains('\t'), "{title}");
     }
-
 
     // Flat form: a bare header line (no trailing `─…─` rule) plus a body
     // indented under a 2-space result gutter. No glyph — the header is just
@@ -782,7 +783,10 @@ mod tests {
         let plain: Vec<String> = lines.iter().map(|l| phi_tui::strip_ansi(l)).collect();
         // Header at depth 1: 2-space indent + title, no glyph.
         assert_eq!(plain[0], "  read foo.rs", "{plain:?}");
-        assert!(!plain[0].contains('⎿'), "header must not carry ⎿: {plain:?}");
+        assert!(
+            !plain[0].contains('⎿'),
+            "header must not carry ⎿: {plain:?}"
+        );
         assert!(!plain[0].contains('─'), "no trailing rule fill: {plain:?}");
         // Result body: indent(1)=2 + result gutter 2 = 4 cells, then content.
         assert_eq!(plain[1], "    body one", "{plain:?}");
@@ -804,7 +808,11 @@ mod tests {
         );
         let plain: Vec<String> = lines.iter().map(|l| phi_tui::strip_ansi(l)).collect();
         // No glyph across the whole block.
-        assert_eq!(plain.iter().map(|l| l.matches('⎿').count()).sum::<usize>(), 0, "{plain:?}");
+        assert_eq!(
+            plain.iter().map(|l| l.matches('⎿').count()).sum::<usize>(),
+            0,
+            "{plain:?}"
+        );
         // Every non-empty body row: indent(1)=2 + result gutter 2 = 4 cells.
         assert_eq!(plain[1], "    line one", "{plain:?}");
         assert_eq!(plain[2], "    line two", "{plain:?}");
@@ -836,15 +844,25 @@ mod tests {
         assert_eq!(phi_tui::visible_width(&indent(3)), 6);
         // Result gutter is 2 cells at every depth (indent + 2).
         for depth in 0..=4 {
-            assert_eq!(result_prefix_width(depth), indent_width(depth) + 2, "depth {depth}");
-            assert_eq!(phi_tui::visible_width(&result_prefix(depth)), result_prefix_width(depth), "depth {depth}");
+            assert_eq!(
+                result_prefix_width(depth),
+                indent_width(depth) + 2,
+                "depth {depth}"
+            );
+            assert_eq!(
+                phi_tui::visible_width(&result_prefix(depth)),
+                result_prefix_width(depth),
+                "depth {depth}"
+            );
         }
         // card_body_width == repl_body_width - result_prefix_width.
         let ui = test_ui(80, 24);
         for depth in 0..=4 {
             assert_eq!(
                 ui.card_body_width(depth),
-                ui.repl_body_width().saturating_sub(result_prefix_width(depth)).max(1),
+                ui.repl_body_width()
+                    .saturating_sub(result_prefix_width(depth))
+                    .max(1),
                 "depth {depth}"
             );
         }
@@ -993,14 +1011,20 @@ mod tests {
         // text is the body — the canonical command is shown once either way.
         let bash1 = tool_identity("bash", &serde_json::json!({"cmd": "cargo check"}), &p);
         assert!(phi_tui::strip_ansi(&bash1.anchor).contains("$ cargo check"));
-        assert!(bash1.body.is_empty(), "single-line bash must not duplicate the command in the body");
+        assert!(
+            bash1.body.is_empty(),
+            "single-line bash must not duplicate the command in the body"
+        );
         let bash2 = tool_identity(
             "bash",
             &serde_json::json!({"cmd": "cargo test\ncargo build"}),
             &p,
         );
         assert!(phi_tui::strip_ansi(&bash2.anchor).contains("$ cargo test…"));
-        assert!(!bash2.body.is_empty(), "multi-line bash must carry the full command in the body");
+        assert!(
+            !bash2.body.is_empty(),
+            "multi-line bash must carry the full command in the body"
+        );
         assert_eq!(bash2.body.len(), 2, "{:?}", bash2.body);
         // Unknown (e.g. MCP/extension) tools: small `key=value` args live in the
         // anchor only (empty body — no dup); a long value earns a body row with
@@ -1012,10 +1036,16 @@ mod tests {
             "{:?}",
             small.anchor
         );
-        assert!(small.body.is_empty(), "small unknown-tool arg must not duplicate in the body");
+        assert!(
+            small.body.is_empty(),
+            "small unknown-tool arg must not duplicate in the body"
+        );
         let big_cmd = "x".repeat(120);
         let big = tool_identity("mcp__x", &serde_json::json!({"q": big_cmd}), &p);
-        assert!(!big.body.is_empty(), "long unknown-tool arg should carry full text in body");
+        assert!(
+            !big.body.is_empty(),
+            "long unknown-tool arg should carry full text in body"
+        );
         let joined = big
             .body
             .iter()
@@ -1026,8 +1056,16 @@ mod tests {
         // A bare (non-object) arg is never in the anchor (anchor is just the
         // name), so a non-empty value lives in the body once.
         let bare = tool_identity("mcp__x", &serde_json::json!("hello"), &p);
-        assert_eq!(phi_tui::strip_ansi(&bare.anchor), "mcp__x", "{:?}", bare.anchor);
-        assert!(!bare.body.is_empty(), "bare-string arg must show its value in the body");
+        assert_eq!(
+            phi_tui::strip_ansi(&bare.anchor),
+            "mcp__x",
+            "{:?}",
+            bare.anchor
+        );
+        assert!(
+            !bare.body.is_empty(),
+            "bare-string arg must show its value in the body"
+        );
         assert!(
             bare.body
                 .iter()
@@ -1325,7 +1363,11 @@ match1
         // ┌/│/└ panel borders.
         let box_lines: Vec<&String> = plain
             .iter()
-            .filter(|line| line.starts_with('\u{250c}') || line.starts_with('\u{2502}') || line.starts_with('\u{2514}'))
+            .filter(|line| {
+                line.starts_with('\u{250c}')
+                    || line.starts_with('\u{2502}')
+                    || line.starts_with('\u{2514}')
+            })
             .collect();
         assert!(box_lines.is_empty(), "box lines should be gone: {plain:?}");
 
@@ -1333,11 +1375,20 @@ match1
         // chevron prompt with "hi".
         assert!(plain.len() >= 3, "{plain:?}");
         // Separator line is all box-drawing chars.
-        assert!(plain[0].chars().all(|c| c == '\u{2500}'), "separator line: {plain:?}");
+        assert!(
+            plain[0].chars().all(|c| c == '\u{2500}'),
+            "separator line: {plain:?}"
+        );
         // Header contains the agent symbol text "phi"
-        assert!(plain[1].contains("phi"), "header should contain agent: {plain:?}");
+        assert!(
+            plain[1].contains("phi"),
+            "header should contain agent: {plain:?}"
+        );
         // Input line contains the editor text
-        assert!(plain[2].contains("hi"), "input line should contain 'hi': {plain:?}");
+        assert!(
+            plain[2].contains("hi"),
+            "input line should contain 'hi': {plain:?}"
+        );
 
         // Cursor is present (the editor has text).
         assert!(cursor.is_some(), "{plain:?}");
@@ -1360,10 +1411,22 @@ match1
         //  - the agent label "phi"
         //  - the model id (stripped of provider prefix)
         let header = &plain[1];
-        assert!(header.contains("phi"), "header should contain dir name: {header:?}");
-        assert!(header.contains("main"), "header should contain branch: {header:?}");
-        assert!(header.contains("phi"), "header should contain agent: {header:?}");
-        assert!(!header.contains("/tmp/phi"), "header should not contain full path: {header:?}");
+        assert!(
+            header.contains("phi"),
+            "header should contain dir name: {header:?}"
+        );
+        assert!(
+            header.contains("main"),
+            "header should contain branch: {header:?}"
+        );
+        assert!(
+            header.contains("phi"),
+            "header should contain agent: {header:?}"
+        );
+        assert!(
+            !header.contains("/tmp/phi"),
+            "header should not contain full path: {header:?}"
+        );
 
         // No footer line in non-framed mode.
         assert!(
@@ -1374,7 +1437,9 @@ match1
 
     #[test]
     fn chrome_lines_ascii_fallback_when_nerd_fonts_disabled() {
-        unsafe { std::env::set_var("PHI_NO_NERD_FONTS", "1"); };
+        unsafe {
+            std::env::set_var("PHI_NO_NERD_FONTS", "1");
+        };
         let mut ui = test_ui(80, 24);
         ui.editor.set_text("hi");
 
@@ -1384,17 +1449,34 @@ match1
         // In ASCII fallback mode the chevron is ">" and there are no Nerd
         // Font PUA codepoints in the output.
         assert!(plain[2].starts_with(">"), "ASCII chevron: {plain:?}");
-        assert!(!plain.iter().any(|l| l.contains('\u{ea83}')), "no nerd folder icon: {plain:?}");
-        assert!(!plain.iter().any(|l| l.contains('\u{f013e}')), "no nerd chevron: {plain:?}");
-        unsafe { std::env::remove_var("PHI_NO_NERD_FONTS"); };
+        assert!(
+            !plain.iter().any(|l| l.contains('\u{ea83}')),
+            "no nerd folder icon: {plain:?}"
+        );
+        assert!(
+            !plain.iter().any(|l| l.contains('\u{f013e}')),
+            "no nerd chevron: {plain:?}"
+        );
+        unsafe {
+            std::env::remove_var("PHI_NO_NERD_FONTS");
+        };
     }
 
     #[test]
     fn chrome_lines_effort_label_width_thresholds() {
-        assert_eq!(effort_label(ThinkingLevel::Medium, 80), Some("med".to_string()));
-        assert_eq!(effort_label(ThinkingLevel::Medium, 100), Some("medium".to_string()));
+        assert_eq!(
+            effort_label(ThinkingLevel::Medium, 80),
+            Some("med".to_string())
+        );
+        assert_eq!(
+            effort_label(ThinkingLevel::Medium, 100),
+            Some("medium".to_string())
+        );
         assert_eq!(effort_label(ThinkingLevel::Off, 80), None);
-        assert_eq!(effort_label(ThinkingLevel::High, 50), Some("hig".to_string()));
+        assert_eq!(
+            effort_label(ThinkingLevel::High, 50),
+            Some("hig".to_string())
+        );
     }
 
     #[test]

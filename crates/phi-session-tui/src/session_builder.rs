@@ -7,19 +7,20 @@ use std::sync::Arc;
 
 use anyhow::{Context as _, Result};
 use phi_ai::{AuthStorage, Model, Registry, ThinkingLevel};
-use phi_builtins::bundled_extensions;
 use phi_builtins::prelude::{CODING_PRELUDE, coding_tools_section};
-use phi_cli::Args;
+use phi_ext::RuntimeBuilder;
 use phi_rlm::{ContextPayload, ProviderLm, Rlm, RlmConfig};
-use phi_runtime::RuntimeBuilder;
+use phi_session::config::CliArgs;
 
+use crate::tui::{TuiSetup, UiSetup};
 use phi_session::config::{Config, Settings};
 use phi_session::session::SessionStore;
-use crate::tui::{TuiSetup, UiSetup};
 
 /// Process-wide handles shared by every session.
 pub struct SharedResources {
-    pub args: Args,
+    pub cli_args: CliArgs,
+    /// Extra `--project` directories for the multiplexer (repeatable).
+    pub projects: Vec<String>,
     pub storage: Arc<AuthStorage>,
     pub registry: Arc<Registry>,
 }
@@ -76,7 +77,7 @@ async fn resolve_models(
 
 /// Discover and load Lua extensions and config.lua files, then build and boot
 /// the AppRuntime with all extensions registered.
-async fn build_runtime(cwd: &Path) -> Result<Arc<phi_runtime::AppRuntime>> {
+async fn build_runtime(cwd: &Path) -> Result<Arc<phi_ext::AppRuntime>> {
     let ext_paths = phi_lua::discover_extensions(cwd);
     let lua_exts = phi_lua::load_extensions(&ext_paths);
 
@@ -84,9 +85,6 @@ async fn build_runtime(cwd: &Path) -> Result<Arc<phi_runtime::AppRuntime>> {
     let config_exts = phi_lua::load_extensions(&config_ext_paths);
 
     let mut rt_builder = RuntimeBuilder::new().with_cwd(cwd);
-    for ext in bundled_extensions() {
-        rt_builder = rt_builder.register_boxed_extension(ext);
-    }
     for ext in config_exts {
         rt_builder = rt_builder.register_boxed_extension(ext);
     }
@@ -99,7 +97,7 @@ async fn build_runtime(cwd: &Path) -> Result<Arc<phi_runtime::AppRuntime>> {
 }
 
 /// Build RlmConfig from resolved settings, prompt overrides, and environment info.
-fn build_rlm_config(cwd: &Path, settings: &Settings, runtime: &phi_runtime::AppRuntime) -> RlmConfig {
+fn build_rlm_config(cwd: &Path, settings: &Settings, runtime: &phi_ext::AppRuntime) -> RlmConfig {
     let ext_stubs = runtime.extension_prelude_stubs();
     let setup_code = if ext_stubs.is_empty() {
         CODING_PRELUDE.to_owned()
@@ -160,11 +158,12 @@ pub async fn build_session(
     resume: Option<&Path>,
 ) -> Result<TuiSetup> {
     let SharedResources {
-        args,
+        cli_args,
+        projects: _,
         storage,
         registry,
     } = shared;
-    let settings = Settings::resolve(&args.to_session_args(), Config::load(cwd)?, true);
+    let settings = Settings::resolve(cli_args, Config::load(cwd)?, true);
 
     let models = resolve_models(&settings, registry, storage).await?;
     let runtime = build_runtime(cwd).await?;
@@ -354,7 +353,9 @@ mod env_info_tests {
         std::fs::create_dir(&sub).unwrap();
         assert!(is_git_repo(&sub));
         // A non-existent path is not a git repo.
-        assert!(!is_git_repo(Path::new("/nonexistent/path/that/does/not/exist")));
+        assert!(!is_git_repo(Path::new(
+            "/nonexistent/path/that/does/not/exist"
+        )));
     }
 
     #[test]
@@ -385,11 +386,7 @@ mod prompt_drift_tests {
                 && let Some(paren) = rest.find('(')
             {
                 let name = rest[..paren].trim();
-                if !name.is_empty()
-                    && name
-                        .chars()
-                        .all(|c| c.is_ascii_alphanumeric() || c == '_')
-                {
+                if !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
                     set.insert(name.to_owned());
                 }
             }
@@ -400,7 +397,15 @@ mod prompt_drift_tests {
     #[test]
     fn coding_roster_lists_expected_file_helpers() {
         let roster = coding_roster(&coding_tools_section());
-        for expected in ["bash", "read_file", "write_file", "edit_file", "grep", "find", "ls"] {
+        for expected in [
+            "bash",
+            "read_file",
+            "write_file",
+            "edit_file",
+            "grep",
+            "find",
+            "ls",
+        ] {
             assert!(
                 roster.contains(expected),
                 "coding_tools_section() no longer documents `{expected}` — prompt/prelude drift"

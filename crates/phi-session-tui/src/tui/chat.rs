@@ -1,6 +1,5 @@
 use super::*;
 
-
 impl Ui {
     pub(super) fn assistant_card_lines(&self, text: &str) -> Vec<String> {
         let rendered = render_markdown(text, self.markdown_width(), &self.palette.markdown);
@@ -28,7 +27,13 @@ impl Ui {
         out
     }
 
-    pub(super) fn tool_lines(&self, depth: usize, title: &str, body: &str, max: usize) -> Vec<String> {
+    pub(super) fn tool_lines(
+        &self,
+        depth: usize,
+        title: &str,
+        body: &str,
+        max: usize,
+    ) -> Vec<String> {
         let mut rows = Vec::new();
         let trimmed = body.trim_end();
         if !trimmed.is_empty() {
@@ -143,7 +148,12 @@ impl Ui {
         }
     }
 
-    pub(super) fn replace_block_rows(&mut self, start: usize, len: usize, rows: Vec<String>) -> usize {
+    pub(super) fn replace_block_rows(
+        &mut self,
+        start: usize,
+        len: usize,
+        rows: Vec<String>,
+    ) -> usize {
         if !self.block_active || start > self.block.len() {
             return rows.len();
         }
@@ -230,7 +240,10 @@ impl Ui {
             self.replace_block_rows(
                 row.start,
                 row.len,
-                self.status_rows(row.depth, &failed_status_text(&row.label, None, None, &self.palette)),
+                self.status_rows(
+                    row.depth,
+                    &failed_status_text(&row.label, None, None, &self.palette),
+                ),
             );
         }
         while let Some(row) = self.open_subcall_rows.pop_back() {
@@ -238,18 +251,15 @@ impl Ui {
             // status instead of trying to replace the (non-existent) inline
             // status row.
             if self.has_subagent_box(row.depth) {
-                self.finalize_subagent_box(
-                    row.depth,
-                    &row.label,
-                    None,
-                    self.output_limit(),
-                    true,
-                );
+                self.finalize_subagent_box(row.depth, &row.label, None, self.output_limit(), true);
             } else {
                 self.replace_block_rows(
                     row.start,
                     row.len,
-                    self.status_rows(row.depth, &failed_status_text(&row.label, None, None, &self.palette)),
+                    self.status_rows(
+                        row.depth,
+                        &failed_status_text(&row.label, None, None, &self.palette),
+                    ),
                 );
             }
         }
@@ -298,10 +308,7 @@ impl Ui {
         if depth == 0 && !self.last_activity && !self.block_active {
             self.pending.push(String::new());
         }
-        self.push_row(forge_title(
-            depth,
-            &text,
-        ));
+        self.push_row(forge_title(depth, &text));
         self.last_activity = true;
     }
 
@@ -350,7 +357,13 @@ impl Ui {
         rows
     }
 
-    pub(super) fn push_preview_with_lang(&mut self, depth: usize, text: &str, max: usize, lang: Option<&str>) {
+    pub(super) fn push_preview_with_lang(
+        &mut self,
+        depth: usize,
+        text: &str,
+        max: usize,
+        lang: Option<&str>,
+    ) {
         let rows = self.preview_rows_with_lang(depth, text, max, lang);
         if rows.is_empty() {
             return;
@@ -366,7 +379,7 @@ impl Ui {
         }
     }
 
-#[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn tool_result_rows(
         &self,
         depth: usize,
@@ -560,13 +573,7 @@ impl Ui {
         } else {
             format!("{label} {DIM}(ctrl+o to expand){RESET}")
         };
-        let rows = self.subcall_result_rows(
-            depth,
-            &display_label,
-            content,
-            max,
-            failed,
-        );
+        let rows = self.subcall_result_rows(depth, &display_label, content, max, failed);
         self.replace_block_rows(box_data.block_start, box_data.block_len, rows);
         self.last_activity = true;
     }
@@ -585,7 +592,8 @@ impl Ui {
                 continue;
             };
             let new_rows = self.subagent_box_rows(&box_data, true, &spinner);
-            let new_len = self.replace_block_rows(box_data.block_start, box_data.block_len, new_rows);
+            let new_len =
+                self.replace_block_rows(box_data.block_start, box_data.block_len, new_rows);
             if let Some(b) = self.active_subagent_boxes.get_mut(&depth) {
                 b.block_len = new_len;
             }
@@ -606,15 +614,7 @@ impl Ui {
         if depth == 0 && !self.last_activity && !self.block_active {
             self.pending.push(String::new());
         }
-        let rows = self.tool_result_rows(
-            depth,
-            name,
-            args,
-            output,
-            max,
-            lang,
-            failed,
-        );
+        let rows = self.tool_result_rows(depth, name, args, output, max, lang, failed);
         for row in rows {
             self.push_row(row);
         }

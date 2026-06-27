@@ -154,7 +154,11 @@ pub(crate) fn truncate_for_log(text: &str) -> String {
 /// `replace_block_rows`, which only mutates the live block). Returns the
 /// residual stdout; when empty, the caller's `push_preview` naturally skips
 /// rendering (no-op on empty), so the duplicate card disappears entirely.
-pub(crate) fn strip_tool_echoes(stdout: &str, tools: &[session::ToolCall], exec_depth: usize) -> String {
+pub(crate) fn strip_tool_echoes(
+    stdout: &str,
+    tools: &[session::ToolCall],
+    exec_depth: usize,
+) -> String {
     let mut result_lines: HashSet<&str> = HashSet::new();
     for t in tools {
         if t.error.is_none() && t.depth == exec_depth {
@@ -172,8 +176,6 @@ pub(crate) fn strip_tool_echoes(stdout: &str, tools: &[session::ToolCall], exec_
         .collect::<Vec<&str>>()
         .join("\n")
 }
-
-
 
 /// Per-level nesting indent: two spaces per `depth`. Used to inset a flat
 /// header line under its enclosing unit (a repl block or an RLM subcall).
@@ -210,11 +212,7 @@ pub(crate) fn forge_title(depth: usize, title: &str) -> String {
 /// wrapped to `card_body_width(depth)`. Every body row is inset by the
 /// 2-space result gutter (`result_prefix`). Empty body lines collapse to the
 /// bare indent. If `body` is empty the header stands alone.
-pub(crate) fn render_flat(
-    title: &str,
-    depth: usize,
-    body: &[String],
-) -> Vec<String> {
+pub(crate) fn render_flat(title: &str, depth: usize, body: &[String]) -> Vec<String> {
     let header = forge_title(depth, title);
     let blank = indent(depth);
     let prefix = result_prefix(depth);

@@ -1,6 +1,5 @@
 //! Slash-command popup autocomplete.
 
-
 use super::*;
 
 pub(crate) struct CommandSpec {
@@ -158,7 +157,11 @@ pub(crate) fn render_popup(popup: &Popup) -> Vec<String> {
 /// Suggestions for the text before the cursor, pi-style: `/prefix` fuzzy
 /// filters command names; `/command arg-prefix` filters that command's
 /// arguments.
-pub(crate) fn complete(before: &str, model_names: &[String], ext_cmds: &[(String, String)]) -> Option<Popup> {
+pub(crate) fn complete(
+    before: &str,
+    model_names: &[String],
+    ext_cmds: &[(String, String)],
+) -> Option<Popup> {
     let rest = before.strip_prefix('/')?;
     let Some((command, arg)) = rest.split_once(' ') else {
         let mut items: Vec<Suggestion> =
@@ -265,6 +268,3 @@ pub(crate) fn single_line(text: &str) -> String {
         joined
     }
 }
-
-
-

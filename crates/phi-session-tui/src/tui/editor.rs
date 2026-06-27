@@ -1,8 +1,10 @@
 use super::*;
 
-
 impl Ui {
-    pub(super) fn handle_popup_key(&mut self, key: phi_tui::crossterm::event::KeyEvent) -> PopupOutcome {
+    pub(super) fn handle_popup_key(
+        &mut self,
+        key: phi_tui::crossterm::event::KeyEvent,
+    ) -> PopupOutcome {
         let Some(popup) = &mut self.popup else {
             return PopupOutcome::Pass;
         };
@@ -31,9 +33,7 @@ impl Ui {
                 self.apply_completion();
                 match kind {
                     PopupKind::Command => PopupOutcome::Pass,
-                    PopupKind::Argument | PopupKind::File => {
-                        PopupOutcome::Handled
-                    }
+                    PopupKind::Argument | PopupKind::File => PopupOutcome::Handled,
                 }
             }
             _ => PopupOutcome::Pass,

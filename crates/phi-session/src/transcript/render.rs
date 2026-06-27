@@ -29,11 +29,7 @@ impl Transcript {
         self.committed_rows
     }
 
-    pub fn render<'a>(
-        &mut self,
-        _viewport_height: usize,
-        blocks: &[BlockSpec<'a>],
-    ) -> Frame {
+    pub fn render<'a>(&mut self, _viewport_height: usize, blocks: &[BlockSpec<'a>]) -> Frame {
         let mut full = Vec::new();
 
         let count = blocks.len();

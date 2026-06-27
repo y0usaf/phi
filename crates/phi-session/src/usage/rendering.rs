@@ -1,7 +1,11 @@
 pub(super) fn display_cell_width(value: &str) -> usize {
     value
         .chars()
-        .map(|ch| unicode_width::UnicodeWidthChar::width(ch).unwrap_or(1).max(1))
+        .map(|ch| {
+            unicode_width::UnicodeWidthChar::width(ch)
+                .unwrap_or(1)
+                .max(1)
+        })
         .sum()
 }
 
@@ -20,7 +24,9 @@ fn truncate_to_cells(value: &str, max_cols: usize) -> String {
     let mut out = String::new();
     let mut width = 0;
     for ch in value.chars() {
-        let ch_width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(1).max(1);
+        let ch_width = unicode_width::UnicodeWidthChar::width(ch)
+            .unwrap_or(1)
+            .max(1);
         if width + ch_width + ellipsis_w > max_cols {
             break;
         }

@@ -1,9 +1,7 @@
-
-
 use super::loading::usage_entries_from_json;
+use super::rendering::display_cell_width;
 use super::rendering::format_model_name;
 use super::*;
-use super::rendering::display_cell_width;
 use serde_json::Value;
 use std::fs;
 

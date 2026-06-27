@@ -8,7 +8,7 @@
 // set `PHI_NO_NERD_FONTS=1` to fall back to plain ASCII equivalents.
 //
 // Nerd Font symbols — left prompt
-pub(crate) const NERD_DIR_SYMBOL: &str = "\u{ea83}";      // folder icon
+pub(crate) const NERD_DIR_SYMBOL: &str = "\u{ea83}"; // folder icon
 pub(crate) const NERD_BRANCH_SYMBOL: &str = "\u{f418}"; //  branch icon
 pub(crate) const NERD_SUCCESS_SYMBOL: &str = "\u{f013e}"; //  chevron
 
@@ -39,20 +39,44 @@ pub(crate) fn nerd_fonts_enabled() -> bool {
 }
 
 pub(crate) fn dir_symbol() -> &'static str {
-    if nerd_fonts_enabled() { NERD_DIR_SYMBOL } else { ASCII_DIR_SYMBOL }
+    if nerd_fonts_enabled() {
+        NERD_DIR_SYMBOL
+    } else {
+        ASCII_DIR_SYMBOL
+    }
 }
 pub(crate) fn branch_symbol() -> &'static str {
-    if nerd_fonts_enabled() { NERD_BRANCH_SYMBOL } else { ASCII_BRANCH_SYMBOL }
+    if nerd_fonts_enabled() {
+        NERD_BRANCH_SYMBOL
+    } else {
+        ASCII_BRANCH_SYMBOL
+    }
 }
 pub(crate) fn success_symbol() -> &'static str {
-    if nerd_fonts_enabled() { NERD_SUCCESS_SYMBOL } else { ASCII_SUCCESS_SYMBOL }
+    if nerd_fonts_enabled() {
+        NERD_SUCCESS_SYMBOL
+    } else {
+        ASCII_SUCCESS_SYMBOL
+    }
 }
 pub(crate) fn agent_symbol() -> &'static str {
-    if nerd_fonts_enabled() { NERD_AGENT_SYMBOL } else { ASCII_AGENT_SYMBOL }
+    if nerd_fonts_enabled() {
+        NERD_AGENT_SYMBOL
+    } else {
+        ASCII_AGENT_SYMBOL
+    }
 }
 pub(crate) fn model_symbol() -> &'static str {
-    if nerd_fonts_enabled() { NERD_MODEL_SYMBOL } else { ASCII_MODEL_SYMBOL }
+    if nerd_fonts_enabled() {
+        NERD_MODEL_SYMBOL
+    } else {
+        ASCII_MODEL_SYMBOL
+    }
 }
 pub(crate) fn cost_symbol() -> &'static str {
-    if nerd_fonts_enabled() { NERD_COST_SYMBOL } else { ASCII_COST_SYMBOL }
+    if nerd_fonts_enabled() {
+        NERD_COST_SYMBOL
+    } else {
+        ASCII_COST_SYMBOL
+    }
 }

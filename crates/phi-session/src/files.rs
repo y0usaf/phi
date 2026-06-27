@@ -215,5 +215,4 @@ mod tests {
         assert_eq!(completion_value("a b/c.txt", false), "@\"a b/c.txt\"");
         assert_eq!(completion_value("src/main.rs", false), "@src/main.rs");
     }
-
 }

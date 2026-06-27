@@ -12,26 +12,70 @@ use mlua::LuaSerdeExt as _;
 
 use serde::Deserialize;
 
-#[derive(Debug, Default, Clone, Deserialize, PartialEq)]
-#[serde(default, deny_unknown_fields)]
-pub struct Config {
-    pub model: Option<String>,
-    pub sub_model: Option<String>,
-    pub thinking: Option<String>,
-    pub sub_model_thinking: Option<String>,
-    pub python: Option<String>,
-    pub max_iterations: Option<usize>,
-    pub max_rlm_depth: Option<usize>,
-    pub budget: Option<f64>,
-    pub max_tokens: Option<u64>,
-    pub timeout: Option<u64>,
-    pub max_errors: Option<usize>,
-    pub max_concurrent_subcalls: Option<usize>,
-    pub mux: Option<MuxConfig>,
-    /// User-configured skill directories or files to scan for `SKILL.md`.
-    /// Paths support `~` expansion; relative paths resolve against `cwd`.
-    /// Example: `skills = { "~/.claude/skills", ".forge/skills" }`
-    pub skills: Option<Vec<String>>,
+/// Generates a struct with the twelve fields shared across [`Config`],
+/// [`CliArgs`], and [`Settings`], plus any extra trailing fields. Each
+/// invocation supplies its own resolved types, so adding or renaming a
+/// shared field here propagates to all three structs automatically.
+macro_rules! shared_fields_struct {
+    (
+        $(#[$meta:meta])*
+        $vis:vis struct $name:ident {
+            model: $model_ty:ty,
+            sub_model: $sub_model_ty:ty,
+            thinking: $thinking_ty:ty,
+            sub_model_thinking: $sub_model_thinking_ty:ty,
+            python: $python_ty:ty,
+            max_iterations: $max_iterations_ty:ty,
+            max_rlm_depth: $max_rlm_depth_ty:ty,
+            budget: $budget_ty:ty,
+            max_tokens: $max_tokens_ty:ty,
+            timeout: $timeout_ty:ty,
+            max_errors: $max_errors_ty:ty,
+            max_concurrent_subcalls: $max_concurrent_subcalls_ty:ty,
+            $($extra:tt)*
+        }
+    ) => {
+        $(#[$meta])*
+        $vis struct $name {
+            pub model: $model_ty,
+            pub sub_model: $sub_model_ty,
+            pub thinking: $thinking_ty,
+            pub sub_model_thinking: $sub_model_thinking_ty,
+            pub python: $python_ty,
+            pub max_iterations: $max_iterations_ty,
+            pub max_rlm_depth: $max_rlm_depth_ty,
+            pub budget: $budget_ty,
+            pub max_tokens: $max_tokens_ty,
+            pub timeout: $timeout_ty,
+            pub max_errors: $max_errors_ty,
+            pub max_concurrent_subcalls: $max_concurrent_subcalls_ty,
+            $($extra)*
+        }
+    };
+}
+
+shared_fields_struct! {
+    #[derive(Debug, Default, Clone, Deserialize, PartialEq)]
+    #[serde(default, deny_unknown_fields)]
+    pub struct Config {
+        model: Option<String>,
+        sub_model: Option<String>,
+        thinking: Option<String>,
+        sub_model_thinking: Option<String>,
+        python: Option<String>,
+        max_iterations: Option<usize>,
+        max_rlm_depth: Option<usize>,
+        budget: Option<f64>,
+        max_tokens: Option<u64>,
+        timeout: Option<u64>,
+        max_errors: Option<usize>,
+        max_concurrent_subcalls: Option<usize>,
+        pub mux: Option<MuxConfig>,
+        /// User-configured skill directories or files to scan for `SKILL.md`.
+        /// Paths support `~` expansion; relative paths resolve against `cwd`.
+        /// Example: `skills = { "~/.claude/skills", ".forge/skills" }`
+        pub skills: Option<Vec<String>>,
+    }
 }
 
 /// Settings for mux mode (the in-process session multiplexer).
@@ -74,14 +118,7 @@ impl Config {
                 .create_function(|_, _: mlua::MultiValue| Ok(()))
                 .expect("noop fn");
             let phi_table = lua.create_table().expect("phi table");
-            for method in &[
-                "on",
-                "register_tool",
-                "register_command",
-                "notify",
-                "set_status",
-                "clear_status",
-            ] {
+            for method in &["on", "register_tool", "register_command"] {
                 phi_table
                     .set(*method, noop.clone())
                     .expect("set phi method");
@@ -128,40 +165,44 @@ impl Config {
     }
 }
 
-/// CLI argument fields needed to resolve [`Settings`], decoupled from clap so
-/// phi-session doesn't depend on a CLI parser.
-#[derive(Debug, Default, Clone)]
-pub struct CliArgs {
-    pub model: Option<String>,
-    pub sub_model: Option<String>,
-    pub thinking: Option<String>,
-    pub sub_model_thinking: Option<String>,
-    pub python: Option<String>,
-    pub max_iterations: Option<usize>,
-    pub max_rlm_depth: Option<usize>,
-    pub budget: Option<f64>,
-    pub max_tokens: Option<u64>,
-    pub timeout: Option<u64>,
-    pub max_errors: Option<usize>,
-    pub max_concurrent_subcalls: Option<usize>,
+shared_fields_struct! {
+    /// CLI argument fields needed to resolve [`Settings`], decoupled from clap so
+    /// phi-session doesn't depend on a CLI parser.
+    #[derive(Debug, Default, Clone)]
+    pub struct CliArgs {
+        model: Option<String>,
+        sub_model: Option<String>,
+        thinking: Option<String>,
+        sub_model_thinking: Option<String>,
+        python: Option<String>,
+        max_iterations: Option<usize>,
+        max_rlm_depth: Option<usize>,
+        budget: Option<f64>,
+        max_tokens: Option<u64>,
+        timeout: Option<u64>,
+        max_errors: Option<usize>,
+        max_concurrent_subcalls: Option<usize>,
+    }
 }
 
-/// Final values after applying CLI flags over config over built-in defaults.
-pub struct Settings {
-    pub model: String,
-    pub sub_model: Option<String>,
-    pub thinking: String,
-    pub sub_model_thinking: String,
-    pub python: String,
-    pub max_iterations: usize,
-    pub max_rlm_depth: usize,
-    pub budget: Option<f64>,
-    pub max_tokens: Option<u64>,
-    pub timeout: Option<u64>,
-    pub max_errors: Option<usize>,
-    pub max_concurrent_subcalls: usize,
-    /// User-configured skill paths (from config.lua `skills` field).
-    pub skills: Vec<String>,
+shared_fields_struct! {
+    /// Final values after applying CLI flags over config over built-in defaults.
+    pub struct Settings {
+        model: String,
+        sub_model: Option<String>,
+        thinking: String,
+        sub_model_thinking: String,
+        python: String,
+        max_iterations: usize,
+        max_rlm_depth: usize,
+        budget: Option<f64>,
+        max_tokens: Option<u64>,
+        timeout: Option<u64>,
+        max_errors: Option<usize>,
+        max_concurrent_subcalls: usize,
+        /// User-configured skill paths (from config.lua `skills` field).
+        pub skills: Vec<String>,
+    }
 }
 
 impl Settings {
@@ -259,7 +300,10 @@ mod tests {
         let config = eval("return { max_rlm_depth = 5 }").unwrap();
         assert_eq!(Settings::resolve(&args, config, true).max_rlm_depth, 5);
 
-        let args = CliArgs { max_rlm_depth: Some(7), ..Default::default() };
+        let args = CliArgs {
+            max_rlm_depth: Some(7),
+            ..Default::default()
+        };
         assert_eq!(
             Settings::resolve(&args, Config::default(), true).max_rlm_depth,
             7
