@@ -10,12 +10,12 @@ pub(crate) fn effort_label(level: ThinkingLevel, width: usize) -> Option<String>
         return None;
     }
     let full = match level {
-        ThinkingLevel::Off => "OFF",
-        ThinkingLevel::Minimal => "MINIMAL",
-        ThinkingLevel::Low => "LOW",
-        ThinkingLevel::Medium => "MEDIUM",
-        ThinkingLevel::High => "HIGH",
-        ThinkingLevel::XHigh => "XHIGH",
+        ThinkingLevel::Off => "off",
+        ThinkingLevel::Minimal => "minimal",
+        ThinkingLevel::Low => "low",
+        ThinkingLevel::Medium => "medium",
+        ThinkingLevel::High => "high",
+        ThinkingLevel::XHigh => "xhigh",
     };
     if width >= WIDE_TERMINAL_THRESHOLD {
         Some(full.to_string())

@@ -171,7 +171,7 @@ impl Ui {
         let active = self.usage.total_tokens > 0;
         let mut result = String::with_capacity(64);
 
-        let agent_str = format!("{} PHI", agent_symbol());
+        let agent_str = format!("{} phi", agent_symbol());
         result.push_str(&format!("{}{agent_str}{RESET}", &self.palette.chrome_agent_fg));
 
         if active {

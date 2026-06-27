@@ -1384,8 +1384,8 @@ match1
         assert!(plain.len() >= 3, "{plain:?}");
         // Separator line is all box-drawing chars.
         assert!(plain[0].chars().all(|c| c == '\u{2500}'), "separator line: {plain:?}");
-        // Header contains the agent symbol text "PHI"
-        assert!(plain[1].contains("PHI"), "header should contain agent: {plain:?}");
+        // Header contains the agent symbol text "phi"
+        assert!(plain[1].contains("phi"), "header should contain agent: {plain:?}");
         // Input line contains the editor text
         assert!(plain[2].contains("hi"), "input line should contain 'hi': {plain:?}");
 
@@ -1407,12 +1407,12 @@ match1
         // The header line (line 1, after separator) should contain:
         //  - the directory name "phi" (last path component, not full path)
         //  - the branch "main"
-        //  - the agent label "PHI"
+        //  - the agent label "phi"
         //  - the model id (stripped of provider prefix)
         let header = &plain[1];
         assert!(header.contains("phi"), "header should contain dir name: {header:?}");
         assert!(header.contains("main"), "header should contain branch: {header:?}");
-        assert!(header.contains("PHI"), "header should contain agent: {header:?}");
+        assert!(header.contains("phi"), "header should contain agent: {header:?}");
         assert!(!header.contains("/tmp/phi"), "header should not contain full path: {header:?}");
 
         // No footer line in non-framed mode.
@@ -1441,10 +1441,10 @@ match1
 
     #[test]
     fn chrome_lines_effort_label_width_thresholds() {
-        assert_eq!(effort_label(ThinkingLevel::Medium, 80), Some("MED".to_string()));
-        assert_eq!(effort_label(ThinkingLevel::Medium, 100), Some("MEDIUM".to_string()));
+        assert_eq!(effort_label(ThinkingLevel::Medium, 80), Some("med".to_string()));
+        assert_eq!(effort_label(ThinkingLevel::Medium, 100), Some("medium".to_string()));
         assert_eq!(effort_label(ThinkingLevel::Off, 80), None);
-        assert_eq!(effort_label(ThinkingLevel::High, 50), Some("HIG".to_string()));
+        assert_eq!(effort_label(ThinkingLevel::High, 50), Some("hig".to_string()));
     }
 
     #[test]
