@@ -8,7 +8,7 @@ use super::dialog::render_dialog_title_line;
 use crate::grid::cell_surface::{CellSurface, draw_box, render_cell_scrollbar};
 use crate::grid::layout::CellRect as Rect;
 use crate::grid::theme;
-use crate::ui::scene::ScenePalette;
+use crate::ui::palette::ScenePalette;
 use phi_session::usage::{
     self, UsageReport, is_usage_separator_line, is_usage_total_line, usage_header_line,
     usage_overlay_line_count, usage_overlay_lines, usage_separator_line, usage_total_line,

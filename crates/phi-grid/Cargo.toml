@@ -1,0 +1,13 @@
+[package]
+name = "phi-grid"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+phi-tui.workspace = true
+unicode-width.workspace = true
+vt100.workspace = true
+
+[lints]
+workspace = true

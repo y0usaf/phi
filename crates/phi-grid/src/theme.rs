@@ -2,7 +2,7 @@
 //! constants plus the cell-color resolution used when blitting vt100
 //! screens onto the surface.
 
-use crate::grid::color::Color;
+use crate::color::Color;
 use phi_tui::palette::TerminalColors;
 
 // Charmtone hexes (subset used by the mux chrome).

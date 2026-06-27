@@ -1,0 +1,212 @@
+//! The mux main loop: owns the real terminal, multiplexes input between the
+//! sidebar, overlays, the `:` command line, and the focused embedded
+//! session, and composites every frame from the session's vt100 screen.
+use std::io::Write as _;
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
+
+use anyhow::{Context as _, Result};
+use phi_tui::RawModeGuard;
+use phi_tui::crossterm::event::{
+    DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyEvent, KeyEventKind,
+    KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
+use tokio::sync::mpsc;
+
+use super::command_line::{CommandLineEvent, CommandLineState, command_line_start_col};
+use super::ui::overlays::archive::{ArchiveOutcome, ArchiveViewerState, render_archive_viewer};
+use super::ui::overlays::help::{HelpOverlayState, render_help_overlay};
+use super::ui::overlays::model::{ModelOverlayOutcome, ModelOverlayState, render_model_overlay};
+use super::ui::overlays::usage::{UsageOverlayState, render_usage_overlay};
+use super::ui::palette::ScenePalette;
+use super::ui::scene::{Chrome, MuxMode, StatusNoteKind, render_scene, statusline_status};
+use super::ui::sidebar::{
+    SidebarRowKind, build_sidebar_rows, ensure_sidebar_selection_visible, project_sidebar_title,
+    scroll_sidebar_by_rows_value, selected_sidebar_selection_span, session_sidebar_title,
+    sidebar_has_spinner, sidebar_viewport_items, sticky_sidebar_anchor_row,
+};
+use crate::clipboard::MuxClipboard;
+use crate::driver::{self as driver, MuxChannels, SessionKey};
+use crate::grid::ansi::{AnsiRenderer, HardwareCursor};
+use crate::grid::cell_surface::CellSurface;
+use crate::grid::layout::{CellLayout, SIDEBAR_WIDTH_DEFAULT, compute_cell_layout};
+use crate::grid::selection::{SelectionPoint, TerminalSelection, selected_text};
+use crate::grid::theme;
+use crate::keys::{AppAction, KeyStroke, Keymap, KeymapMatch, MuxCommand, parse_command};
+use crate::persisted::{self as persisted, PersistedState};
+use crate::status::SessionStatus;
+use crate::watcher::SessionWatcher;
+use crate::workspace::{self as workspace, Workspace};
+use phi_session::config::MuxConfig;
+use phi_session_tui::session_builder::SharedResources;
+use phi_session_tui::tui::{self, HostModalKind, HostModalRequest};
+
+const ANIMATION_TICK: Duration = Duration::from_millis(60);
+const NOTE_TTL: Duration = Duration::from_secs(4);
+const WHEEL_LINES: i32 = 3;
+const ARCHIVE_MAX_AGE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+
+mod commands;
+mod input;
+mod rendering;
+mod session;
+
+pub async fn run(shared: SharedResources, mux_config: MuxConfig, cwd: PathBuf) -> Result<()> {
+    install_panic_log_hook();
+
+    let mut persisted = PersistedState::load_default().unwrap_or_default();
+    let mut project_dirs: Vec<PathBuf> = persisted.projects.iter().map(PathBuf::from).collect();
+    let push_project = |dirs: &mut Vec<PathBuf>, dir: PathBuf| {
+        let dir = PathBuf::from(persisted::normalize_path(&dir));
+        if dir.is_dir() && !dirs.contains(&dir) {
+            dirs.push(dir);
+        }
+    };
+    push_project(&mut project_dirs, cwd);
+    for dir in &shared.projects {
+        push_project(&mut project_dirs, PathBuf::from(dir));
+    }
+    project_dirs.retain(|dir| dir.is_dir());
+
+    persisted.normalize();
+    let mut workspace = Workspace::discover(project_dirs);
+
+    if let Some(selected) = &persisted.selected_project {
+        let selected = PathBuf::from(selected);
+        if let Some(i) = workspace.projects.iter().position(|p| p.cwd == selected) {
+            workspace.selected_project = i;
+        }
+    }
+
+    let _ = workspace.ensure_project_session(workspace.selected_project);
+
+    // Start filesystem watchers on each project's session directory so the
+    // sidebar auto-refreshes when session files change (the filesystem is
+    // the source of truth; the sidebar is a view over it).
+    let (mut session_watcher, watcher_rx) = SessionWatcher::new();
+    for (i, project) in workspace.projects.iter().enumerate() {
+        session_watcher.add_watch(i, &project.cwd);
+    }
+
+    let guard = RawModeGuard::new().context("mux requires a tty")?;
+    let mut stdout = std::io::stdout();
+    let _ = phi_tui::crossterm::execute!(stdout, EnableMouseCapture);
+    // The mux owns the whole screen (unlike the inline single-session TUI).
+    let _ = write!(stdout, "\x1b[2J\x1b[H");
+
+    // Probe the host terminal's colors (OSC 10/11/4) once, inside raw mode,
+    // and derive the mux palette from them. When the terminal doesn't answer
+    // (SSH, CI, etc.) we synthesize standard ANSI defaults and run the same
+    // `generate_system` path — there is no separate hardcoded fallback palette,
+    // so every surface, border, statusbar, and accent always comes from the
+    // same gray ramp / ANSI mapping. Mirrors opencode's single-path approach.
+    let palette = ScenePalette::from_terminal_colors(
+        phi_tui::detect_terminal_colors(Duration::from_millis(150))
+            .as_ref()
+            .unwrap_or(&theme::default_terminal_colors()),
+    );
+
+    let (status_tx, status_rx) = mpsc::unbounded_channel();
+    let (redraw_tx, redraw_rx) = mpsc::unbounded_channel();
+    let (suspend_tx, suspend_rx) = mpsc::unbounded_channel();
+    let (host_modal_tx, host_modal_rx) = mpsc::unbounded_channel();
+
+    let mut app = MuxApp {
+        shared,
+        workspace,
+        keymap: Keymap::from_overrides(mux_config.keybinds.as_ref().unwrap_or(&Default::default())),
+        sidebar_width: mux_config.sidebar_width.unwrap_or(SIDEBAR_WIDTH_DEFAULT),
+        command_line: None,
+        help_overlay: None,
+        usage_overlay: None,
+        model_overlay: None,
+        archive_viewer: None,
+        selection: TerminalSelection::default(),
+        clipboard: MuxClipboard::default(),
+        renderer: AnsiRenderer::default(),
+        size: phi_tui::crossterm::terminal::size().unwrap_or((80, 24)),
+        surface: CellSurface::default(),
+        palette,
+        alt_screen_active: false,
+        sidebar_scroll: 0,
+        note: None,
+        channels: MuxChannels {
+            status_tx,
+            redraw_tx,
+            suspend_tx,
+            host_modal_tx,
+        },
+        session_watcher,
+        quit: false,
+    };
+
+    let result = app
+        .main_loop(
+            &guard,
+            status_rx,
+            redraw_rx,
+            suspend_rx,
+            host_modal_rx,
+            watcher_rx,
+        )
+        .await;
+
+    app.persist_now();
+    PersistedState::flush();
+    // Drop sessions before restoring the terminal so their final writes land
+    // in the in-memory parsers, not the real screen.
+    drop(app);
+    let _ = phi_tui::crossterm::execute!(stdout, DisableMouseCapture);
+    let _ = write!(stdout, "\x1b[2J\x1b[H\x1b[?25h");
+    let _ = stdout.flush();
+    drop(guard);
+    result
+}
+
+struct MuxApp {
+    shared: SharedResources,
+    workspace: Workspace,
+    keymap: Keymap,
+    sidebar_width: u16,
+    command_line: Option<CommandLineState>,
+    help_overlay: Option<HelpOverlayState>,
+    usage_overlay: Option<UsageOverlayState>,
+    model_overlay: Option<ModelOverlayState>,
+    archive_viewer: Option<ArchiveViewerState>,
+    selection: TerminalSelection,
+    clipboard: MuxClipboard,
+    renderer: AnsiRenderer,
+    size: (u16, u16),
+    /// Persistent compositing surface, reused across frames so the
+    /// `StringInterner` isn't rebuilt and text re-interned every frame, and
+    /// so dirty tracking is relative to the previous frame's content.
+    surface: CellSurface,
+    /// Resolved mux palette. Derived from the host terminal's OSC colors at
+    /// startup; falls back to the built-in Charmtone palette.
+    palette: ScenePalette,
+    /// Whether the focused session's screen was in the alternate screen last
+    /// frame; a transition drops scroll history and forces a full repaint.
+    alt_screen_active: bool,
+    sidebar_scroll: usize,
+    note: Option<(String, StatusNoteKind, Instant)>,
+    channels: MuxChannels,
+    session_watcher: SessionWatcher,
+    quit: bool,
+}
+
+fn install_panic_log_hook() {
+    std::panic::set_hook(Box::new(|info| {
+        let Some(dirs) = directories::ProjectDirs::from("", "", "phi") else {
+            return;
+        };
+        let path = dirs.data_dir().join("mux-panic.log");
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+        {
+            let _ = writeln!(file, "[{:?}] panic: {info}", std::time::SystemTime::now());
+            let _ = writeln!(file, "{}", std::backtrace::Backtrace::force_capture());
+        }
+    }));
+}

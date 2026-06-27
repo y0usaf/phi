@@ -8,7 +8,7 @@ use crate::grid::cell_surface::{CellSurface, draw_box, render_cell_scrollbar, tr
 use crate::grid::layout::CellRect as Rect;
 use crate::grid::theme;
 use crate::keys::{AppAction, Keymap};
-use crate::ui::scene::ScenePalette;
+use crate::ui::palette::ScenePalette;
 
 #[derive(Clone, Debug, Default)]
 pub struct HelpOverlayState {

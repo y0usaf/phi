@@ -9,7 +9,7 @@ use super::dialog::render_dialog_title_line;
 use crate::grid::cell_surface::{CellSurface, draw_box, render_cell_scrollbar, truncate_to_cells};
 use crate::grid::layout::CellRect as Rect;
 use crate::grid::theme;
-use crate::ui::scene::ScenePalette;
+use crate::ui::palette::ScenePalette;
 use crate::workspace::{self as workspace, ArchivedSession};
 
 /// What the mux loop should do after the archive viewer consumed a key.

@@ -12,3 +12,5 @@ pub mod layout;
 pub mod packed;
 pub mod selection;
 pub mod theme;
+
+pub use phi_tui::{display_cell_width, truncate_to_cells};

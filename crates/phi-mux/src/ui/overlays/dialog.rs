@@ -1,7 +1,7 @@
 //! Shared dialog chrome (port of pi-harness `overlays/dialog.rs`).
 
 use crate::grid::cell_surface::{CellSurface, display_cell_width};
-use crate::ui::scene::ScenePalette;
+use crate::ui::palette::ScenePalette;
 
 pub fn render_dialog_title_line(
     surface: &mut CellSurface,

@@ -5,7 +5,7 @@
 //! `grid` module.
 
 pub mod overlays;
+pub mod palette;
 pub mod scene;
 pub mod sidebar;
 pub mod terminal_view;
-pub mod viewport;

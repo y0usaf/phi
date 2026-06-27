@@ -4,7 +4,7 @@
 
 pub mod clipboard;
 pub mod driver;
-pub mod grid;
+pub(crate) use phi_grid as grid;
 pub mod keys;
 pub mod persisted;
 pub mod status;

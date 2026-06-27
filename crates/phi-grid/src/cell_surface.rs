@@ -8,10 +8,10 @@
 
 #![allow(clippy::too_many_arguments)]
 
-use crate::grid::color::Color;
-use crate::grid::damage::DirtyRegion;
-use crate::grid::layout::CellRect;
-use crate::grid::packed::{PackedCell, PackedStyle, PackedText, StringInterner};
+use crate::color::Color;
+use crate::damage::DirtyRegion;
+use crate::layout::CellRect;
+use crate::packed::{PackedCell, PackedStyle, PackedText, StringInterner};
 
 #[derive(Clone)]
 pub struct CellSurface {

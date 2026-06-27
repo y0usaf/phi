@@ -17,10 +17,10 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::io::{self, Write};
 
-use crate::grid::cell_surface::CellSurface;
-use crate::grid::color::Color;
-use crate::grid::layout::CellRect;
-use crate::grid::packed::{PackedCell, PackedStyle, StringInterner};
+use crate::cell_surface::CellSurface;
+use crate::color::Color;
+use crate::layout::CellRect;
+use crate::packed::{PackedCell, PackedStyle, StringInterner};
 
 pub const DEFAULT_FG: Color = Color::rgba(0, 0, 0, 0);
 pub const DEFAULT_BG: Color = Color::rgba(0, 0, 0, 0);
