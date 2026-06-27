@@ -129,7 +129,21 @@ impl Workspace {
         let Some(project) = self.projects.get_mut(index) else {
             return RefreshDelta::default();
         };
+        // Assign real keys to any key-0 (unassigned) sessions *before*
+        // capturing the selected key, so the unmaterialized draft gets a
+        // stable key that survives the rebuild below.  Without this, the
+        // draft's key is 0 when captured, then reassigned to a real key
+        // during the rebuild, making the post-rebuild key lookup fail and
+        // causing `unwrap_or(0)` to jump focus to the newest session — a
+        // focus steal triggered by any external file change.
+        for s in &mut project.sessions {
+            if s.key == 0 {
+                s.key = self.next_key;
+                self.next_key += 1;
+            }
+        }
         let selected_key = project.sessions.get(project.selected).map(|s| s.key);
+        let selected_index = project.selected;
         let mut old = std::mem::take(&mut project.sessions);
         let mut fresh: Vec<MuxSession> = Vec::new();
         // Drafts (no file yet) stay; a draft that materialized since the
@@ -166,7 +180,7 @@ impl Workspace {
         let mut delta = RefreshDelta::default();
         fresh.extend(old.into_iter().filter(|s| {
             // Always keep the reusable unmaterialized draft.
-            if s.is_draft() && s.key == 0 {
+            if s.is_unmaterialized_draft() {
                 return true;
             }
             // A running draft with no store_path yet — keep it alive.
@@ -192,9 +206,15 @@ impl Workspace {
             }
         }
         project.sessions = fresh;
+        // Preserve the user's selection: look up the previously selected
+        // session by key first (handles reordering from newest-first sort).
+        // If the session was removed (archived/deleted by another process),
+        // fall back to the *original index* clamped to bounds rather than
+        // jumping to index 0 — the newest session — which would steal focus
+        // from whatever the user was looking at.
         project.selected = selected_key
             .and_then(|key| project.sessions.iter().position(|s| s.key == key))
-            .unwrap_or(0);
+            .unwrap_or(selected_index.min(project.sessions.len().saturating_sub(1)));
         delta
     }
 
@@ -726,5 +746,86 @@ mod tests {
         assert_eq!(ws.projects.len(), 1);
         ws.remove_project(0);
         assert!(ws.projects.is_empty());
+    }
+
+    /// Regression: when the user is looking at an unmaterialized draft (which
+    /// has the sentinel key 0), a background `refresh_project` (triggered by
+    /// a filesystem watcher event from another Phi instance) must NOT steal
+    /// focus by jumping to index 0 (the newest session).  The draft's key
+    /// must be stabilised before the rebuild so the post-rebuild key lookup
+    /// succeeds and the selection is preserved.
+    #[test]
+    fn refresh_project_preserves_selection_on_unmaterialized_draft() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut ws = Workspace::discover(vec![tmp.path().to_path_buf()]);
+        // A file-backed session whose file actually exists (survives refresh).
+        let real_file = tmp.path().join("existing.jsonl");
+        std::fs::write(&real_file, "dummy").unwrap();
+        ws.projects[0].sessions = vec![
+            test_session(5, Some(real_file), "real session"),
+            // The unmaterialized draft the user is currently looking at.
+            MuxSession {
+                key: 0,
+                store_path: None,
+                first_message: String::new(),
+                modified: None,
+                status: SessionStatus::Idle,
+                handle: None,
+            },
+        ];
+        ws.projects[0].selected = 1; // user is on the draft
+
+        let _ = ws.refresh_project(0);
+
+        // The draft must survive with a real (non-zero) key.
+        let draft_idx = ws.projects[0]
+            .sessions
+            .iter()
+            .position(|s| s.is_unmaterialized_draft());
+        assert!(draft_idx.is_some(), "draft should survive refresh");
+        assert_ne!(
+            ws.projects[0].sessions[draft_idx.unwrap()].key,
+            0,
+            "draft should have a real key after refresh, not sentinel 0"
+        );
+        // Focus must stay on the draft, not jump to the real session.
+        assert_eq!(
+            ws.projects[0].selected,
+            draft_idx.unwrap(),
+            "selection should stay on the draft, not steal focus to another session"
+        );
+    }
+
+    /// Regression: when the selected session is removed (archived/deleted by
+    /// another process) during a background `refresh_project`, the selection
+    /// should fall back to the *original index* clamped to bounds, not jump to
+    /// index 0 (the newest session) — which would steal focus.
+    #[test]
+    fn refresh_project_fallback_uses_clamped_index_not_zero() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut ws = Workspace::discover(vec![tmp.path().to_path_buf()]);
+        // Two surviving sessions (files exist) + one that will be dropped
+        // (file doesn't exist).  User is on the one that gets dropped.
+        let file_a = tmp.path().join("a.jsonl");
+        let file_b = tmp.path().join("b.jsonl");
+        std::fs::write(&file_a, "x").unwrap();
+        std::fs::write(&file_b, "x").unwrap();
+        ws.projects[0].sessions = vec![
+            test_session(1, Some(file_a), "a"),
+            test_session(2, Some(tmp.path().join("gone.jsonl")), "gone"),
+            test_session(3, Some(file_b), "b"),
+        ];
+        ws.projects[0].selected = 1; // on "gone", which will be dropped
+
+        let _ = ws.refresh_project(0);
+
+        // "gone" was dropped (2 sessions remain: a, b).  The selected key (2)
+        // is no longer found, so the fallback should use the original index
+        // (1) clamped to the new length — NOT 0.
+        assert_eq!(ws.projects[0].sessions.len(), 2);
+        assert_eq!(
+            ws.projects[0].selected, 1,
+            "fallback should stay at original index 1, not jump to 0"
+        );
     }
 }

@@ -204,9 +204,14 @@ impl MuxApp {
 
         while !self.quit {
             let mut dirty = false;
+            // Principle: whatever the user is looking at must not change
+            // unless the user explicitly requests it (key, mouse, command).
             // `focus_changed` is only set by *user* input, never by background
             // events (watcher, status, redraw, ticker). Background session
             // updates must refresh the sidebar/screen without touching focus.
+            // `refresh_project` likewise preserves the selected session by
+            // key and falls back to the original index (not 0) if the session
+            // was removed, so external file changes never steal focus.
             let mut focus_changed = false;
             tokio::select! {
                 event = events.next() => {
