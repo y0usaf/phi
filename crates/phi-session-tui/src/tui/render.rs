@@ -311,6 +311,27 @@ pub(crate) struct OpenSubcallRow {
     pub(crate) len: usize,
 }
 
+/// Collapsible box for a subagent's activity. While the subagent runs, its
+/// tool calls, REPL blocks, and nested subcalls are collected in
+/// `action_rows` in the background. By default the box is collapsed — only
+/// the single header line is shown — and the user can expand it with
+/// ctrl+o to see all accumulated action rows. On `SubcallEnd` the box
+/// collapses to a compact result card.
+#[derive(Clone)]
+pub(crate) struct SubagentBox {
+    pub(crate) depth: usize,
+    pub(crate) label: String,
+    /// All action rows the subagent has produced so far (tools, repl, nested).
+    pub(crate) action_rows: Vec<String>,
+    /// Whether the box is expanded (ctrl+o). When false, only the header
+    /// line is rendered; action rows stay hidden.
+    pub(crate) expanded: bool,
+    /// Position in `self.block` where the box's header row sits.
+    pub(crate) block_start: usize,
+    /// Current number of rows the box occupies in `self.block`.
+    pub(crate) block_len: usize,
+}
+
 #[derive(Clone)]
 pub(crate) struct TranscriptBlock {
     pub(crate) key: String,
