@@ -56,11 +56,8 @@ impl Ui {
         };
         let kind = popup.kind;
         self.editor.replace_prefix(&popup.prefix, &replacement);
-        if is_dir {
-            match kind {
-                PopupKind::File => self.refresh_popup(),
-                _ => {}
-            }
+        if is_dir && kind == PopupKind::File {
+            self.refresh_popup();
         }
     }
 

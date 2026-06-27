@@ -605,7 +605,6 @@ struct Ui {
 
 /// Current git branch of `cwd` (or a short detached-HEAD hash), following a
 /// worktree `gitdir:` redirect.
-
 /// Abbreviate `$HOME` to `~` for display.
 pub(super) fn display_path(path: &std::path::Path) -> String {
     let s = path.display().to_string();
