@@ -781,14 +781,6 @@ impl Ui {
         }
 
         self.replay_transcript_if_idle();
-        self.pending.push(format!(
-            "{DIM}[tool output {} throughout transcript]{RESET}",
-            if self.expand_tools {
-                "expanded"
-            } else {
-                "collapsed"
-            }
-        ));
     }
 
     pub(super) fn code_limit(&self) -> usize {
