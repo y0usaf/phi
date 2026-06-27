@@ -134,6 +134,36 @@ impl Ui {
             }
         }
 
+        // Queued messages are part of the transcript — they're waiting to be
+        // sent once the current turn completes.  Render them as the last
+        // live block so they appear at the very bottom of the transcript,
+        // just above the separator line.
+        if self.running.is_some() && !self.queued.is_empty() {
+            let p = &self.palette;
+            let mode = self.send_mode.label();
+            let mut lines = Vec::with_capacity(self.queued.len());
+            for (i, text) in self.queued.iter().enumerate() {
+                let first = text.lines().next().unwrap_or("");
+                let more = if text.lines().count() > 1 { " …" } else { "" };
+                let prefix = if i == 0 {
+                    let count = if self.queued.len() > 1 {
+                        format!(" ×{}", self.queued.len())
+                    } else {
+                        String::new()
+                    };
+                    format!("{}{}{} > ", &p.muted_fg, mode, count)
+                } else {
+                    format!("{}  > ", &p.muted_fg)
+                };
+                lines.push(format!("{}{}{}{}", prefix, first, more, RESET));
+            }
+            blocks.push(TranscriptBlock {
+                key: "live:queued".to_owned(),
+                lines,
+                finalized: false,
+            });
+        }
+
         blocks
     }
 
@@ -316,15 +346,13 @@ impl Ui {
                 lines.push(self.spinner.frame().to_owned());
             }
 
-            if let Some(text) = self.queued.first() {
-                let first = text.lines().next().unwrap_or("");
-                let more = if text.lines().count() > 1 { " \u{2026}" } else { "" };
-                let count = if self.queued.len() > 1 {
-                    format!(" \u{00d7}{}", self.queued.len())
-                } else {
-                    String::new()
-                };
-                lines.push(format!("{muted_fg}queued{count} > {first}{more}{RESET}", muted_fg = &p.muted_fg));
+            // Send-mode indicator: show the active mode when the agent is
+            // running and the mode is not the default.  Queued messages
+            // are rendered as a live transcript block (see
+            // `current_live_transcript_blocks`), not here in the chrome.
+            if self.running.is_some() && self.send_mode != SendMode::Queue {
+                lines.push(format!("{muted_fg}send: {mode}{RESET}",
+                    mode = self.send_mode.label(), muted_fg = &p.muted_fg));
             }
 
             if let Some(popup) = &self.popup {

@@ -7,8 +7,6 @@
 //! The accent color is supplied by the auto-generating theme palette so the
 //! scanner matches the user's terminal.
 
-use std::time::{Duration, Instant};
-
 use crate::palette::Rgb;
 
 // ── defaults ──────────────────────────────────────────────────────────────
@@ -17,7 +15,6 @@ const WIDTH: usize = 8;
 const TRAIL_STEPS: usize = 6;
 const HOLD_START: usize = 30;
 const HOLD_END: usize = 9;
-const FRAME_INTERVAL: Duration = Duration::from_millis(40);
 const INACTIVE_FACTOR: f64 = 0.2;
 const MIN_ALPHA: f64 = 0.0;
 
@@ -212,7 +209,6 @@ fn build_frames(accent: Rgb, background: Rgb) -> Vec<String> {
 
 pub struct Spinner {
     idx: usize,
-    last_advance: Instant,
     frames: Vec<String>,
 }
 
@@ -222,7 +218,6 @@ impl Spinner {
     pub fn new(accent: Rgb, background: Rgb) -> Self {
         Self {
             idx: 0,
-            last_advance: Instant::now(),
             frames: build_frames(accent, background),
         }
     }
@@ -232,14 +227,16 @@ impl Spinner {
         &self.frames[self.idx]
     }
 
-    /// Advance the frame by wall-clock time and return the current frame.
+    /// Advance the frame by one step and return the current frame.
+    ///
+    /// This mirrors opencode's `<spinner interval={40}>` approach: the
+    /// caller drives a fixed interval timer (`tokio::time::interval(40ms)`)
+    /// and calls `tick()` once per fire.  The spinner simply increments a
+    /// frame counter — no wall-clock tracking, no drift.  This is the same
+    /// pattern as `setInterval(advanceByOne, 40)` in opencode's
+    /// `opentui-spinner`.
     pub fn tick(&mut self) -> &str {
-        let elapsed = self.last_advance.elapsed();
-        if elapsed >= FRAME_INTERVAL {
-            let steps = (elapsed.as_millis() / FRAME_INTERVAL.as_millis()) as usize;
-            self.idx = (self.idx + steps) % self.frames.len();
-            self.last_advance = Instant::now();
-        }
+        self.idx = (self.idx + 1) % self.frames.len();
         &self.frames[self.idx]
     }
 }
@@ -295,8 +292,6 @@ mod tests {
     fn tick_advances_frames() {
         let mut s = Spinner::default();
         let initial = s.idx;
-        // Simulate time passing by manipulating last_advance.
-        s.last_advance = Instant::now() - Duration::from_millis(200);
         s.tick();
         assert_ne!(s.idx, initial);
     }

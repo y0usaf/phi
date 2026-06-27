@@ -87,6 +87,38 @@ pub(super) enum Cmd {
     Shutdown,
 }
 
+/// How a message submitted while the agent is running gets dispatched.
+/// Cycled with Tab (empty editor) or Ctrl+X.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum SendMode {
+    /// Queue: wait for the full turn to finish, then send FIFO (current default).
+    #[default]
+    Queue,
+    /// Interleave: inject at the next safe point mid-turn (placeholder: still
+    /// queues until the runtime supports soft-interrupt injection points).
+    Interleave,
+    /// Cancel the in-flight turn, then send immediately as a fresh prompt.
+    CancelSend,
+}
+
+impl SendMode {
+    pub(super) fn label(self) -> &'static str {
+        match self {
+            Self::Queue => "queued",
+            Self::Interleave => "interleave",
+            Self::CancelSend => "cancel+send",
+        }
+    }
+
+    pub(super) fn next(self) -> Self {
+        match self {
+            Self::Queue => Self::Interleave,
+            Self::Interleave => Self::CancelSend,
+            Self::CancelSend => Self::Queue,
+        }
+    }
+}
+
 pub(super) enum Done {
     Run(RlmCompletion),
     Shell {
@@ -484,6 +516,8 @@ struct Ui {
     /// Follow-up prompts queued while a turn is in flight; sent FIFO as
     /// turns complete.
     pub(super) queued: Vec<String>,
+    /// How messages submitted mid-run get dispatched (queue/interleave/cancel+send).
+    pub(super) send_mode: SendMode,
     /// Time of the last ctrl-c; a second one within 500ms quits.
     pub(super) last_ctrl_c: Option<std::time::Instant>,
     /// Lines staged by event handlers since the last draw; each draw folds
@@ -614,6 +648,7 @@ impl Ui {
             expand_tools: false,
             expand_thinking: false,
             queued: Vec::new(),
+            send_mode: SendMode::default(),
             last_ctrl_c: None,
             pending: Vec::new(),
             transcript: Transcript::new(),

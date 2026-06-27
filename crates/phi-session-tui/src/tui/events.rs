@@ -133,7 +133,20 @@ impl Ui {
                 if key.code == KeyCode::Tab && self.login.is_none() {
                     // handle_popup_key consumed Tab if a popup was open;
                     // otherwise Tab force-triggers path completion (pi-style).
+                    // But when the agent is running and the editor is empty
+                    // (e.g. right after queuing a message), Tab cycles the
+                    // send mode instead of listing every file in the cwd.
+                    if self.running.is_some() && self.editor.is_empty() {
+                        self.cycle_send_mode();
+                        return false;
+                    }
                     self.open_path_popup();
+                    return false;
+                }
+                if key.code == KeyCode::Char('x') && ctrl {
+                    // Ctrl+X: cycle send mode at any time (fallback for when
+                    // the editor has text or the agent is idle).
+                    self.cycle_send_mode();
                     return false;
                 }
                 if key.code == KeyCode::BackTab {
@@ -190,6 +203,10 @@ impl Ui {
         false
     }
 
+    pub(super) fn cycle_send_mode(&mut self) {
+        self.send_mode = self.send_mode.next();
+    }
+
     pub(super) fn cancel_run(&mut self) {
         if let Some(cancel) = &self.running {
             cancel.cancel();
@@ -200,6 +217,36 @@ impl Ui {
     pub(super) fn cancel_login(&mut self) {
         if let Some(login) = &self.login {
             login.cancel.cancel();
+        }
+    }
+
+    /// Dispatch a message (prompt or shell escape) according to the current
+    /// send mode when the agent is running. When the agent is idle, always
+    /// sends immediately via `send`.
+    pub(super) fn dispatch_mid_run(
+        &mut self,
+        text: &str,
+        cmd_tx: &mpsc::UnboundedSender<Cmd>,
+        send: impl FnOnce(&mut Self, &str, &mpsc::UnboundedSender<Cmd>),
+    ) {
+        if self.running.is_none() {
+            send(self, text, cmd_tx);
+            return;
+        }
+        match self.send_mode {
+            SendMode::Queue | SendMode::Interleave => {
+                // Both modes queue for now; Interleave will inject at the
+                // next safe point once the runtime supports soft-interrupt
+                // injection points.
+                self.queued.push(text.to_owned());
+            }
+            SendMode::CancelSend => {
+                self.cancel_run();
+                // Send immediately as a fresh turn. The cancel token fires
+                // and the run loop will complete before this new Cmd::Prompt
+                // is processed (cmds are consumed in order).
+                send(self, text, cmd_tx);
+            }
         }
     }
 
@@ -220,13 +267,13 @@ impl Ui {
                     "{DIM}!!cmd               run bash(cmd) without showing the model{RESET}"
                 ));
                 self.pending.push(format!(
-                    "{DIM}keys: enter send (queues mid-run) · shift+enter newline · tab complete · up/down history{RESET}"
+                    "{DIM}keys: enter send (mode-dependent mid-run) · shift+enter newline · tab complete/cycle send mode · up/down history{RESET}"
                 ));
                 self.pending.push(format!(
                     "{DIM}      ctrl-z undo · ctrl-y redo · ctrl-r yank · ctrl-p cycle model · ctrl-l models · shift+tab thinking level{RESET}"
                 ));
                 self.pending.push(format!(
-                    "{DIM}      ctrl-t show/hide thinking · ctrl-o expand tool output · ctrl-g $EDITOR · ctrl-q suspend{RESET}"
+                    "{DIM}      ctrl-t show/hide thinking · ctrl-o expand tool output · ctrl-g $EDITOR · ctrl-q suspend · ctrl-x cycle send mode{RESET}"
                 ));
                 self.pending
                     .push(format!("{DIM}      esc cancel · ctrl-c ctrl-c quit{RESET}"));
@@ -291,13 +338,11 @@ impl Ui {
                 }
             }
             _ if trimmed.starts_with('!') && trimmed.len() > 1 => {
-                // Shell escapes queue mid-run like prompts so they execute
-                // against the REPL in submission order.
-                if self.running.is_some() {
-                    self.queued.push(trimmed.to_owned());
-                } else {
-                    self.send_shell(trimmed, cmd_tx);
-                }
+                // Shell escapes dispatch according to the send mode when the
+                // agent is running, same as plain prompts.
+                self.dispatch_mid_run(trimmed, cmd_tx, |ui, text, tx| {
+                    ui.send_shell(text, tx);
+                });
             }
             // Extension slash commands: dispatch to the registered handler
             // via the runtime (e.g. /recall, /capture, /explore from
@@ -341,13 +386,11 @@ impl Ui {
                 }
             }
             prompt => {
-                // Plain prompts submitted mid-run queue as follow-ups (slash
-                // commands above run immediately).
-                if self.running.is_some() {
-                    self.queued.push(prompt.to_owned());
-                } else {
-                    self.send_prompt(prompt, cmd_tx);
-                }
+                // Plain prompts dispatch according to the send mode when the
+                // agent is running (slash commands above run immediately).
+                self.dispatch_mid_run(prompt, cmd_tx, |ui, text, tx| {
+                    ui.send_prompt(text, tx);
+                });
             }
         }
         false
