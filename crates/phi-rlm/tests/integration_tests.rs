@@ -1151,12 +1151,6 @@ answer['ready'] = True
             "summary should not contain the most recent exchange (still in transcript)"
         );
 
-        // The compaction archive should have captured the verbatim compacted entries.
-        assert!(
-            !session.compaction_archive.is_empty(),
-            "compaction_archive should be populated after compaction"
-        );
-
         session.shutdown().await;
     }
 

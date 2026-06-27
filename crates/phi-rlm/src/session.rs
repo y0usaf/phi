@@ -39,12 +39,6 @@ pub struct RlmSession {
     /// user message at the top of the warm replay so the model retains
     /// continuity without re-reading every prior turn verbatim.
     pub session_summary: Option<String>,
-    /// Archive of entries that have been compacted out of `transcript` by
-    /// `compact_transcript`. Each entry is a structured record of the
-    /// compacted user/assistant message pair, preserving the full text for
-    /// potential replay or inspection. Unlike `session_summary` (which is a
-    /// lossy text recap), this archive retains the verbatim content.
-    pub compaction_archive: Vec<String>,
     /// User-initiated shell executions to replay to the model on the next
     /// `send`, as (assistant ```repl``` block, REPL-output user message)
     /// pairs — the model sees them as its own prior repl turns.
@@ -70,7 +64,6 @@ impl RlmSession {
             contexts: 1,
             transcript: Vec::new(),
             session_summary: None,
-            compaction_archive: Vec::new(),
             pending_shell: Vec::new(),
         }
     }
@@ -175,8 +168,9 @@ impl RlmSession {
                     .await
                     .unwrap_or_else(|_| sys_msg.content.clone());
             }
-        // Cold send: replay user shell executions after the prompt (the warm
-        // branch drained them above, before the prompt).
+        // Drain pending shell executions for cold sends (warm sends already
+        // drained above). This is a no-op for warm sends because Vec::append
+        // empties the source vector.
         history.append(&mut self.pending_shell);
         let warm = !self.transcript.is_empty();
         self.rlm.register_repl_tool();
@@ -358,7 +352,6 @@ impl RlmSession {
         self.contexts = 1;
         self.transcript.clear();
         self.session_summary = None;
-        self.compaction_archive.clear();
         self.pending_shell.clear();
     }
 
@@ -385,10 +378,6 @@ impl RlmSession {
         for chunk in self.transcript[..cut].chunks(2) {
             let user_text = chunk.first().map(|m| m.content.as_str()).unwrap_or("");
             let asst_text = chunk.get(1).map(|m| m.content.as_str()).unwrap_or("");
-            // Archive the verbatim content before producing the lossy summary.
-            self.compaction_archive.push(format!(
-                "User: {user_text}\nAssistant: {asst_text}"
-            ));
             // Extract the prompt after "Answer the following: "
             let prompt = user_text
                 .strip_prefix("Answer the following: ")
