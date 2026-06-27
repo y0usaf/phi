@@ -1,8 +1,8 @@
 //! Credential storage and OAuth flows (Anthropic Pro/Max, OpenAI Codex).
 
-pub mod anthropic;
+mod anthropic;
 mod callback_server;
-pub mod codex;
+mod codex;
 mod device_code;
 mod pkce;
 mod storage;

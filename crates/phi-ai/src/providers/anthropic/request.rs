@@ -1,92 +1,12 @@
-//! Anthropic Messages API provider (SSE streaming).
-
-use std::collections::HashMap;
-
 use serde_json::{Value, json};
 
-use crate::providers::{SseHandler, http_client, run_sse};
-use crate::registry::ApiProvider;
-use crate::stream::{Accumulator, AssistantEvent, AssistantEventStream, EventSink};
 use crate::types::{
-    Api, AssistantContent, AssistantMessage, Auth, Context, Message, Model, StopReason,
-    StreamOptions, ToolDefinition,
+    AssistantContent, Auth, Context, Message, Model, StreamOptions, ToolDefinition,
 };
 
-const ANTHROPIC_VERSION: &str = "2023-06-01";
-const OAUTH_BETA: &str = "claude-code-20250219,oauth-2025-04-20";
-const CLAUDE_CODE_IDENTITY: &str = "You are Claude Code, Anthropic's official CLI for Claude.";
-const CLAUDE_CLI_VERSION: &str = "2.0.14";
-
-pub struct AnthropicProvider {
-    client: reqwest::Client,
-}
-
-impl AnthropicProvider {
-    pub fn new() -> Self {
-        Self {
-            client: http_client(),
-        }
-    }
-}
-
-impl Default for AnthropicProvider {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl ApiProvider for AnthropicProvider {
-    fn api(&self) -> Api {
-        Api::AnthropicMessages
-    }
-
-    fn stream(&self, model: &Model, ctx: &Context, opts: StreamOptions) -> AssistantEventStream {
-        let (sink, stream) = AssistantEventStream::channel();
-        let client = self.client.clone();
-        let model = model.clone();
-        let ctx = ctx.clone();
-        tokio::spawn(async move {
-            run(client, model, ctx, opts, sink).await;
-        });
-        stream
-    }
-}
-
-async fn run(
-    client: reqwest::Client,
-    model: Model,
-    ctx: Context,
-    opts: StreamOptions,
-    sink: EventSink,
-) {
-    let body = build_body(&model, &ctx, &opts);
-    let url = format!("{}/v1/messages", model.base_url.trim_end_matches('/'));
-    let mut handler = Parser::new(&model);
-
-    let build_request = |client: &reqwest::Client| {
-        let mut request = client
-            .post(&url)
-            .header("anthropic-version", ANTHROPIC_VERSION)
-            .header("accept", "application/json");
-        request = match &opts.auth {
-            Auth::OAuthToken(token) => request
-                .bearer_auth(token)
-                .header("anthropic-beta", OAUTH_BETA)
-                .header("user-agent", format!("claude-cli/{CLAUDE_CLI_VERSION}"))
-                .header("x-app", "cli"),
-            Auth::ApiKey(key) => request.header("x-api-key", key),
-            Auth::ChatGptOAuth { access, .. } => request.bearer_auth(access),
-        };
-        for (name, value) in &model.headers {
-            request = request.header(name, value);
-        }
-        request.json(&body)
-    };
-
-    if run_sse(&client, build_request, &model, &opts, &sink, &mut handler).await {
-        handler.finish(&model, &sink);
-    }
-}
+pub(super) const ANTHROPIC_VERSION: &str = "2023-06-01";
+pub(super) const OAUTH_BETA: &str = "claude-code-20250219,oauth-2025-04-20";
+pub(super) const CLAUDE_CLI_VERSION: &str = "2.0.14";
 
 fn anthropic_tool_schema(tool: &ToolDefinition) -> Value {
     json!({
@@ -96,7 +16,7 @@ fn anthropic_tool_schema(tool: &ToolDefinition) -> Value {
     })
 }
 
-fn build_body(model: &Model, ctx: &Context, opts: &StreamOptions) -> Value {
+pub(super) fn build_body(model: &Model, ctx: &Context, opts: &StreamOptions) -> Value {
     let is_oauth = matches!(opts.auth, Auth::OAuthToken(_));
     // Cap to context_window defensively (see openai_completions::build_body).
     let max = opts
@@ -107,21 +27,21 @@ fn build_body(model: &Model, ctx: &Context, opts: &StreamOptions) -> Value {
         "model": model.id,
         "max_tokens": max,
         "stream": true,
-        "messages": convert_messages(&ctx.messages),
+        "messages": convert_messages(&ctx.messages, opts.cache_control),
     });
 
     let mut system = Vec::new();
-    if is_oauth {
-        // OAuth requests must carry the Claude Code identity as the first
-        // system block or the API rejects the token.
-        system.push(json!({ "type": "text", "text": CLAUDE_CODE_IDENTITY }));
+    if is_oauth && let Some(identity) = &opts.identity {
+        // OAuth requests may require a carrier identity block as the
+        // first system block (e.g. the Claude Code compliance shim).
+        system.push(json!({ "type": "text", "text": identity }));
     }
     if let Some(prompt) = &ctx.system_prompt {
-        system.push(json!({
-            "type": "text",
-            "text": prompt,
-            "cache_control": { "type": "ephemeral" },
-        }));
+        let mut block = json!({ "type": "text", "text": prompt });
+        if opts.cache_control {
+            block["cache_control"] = json!({ "type": "ephemeral" });
+        }
+        system.push(block);
     }
     if !system.is_empty() {
         body["system"] = Value::Array(system);
@@ -130,9 +50,7 @@ fn build_body(model: &Model, ctx: &Context, opts: &StreamOptions) -> Value {
     // Tool definitions: sent as the native Anthropic `tools` array so the
     // model emits `tool_use` content blocks instead of text-based fences.
     if !ctx.tools.is_empty() {
-        body["tools"] = Value::Array(
-            ctx.tools.iter().map(anthropic_tool_schema).collect(),
-        );
+        body["tools"] = Value::Array(ctx.tools.iter().map(anthropic_tool_schema).collect());
     }
 
     let thinking_budget = model
@@ -147,7 +65,7 @@ fn build_body(model: &Model, ctx: &Context, opts: &StreamOptions) -> Value {
     body
 }
 
-fn convert_messages(messages: &[Message]) -> Vec<Value> {
+fn convert_messages(messages: &[Message], cache_control: bool) -> Vec<Value> {
     let mut out = Vec::new();
     for message in messages {
         match message {
@@ -205,261 +123,20 @@ fn convert_messages(messages: &[Message]) -> Vec<Value> {
     // prompt already uses one breakpoint (see build_body); Anthropic allows 4
     // total, so we keep one on the conversation for cache-read pricing (10x
     // cheaper than full input) on subsequent turns.
-    for msg in out.iter_mut().rev() {
-        if msg.get("role").and_then(|r| r.as_str()) == Some("user") {
-            if let Some(content) = msg.get_mut("content").and_then(|c| c.as_array_mut())
-                && let Some(last_block) = content.last_mut()
-            {
-                last_block["cache_control"] = json!({ "type": "ephemeral" });
+    if cache_control {
+        for msg in out.iter_mut().rev() {
+            if msg.get("role").and_then(|r| r.as_str()) == Some("user") {
+                if let Some(content) = msg.get_mut("content").and_then(|c| c.as_array_mut())
+                    && let Some(last_block) = content.last_mut()
+                {
+                    last_block["cache_control"] = json!({ "type": "ephemeral" });
+                }
+                break;
             }
-            break;
         }
     }
 
     out
-}
-
-struct ToolBuffer {
-    id: String,
-    name: String,
-    arguments: String,
-}
-
-struct Parser {
-    acc: Accumulator,
-    /// Anthropic content index -> our content index (tool blocks skew them).
-    index_map: HashMap<u64, usize>,
-    tools: HashMap<u64, ToolBuffer>,
-    stop_reason: StopReason,
-    errored: bool,
-}
-
-impl Parser {
-    fn new(model: &Model) -> Self {
-        Self {
-            acc: Accumulator::new(model),
-            index_map: HashMap::new(),
-            tools: HashMap::new(),
-            stop_reason: StopReason::Stop,
-            errored: false,
-        }
-    }
-
-    fn finish(self, model: &Model, sink: &EventSink) {
-        if self.errored {
-            return;
-        }
-        let mut message = self.acc.into_message();
-        message.stop_reason = self.stop_reason;
-        message.usage.finalize(&model.cost);
-        sink.push(AssistantEvent::Done { message });
-    }
-
-    fn block_text(&self, index: usize) -> String {
-        match self.acc.message().content.get(index) {
-            Some(AssistantContent::Text { text }) => text.clone(),
-            Some(AssistantContent::Thinking { thinking, .. }) => thinking.clone(),
-            _ => String::new(),
-        }
-    }
-}
-
-fn map_stop_reason(reason: &str) -> StopReason {
-    match reason {
-        "max_tokens" => StopReason::Length,
-        "tool_use" => StopReason::ToolUse,
-        "refusal" => StopReason::Error,
-        _ => StopReason::Stop,
-    }
-}
-
-impl SseHandler for Parser {
-    fn partial(&self) -> AssistantMessage {
-        self.acc.message().clone()
-    }
-
-    fn reset(&mut self, model: &Model) {
-        self.acc = Accumulator::new(model);
-        self.index_map.clear();
-        self.tools.clear();
-        self.stop_reason = StopReason::Stop;
-        self.errored = false;
-    }
-
-    fn on_event(&mut self, event_name: &str, data: &str, sink: &EventSink) {
-        let Ok(value) = serde_json::from_str::<Value>(data) else {
-            return;
-        };
-        match event_name {
-            "message_start" => {
-                let usage = &value["message"]["usage"];
-                let message = self.acc.message_mut();
-                message.usage.input = usage["input_tokens"].as_u64().unwrap_or(0);
-                message.usage.cache_read = usage["cache_read_input_tokens"].as_u64().unwrap_or(0);
-                message.usage.cache_write =
-                    usage["cache_creation_input_tokens"].as_u64().unwrap_or(0);
-            }
-            "content_block_start" => {
-                let Some(index) = value["index"].as_u64() else {
-                    return;
-                };
-                let block = &value["content_block"];
-                match block["type"].as_str() {
-                    Some("text") => {
-                        let ours = self.acc.message().content.len();
-                        self.index_map.insert(index, ours);
-                        let event = AssistantEvent::TextStart { index: ours };
-                        self.acc.apply(&event);
-                        sink.push(event);
-                    }
-                    Some("thinking") => {
-                        let ours = self.acc.message().content.len();
-                        self.index_map.insert(index, ours);
-                        let event = AssistantEvent::ThinkingStart { index: ours };
-                        self.acc.apply(&event);
-                        sink.push(event);
-                    }
-                    Some("tool_use") => {
-                        let id = block["id"].as_str().unwrap_or_default().to_owned();
-                        let name = block["name"].as_str().unwrap_or_default().to_owned();
-                        let ours = self.acc.message().content.len();
-                        self.index_map.insert(index, ours);
-                        self.tools.insert(
-                            index,
-                            ToolBuffer {
-                                id: id.clone(),
-                                name: name.clone(),
-                                arguments: String::new(),
-                            },
-                        );
-                        let event = AssistantEvent::ToolCallStart {
-                            index: ours,
-                            id,
-                            name,
-                        };
-                        sink.push(event);
-                    }
-                    _ => {}
-                }
-            }
-            "content_block_delta" => {
-                let Some(index) = value["index"].as_u64() else {
-                    return;
-                };
-                let delta = &value["delta"];
-                match delta["type"].as_str() {
-                    Some("text_delta") => {
-                        let Some(&ours) = self.index_map.get(&index) else {
-                            return;
-                        };
-                        let event = AssistantEvent::TextDelta {
-                            index: ours,
-                            delta: delta["text"].as_str().unwrap_or_default().to_owned(),
-                        };
-                        self.acc.apply(&event);
-                        sink.push(event);
-                    }
-                    Some("thinking_delta") => {
-                        let Some(&ours) = self.index_map.get(&index) else {
-                            return;
-                        };
-                        let event = AssistantEvent::ThinkingDelta {
-                            index: ours,
-                            delta: delta["thinking"].as_str().unwrap_or_default().to_owned(),
-                        };
-                        self.acc.apply(&event);
-                        sink.push(event);
-                    }
-                    Some("signature_delta") => {
-                        if let Some(&ours) = self.index_map.get(&index) {
-                            self.acc.set_signature(
-                                ours,
-                                delta["signature"].as_str().unwrap_or_default().to_owned(),
-                            );
-                        }
-                    }
-                    Some("input_json_delta") => {
-                        let partial = delta["partial_json"].as_str().unwrap_or_default();
-                        if let Some(tool) = self.tools.get_mut(&index) {
-                            tool.arguments.push_str(partial);
-                        }
-                        if let Some(&ours) = self.index_map.get(&index) {
-                            sink.push(AssistantEvent::ToolCallDelta {
-                                index: ours,
-                                delta: partial.to_owned(),
-                            });
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            "content_block_stop" => {
-                let Some(index) = value["index"].as_u64() else {
-                    return;
-                };
-                if let Some(tool) = self.tools.remove(&index) {
-                    let arguments = serde_json::from_str(&tool.arguments)
-                        .unwrap_or_else(|e| {
-                            eprintln!("anthropic: malformed tool-call arguments for index {index}: {e}");
-                            Value::Object(Default::default())
-                        });
-                    // Resolve our content index; if the index_map is missing
-                    // the entry (unexpected), fall back to the current
-                    // content length so the ToolCallEnd is still emitted.
-                    let ours = self
-                        .index_map
-                        .get(&index)
-                        .copied()
-                        .unwrap_or_else(|| self.acc.message().content.len());
-                    let event = AssistantEvent::ToolCallEnd {
-                        index: ours,
-                        id: tool.id,
-                        name: tool.name,
-                        arguments,
-                    };
-                    // `apply` inserts the finalized ToolCall into the
-                    // accumulator's message content at `index`.
-                    self.acc.apply(&event);
-                    sink.push(event);
-                    return;
-                }
-                let Some(&ours) = self.index_map.get(&index) else {
-                    return;
-                };
-                let content = self.block_text(ours);
-                let event = match self.acc.message().content.get(ours) {
-                    Some(AssistantContent::Thinking { .. }) => AssistantEvent::ThinkingEnd {
-                        index: ours,
-                        content,
-                    },
-                    _ => AssistantEvent::TextEnd {
-                        index: ours,
-                        content,
-                    },
-                };
-                sink.push(event);
-            }
-            "message_delta" => {
-                if let Some(reason) = value["delta"]["stop_reason"].as_str() {
-                    self.stop_reason = map_stop_reason(reason);
-                }
-                if let Some(output) = value["usage"]["output_tokens"].as_u64() {
-                    self.acc.message_mut().usage.output = output;
-                }
-            }
-            "error" => {
-                self.errored = true;
-                let detail = value["error"]["message"]
-                    .as_str()
-                    .unwrap_or("unknown provider error");
-                let mut message = self.acc.message().clone();
-                message.stop_reason = StopReason::Error;
-                message.error_message = Some(detail.to_owned());
-                sink.push(AssistantEvent::Error { message });
-            }
-            _ => {}
-        }
-    }
 }
 
 #[cfg(test)]
@@ -471,7 +148,7 @@ mod tests {
         ToolResultMessage, UserMessage,
     };
 
-    use super::{CLAUDE_CODE_IDENTITY, build_body, convert_messages};
+    use super::{build_body, convert_messages};
     use crate::types::{AssistantContent, AssistantMessage};
     use serde_json::json;
 
@@ -494,6 +171,9 @@ mod tests {
         }
     }
 
+    /// Test-only identity string, mirroring the former hardcoded constant.
+    const CLAUDE_CODE_IDENTITY: &str = "You are Claude Code, Anthropic's official CLI for Claude.";
+
     /// The substantive RLM identity that `build_system_prompt` produces and that
     /// `ctx.system_prompt` carries in the real flow.
     const RLM_IDENTITY: &str = "You are a Recursive Language Model (RLM): a language model with a prompt, and a context stored in a Python REPL.";
@@ -512,7 +192,11 @@ mod tests {
         let opts = StreamOptions::new(Auth::ApiKey("k".to_owned()));
         let body = build_body(&model(), &ctx, &opts);
         let system = body["system"].as_array().expect("system array");
-        assert_eq!(system.len(), 1, "api-key path must emit exactly one system block");
+        assert_eq!(
+            system.len(),
+            1,
+            "api-key path must emit exactly one system block"
+        );
         assert_eq!(system[0]["text"].as_str(), Some(RLM_IDENTITY));
         assert!(
             system[0].get("cache_control").is_some(),
@@ -537,7 +221,8 @@ mod tests {
             messages: vec![],
             ..Default::default()
         };
-        let opts = StreamOptions::new(Auth::OAuthToken("token".to_owned()));
+        let mut opts = StreamOptions::new(Auth::OAuthToken("token".to_owned()));
+        opts.identity = Some(CLAUDE_CODE_IDENTITY.to_owned());
         let body = build_body(&model(), &ctx, &opts);
         let system = body["system"].as_array().expect("system array");
         assert_eq!(system.len(), 2, "oauth path: shim + cached RLM block");
@@ -554,9 +239,45 @@ mod tests {
             "the RLM block is the cached block"
         );
         assert!(
-            system[1]["text"].as_str().unwrap().contains("Recursive Language Model"),
+            system[1]["text"]
+                .as_str()
+                .unwrap()
+                .contains("Recursive Language Model"),
             "the cached block is the RLM identity, not the shim"
         );
+    }
+
+    /// OAuth path without an identity shim emits only the system prompt block.
+    #[test]
+    fn oauth_path_without_identity_emits_single_block() {
+        let ctx = Context {
+            system_prompt: Some(RLM_IDENTITY.to_owned()),
+            messages: vec![],
+            ..Default::default()
+        };
+        let opts = StreamOptions::new(Auth::OAuthToken("token".to_owned()));
+        let body = build_body(&model(), &ctx, &opts);
+        let system = body["system"].as_array().expect("system array");
+        assert_eq!(system.len(), 1, "no identity => single system block");
+        assert_eq!(system[0]["text"].as_str(), Some(RLM_IDENTITY));
+    }
+
+    /// `cache_control: false` suppresses all `cache_control` markers.
+    #[test]
+    fn cache_control_disabled_strips_markers() {
+        let ctx = Context {
+            system_prompt: Some("sys".to_owned()),
+            messages: vec![Message::User(UserMessage::new("hello"))],
+            ..Default::default()
+        };
+        let mut opts = StreamOptions::new(Auth::ApiKey("k".to_owned()));
+        opts.cache_control = false;
+        let body = build_body(&model(), &ctx, &opts);
+        let system = body["system"].as_array().expect("system array");
+        assert!(system[0].get("cache_control").is_none());
+        let messages = body["messages"].as_array().expect("messages array");
+        let last_content = messages[0]["content"].as_array().unwrap();
+        assert!(last_content[0].get("cache_control").is_none());
     }
 
     /// `convert_messages` must place `cache_control: ephemeral` on the last
@@ -570,7 +291,7 @@ mod tests {
             Message::User(UserMessage::new("third message")),
         ];
 
-        let result = convert_messages(&messages);
+        let result = convert_messages(&messages, true);
         assert_eq!(result.len(), 3);
 
         // First two messages: no cache_control.
@@ -596,7 +317,7 @@ mod tests {
     #[test]
     fn convert_messages_single_message_gets_one_breakpoint() {
         let messages = vec![Message::User(UserMessage::new("only message"))];
-        let result = convert_messages(&messages);
+        let result = convert_messages(&messages, true);
         let content = result[0]["content"].as_array().unwrap();
         assert_eq!(
             content[0]["cache_control"]["type"].as_str(),
@@ -607,7 +328,7 @@ mod tests {
     /// Empty messages produce no output and no breakpoints.
     #[test]
     fn convert_messages_empty() {
-        let result = convert_messages(&[]);
+        let result = convert_messages(&[], true);
         assert!(result.is_empty());
     }
 
@@ -625,7 +346,7 @@ mod tests {
             Message::Assistant(assistant),
         ];
 
-        let result = convert_messages(&messages);
+        let result = convert_messages(&messages, true);
         assert_eq!(result.len(), 2);
 
         // The last user message (message 0) gets the cache breakpoint.
@@ -659,23 +380,26 @@ mod tests {
             Message::User(UserMessage::new("second")),
         ];
 
-        let result = convert_messages(&messages);
+        let result = convert_messages(&messages, true);
         assert_eq!(result.len(), 3);
 
         // First user: no cache_control.
-        assert!(result[0]["content"].as_array().unwrap()[0]
-            .get("cache_control")
-            .is_none());
+        assert!(
+            result[0]["content"].as_array().unwrap()[0]
+                .get("cache_control")
+                .is_none()
+        );
 
         // Assistant: no cache_control.
-        assert!(result[1]["content"].as_array().unwrap()[0]
-            .get("cache_control")
-            .is_none());
+        assert!(
+            result[1]["content"].as_array().unwrap()[0]
+                .get("cache_control")
+                .is_none()
+        );
 
         // Last user: has cache_control.
         assert_eq!(
-            result[2]["content"].as_array().unwrap()[0]["cache_control"]["type"]
-                .as_str(),
+            result[2]["content"].as_array().unwrap()[0]["cache_control"]["type"].as_str(),
             Some("ephemeral")
         );
     }
@@ -699,9 +423,15 @@ mod tests {
         assert_eq!(schema["name"], "repl");
         assert_eq!(schema["description"], "Execute Python code");
         assert_eq!(schema["input_schema"]["type"], "object");
-        assert_eq!(schema["input_schema"]["properties"]["code"]["type"], "string");
+        assert_eq!(
+            schema["input_schema"]["properties"]["code"]["type"],
+            "string"
+        );
         // Anthropic uses `input_schema` at the root (not nested under `function`).
-        assert!(schema.get("function").is_none(), "anthropic schema must not nest under function");
+        assert!(
+            schema.get("function").is_none(),
+            "anthropic schema must not nest under function"
+        );
     }
 
     #[test]
@@ -744,13 +474,15 @@ mod tests {
         assistant.content.push(AssistantContent::Text {
             text: "let me check".to_owned(),
         });
-        assistant.content.push(AssistantContent::ToolCall(crate::types::ToolCall {
-            id: "toolu_123".to_owned(),
-            name: "repl".to_owned(),
-            arguments: json!({"code": "print(1+1)"}),
-        }));
+        assistant
+            .content
+            .push(AssistantContent::ToolCall(crate::types::ToolCall {
+                id: "toolu_123".to_owned(),
+                name: "repl".to_owned(),
+                arguments: json!({"code": "print(1+1)"}),
+            }));
         let messages = vec![Message::Assistant(assistant)];
-        let out = convert_messages(&messages);
+        let out = convert_messages(&messages, true);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0]["role"], "assistant");
         let content = out[0]["content"].as_array().unwrap();
@@ -766,7 +498,7 @@ mod tests {
     fn convert_messages_serializes_tool_result_as_user_tool_result() {
         let result = ToolResultMessage::new("toolu_123", "2");
         let messages = vec![Message::ToolResult(result)];
-        let out = convert_messages(&messages);
+        let out = convert_messages(&messages, true);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0]["role"], "user");
         let content = out[0]["content"].as_array().unwrap();
@@ -780,7 +512,7 @@ mod tests {
     fn convert_messages_serializes_tool_result_with_error_flag() {
         let result = ToolResultMessage::new("toolu_456", "Error: bad code").with_error(true);
         let messages = vec![Message::ToolResult(result)];
-        let out = convert_messages(&messages);
+        let out = convert_messages(&messages, true);
         let content = out[0]["content"].as_array().unwrap();
         assert_eq!(content[0]["is_error"], true);
     }
@@ -788,11 +520,13 @@ mod tests {
     #[test]
     fn convert_messages_round_trips_assistant_tool_call_then_tool_result() {
         let mut assistant = AssistantMessage::empty(&model());
-        assistant.content.push(AssistantContent::ToolCall(crate::types::ToolCall {
-            id: "toolu_789".to_owned(),
-            name: "repl".to_owned(),
-            arguments: json!({"code": "x = 1"}),
-        }));
+        assistant
+            .content
+            .push(AssistantContent::ToolCall(crate::types::ToolCall {
+                id: "toolu_789".to_owned(),
+                name: "repl".to_owned(),
+                arguments: json!({"code": "x = 1"}),
+            }));
         let result = ToolResultMessage::new("toolu_789", "ok");
         let messages = vec![
             Message::User(UserMessage::new("what is 1+1?")),
@@ -800,7 +534,7 @@ mod tests {
             Message::ToolResult(result),
             Message::User(UserMessage::new("thanks")),
         ];
-        let out = convert_messages(&messages);
+        let out = convert_messages(&messages, true);
         assert_eq!(out.len(), 4);
         let asst_content = out[1]["content"].as_array().unwrap();
         assert_eq!(asst_content[0]["type"], "tool_use");

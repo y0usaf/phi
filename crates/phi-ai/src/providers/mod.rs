@@ -10,16 +10,15 @@ use crate::stream::{AssistantEvent, EventSink};
 use crate::types::{Model, StopReason, StreamOptions};
 
 pub(crate) use retry::{
-    fresh_transport_client, is_transient_transport_error, parse_retry_after,
-    retry_delay, retryable_status,
+    fresh_transport_client, is_transient_transport_error, parse_retry_after, retry_delay,
+    retryable_status,
 };
 pub(crate) use sse::{CappedSse, CappedSseError, MAX_SSE_EVENT_BYTES, SseHandler};
 
-pub(crate) fn http_client() -> reqwest::Client {
+pub(crate) fn http_client() -> reqwest::Result<reqwest::Client> {
     reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(30))
         .build()
-        .expect("reqwest client must build")
 }
 
 /// Sends the request with retries; on success, forwards SSE events to the
@@ -79,8 +78,10 @@ pub(crate) async fn run_sse<H: SseHandler>(
                 if retryable_status(status) && attempt < opts.max_retries {
                     tokio::time::sleep(retry_delay(attempt, retry_after)).await;
                     attempt += 1;
-                    if retry_client.is_none() {
-                        retry_client = Some(fresh_transport_client());
+                    if retry_client.is_none()
+                        && let Ok(c) = fresh_transport_client()
+                    {
+                        retry_client = Some(c);
                     }
                     continue;
                 }
@@ -91,8 +92,10 @@ pub(crate) async fn run_sse<H: SseHandler>(
                 if attempt < opts.max_retries && !error.is_builder() {
                     tokio::time::sleep(retry_delay(attempt, None)).await;
                     attempt += 1;
-                    if retry_client.is_none() {
-                        retry_client = Some(fresh_transport_client());
+                    if retry_client.is_none()
+                        && let Ok(c) = fresh_transport_client()
+                    {
+                        retry_client = Some(c);
                     }
                     continue;
                 }
@@ -150,8 +153,10 @@ pub(crate) async fn run_sse<H: SseHandler>(
                     if attempt < opts.max_retries && is_transient_transport_error(&error) {
                         tokio::time::sleep(retry_delay(attempt, None)).await;
                         attempt += 1;
-                        if retry_client.is_none() {
-                            retry_client = Some(fresh_transport_client());
+                        if retry_client.is_none()
+                            && let Ok(c) = fresh_transport_client()
+                        {
+                            retry_client = Some(c);
                         }
                         // Break out of the inner streaming loop and re-enter
                         // the outer loop to reconnect and replay from the top.

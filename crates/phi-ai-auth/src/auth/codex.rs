@@ -11,7 +11,7 @@ use crate::auth::callback_server::CallbackServer;
 use crate::auth::device_code::{PollOutcome, poll_device_code};
 use crate::auth::pkce::{Pkce, random_state};
 use crate::auth::{AuthError, LoginCallbacks, OAuthCredentials, parse_authorization_input};
-use crate::types::now_ms;
+use phi_ai_types::now_ms;
 
 const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const AUTH_BASE_URL: &str = "https://auth.openai.com";
@@ -33,8 +33,8 @@ pub async fn login_browser(
     let state = random_state();
     let mut server = CallbackServer::start(CALLBACK_PORT, CALLBACK_PATH, state.clone()).await?;
 
-    let mut url =
-        url::Url::parse(&format!("{AUTH_BASE_URL}/oauth/authorize")).expect("authorize url");
+    let mut url = url::Url::parse(&format!("{AUTH_BASE_URL}/oauth/authorize"))
+        .map_err(|e| AuthError::Protocol(format!("invalid authorize url: {e}")))?;
     url.query_pairs_mut()
         .append_pair("response_type", "code")
         .append_pair("client_id", CLIENT_ID)

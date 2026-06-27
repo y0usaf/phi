@@ -5,12 +5,28 @@ use crate::types::{AssistantContent, AssistantMessage, Model, StopReason, ToolCa
 #[derive(Clone, Debug)]
 pub enum AssistantEvent {
     Start,
-    TextStart { index: usize },
-    TextDelta { index: usize, delta: String },
-    TextEnd { index: usize, content: String },
-    ThinkingStart { index: usize },
-    ThinkingDelta { index: usize, delta: String },
-    ThinkingEnd { index: usize, content: String },
+    TextStart {
+        index: usize,
+    },
+    TextDelta {
+        index: usize,
+        delta: String,
+    },
+    TextEnd {
+        index: usize,
+        content: String,
+    },
+    ThinkingStart {
+        index: usize,
+    },
+    ThinkingDelta {
+        index: usize,
+        delta: String,
+    },
+    ThinkingEnd {
+        index: usize,
+        content: String,
+    },
     /// The model started a tool call; `index` is the content-block index.
     ToolCallStart {
         index: usize,
@@ -29,11 +45,18 @@ pub enum AssistantEvent {
         name: String,
         arguments: serde_json::Value,
     },
-    Done { message: AssistantMessage },
-    Error { message: AssistantMessage },
+    Done {
+        message: AssistantMessage,
+    },
+    Error {
+        message: AssistantMessage,
+    },
     /// Sent before a mid-stream retry; the consumer should discard partial
     /// output accumulated since the last `Start`/`RetryRollback`.
-    RetryRollback { attempt: u32, max: u32 },
+    RetryRollback {
+        attempt: u32,
+        max: u32,
+    },
     /// Keepalive signal emitted periodically during slow generation so
     /// consumers know the stream is still alive.
     Pong,

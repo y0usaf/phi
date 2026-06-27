@@ -17,7 +17,7 @@ pub struct Registry {
 impl Registry {
     pub fn builtin() -> Self {
         let models: Vec<Model> = serde_json::from_str(include_str!("models.json"))
-            .expect("embedded models.json must parse");
+            .unwrap_or_else(|e| panic!("embedded models.json failed to parse: {e}"));
         let mut providers: HashMap<Api, Arc<dyn ApiProvider>> = HashMap::new();
         providers.insert(
             Api::AnthropicMessages,
@@ -121,12 +121,10 @@ mod tests {
         // Registry carries models for APIs without providers; they must be
         // excluded from the supported view.
         assert!(supported.len() < total);
-        assert!(
-            supported.iter().all(|m| matches!(
-                m.api,
-                Api::AnthropicMessages | Api::OpenAiResponses | Api::OpenAiCompletions
-            ))
-        );
+        assert!(supported.iter().all(|m| matches!(
+            m.api,
+            Api::AnthropicMessages | Api::OpenAiResponses | Api::OpenAiCompletions
+        )));
         // Unqualified find prefers a supported model on id collisions; with
         // OpenAiCompletions registered, the 302ai variant is supported and
         // appears first. Use a qualified lookup to pin the Anthropic model.

@@ -3,8 +3,8 @@
 use tokio_util::sync::CancellationToken;
 
 use crate::auth::callbacks::{LoginCallbacks, LoginMethod};
-use crate::auth::types::{OAuthCredentials, OAuthProviderId};
 use crate::auth::error::AuthError;
+use crate::auth::types::{OAuthCredentials, OAuthProviderId};
 
 pub async fn login(
     provider: OAuthProviderId,

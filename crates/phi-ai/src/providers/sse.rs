@@ -257,10 +257,7 @@ mod tests {
         let line = format!("data: {big}\n\n");
         let mut s = CappedSse::new(stream_from(vec![line.as_bytes()]));
         let outcome = s.next_events().await;
-        assert!(matches!(
-            outcome,
-            Some(Err(CappedSseError::Oversized))
-        ));
+        assert!(matches!(outcome, Some(Err(CappedSseError::Oversized))));
     }
 
     #[tokio::test]
@@ -268,10 +265,7 @@ mod tests {
         let filler = "x".repeat(MAX_SSE_EVENT_BYTES + 1024);
         let mut s = CappedSse::new(stream_from(vec![filler.as_bytes()]));
         let outcome = s.next_events().await;
-        assert!(matches!(
-            outcome,
-            Some(Err(CappedSseError::Oversized))
-        ));
+        assert!(matches!(outcome, Some(Err(CappedSseError::Oversized))));
     }
 
     #[tokio::test]

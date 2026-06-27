@@ -6,7 +6,7 @@ use tokio_util::sync::CancellationToken;
 use crate::auth::callback_server::CallbackServer;
 use crate::auth::pkce::Pkce;
 use crate::auth::{AuthError, LoginCallbacks, OAuthCredentials, parse_authorization_input};
-use crate::types::now_ms;
+use phi_ai_types::now_ms;
 
 const CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 const AUTHORIZE_URL: &str = "https://claude.ai/oauth/authorize";
@@ -30,7 +30,8 @@ pub async fn login(
     let state = pkce.verifier.clone();
     let mut server = CallbackServer::start(CALLBACK_PORT, CALLBACK_PATH, state.clone()).await?;
 
-    let mut url = url::Url::parse(AUTHORIZE_URL).expect("authorize url");
+    let mut url = url::Url::parse(AUTHORIZE_URL)
+        .map_err(|e| AuthError::Protocol(format!("invalid authorize url: {e}")))?;
     url.query_pairs_mut()
         .append_pair("code", "true")
         .append_pair("client_id", CLIENT_ID)

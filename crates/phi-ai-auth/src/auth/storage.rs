@@ -12,7 +12,7 @@ use tokio_util::sync::CancellationToken;
 use crate::auth::{
     AuthCredential, AuthError, LoginCallbacks, LoginMethod, OAuthCredentials, OAuthProviderId,
 };
-use crate::types::{Auth, now_ms};
+use phi_ai_types::{Auth, now_ms};
 
 type AuthData = BTreeMap<String, AuthCredential>;
 
@@ -184,7 +184,8 @@ impl AuthStorage {
             if now_ms() < current.expires {
                 return Ok(current);
             }
-            let refreshed = handle.block_on(crate::auth::refresh(oauth_provider, &current.refresh))?;
+            let refreshed =
+                handle.block_on(crate::auth::refresh(oauth_provider, &current.refresh))?;
             // Re-acquire the lock to persist the refreshed credentials.
             // If another process already refreshed, use its credentials.
             storage.with_lock(|data| {

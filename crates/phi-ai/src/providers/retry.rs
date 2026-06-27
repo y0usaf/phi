@@ -8,12 +8,11 @@ pub(crate) const MAX_RETRY_DELAY: Duration = Duration::from_secs(30);
 /// transport failure the pooled connection that broke may have poisoned other
 /// idle connections on the same path (e.g. a TLS BadRecordMac from a corrupting
 /// middlebox). Disabling idle pooling forces a new TLS handshake per retry.
-pub(crate) fn fresh_transport_client() -> reqwest::Client {
+pub(crate) fn fresh_transport_client() -> reqwest::Result<reqwest::Client> {
     reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(30))
         .pool_max_idle_per_host(0)
         .build()
-        .expect("reqwest client must build")
 }
 
 pub(crate) fn retryable_status(status: reqwest::StatusCode) -> bool {
@@ -82,7 +81,10 @@ mod tests {
                 let d = retry_delay(attempt, None);
                 let min = Duration::from_millis((base.as_millis() as f32 * 0.8) as u64);
                 let max = Duration::from_millis((base.as_millis() as f32 * 1.2) as u64);
-                assert!(d >= min && d <= max.min(MAX_RETRY_DELAY), "attempt={attempt} d={d:?} base={base:?}");
+                assert!(
+                    d >= min && d <= max.min(MAX_RETRY_DELAY),
+                    "attempt={attempt} d={d:?} base={base:?}"
+                );
             }
         }
     }
