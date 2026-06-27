@@ -236,7 +236,7 @@ impl Ui {
             SendMode::Queue => {
                 self.queued.push(text.to_owned());
             }
-            SendMode::Interleave | SendMode::CancelSend => {
+            SendMode::Interleave => {
                 // Cancel the in-flight turn so it completes at the next
                 // iteration boundary (the run loop checks the cancel token
                 // at the top of each iteration — the "next safe point").

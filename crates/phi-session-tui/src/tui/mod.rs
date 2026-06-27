@@ -100,10 +100,6 @@ pub(super) enum SendMode {
     /// This is the closest local equivalent to "inject at the next safe
     /// point" — the turn is interrupted at a clean boundary, not mid-stream.
     Interleave,
-    /// Cancel the in-flight turn, then send immediately as a fresh prompt.
-    /// Same mechanism as Interleave (cancel + queue), but signals user
-    /// intent to fully discard the current turn rather than build on it.
-    CancelSend,
 }
 
 impl SendMode {
@@ -111,15 +107,13 @@ impl SendMode {
         match self {
             Self::Queue => "queued",
             Self::Interleave => "interleave",
-            Self::CancelSend => "cancel+send",
         }
     }
 
     pub(super) fn next(self) -> Self {
         match self {
             Self::Queue => Self::Interleave,
-            Self::Interleave => Self::CancelSend,
-            Self::CancelSend => Self::Queue,
+            Self::Interleave => Self::Queue,
         }
     }
 }
@@ -307,7 +301,11 @@ pub async fn run(setup: TuiSetup, mut io: SessionIo) -> Result<()> {
         ui.palette = InlinePalette::from_terminal_colors(&colors);
         ui.spinner = Spinner::new(ui.palette.spinner_accent, ui.palette.terminal_bg);
     }
-    let restoring = ui.store.leaf().is_some();
+    // Resume when the session has any message entries, regardless of the
+    // leaf pointer. A session navigated to root (leaf None) still has
+    // entries and must replay its branch; only a truly empty (new) session
+    // shows the greeting.
+    let restoring = ui.store.has_entries();
     if restoring {
         ui.replay_branch();
         ui.restore_rlm(&cmd_tx);
@@ -522,7 +520,7 @@ struct Ui {
     /// Follow-up prompts queued while a turn is in flight; sent FIFO as
     /// turns complete.
     pub(super) queued: Vec<String>,
-    /// How messages submitted mid-run get dispatched (queue/interleave/cancel+send).
+    /// How messages submitted mid-run get dispatched (queue/interleave).
     pub(super) send_mode: SendMode,
     /// Time of the last ctrl-c; a second one within 500ms quits.
     pub(super) last_ctrl_c: Option<std::time::Instant>,
