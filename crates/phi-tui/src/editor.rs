@@ -17,19 +17,7 @@ pub enum EditorAction {
     Quit,
 }
 
-const KILL_RING_MAX: usize = 50;
 const UNDO_MAX: usize = 100;
-const REDO_MAX: usize = 100;
-/// Pastes longer than this many lines or chars collapse to a marker
-/// (pi-compatible thresholds).
-const PASTE_LINES_MAX: usize = 10;
-const PASTE_CHARS_MAX: usize = 1000;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum JumpDir {
-    Forward,
-    Backward,
-}
 
 pub struct Editor {
     lines: Vec<String>,
@@ -39,24 +27,8 @@ pub struct Editor {
     history: Vec<String>,
     history_idx: Option<usize>,
     draft: Option<Vec<String>>,
-    kill_ring: Vec<String>,
-    /// Region of the last yank (start row/col, end row/col, ring index);
-    /// present only while the previous key was a yank, enabling alt-y.
-    last_yank: Option<(usize, usize, usize, usize, usize)>,
+    kill_ring: Option<String>,
     undo_stack: Vec<(Vec<String>, usize, usize)>,
-    /// Redo stack: states popped by undo, available for redo (Ctrl+Y).
-    redo_stack: Vec<(Vec<String>, usize, usize)>,
-    /// Large pastes collapsed to `[paste #N …]` markers: (marker, content).
-    /// Markers are expanded on submit; an edited marker stays literal text.
-    pastes: Vec<(String, String)>,
-    paste_counter: usize,
-    /// Char-jump mode (ctrl+] / ctrl+alt+]): the next printable key jumps
-    /// the cursor to that character within the current line, vi f/F style.
-    jump: Option<JumpDir>,
-    /// Preferred visual column for vertical cursor movement, pi-style: when a
-    /// short line clamps the cursor, keep the original display column and
-    /// restore it once a later line is wide enough again.
-    preferred_col: Option<usize>,
 }
 
 impl Default for Editor {
@@ -74,14 +46,8 @@ impl Editor {
             history: Vec::new(),
             history_idx: None,
             draft: None,
-            kill_ring: Vec::new(),
-            last_yank: None,
+            kill_ring: None,
             undo_stack: Vec::new(),
-            redo_stack: Vec::new(),
-            pastes: Vec::new(),
-            paste_counter: 0,
-            jump: None,
-            preferred_col: None,
         }
     }
 
@@ -100,7 +66,6 @@ impl Editor {
         }
         self.row = self.lines.len() - 1;
         self.col = grapheme_count(&self.lines[self.row]);
-        self.preferred_col = None;
     }
 
     pub fn cursor_row(&self) -> usize {
@@ -136,11 +101,9 @@ impl Editor {
         self.col = 0;
         self.history_idx = None;
         self.draft = None;
-        self.preferred_col = None;
-        // A fresh buffer starts with no undo/redo history (jcode's
+        // A fresh buffer starts with no undo history (jcode's
         // clear_input_undo_history on submit).
         self.undo_stack.clear();
-        self.redo_stack.clear();
     }
 
     /// Add a submitted prompt to the recall history used by Up/Down.
@@ -177,39 +140,17 @@ impl Editor {
         self.insert_raw(text);
     }
 
-    /// Insert pasted text. Large pastes (pi thresholds: >10 lines or >1000
-    /// chars) collapse into a `[paste #N +M lines]` / `[paste #N M chars]`
-    /// marker that expands back to the full content on submit.
+    /// Insert pasted text, normalizing line endings and stripping control
+    /// characters.
     pub fn insert_paste(&mut self, text: &str) {
         self.snapshot();
         let clean = normalize_paste(text);
-        let line_count = clean.split('\n').count();
-        if line_count <= PASTE_LINES_MAX && clean.chars().count() <= PASTE_CHARS_MAX {
-            self.insert_raw(&clean);
-            return;
-        }
-        self.paste_counter += 1;
-        let id = self.paste_counter;
-        let marker = if line_count > PASTE_LINES_MAX {
-            format!("[paste #{id} +{line_count} lines]")
-        } else {
-            format!("[paste #{id} {} chars]", clean.chars().count())
-        };
-        self.pastes.push((marker.clone(), clean));
-        self.insert_raw(&marker);
+        self.insert_raw(&clean);
     }
 
-    /// Buffer text with paste markers expanded to their stored content.
+    /// Buffer text.
     pub fn expanded_text(&self) -> String {
-        self.expand_markers(&self.text())
-    }
-
-    fn expand_markers(&self, text: &str) -> String {
-        let mut out = text.to_owned();
-        for (marker, content) in &self.pastes {
-            out = out.replace(marker, content);
-        }
-        out
+        self.text()
     }
 
     fn insert_raw(&mut self, text: &str) {
@@ -231,33 +172,8 @@ impl Editor {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let alt = key.modifiers.contains(KeyModifiers::ALT);
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
-        if !matches!(key.code, KeyCode::Up | KeyCode::Down) {
-            self.preferred_col = None;
-        }
-        // Yank state survives only across consecutive yanks (alt-y).
-        let prev_yank = self.last_yank.take();
-
-        // Char-jump mode: the next printable key jumps; the trigger key
-        // cancels; anything else cancels and is processed normally.
-        if let Some(dir) = self.jump.take() {
-            match key.code {
-                KeyCode::Char(']') if ctrl => return EditorAction::None,
-                KeyCode::Char(c) if !ctrl && !alt => {
-                    self.jump_to_char(c, dir);
-                    return EditorAction::None;
-                }
-                _ => {}
-            }
-        }
 
         match key.code {
-            KeyCode::Char(']') if ctrl => {
-                self.jump = Some(if alt {
-                    JumpDir::Backward
-                } else {
-                    JumpDir::Forward
-                });
-            }
             KeyCode::Char('c') if ctrl => return EditorAction::Cancel,
             KeyCode::Char('d') if ctrl => {
                 if self.is_empty() {
@@ -289,7 +205,7 @@ impl Editor {
                 }
                 self.clear();
                 self.add_history_entry(&text);
-                return EditorAction::Submit(self.expand_markers(&text));
+                return EditorAction::Submit(text);
             }
             KeyCode::Backspace if ctrl || alt => self.delete_word_back(),
             KeyCode::Backspace => {
@@ -307,12 +223,8 @@ impl Editor {
             KeyCode::Char('e') if ctrl => self.col = grapheme_count(&self.lines[self.row]),
             KeyCode::Char('k') if ctrl => self.kill_to_eol(),
             KeyCode::Char('u') if ctrl => self.kill_to_bol(),
-            // Ctrl+Z undo, Ctrl+Y redo (Ctrl+- / Ctrl+_ remain as emacs aliases).
-            // Yank moved to Ctrl+R to free Ctrl+Y for redo.
             KeyCode::Char('z') if ctrl => self.undo(),
-            KeyCode::Char('y') if ctrl => self.redo(),
             KeyCode::Char('r') if ctrl => self.yank(),
-            KeyCode::Char('y') if alt => self.yank_pop(prev_yank),
             KeyCode::Char('-' | '_') if ctrl => self.undo(),
             KeyCode::Char('b') if alt => self.move_word_back(),
             KeyCode::Char('f') if alt => self.move_word_forward(),
@@ -376,17 +288,8 @@ impl Editor {
             let current_visual = width_of_graphemes(&self.lines[self.row], self.col);
             self.row -= 1;
             let target_line = &self.lines[self.row];
-            let target_visual = width_of_graphemes(target_line, grapheme_count(target_line));
-            let desired = self.preferred_col.unwrap_or(current_visual);
-            if desired > target_visual {
-                self.preferred_col.get_or_insert(current_visual);
-                self.col = grapheme_count(target_line);
-            } else {
-                self.col = grapheme_index_at_width(target_line, desired);
-                self.preferred_col = None;
-            }
+            self.col = grapheme_index_at_width(target_line, current_visual);
         } else {
-            self.preferred_col = None;
             self.history_prev();
         }
     }
@@ -396,17 +299,8 @@ impl Editor {
             let current_visual = width_of_graphemes(&self.lines[self.row], self.col);
             self.row += 1;
             let target_line = &self.lines[self.row];
-            let target_visual = width_of_graphemes(target_line, grapheme_count(target_line));
-            let desired = self.preferred_col.unwrap_or(current_visual);
-            if desired > target_visual {
-                self.preferred_col.get_or_insert(current_visual);
-                self.col = grapheme_count(target_line);
-            } else {
-                self.col = grapheme_index_at_width(target_line, desired);
-                self.preferred_col = None;
-            }
+            self.col = grapheme_index_at_width(target_line, current_visual);
         } else {
-            self.preferred_col = None;
             self.history_next();
         }
     }
@@ -436,7 +330,6 @@ impl Editor {
             self.lines = draft;
             self.row = self.lines.len() - 1;
             self.col = grapheme_count(&self.lines[self.row]);
-            self.preferred_col = None;
         }
     }
 
@@ -537,52 +430,15 @@ impl Editor {
         if text.is_empty() {
             return;
         }
-        self.kill_ring.push(text);
-        if self.kill_ring.len() > KILL_RING_MAX {
-            self.kill_ring.remove(0);
-        }
+        self.kill_ring = Some(text);
     }
 
     fn yank(&mut self) {
-        let Some(text) = self.kill_ring.last().cloned() else {
+        let Some(text) = self.kill_ring.clone() else {
             return;
         };
         self.snapshot();
-        let (srow, scol) = (self.row, self.col);
         self.insert_raw(&text);
-        self.last_yank = Some((srow, scol, self.row, self.col, self.kill_ring.len() - 1));
-    }
-
-    /// Replace the text inserted by the previous yank with the next-older
-    /// kill-ring entry (wrapping). No-op unless the previous key was a yank.
-    fn yank_pop(&mut self, prev: Option<(usize, usize, usize, usize, usize)>) {
-        let Some((srow, scol, erow, ecol, idx)) = prev else {
-            return;
-        };
-        self.snapshot();
-        self.delete_region(srow, scol, erow, ecol);
-        let idx = idx.checked_sub(1).unwrap_or(self.kill_ring.len() - 1);
-        let text = self.kill_ring[idx].clone();
-        self.insert_raw(&text);
-        self.last_yank = Some((srow, scol, self.row, self.col, idx));
-    }
-
-    fn delete_region(&mut self, srow: usize, scol: usize, erow: usize, ecol: usize) {
-        if srow == erow {
-            let line = &mut self.lines[srow];
-            let start = byte_index(line, scol);
-            let end = byte_index(line, ecol);
-            line.replace_range(start..end, "");
-        } else {
-            let tail_byte = byte_index(&self.lines[erow], ecol);
-            let tail = self.lines[erow][tail_byte..].to_owned();
-            let head_byte = byte_index(&self.lines[srow], scol);
-            self.lines[srow].truncate(head_byte);
-            self.lines[srow].push_str(&tail);
-            self.lines.drain(srow + 1..=erow);
-        }
-        self.row = srow;
-        self.col = scol;
     }
 
     fn snapshot(&mut self) {
@@ -591,31 +447,10 @@ impl Editor {
         if self.undo_stack.len() > UNDO_MAX {
             self.undo_stack.remove(0);
         }
-        // A new edit invalidates the redo history.
-        self.redo_stack.clear();
     }
 
     fn undo(&mut self) {
         if let Some((lines, row, col)) = self.undo_stack.pop() {
-            // Stash the pre-undo state so redo can re-apply it.
-            self.redo_stack.push((self.lines.clone(), self.row, self.col));
-            if self.redo_stack.len() > REDO_MAX {
-                self.redo_stack.remove(0);
-            }
-            self.lines = lines;
-            self.row = row;
-            self.col = col;
-        }
-    }
-
-    fn redo(&mut self) {
-        if let Some((lines, row, col)) = self.redo_stack.pop() {
-            // Push the pre-redo state back onto undo so the stacks alternate.
-            self.undo_stack
-                .push((self.lines.clone(), self.row, self.col));
-            if self.undo_stack.len() > UNDO_MAX {
-                self.undo_stack.remove(0);
-            }
             self.lines = lines;
             self.row = row;
             self.col = col;
@@ -636,29 +471,6 @@ impl Editor {
             self.move_right();
         } else {
             self.col = self.word_forward_col();
-        }
-    }
-
-    fn jump_to_char(&mut self, target: char, dir: JumpDir) {
-        let graphemes: Vec<&str> = self.lines[self.row].graphemes(true).collect();
-        let hit = |g: &&str| g.starts_with(target);
-        let found = match dir {
-            JumpDir::Forward => graphemes
-                .iter()
-                .enumerate()
-                .skip(self.col + 1)
-                .find(|(_, g)| hit(g))
-                .map(|(i, _)| i),
-            JumpDir::Backward => graphemes
-                .iter()
-                .enumerate()
-                .take(self.col)
-                .rev()
-                .find(|(_, g)| hit(g))
-                .map(|(i, _)| i),
-        };
-        if let Some(i) = found {
-            self.col = i;
         }
     }
 
@@ -853,25 +665,6 @@ mod tests {
     }
 
     #[test]
-    fn vertical_movement_preserves_preferred_column() {
-        let mut ed = Editor::new();
-        ed.set_text("abcde\nx\nabcde");
-        assert_eq!(ed.render().1, (2, 5));
-
-        ed.handle_key(key(KeyCode::Up));
-        assert_eq!(ed.render().1, (1, 1));
-
-        ed.handle_key(key(KeyCode::Up));
-        assert_eq!(ed.render().1, (0, 5));
-
-        ed.handle_key(key(KeyCode::Down));
-        assert_eq!(ed.render().1, (1, 1));
-
-        ed.handle_key(key(KeyCode::Down));
-        assert_eq!(ed.render().1, (2, 5));
-    }
-
-    #[test]
     fn cancel_and_quit() {
         let mut ed = Editor::new();
         assert_eq!(ed.handle_key(ctrl('c')), EditorAction::Cancel);
@@ -947,7 +740,7 @@ mod tests {
     }
 
     #[test]
-    fn kill_ring_yank_and_pop() {
+    fn kill_ring_yank() {
         let mut ed = Editor::new();
         type_str(&mut ed, "alpha beta");
         ed.handle_key(ctrl('w')); // kill "beta"
@@ -955,14 +748,6 @@ mod tests {
         assert_eq!(ed.text(), "");
         ed.handle_key(ctrl('r'));
         assert_eq!(ed.text(), "alpha ");
-        ed.handle_key(alt('y')); // rotate to "beta"
-        assert_eq!(ed.text(), "beta");
-        ed.handle_key(alt('y')); // wrap back to "alpha "
-        assert_eq!(ed.text(), "alpha ");
-        // alt-y without a preceding yank is a no-op.
-        type_str(&mut ed, "x");
-        ed.handle_key(alt('y'));
-        assert_eq!(ed.text(), "alpha x");
     }
 
     #[test]
@@ -981,7 +766,7 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_z_undo_and_ctrl_y_redo() {
+    fn ctrl_z_undo() {
         let mut ed = Editor::new();
         type_str(&mut ed, "abc");
         // Undo twice via Ctrl+Z.
@@ -989,36 +774,6 @@ mod tests {
         assert_eq!(ed.text(), "ab");
         ed.handle_key(ctrl('z'));
         assert_eq!(ed.text(), "a");
-        // Redo once via Ctrl+Y.
-        ed.handle_key(ctrl('y'));
-        assert_eq!(ed.text(), "ab");
-        // Redo again restores "abc".
-        ed.handle_key(ctrl('y'));
-        assert_eq!(ed.text(), "abc");
-        // A new edit clears the redo stack: undo reverts the "d", redo
-        // re-applies it.
-        type_str(&mut ed, "d");
-        assert_eq!(ed.text(), "abcd");
-        ed.handle_key(ctrl('z'));
-        assert_eq!(ed.text(), "abc");
-        ed.handle_key(ctrl('y'));
-        assert_eq!(ed.text(), "abcd");
-    }
-
-    #[test]
-    fn undo_redo_restores_cursor() {
-        let mut ed = Editor::new();
-        type_str(&mut ed, "hello");
-        ed.handle_key(key(KeyCode::Left));
-        ed.handle_key(key(KeyCode::Left));
-        ed.handle_key(key(KeyCode::Backspace));
-        assert_eq!(ed.text(), "helo");
-        ed.handle_key(ctrl('z')); // undo backspace
-        assert_eq!(ed.text(), "hello");
-        // cursor restored to position before backspace (col 3)
-        assert_eq!(ed.render().1, (0, 3));
-        ed.handle_key(ctrl('y')); // redo backspace
-        assert_eq!(ed.text(), "helo");
     }
 
     #[test]
@@ -1039,31 +794,6 @@ mod tests {
     }
 
     #[test]
-    fn char_jump_forward_and_backward() {
-        let mut ed = Editor::new();
-        type_str(&mut ed, "abc def abc");
-        ed.handle_key(ctrl('a'));
-        let trigger = KeyEvent::new(KeyCode::Char(']'), KeyModifiers::CONTROL);
-        ed.handle_key(trigger);
-        ed.handle_key(key(KeyCode::Char('d')));
-        assert_eq!(ed.render().1, (0, 4));
-        // Backward jump (ctrl+alt+]).
-        ed.handle_key(ctrl('e'));
-        ed.handle_key(KeyEvent::new(
-            KeyCode::Char(']'),
-            KeyModifiers::CONTROL | KeyModifiers::ALT,
-        ));
-        ed.handle_key(key(KeyCode::Char('d')));
-        assert_eq!(ed.render().1, (0, 4));
-        // Trigger again cancels: the 'x' is not inserted by the jump path
-        // but typed normally afterwards.
-        ed.handle_key(trigger);
-        ed.handle_key(trigger);
-        ed.handle_key(key(KeyCode::Char('x')));
-        assert!(ed.text().contains('x'));
-    }
-
-    #[test]
     fn small_paste_inserts_directly() {
         let mut ed = Editor::new();
         ed.insert_paste("hello\nworld");
@@ -1071,27 +801,19 @@ mod tests {
     }
 
     #[test]
-    fn large_paste_collapses_to_marker_and_expands_on_submit() {
+    fn large_paste_inserts_directly() {
         let mut ed = Editor::new();
         let big: String = (0..20).map(|i| format!("line {i}\n")).collect();
         ed.insert_paste(&big);
-        assert_eq!(ed.text(), "[paste #1 +21 lines]");
-        type_str(&mut ed, " tail");
-        let action = ed.handle_key(key(KeyCode::Enter));
-        let EditorAction::Submit(text) = action else {
-            panic!("expected submit");
-        };
-        assert!(text.starts_with("line 0\n"));
-        assert!(text.ends_with(" tail"));
-        assert!(!text.contains("[paste"));
+        assert_eq!(ed.text(), big);
     }
 
     #[test]
-    fn char_paste_marker_counts_chars() {
+    fn char_paste_inserts_directly() {
         let mut ed = Editor::new();
         let big = "x".repeat(1500);
         ed.insert_paste(&big);
-        assert_eq!(ed.text(), "[paste #1 1500 chars]");
+        assert_eq!(ed.text(), big);
         assert_eq!(ed.expanded_text(), big);
     }
 
