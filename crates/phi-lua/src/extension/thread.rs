@@ -13,7 +13,7 @@ const NTH_INSTRUCTION: u32 = 1000;
 const DEFAULT_TIMEOUT_MS: i64 = 5000;
 
 // ---------------------------------------------------------------------------
-// Lua global setup
+// Lua thread communication
 // ---------------------------------------------------------------------------
 
 pub enum LuaMsg {
@@ -29,81 +29,13 @@ pub enum LuaMsg {
     },
 }
 
-struct SendableLua {
-    lua: mlua::Lua,
-    /// The thread that owns this Lua VM. All access must come from this
-    /// thread; checked at runtime in [`SendableLua::get`].
-    /// Set to `None` until the owning thread initialises it via
-    /// [`SendableLua::init_thread_id`].
-    thread_id: std::sync::OnceLock<std::thread::ThreadId>,
-}
-
-// # Safety
-//
-// `mlua::Lua` (without the `send` feature) is `!Send` because it internally
-// uses `Rc` and other non-thread-safe types.  `SendableLua` asserts `Send`
-// so that the value can be moved across thread boundaries **exactly once**:
-// from the thread that creates it into the dedicated Lua owner thread.
-//
-// The contract is:
-//
-// 1. `SendableLua::new` must be called **after** the `thread::spawn` call
-//    (or from within the spawned thread), so that `thread_id` records the
-//    owning thread.
-// 2. The VM must never be cloned or shared; there is exactly one owner.
-// 3. All subsequent access to the Lua VM must come from the same thread
-//    recorded in `thread_id`.  `SendableLua::get` enforces this with a
-//    runtime `assert!`.
-// 4. Communication with the owning thread is exclusively through the
-//    `mpsc` channel (serialised), so no two threads ever access the VM
-//    concurrently.
-//
-// Violating any of these invariants is undefined behaviour.
-unsafe impl Send for SendableLua {}
-
-impl SendableLua {
-    /// Create a `SendableLua` wrapping the given Lua VM.  The thread id
-    /// is not yet set; call [`SendableLua::init_thread_id`] from the
-    /// dedicated owner thread before any access.
-    fn new(lua: mlua::Lua) -> Self {
-        Self {
-            lua,
-            thread_id: std::sync::OnceLock::new(),
-        }
-    }
-
-    /// Record the **current** thread as the exclusive owner.  Must be
-    /// called once, from the dedicated Lua thread, before any `get()`.
-    fn init_thread_id(&self) {
-        self.thread_id
-            .set(std::thread::current().id())
-            .expect("init_thread_id called more than once");
-    }
-
-    /// Access the inner `Lua` VM, asserting that the caller is on the
-    /// owning thread.
-    fn get(&self) -> &mlua::Lua {
-        let id = self
-            .thread_id
-            .get()
-            .expect("SendableLua accessed before init_thread_id was called");
-        assert!(
-            std::thread::current().id() == *id,
-            "SendableLua accessed from a thread other than its dedicated owner;              this is undefined behaviour for the !Send Rc-based mlua::Lua"
-        );
-        &self.lua
-    }
-}
-
+/// Spawn a dedicated OS thread that owns the Lua VM.
+///
+/// With mlua's `send` feature, `mlua::Lua` is `Send`, so it can be moved
+/// safely into the spawned thread without any `unsafe` wrapper.
 pub(super) fn spawn_lua_thread(lua: mlua::Lua, rx: std::sync::mpsc::Receiver<LuaMsg>) {
-    // Wrap in SendableLua *before* the spawn so the unsafe Send impl
-    // applies; the raw !Send mlua::Lua is never moved across the
-    // boundary alone.
-    let sendable = SendableLua::new(lua);
     std::thread::spawn(move || {
-        // Record this thread as the exclusive owner before any VM access.
-        sendable.init_thread_id();
-        lua_thread_loop(&sendable, rx);
+        lua_thread_loop(&lua, rx);
     });
 }
 
@@ -111,9 +43,7 @@ pub(super) fn spawn_lua_thread(lua: mlua::Lua, rx: std::sync::mpsc::Receiver<Lua
 // Lua thread loop
 // ---------------------------------------------------------------------------
 
-fn lua_thread_loop(lua: &SendableLua, rx: std::sync::mpsc::Receiver<LuaMsg>) {
-    let lua = lua.get();
-
+fn lua_thread_loop(lua: &mlua::Lua, rx: std::sync::mpsc::Receiver<LuaMsg>) {
     // Allocate an atomic deadline variable for the watchdog hook.
     // A value of 0 implies no deadline or cleared timeout.
     let deadline = std::sync::Arc::new(std::sync::atomic::AtomicI64::new(0));

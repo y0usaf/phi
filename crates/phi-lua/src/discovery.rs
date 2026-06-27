@@ -4,8 +4,9 @@ pub fn discover_extensions(cwd: &Path) -> Vec<PathBuf> {
     let mut results = Vec::new();
 
     // 1. Global config dir: <config>/phi/extensions/*.lua
-    if let Some(config_dir) = dirs::config_dir() {
-        let global_ext_dir = config_dir.join("phi/extensions");
+    if let Some(proj_dirs) = directories::ProjectDirs::from("", "", "phi") {
+        let config_dir = proj_dirs.config_dir();
+        let global_ext_dir = config_dir.join("extensions");
         collect_lua_files(&global_ext_dir, &mut results);
     }
 

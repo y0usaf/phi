@@ -90,12 +90,9 @@ impl phi_ext::Extension for LuaExtension {
         // Create the channel
         let (tx, rx) = std::sync::mpsc::sync_channel::<LuaMsg>(32);
 
-        // Spawn the dedicated Lua owner thread.
-        // SAFETY: mlua::Lua without the "send" feature is !Send due to
-        // internal Rc. We guarantee sole ownership from this point: the Lua
-        // VM is moved into SendableLua (which declares Send) and from there
-        // exclusively into the spawned thread. All Lua calls are serialized
-        // through the sync_channel; no other thread ever touches the VM.
+        // Spawn the dedicated Lua owner thread. With mlua's `send` feature,
+        // `mlua::Lua` is `Send` and can be moved safely into the spawned
+        // thread. All Lua calls are serialized through the sync_channel.
         spawn_lua_thread(lua, rx);
 
         let tx = Arc::new(tx);
