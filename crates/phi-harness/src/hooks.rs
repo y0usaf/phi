@@ -114,6 +114,15 @@ struct HandlerEntry {
     handler: Arc<dyn Any + Send + Sync>,
 }
 
+impl Clone for HandlerEntry {
+    fn clone(&self) -> Self {
+        Self {
+            source: self.source.clone(),
+            handler: self.handler.clone(),
+        }
+    }
+}
+
 struct CleanupEntry {
     cleanup: Box<dyn FnOnce() -> Result<(), HarnessError> + Send + Sync>,
 }
@@ -363,15 +372,6 @@ impl PhiHooks {
 impl Default for PhiHooks {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-impl Clone for HandlerEntry {
-    fn clone(&self) -> Self {
-        Self {
-            source: self.source.clone(),
-            handler: self.handler.clone(),
-        }
     }
 }
 

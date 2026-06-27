@@ -143,8 +143,8 @@ impl PhiHarness {
             payload
         } else {
             let combined = next_turn
-                .iter()
-                .map(|m| m.text.clone())
+                .into_iter()
+                .map(|m| m.text)
                 .collect::<Vec<_>>()
                 .join("\n\n");
             match &payload {
@@ -264,16 +264,13 @@ impl PhiHarness {
     // ── Queue ops (allowed during Turn) ─────────────────────────────────────
 
     pub async fn steer(&self, text: &str) -> Result<String, HarnessError> {
-        let id = self.queues.enqueue_steer(text).await;
-        Ok(id)
+        Ok(self.queues.enqueue_steer(text).await)
     }
     pub async fn follow_up(&self, text: &str) -> Result<String, HarnessError> {
-        let id = self.queues.enqueue_follow_up(text).await;
-        Ok(id)
+        Ok(self.queues.enqueue_follow_up(text).await)
     }
     pub async fn next_turn(&self, text: &str) -> Result<String, HarnessError> {
-        let id = self.queues.enqueue_next_turn(text).await;
-        Ok(id)
+        Ok(self.queues.enqueue_next_turn(text).await)
     }
 
     // ── Config setters (affect next snapshot) ───────────────────────────────
