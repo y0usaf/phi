@@ -24,7 +24,7 @@ pub fn truncate_to_cells(value: &str, max_cols: usize) -> String {
     if max_cols <= ellipsis_w {
         return ellipsis.to_string();
     }
-    let mut out = String::new();
+    let mut out = String::with_capacity(max_cols);
     let mut width = 0;
     for ch in value.chars() {
         let ch_width = unicode_width::UnicodeWidthChar::width(ch)
@@ -129,7 +129,7 @@ pub fn truncate_line_to_width(line: &str, width: usize) -> String {
     if width == 0 {
         return String::new();
     }
-    let mut out = String::new();
+    let mut out = String::with_capacity(line.len().min(width * 4));
     let mut state = SgrState::default();
     let mut remaining = width;
 
@@ -183,7 +183,7 @@ pub fn truncate_line_with_ellipsis_to_width(line: &str, width: usize) -> String 
 
     // Reserve 1 cell for the ellipsis.
     let budget = width - 1;
-    let mut out = String::new();
+    let mut out = String::with_capacity(line.len().min(width * 4));
     let mut state = SgrState::default();
     let mut remaining = budget;
 
