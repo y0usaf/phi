@@ -185,15 +185,6 @@ impl Ui {
         let width = self.term.width().max(12);
         let p = &self.palette;
 
-        if self.running.is_some() {
-            lines.push(format!(
-                "{CYAN}{}{RESET} {DIM}{} · turn {}{RESET}",
-                self.spinner.frame(),
-                self.status,
-                self.turn
-            ));
-        }
-
         if self.branch_at.elapsed() > Duration::from_secs(5) {
             self.branch = git_branch(&self.cwd);
             self.branch_at = std::time::Instant::now();
@@ -320,6 +311,11 @@ impl Ui {
             }
             cursor = input_cursor;
 
+            // Knight Rider spinner under the >> input, like opencode.
+            if self.running.is_some() {
+                lines.push(self.spinner.frame().to_owned());
+            }
+
             if let Some(text) = self.queued.first() {
                 let first = text.lines().next().unwrap_or("");
                 let more = if text.lines().count() > 1 { " \u{2026}" } else { "" };
@@ -341,8 +337,6 @@ impl Ui {
                 ]
             } else if self.popup.is_some() {
                 &["tab complete \u{00b7} up/down select \u{00b7} enter accept \u{00b7} esc dismiss"]
-            } else if self.running.is_some() {
-                &["enter queue follow-up", "alt+up edit queued \u{00b7} esc cancel"]
             } else {
                 &[]
             };
