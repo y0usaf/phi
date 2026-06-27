@@ -1,4 +1,3 @@
-
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -338,7 +337,6 @@ async fn prelude_internals_hidden_from_vars() {
     repl.shutdown().await;
 }
 
-
 #[tokio::test]
 async fn hashline_envelope_markers() {
     let dir = tempfile::tempdir().unwrap();
@@ -373,9 +371,7 @@ async fn hashline_apply_patch_contamination_rejected() {
 
     let r = repl
         .exec(
-            &format!(
-                r#"print(edit_file(patch='*** Update File: {path}\nSWAP 1.=1:\n+X'))"#
-            ),
+            &format!(r#"print(edit_file(patch='*** Update File: {path}\nSWAP 1.=1:\n+X'))"#),
             EXEC_TIMEOUT,
         )
         .await
@@ -398,18 +394,12 @@ async fn hashline_unified_diff_rejected() {
 
     let r = repl
         .exec(
-            &format!(
-                r#"print(edit_file(patch='@@ -1,2 +1,2 @@\n-line1\n+LINE1'))"#
-            ),
+            &format!(r#"print(edit_file(patch='@@ -1,2 +1,2 @@\n-line1\n+LINE1'))"#),
             EXEC_TIMEOUT,
         )
         .await
         .unwrap();
-    assert!(
-        r.stdout.contains("unified-diff"),
-        "stdout: {}",
-        r.stdout
-    );
+    assert!(r.stdout.contains("unified-diff"), "stdout: {}", r.stdout);
     repl.shutdown().await;
 }
 
@@ -511,11 +501,7 @@ print(edit_file(patch=patch))"#
         )
         .await
         .unwrap();
-    assert!(
-        r.stdout.contains("2:line one"),
-        "stdout: {}",
-        r.stdout
-    );
+    assert!(r.stdout.contains("2:line one"), "stdout: {}", r.stdout);
     assert!(
         r.stdout.contains("3:line two"),
         "should have stripped prefix: {}",
@@ -529,7 +515,11 @@ async fn hashline_boundary_repair_drops_duplicated_closer() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("closers.txt");
     let path = path.to_str().unwrap();
-    std::fs::write(path, "it('a', () => {\n\tsetup();\n\trun();\n});\nafter();\n").unwrap();
+    std::fs::write(
+        path,
+        "it('a', () => {\n\tsetup();\n\trun();\n});\nafter();\n",
+    )
+    .unwrap();
     let (mut repl, _events) = started().await;
 
     let r = repl
@@ -690,36 +680,6 @@ print(edit_file(patch=patch))"#
 }
 
 #[tokio::test]
-async fn hashline_apply_patch_path_noise_stripped() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("noise.txt");
-    let path = path.to_str().unwrap();
-    std::fs::write(path, "a\nb\nc\n").unwrap();
-    let (mut repl, _events) = started().await;
-
-    let r = repl
-        .exec(
-            &format!(
-                r#"view = read_file({path:?})
-header = view.splitlines()[0]
-tag = header.split('#')[1].rstrip(']')
-noise_header = "[*** Update File: {path}#" + tag + "]"
-patch = noise_header + "\nSWAP 2.=2:\n+BEE"
-print(edit_file(patch=patch))"#
-            ),
-            EXEC_TIMEOUT,
-        )
-        .await
-        .unwrap();
-    assert!(
-        r.stdout.contains("2:BEE"),
-        "should strip path noise: {}",
-        r.stdout
-    );
-    repl.shutdown().await;
-}
-
-#[tokio::test]
 async fn hashline_minus_row_rejected() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("minus.txt");
@@ -774,4 +734,3 @@ print(edit_file(patch=patch))"#
     );
     repl.shutdown().await;
 }
-

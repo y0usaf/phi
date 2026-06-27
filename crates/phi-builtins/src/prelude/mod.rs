@@ -9,7 +9,13 @@ pub const CODING_PRELUDE: &str = concat!(
     include_str!("bash.py"),
     include_str!("file_ops.py"),
     include_str!("search.py"),
-    include_str!("hashline.py"),
+    include_str!("hashline/normalize.py"),
+    include_str!("hashline/hashing.py"),
+    include_str!("hashline/snapshot.py"),
+    include_str!("hashline/view.py"),
+    include_str!("hashline/parse.py"),
+    include_str!("hashline/resolve.py"),
+    include_str!("hashline/apply.py"),
 );
 
 pub fn coding_tools_section() -> String {
