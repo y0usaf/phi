@@ -222,7 +222,13 @@ impl Ui {
         // Always render the statusbar first (separator + header), whether a
         // selector is open or not — like Pi's permanent footer.
         let sep = "\u{2500}".repeat(width);
-        lines.push(format!("{}{sep}{RESET}", &p.statusbar_bg));
+        let bg = p.terminal_bg;
+        lines.push(format!(
+            "\x1b[38;2;{};{};{}m{sep}{RESET}",
+            255 - bg.0,
+            255 - bg.1,
+            255 - bg.2,
+        ));
 
         let current_dir = self
             .cwd
