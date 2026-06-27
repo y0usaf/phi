@@ -41,8 +41,6 @@ pub const WARNING: Color = MUSTARD;
 pub const ERROR: Color = SRIRACHA;
 pub const SUCCESS: Color = JULEP;
 pub const SUCCESS_SUBTLE: Color = GUAC;
-pub const STATUS_FG: Color = BUTTER;
-pub const STATUS_BG: Color = CHARPLE;
 pub const BORDER: Color = CHARCOAL;
 pub const SURFACE: Color = PEPPER;
 pub const SURFACE_RAISED: Color = BBQ;
@@ -247,6 +245,31 @@ pub fn generate_system(colors: &TerminalColors) -> GeneratedTheme {
         success_subtle: fade_toward(grays[2], col(2), subtle_alpha),
         warning: col(3),
         error: col(1),
+    }
+}
+
+/// Standard ANSI 16-color palette + black background / white foreground, used
+/// as the fallback when the terminal doesn't answer OSC probes (SSH, CI, etc.).
+/// Mirrors opencode's `ansiToRgba` defaults so `generate_system` can run on a
+/// synthetic `TerminalColors` and produce the same cohesive palette it would
+/// from a real terminal — every surface, border, statusbar, and accent comes
+/// from the same gray ramp / ANSI mapping instead of ad-hoc hardcoded hexes.
+pub fn default_terminal_colors() -> TerminalColors {
+    use phi_tui::palette::Rgb;
+    const STD: [Rgb; 16] = [
+        Rgb(0x00, 0x00, 0x00), Rgb(0x80, 0x00, 0x00),
+        Rgb(0x00, 0x80, 0x00), Rgb(0x80, 0x80, 0x00),
+        Rgb(0x00, 0x00, 0x80), Rgb(0x80, 0x00, 0x80),
+        Rgb(0x00, 0x80, 0x80), Rgb(0xc0, 0xc0, 0xc0),
+        Rgb(0x80, 0x80, 0x80), Rgb(0xff, 0x00, 0x00),
+        Rgb(0x00, 0xff, 0x00), Rgb(0xff, 0xff, 0x00),
+        Rgb(0x00, 0x00, 0xff), Rgb(0xff, 0x00, 0xff),
+        Rgb(0x00, 0xff, 0xff), Rgb(0xff, 0xff, 0xff),
+    ];
+    TerminalColors {
+        background: Rgb(0x00, 0x00, 0x00),
+        foreground: Rgb(0xc0, 0xc0, 0xc0),
+        palette: STD.map(Some),
     }
 }
 

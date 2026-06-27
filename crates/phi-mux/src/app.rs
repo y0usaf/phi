@@ -21,6 +21,7 @@ use crate::driver::{self as driver, MuxChannels, SessionKey};
 use crate::persisted::{self as persisted, PersistedState};
 use crate::status::SessionStatus;
 use crate::grid::ansi::{AnsiRenderer, HardwareCursor};
+use crate::grid::theme;
 use crate::grid::cell_surface::CellSurface;
 use crate::grid::layout::{CellLayout, SIDEBAR_WIDTH_DEFAULT, compute_cell_layout};
 use super::ui::overlays::archive::{ArchiveOutcome, ArchiveViewerState, render_archive_viewer};
@@ -91,12 +92,16 @@ pub async fn run(shared: SharedResources, mux_config: MuxConfig, cwd: PathBuf) -
     let _ = write!(stdout, "\x1b[2J\x1b[H");
 
     // Probe the host terminal's colors (OSC 10/11/4) once, inside raw mode,
-    // and derive the mux palette from them. Falls back to the built-in
-    // Charmtone palette when the terminal doesn't answer in time.
-    let palette = phi_tui::detect_terminal_colors(Duration::from_millis(150))
-        .as_ref()
-        .map(ScenePalette::from_terminal_colors)
-        .unwrap_or_default();
+    // and derive the mux palette from them. When the terminal doesn't answer
+    // (SSH, CI, etc.) we synthesize standard ANSI defaults and run the same
+    // `generate_system` path — there is no separate hardcoded fallback palette,
+    // so every surface, border, statusbar, and accent always comes from the
+    // same gray ramp / ANSI mapping. Mirrors opencode's single-path approach.
+    let palette = ScenePalette::from_terminal_colors(
+        phi_tui::detect_terminal_colors(Duration::from_millis(150))
+            .as_ref()
+            .unwrap_or(&theme::default_terminal_colors()),
+    );
 
     let (status_tx, status_rx) = mpsc::unbounded_channel();
     let (redraw_tx, redraw_rx) = mpsc::unbounded_channel();
@@ -199,12 +204,17 @@ impl MuxApp {
 
         while !self.quit {
             let mut dirty = false;
+            // `focus_changed` is only set by *user* input, never by background
+            // events (watcher, status, redraw, ticker). Background session
+            // updates must refresh the sidebar/screen without touching focus.
+            let mut focus_changed = false;
             tokio::select! {
                 event = events.next() => {
                     match event {
                         Some(Ok(event)) => {
                             self.handle_event(event).await;
                             dirty = true;
+                            focus_changed = true;
                         }
                         Some(Err(_)) | None => break,
                     }
@@ -289,7 +299,9 @@ impl MuxApp {
             }
 
             if dirty {
-                self.ensure_focused_session().await;
+                if focus_changed {
+                    self.ensure_focused_session().await;
+                }
                 self.draw();
             }
         }

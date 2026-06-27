@@ -50,29 +50,11 @@ pub struct ScenePalette {
 
 impl Default for ScenePalette {
     fn default() -> Self {
-        Self {
-            fg: theme::TEXT,
-            // Transparent: let the host terminal's background show through.
-            bg: theme::TRANSPARENT,
-            surface_raised: theme::SURFACE_RAISED,
-            statusbar_fg: theme::STATUS_FG,
-            statusbar_bg: theme::STATUS_BG,
-            // Transparent sidebar: structure comes from row focus, not a
-            // slab background.
-            sidebar_bg: theme::TRANSPARENT,
-            border: theme::BORDER,
-            muted: theme::MUTED,
-            term_fg: theme::TERM_FG,
-            term_bg: theme::TRANSPARENT,
-            accent: theme::ACCENT,
-            accent_2: theme::ACCENT_2,
-            ansi: theme::default_ansi_palette(),
-            running: theme::RUNNING,
-            success: theme::SUCCESS,
-            success_subtle: theme::SUCCESS_SUBTLE,
-            warning: theme::WARNING,
-            error: theme::ERROR,
-        }
+        // Unify every path through `generate_system` so there is no separate
+        // hardcoded fallback — the statusbar, surfaces, borders, and accents
+        // always come from the same gray ramp / ANSI mapping. This is what
+        // tests get; production goes through `from_terminal_colors` in app.rs.
+        Self::from_terminal_colors(&theme::default_terminal_colors())
     }
 }
 
