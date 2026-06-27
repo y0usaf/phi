@@ -128,10 +128,17 @@ impl<W: Write> Terminal<W> {
     }
 
     pub fn resize(&mut self, width: u16, height: u16) {
-        self.width = width.max(1) as usize;
-        self.height = height.max(1) as usize;
-        // Reflow invalidates row accounting; drop the live region and let the
-        // next render redraw from wherever the terminal reflowed us to.
+        // Skip same-dimension resize events: terminals fire several per
+        // window adjustment and each would leave a stale chrome copy.
+        let (w, h) = (width.max(1) as usize, height.max(1) as usize);
+        if self.width == w && self.height == h {
+            return;
+        }
+        self.width = w;
+        self.height = h;
+        // Reflow invalidates row accounting; the caller (events.rs) must
+        // run `clear_all()` so the physical cursor is homed to (0,0) —
+        // matching `cursor_row = 0` below — before the next render.
         self.prev.clear();
         self.cursor_row = 0;
         self.cursor_col = 0;

@@ -170,7 +170,21 @@ impl Ui {
                 self.editor.insert_paste(&text);
                 self.refresh_popup();
             }
-            Event::Resize(width, height) => self.term.resize(width, height),
+            Event::Resize(width, height) => {
+                // resize() no-ops on same dimensions (terminals fire several
+                // resize events per window adjustment). When the size really
+                // changed, do an absolute clear (clear_all: erase-screen +
+                // erase-scrollback + cursor-home sequence) so the
+                // physical cursor is homed to row 0 — matching the
+                // cursor_row = 0 that resize() just set. Without this, the
+                // next render's move_to_origin would emit zero cursor-up
+                // commands, leaving stale chrome in scrollback.
+                // transcript.reset() sets committed_rows = 0 so all finalized
+                // blocks are re-emitted as scrollback on the next draw().
+                self.term.resize(width, height);
+                let _ = self.term.clear_all();
+                self.transcript.reset();
+            }
             _ => {}
         }
         false
@@ -209,10 +223,10 @@ impl Ui {
                     "{DIM}keys: enter send (queues mid-run) · shift+enter newline · tab complete · up/down history{RESET}"
                 ));
                 self.pending.push(format!(
-                    "{DIM}      ctrl-y yank · ctrl-_ undo · ctrl-p cycle model · ctrl-l models · shift+tab thinking level{RESET}"
+                    "{DIM}      ctrl-z undo · ctrl-y redo · ctrl-r yank · ctrl-p cycle model · ctrl-l models · shift+tab thinking level{RESET}"
                 ));
                 self.pending.push(format!(
-                    "{DIM}      ctrl-t show/hide thinking · ctrl-o expand tool output · ctrl-g $EDITOR · ctrl-z suspend{RESET}"
+                    "{DIM}      ctrl-t show/hide thinking · ctrl-o expand tool output · ctrl-g $EDITOR · ctrl-q suspend{RESET}"
                 ));
                 self.pending
                     .push(format!("{DIM}      esc cancel · ctrl-c ctrl-c quit{RESET}"));

@@ -19,6 +19,7 @@ pub enum EditorAction {
 
 const KILL_RING_MAX: usize = 50;
 const UNDO_MAX: usize = 100;
+const REDO_MAX: usize = 100;
 /// Pastes longer than this many lines or chars collapse to a marker
 /// (pi-compatible thresholds).
 const PASTE_LINES_MAX: usize = 10;
@@ -43,6 +44,8 @@ pub struct Editor {
     /// present only while the previous key was a yank, enabling alt-y.
     last_yank: Option<(usize, usize, usize, usize, usize)>,
     undo_stack: Vec<(Vec<String>, usize, usize)>,
+    /// Redo stack: states popped by undo, available for redo (Ctrl+Y).
+    redo_stack: Vec<(Vec<String>, usize, usize)>,
     /// Large pastes collapsed to `[paste #N …]` markers: (marker, content).
     /// Markers are expanded on submit; an edited marker stays literal text.
     pastes: Vec<(String, String)>,
@@ -74,6 +77,7 @@ impl Editor {
             kill_ring: Vec::new(),
             last_yank: None,
             undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
             pastes: Vec::new(),
             paste_counter: 0,
             jump: None,
@@ -127,15 +131,16 @@ impl Editor {
     }
 
     pub fn clear(&mut self) {
-        if !self.is_empty() {
-            self.snapshot();
-        }
         self.lines = vec![String::new()];
         self.row = 0;
         self.col = 0;
         self.history_idx = None;
         self.draft = None;
         self.preferred_col = None;
+        // A fresh buffer starts with no undo/redo history (jcode's
+        // clear_input_undo_history on submit).
+        self.undo_stack.clear();
+        self.redo_stack.clear();
     }
 
     /// Add a submitted prompt to the recall history used by Up/Down.
@@ -302,7 +307,11 @@ impl Editor {
             KeyCode::Char('e') if ctrl => self.col = grapheme_count(&self.lines[self.row]),
             KeyCode::Char('k') if ctrl => self.kill_to_eol(),
             KeyCode::Char('u') if ctrl => self.kill_to_bol(),
-            KeyCode::Char('y') if ctrl => self.yank(),
+            // Ctrl+Z undo, Ctrl+Y redo (Ctrl+- / Ctrl+_ remain as emacs aliases).
+            // Yank moved to Ctrl+R to free Ctrl+Y for redo.
+            KeyCode::Char('z') if ctrl => self.undo(),
+            KeyCode::Char('y') if ctrl => self.redo(),
+            KeyCode::Char('r') if ctrl => self.yank(),
             KeyCode::Char('y') if alt => self.yank_pop(prev_yank),
             KeyCode::Char('-' | '_') if ctrl => self.undo(),
             KeyCode::Char('b') if alt => self.move_word_back(),
@@ -582,10 +591,31 @@ impl Editor {
         if self.undo_stack.len() > UNDO_MAX {
             self.undo_stack.remove(0);
         }
+        // A new edit invalidates the redo history.
+        self.redo_stack.clear();
     }
 
     fn undo(&mut self) {
         if let Some((lines, row, col)) = self.undo_stack.pop() {
+            // Stash the pre-undo state so redo can re-apply it.
+            self.redo_stack.push((self.lines.clone(), self.row, self.col));
+            if self.redo_stack.len() > REDO_MAX {
+                self.redo_stack.remove(0);
+            }
+            self.lines = lines;
+            self.row = row;
+            self.col = col;
+        }
+    }
+
+    fn redo(&mut self) {
+        if let Some((lines, row, col)) = self.redo_stack.pop() {
+            // Push the pre-redo state back onto undo so the stacks alternate.
+            self.undo_stack
+                .push((self.lines.clone(), self.row, self.col));
+            if self.undo_stack.len() > UNDO_MAX {
+                self.undo_stack.remove(0);
+            }
             self.lines = lines;
             self.row = row;
             self.col = col;
@@ -923,7 +953,7 @@ mod tests {
         ed.handle_key(ctrl('w')); // kill "beta"
         ed.handle_key(ctrl('u')); // kill "alpha "
         assert_eq!(ed.text(), "");
-        ed.handle_key(ctrl('y'));
+        ed.handle_key(ctrl('r'));
         assert_eq!(ed.text(), "alpha ");
         ed.handle_key(alt('y')); // rotate to "beta"
         assert_eq!(ed.text(), "beta");
@@ -948,6 +978,47 @@ mod tests {
         assert_eq!(ed.text(), "a");
         ed.handle_key(undo);
         assert_eq!(ed.text(), "");
+    }
+
+    #[test]
+    fn ctrl_z_undo_and_ctrl_y_redo() {
+        let mut ed = Editor::new();
+        type_str(&mut ed, "abc");
+        // Undo twice via Ctrl+Z.
+        ed.handle_key(ctrl('z'));
+        assert_eq!(ed.text(), "ab");
+        ed.handle_key(ctrl('z'));
+        assert_eq!(ed.text(), "a");
+        // Redo once via Ctrl+Y.
+        ed.handle_key(ctrl('y'));
+        assert_eq!(ed.text(), "ab");
+        // Redo again restores "abc".
+        ed.handle_key(ctrl('y'));
+        assert_eq!(ed.text(), "abc");
+        // A new edit clears the redo stack: undo reverts the "d", redo
+        // re-applies it.
+        type_str(&mut ed, "d");
+        assert_eq!(ed.text(), "abcd");
+        ed.handle_key(ctrl('z'));
+        assert_eq!(ed.text(), "abc");
+        ed.handle_key(ctrl('y'));
+        assert_eq!(ed.text(), "abcd");
+    }
+
+    #[test]
+    fn undo_redo_restores_cursor() {
+        let mut ed = Editor::new();
+        type_str(&mut ed, "hello");
+        ed.handle_key(key(KeyCode::Left));
+        ed.handle_key(key(KeyCode::Left));
+        ed.handle_key(key(KeyCode::Backspace));
+        assert_eq!(ed.text(), "helo");
+        ed.handle_key(ctrl('z')); // undo backspace
+        assert_eq!(ed.text(), "hello");
+        // cursor restored to position before backspace (col 3)
+        assert_eq!(ed.render().1, (0, 3));
+        ed.handle_key(ctrl('y')); // redo backspace
+        assert_eq!(ed.text(), "helo");
     }
 
     #[test]

@@ -306,21 +306,13 @@ pub async fn run(setup: TuiSetup, mut io: SessionIo) -> Result<()> {
                     if guard.is_some()
                         && !io.embedded
                         && key.kind != KeyEventKind::Release
-                        && key.code == KeyCode::Char('z')
+                        && key.code == KeyCode::Char('q')
                         && key.modifiers.contains(KeyModifiers::CONTROL) =>
                 {
                     let _ = ui.term.finish();
                     if let Some(guard) = &guard {
                         guard.suspend();
                     }
-                    false
-                }
-                #[cfg(unix)]
-                Some(Ok(Event::Key(key)))
-                    if key.kind != KeyEventKind::Release
-                        && key.code == KeyCode::Char('z')
-                        && key.modifiers.contains(KeyModifiers::CONTROL) =>
-                {
                     false
                 }
                 Some(Ok(event)) => ui.handle_input(event, &cmd_tx).await,
