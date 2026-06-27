@@ -3,7 +3,19 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use super::constants::{BOLD, DIM, ITALIC, RESET, UNDERLINE, CYAN, MarkdownPalette};
 use super::highlight::highlight_code_cached;
-use super::checkpoint::MarkdownBlockKind;
+/// Kind of markdown block, used to determine spacing behaviour at block
+/// boundaries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MarkdownBlockKind {
+    Heading,
+    Paragraph,
+    List,
+    BlockQuote,
+    CodeBlock,
+    DisplayMath,
+    Rule,
+    HtmlBlock,
+}
 
 /// Semantic spacing mode controlling vertical separation between blocks.
 ///
