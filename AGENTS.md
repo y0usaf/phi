@@ -65,7 +65,6 @@ See `README.md` for the crate layout. Key crates:
 - `phi-tui`: terminal frontend primitives
 - `phi-mux`: session multiplexer (cell-grid, UI, keys, workspace)
 - `phi-session`: session config, transcript, usage, JSONL store
-- `phi-harness`: orchestration between RLM engine and frontends
 
 ## Checklist
 

@@ -26,7 +26,7 @@ futures = "0.3.31"
 ignore = "0.4"
 jiff = "0.2.14"
 libc = "0.2"
-mlua = { version = "0.11", features = ["lua54", "vendored", "serialize", "error-send"] }
+mlua = { version = "0.11", features = ["lua54", "vendored", "serialize", "error-send", "send"] }
 notify = "8"
 pulldown-cmark = { version = "0.13", default-features = false }
 rand = "0.9.1"
@@ -51,18 +51,19 @@ dirs = "5"
 webbrowser = "1.0.4"
 
 phi-ai = { path = "crates/phi-ai" }
+phi-ai-auth = { path = "crates/phi-ai-auth" }
+phi-ai-types = { path = "crates/phi-ai-types" }
 phi-builtins = { path = "crates/phi-builtins" }
-phi-cli = { path = "crates/phi-cli" }
 phi-ext = { path = "crates/phi-ext" }
+phi-grid = { path = "crates/phi-grid" }
+phi-event = { path = "crates/phi-event" }
 phi-repl = { path = "crates/phi-repl" }
 phi-mux = { path = "crates/phi-mux" }
 phi-rlm = { path = "crates/phi-rlm" }
 phi-session = { path = "crates/phi-session" }
 phi-session-tui = { path = "crates/phi-session-tui" }
-phi-runtime = { path = "crates/phi-runtime" }
 phi-tui = { path = "crates/phi-tui" }
 phi-lua = { path = "crates/phi-lua" }
-phi-harness = { path = "crates/phi-harness" }
 
 [profile.dev]
 debug = 0
