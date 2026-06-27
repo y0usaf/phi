@@ -80,10 +80,15 @@ impl AppRuntime {
         for r in returns {
             if let EventReturn::SystemPromptMod { prepend, append } = r {
                 if let Some(pre) = prepend {
-                    result = format!("{pre}\n\n{result}");
+                    let mut new_result = String::with_capacity(pre.len() + 2 + result.len());
+                    new_result.push_str(&pre);
+                    new_result.push_str("\n\n");
+                    new_result.push_str(&result);
+                    result = new_result;
                 }
                 if let Some(app) = append {
-                    result.push_str(&format!("\n\n{app}"));
+                    result.push_str("\n\n");
+                    result.push_str(&app);
                 }
             }
         }
@@ -204,7 +209,7 @@ impl AppRuntime {
         &self,
         name: &str,
         input: &str,
-    ) -> anyhow::Result<Option<phi_ext::ToolOutput>> {
+    ) -> Result<Option<phi_ext::ToolOutput>> {
         let Some(tool) = self.tools.get(name) else {
             return Ok(None);
         };
