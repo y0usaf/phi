@@ -1,20 +1,5 @@
 //! Temporary experiment: how does vt100 handle cursor at/beyond width?
 
-use std::cell::RefCell;
-use std::io::Write;
-use std::rc::Rc;
-
-#[derive(Clone, Default)]
-struct Buf(Rc<RefCell<Vec<u8>>>);
-
-impl Write for Buf {
-    fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
-        self.0.borrow_mut().extend_from_slice(b);
-        Ok(b.len())
-    }
-    fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
-}
-
 #[test]
 #[ignore]
 fn experiment_cursor_beyond_width() {

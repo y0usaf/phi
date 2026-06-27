@@ -8,7 +8,6 @@ use std::sync::Mutex;
 use std::collections::VecDeque;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
-use serde_json::json;
 
 const TRANSCRIPT_COMPACTION_THRESHOLD: usize = 20;
 
@@ -259,9 +258,7 @@ const TRANSCRIPT_COMPACTION_THRESHOLD: usize = 20;
 
     /// Streams a fence-closing chunk, then refuses to finish the stream until
     /// Emits a tool call during the stream.
-    struct EagerLm {
-        exec_started: Arc<tokio::sync::Notify>,
-    }
+    struct EagerLm {}
 
     #[async_trait]
     impl LanguageModel for EagerLm {
@@ -308,9 +305,7 @@ const TRANSCRIPT_COMPACTION_THRESHOLD: usize = 20;
     #[tokio::test]
     async fn executes_blocks_while_streaming() {
         let exec_started = Arc::new(tokio::sync::Notify::new());
-        let root = Arc::new(EagerLm {
-            exec_started: exec_started.clone(),
-        });
+        let root = Arc::new(EagerLm {});
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let notify = exec_started.clone();
         tokio::spawn(async move {
