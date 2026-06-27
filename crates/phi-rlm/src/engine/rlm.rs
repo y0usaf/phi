@@ -310,6 +310,7 @@ impl Rlm {
             cwd: self.config.cwd.as_deref(),
             orchestrator: self.config.orchestrator,
             turn_cap: self.iteration_limit(),
+            skills: self.config.skills.clone(),
             ..Default::default()
         }
     }

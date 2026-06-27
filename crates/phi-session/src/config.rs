@@ -28,6 +28,10 @@ pub struct Config {
     pub max_errors: Option<usize>,
     pub max_concurrent_subcalls: Option<usize>,
     pub mux: Option<MuxConfig>,
+    /// User-configured skill directories or files to scan for `SKILL.md`.
+    /// Paths support `~` expansion; relative paths resolve against `cwd`.
+    /// Example: `skills = { "~/.claude/skills", ".forge/skills" }`
+    pub skills: Option<Vec<String>>,
 }
 
 /// Settings for mux mode (the in-process session multiplexer).
@@ -109,7 +113,8 @@ impl Config {
             max_tokens,
             timeout,
             max_errors,
-            max_concurrent_subcalls
+            max_concurrent_subcalls,
+            skills
         );
         if let Some(other_mux) = other.mux {
             let mux = self.mux.get_or_insert_with(MuxConfig::default);
@@ -155,6 +160,8 @@ pub struct Settings {
     pub timeout: Option<u64>,
     pub max_errors: Option<usize>,
     pub max_concurrent_subcalls: usize,
+    /// User-configured skill paths (from config.lua `skills` field).
+    pub skills: Vec<String>,
 }
 
 impl Settings {
@@ -195,6 +202,7 @@ impl Settings {
                 .max_concurrent_subcalls
                 .or(config.max_concurrent_subcalls)
                 .unwrap_or(4),
+            skills: config.skills.unwrap_or_default(),
         }
     }
 }

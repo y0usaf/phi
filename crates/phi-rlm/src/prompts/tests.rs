@@ -108,7 +108,10 @@ fn system_prompt_includes_skills() {
     let prompt = build_system_prompt(&opts);
     assert!(prompt.contains("<available_skills>"));
     assert!(prompt.contains("cargo-test"));
+    assert!(prompt.contains("Run cargo tests"));
+    assert!(prompt.contains("skills/cargo-test/SKILL.md"));
     assert!(prompt.contains("</available_skills>"));
+    assert!(prompt.contains("The following skills provide specialized instructions"));
 }
 
 #[test]

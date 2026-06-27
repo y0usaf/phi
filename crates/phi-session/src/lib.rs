@@ -9,5 +9,6 @@ pub mod config;
 pub mod files;
 pub mod prompts;
 pub mod session;
+pub mod skills;
 pub mod transcript;
 pub mod usage;

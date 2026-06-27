@@ -58,6 +58,8 @@ pub async fn run(
         }
     }
 
+    let skills = phi_session::skills::discover_skills(&cwd, &settings.skills);
+
     let config = RlmConfig {
         max_rlm_depth: settings.max_rlm_depth,
         max_iterations: settings.max_iterations,
@@ -70,6 +72,7 @@ pub async fn run(
              Use the pre-defined helper functions to explore and modify the project.",
             cwd.display()
         )),
+        skills,
         ..RlmConfig::default()
     };
 

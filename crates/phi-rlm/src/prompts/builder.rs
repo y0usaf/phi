@@ -172,18 +172,17 @@ pub fn build_system_prompt(opts: &SystemPromptOptions) -> String {
             .skills
             .iter()
             .map(|s| {
-                let path_attr = s
-                    .path
-                    .as_deref()
-                    .map(|p| format!(" path=\"{}\"", p))
-                    .unwrap_or_default();
+                let location = s.path.as_deref().unwrap_or("");
                 format!(
-                    "<skill name=\"{}\" description=\"{}\"{} />",
-                    s.name, s.description, path_attr
+                    "  <skill>\n    <name>{}</name>\n    <description>{}</description>\n    <location>{}</location>\n  </skill>",
+                    s.name, s.description, location
                 )
             })
             .collect();
-        sections.push(format!("<available_skills>\n{}\n</available_skills>", entries.join("\n")));
+        sections.push(format!(
+            "The following skills provide specialized instructions for specific tasks.\n             Read the full skill file when the task matches its description.\n             When a skill file references a relative path, resolve it against the skill directory.\n\n             <available_skills>\n{}\n</available_skills>",
+            entries.join("\n")
+        ));
     }
 
     // env_info (caller-supplied data; no const fallback) — before cwd

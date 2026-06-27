@@ -108,6 +108,7 @@ fn build_rlm_config(cwd: &Path, settings: &Settings, runtime: &phi_runtime::AppR
     };
 
     let (prompt_override, append_prompt) = phi_session::prompts::discover_prompt_overrides(cwd);
+    let skills = phi_session::skills::discover_skills(cwd, &settings.skills);
 
     RlmConfig {
         max_rlm_depth: settings.max_rlm_depth,
@@ -124,6 +125,7 @@ fn build_rlm_config(cwd: &Path, settings: &Settings, runtime: &phi_runtime::AppR
              Use the pre-defined helper functions to explore and modify the project.",
             cwd.display()
         )),
+        skills,
         ..RlmConfig::default()
     }
 }
