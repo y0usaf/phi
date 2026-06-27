@@ -87,37 +87,6 @@ pub(super) enum Cmd {
     Shutdown,
 }
 
-/// How a message submitted while the agent is running gets dispatched.
-/// Cycled with Tab (empty editor) or Ctrl+X.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(super) enum SendMode {
-    /// Queue: wait for the full turn to finish naturally, then send FIFO.
-    #[default]
-    Queue,
-    /// Interleave: cancel the in-flight turn at the next iteration boundary
-    /// (the run loop checks the cancel token at the top of each iteration),
-    /// then send the message immediately after the cancelled turn completes.
-    /// This is the closest local equivalent to "inject at the next safe
-    /// point" — the turn is interrupted at a clean boundary, not mid-stream.
-    Interleave,
-}
-
-impl SendMode {
-    pub(super) fn label(self) -> &'static str {
-        match self {
-            Self::Queue => "queued",
-            Self::Interleave => "interleave",
-        }
-    }
-
-    pub(super) fn next(self) -> Self {
-        match self {
-            Self::Queue => Self::Interleave,
-            Self::Interleave => Self::Queue,
-        }
-    }
-}
-
 pub(super) enum Done {
     Run(RlmCompletion),
     Shell {
@@ -520,8 +489,7 @@ struct Ui {
     /// Follow-up prompts queued while a turn is in flight; sent FIFO as
     /// turns complete.
     pub(super) queued: Vec<String>,
-    /// How messages submitted mid-run get dispatched (queue/interleave).
-    pub(super) send_mode: SendMode,
+    /// How messages submitted mid-run get dispatched (queue/interleave/interrupt).
     /// Time of the last ctrl-c; a second one within 500ms quits.
     pub(super) last_ctrl_c: Option<std::time::Instant>,
     /// Lines staged by event handlers since the last draw; each draw folds
@@ -659,7 +627,6 @@ impl Ui {
             expand_tools: false,
             expand_thinking: false,
             queued: Vec::new(),
-            send_mode: SendMode::default(),
             last_ctrl_c: None,
             pending: Vec::new(),
             transcript: Transcript::new(),

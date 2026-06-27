@@ -140,7 +140,7 @@ impl Ui {
         // just above the separator line.
         if self.running.is_some() && !self.queued.is_empty() {
             let p = &self.palette;
-            let mode = self.send_mode.label();
+            let mode = "queued";
             let mut lines = Vec::with_capacity(self.queued.len());
             for (i, text) in self.queued.iter().enumerate() {
                 let first = text.lines().next().unwrap_or("");
@@ -331,15 +331,6 @@ impl Ui {
                 lines.push(self.spinner.frame().to_owned());
             }
 
-            // Send-mode indicator: show the active mode when the agent is
-            // running and the mode is not the default.  Queued messages
-            // are rendered as a live transcript block (see
-            // `current_live_transcript_blocks`), not here in the chrome.
-            if self.running.is_some() && self.send_mode != SendMode::Queue {
-                lines.push(format!("{muted_fg}send: {mode}{RESET}",
-                    mode = self.send_mode.label(), muted_fg = &p.muted_fg));
-            }
-
             if let Some(popup) = &self.popup {
                 lines.extend(render_popup(popup));
             }
@@ -350,6 +341,8 @@ impl Ui {
                 ]
             } else if self.popup.is_some() {
                 &["tab complete \u{00b7} up/down select \u{00b7} enter accept \u{00b7} esc dismiss"]
+            } else if self.running.is_some() {
+                &["enter to queue \u{00b7} tab to interrupt"]
             } else {
                 &[]
             };

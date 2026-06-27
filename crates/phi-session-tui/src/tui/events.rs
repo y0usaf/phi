@@ -134,18 +134,11 @@ impl Ui {
                     // handle_popup_key consumed Tab if a popup was open
                     // (e.g. from an @-mention). Otherwise Tab does nothing —
                     // file completion only happens via @ mentions.
-                    // When the agent is running and the editor is empty
-                    // (e.g. right after queuing a message), Tab cycles the
-                    // send mode.
+                    // When the agent is running and the editor is empty,
+                    // Tab interrupts the in-flight run.
                     if self.running.is_some() && self.editor.is_empty() {
-                        self.cycle_send_mode();
+                        self.cancel_run();
                     }
-                    return false;
-                }
-                if key.code == KeyCode::Char('x') && ctrl {
-                    // Ctrl+X: cycle send mode at any time (fallback for when
-                    // the editor has text or the agent is idle).
-                    self.cycle_send_mode();
                     return false;
                 }
                 if key.code == KeyCode::BackTab {
@@ -202,10 +195,6 @@ impl Ui {
         false
     }
 
-    pub(super) fn cycle_send_mode(&mut self) {
-        self.send_mode = self.send_mode.next();
-    }
-
     pub(super) fn cancel_run(&mut self) {
         if let Some(cancel) = &self.running {
             cancel.cancel();
@@ -219,9 +208,11 @@ impl Ui {
         }
     }
 
-    /// Dispatch a message (prompt or shell escape) according to the current
-    /// send mode when the agent is running. When the agent is idle, always
-    /// sends immediately via `send`.
+    /// Dispatch a message (prompt or shell escape) when the agent is
+    /// running.  Messages are always queued — they are sent FIFO once the
+    /// current turn completes.  To interrupt the run instead, the user
+    /// presses Tab on an empty editor.  When the agent is idle, sends
+    /// immediately via `send`.
     pub(super) fn dispatch_mid_run(
         &mut self,
         text: &str,
@@ -232,26 +223,7 @@ impl Ui {
             send(self, text, cmd_tx);
             return;
         }
-        match self.send_mode {
-            SendMode::Queue => {
-                self.queued.push(text.to_owned());
-            }
-            SendMode::Interleave => {
-                // Cancel the in-flight turn so it completes at the next
-                // iteration boundary (the run loop checks the cancel token
-                // at the top of each iteration — the "next safe point").
-                // Then queue the message; drain_queue sends it once the
-                // cancelled turn's Done::Run clears self.running.
-                //
-                // We do NOT call send() directly here. Doing so would
-                // overwrite self.running with a new token while the old
-                // turn is still in flight, and the old turn's Done::Run
-                // would then wipe the new token — a race that leaves the
-                // UI in a wrong idle state mid-turn.
-                self.cancel_run();
-                self.queued.push(text.to_owned());
-            }
-        }
+        self.queued.push(text.to_owned());
     }
 
     pub(super) fn submit(&mut self, text: &str, cmd_tx: &mpsc::UnboundedSender<Cmd>) -> bool {
