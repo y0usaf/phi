@@ -301,16 +301,22 @@ impl PythonRepl {
             Ok(Ok(frame)) => {
                 if frame_kind == "exec"
                     && let DriverFrame::Fatal { error } = &frame {
-                    let stderr = proc.stderr.lock().unwrap().clone();
+                    let stderr_msg = {
+                        let buf = proc.stderr.lock().unwrap();
+                        format!("{}: {}", error, buf.trim())
+                    };
                     self.respawn().await;
-                    return Err(ReplError::Crashed(format!("{}: {}", error, stderr.trim())));
+                    return Err(ReplError::Crashed(stderr_msg));
                 }
                 Ok(frame)
             }
             Ok(Err(_)) => {
-                let stderr = self.proc.as_ref().map(|p| p.stderr.lock().unwrap().clone()).unwrap_or_default();
+                let stderr_msg = self.proc.as_ref().map(|p| {
+                    let buf = p.stderr.lock().unwrap();
+                    format!("driver exited unexpectedly: {}", buf.trim())
+                }).unwrap_or_else(|| "driver exited unexpectedly".to_owned());
                 self.respawn().await;
-                Err(ReplError::Protocol(format!("driver exited unexpectedly: {}", stderr.trim())))
+                Err(ReplError::Protocol(stderr_msg))
             }
             Err(_) => {
                 // Remove the pending entry on timeout to avoid leaks
@@ -344,9 +350,12 @@ impl ReplEnv for PythonRepl {
         )
         .await
         {
-            let stderr = proc.stderr.lock().unwrap().clone();
+            let stderr_msg = {
+                let buf = proc.stderr.lock().unwrap();
+                format!("{e}: {}", buf.trim())
+            };
             self.respawn().await;
-            return Err(ReplError::Crashed(format!("{e}: {}", stderr.trim())));
+            return Err(ReplError::Crashed(stderr_msg));
         }
 
         let wait_timeout = timeout + EXEC_GRACE;
