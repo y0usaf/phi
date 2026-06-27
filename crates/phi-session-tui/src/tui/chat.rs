@@ -4,7 +4,7 @@ use super::*;
 impl Ui {
     pub(super) fn assistant_card_lines(&self, text: &str) -> Vec<String> {
         let rendered = render_markdown(text, self.markdown_width(), &self.palette.markdown);
-        let mut out = vec![forge_title(0, None, "Assistant")];
+        let mut out = vec![forge_title(0, "Assistant")];
         for line in rendered {
             out.push(if line.is_empty() {
                 String::new()
@@ -17,7 +17,7 @@ impl Ui {
 
     pub(super) fn user_card_lines(&self, text: &str) -> Vec<String> {
         let rendered = render_markdown(text, self.markdown_width(), &self.palette.markdown);
-        let mut out = vec![forge_title(0, None, "You")];
+        let mut out = vec![forge_title(0, "You")];
         for line in rendered {
             out.push(if line.is_empty() {
                 String::new()
@@ -48,7 +48,7 @@ impl Ui {
             }
         }
 
-        render_flat(None, title, depth, &rows)
+        render_flat(title, depth, &rows)
     }
 
     pub(super) fn repl_code_lines(&self, depth: usize, body: &str, max: usize) -> Vec<String> {
@@ -300,14 +300,13 @@ impl Ui {
         }
         self.push_row(forge_title(
             depth,
-            self.committed_ts().as_deref(),
             &text,
         ));
         self.last_activity = true;
     }
 
     pub(super) fn push_bar(&mut self, depth: usize, text: String) {
-        let rows = render_flat(None, &format!("{DIM}{text}{RESET}"), depth, &[]);
+        let rows = render_flat(&format!("{DIM}{text}{RESET}"), depth, &[]);
         for row in rows {
             self.push_row(row);
         }
@@ -367,11 +366,7 @@ impl Ui {
         }
     }
 
-    pub(super) fn committed_ts(&self) -> Option<String> {
-        self.running.is_some().then(now_hms)
-    }
-
-    #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
     pub(super) fn tool_result_rows(
         &self,
         depth: usize,
@@ -381,7 +376,6 @@ impl Ui {
         max: usize,
         lang: Option<&str>,
         _failed: bool,
-        ts: Option<&str>,
     ) -> Vec<String> {
         let identity = tool_identity(name, args, &self.palette);
         // The colored `●` carries success/failure (green/red); the in-flight
@@ -398,7 +392,7 @@ impl Ui {
             .flat_map(|line| wrap_ansi(&line, width))
             .collect();
         body.extend(self.preview_rows_with_lang(depth, output, max, lang));
-        render_flat(ts, &identity.anchor, depth, &body)
+        render_flat(&identity.anchor, depth, &body)
     }
 
     pub(super) fn subcall_result_rows(
@@ -408,12 +402,11 @@ impl Ui {
         content: Option<&str>,
         max: usize,
         _failed: bool,
-        ts: Option<&str>,
     ) -> Vec<String> {
         let body = content
             .map(|text| self.preview_rows_with_lang(depth, text, max, None))
             .unwrap_or_default();
-        render_flat(ts, label, depth, &body)
+        render_flat(label, depth, &body)
     }
 
     // ── Subagent collapsible box ───────────────────────────────────────────
@@ -573,7 +566,6 @@ impl Ui {
             content,
             max,
             failed,
-            self.committed_ts().as_deref(),
         );
         self.replace_block_rows(box_data.block_start, box_data.block_len, rows);
         self.last_activity = true;
@@ -622,7 +614,6 @@ impl Ui {
             max,
             lang,
             failed,
-            self.committed_ts().as_deref(),
         );
         for row in rows {
             self.push_row(row);
@@ -734,7 +725,6 @@ impl Ui {
                 content,
                 self.output_limit(),
                 subcall.error.is_some(),
-                None,
             );
             for row in rows {
                 self.push_row(row);

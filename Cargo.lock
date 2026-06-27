@@ -1830,7 +1830,6 @@ dependencies = [
  "dirs",
  "futures",
  "ignore",
- "jiff",
  "mlua",
  "phi-ai",
  "phi-builtins",

@@ -795,7 +795,6 @@ impl Ui {
                     self.output_limit(),
                     lang,
                     error.is_some(),
-                    self.committed_ts().as_deref(),
                 );
                 if self.has_subagent_box(depth) {
                     // Tool result inside a top-level subagent: add as action rows.
@@ -925,7 +924,6 @@ impl Ui {
                         content,
                         self.output_limit(),
                         error.is_some(),
-                        None,
                     );
                     for row in rows {
                         self.add_subagent_action(depth - 1, row);
@@ -938,7 +936,6 @@ impl Ui {
                         content,
                         self.output_limit(),
                         error.is_some(),
-                        self.committed_ts().as_deref(),
                     );
                     if let Some(row) = open {
                         self.replace_block_rows(row.start, row.len, rows);
@@ -971,12 +968,12 @@ impl Ui {
                     duration.as_secs_f64()
                 );
                 if self.has_subagent_box(depth) {
-                    let rows = render_flat(None, &format!("{DIM}{bar_text}{RESET}"), depth, &[]);
+                    let rows = render_flat(&format!("{DIM}{bar_text}{RESET}"), depth, &[]);
                     for row in rows {
                         self.add_subagent_action(depth, row);
                     }
                 } else if self.has_subagent_box(depth - 1) {
-                    let rows = render_flat(None, &format!("{DIM}{bar_text}{RESET}"), depth, &[]);
+                    let rows = render_flat(&format!("{DIM}{bar_text}{RESET}"), depth, &[]);
                     for row in rows {
                         self.add_subagent_action(depth - 1, row);
                     }

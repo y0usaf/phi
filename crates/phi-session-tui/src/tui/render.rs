@@ -233,23 +233,10 @@ pub(crate) fn result_prefix_width(depth: usize) -> usize {
     indent_width(depth) + 2
 }
 
-/// Local wall-clock `HH:MM:SS`, for the `[time]` segment of live-committed
-/// `forge_title` headers. Replay/restored rows pass `None` instead (see
-/// `forge_title`) so re-rendered transcripts don't stamp a false replay-time
-/// clock. Uses `jiff` (already a workspace dep) — not `chrono`.
-pub(crate) fn now_hms() -> String {
-    jiff::Zoned::now().strftime("%H:%M:%S").to_string()
-}
-
-/// Flat header line: `{indent(depth)}[{timestamp}] {title}`. The header is a
-/// bare title at the nesting indent (no bullet glyph, no trailing rule).
-/// `timestamp == None` omits the `[time]` segment (replay/restored rows).
-pub(crate) fn forge_title(depth: usize, timestamp: Option<&str>, title: &str) -> String {
-    let stamp = match timestamp {
-        Some(t) => format!("{DIM}[{t}] {RESET}"),
-        None => String::new(),
-    };
-    format!("{}{stamp}{title}", indent(depth))
+/// Flat header line: `{indent(depth)}{title}`. The header is a bare title at
+/// the nesting indent (no bullet glyph, no trailing rule, no timestamp).
+pub(crate) fn forge_title(depth: usize, title: &str) -> String {
+    format!("{}{title}", indent(depth))
 }
 
 /// Flat header line + indented result body. `body` lines must already be
@@ -257,12 +244,11 @@ pub(crate) fn forge_title(depth: usize, timestamp: Option<&str>, title: &str) ->
 /// 2-space result gutter (`result_prefix`). Empty body lines collapse to the
 /// bare indent. If `body` is empty the header stands alone.
 pub(crate) fn render_flat(
-    timestamp: Option<&str>,
     title: &str,
     depth: usize,
     body: &[String],
 ) -> Vec<String> {
-    let header = forge_title(depth, timestamp, title);
+    let header = forge_title(depth, title);
     let blank = indent(depth);
     let prefix = result_prefix(depth);
     let mut out = Vec::with_capacity(body.len().saturating_add(1));

@@ -828,7 +828,7 @@ mod tests {
     // the title at the nesting indent, the body is plain indented text.
     #[test]
     fn render_flat_is_a_bare_header_with_indented_body() {
-        let lines = render_flat(None, "read foo.rs", 1, &["body one".to_owned()]);
+        let lines = render_flat("read foo.rs", 1, &["body one".to_owned()]);
         let plain: Vec<String> = lines.iter().map(|l| phi_tui::strip_ansi(l)).collect();
         // Header at depth 1: 2-space indent + title, no glyph.
         assert_eq!(plain[0], "  read foo.rs", "{plain:?}");
@@ -843,7 +843,6 @@ mod tests {
     #[test]
     fn render_flat_shows_single_crop_for_multiline_body() {
         let lines = render_flat(
-            None,
             "read foo.rs",
             1,
             &[
@@ -865,16 +864,14 @@ mod tests {
         assert_eq!(plain[4], "    line four", "{plain:?}");
     }
 
-    // forge_title stamps `[HH:MM:SS]` only when given a timestamp; without one
-    // (replay/restored rows) the header is bare so re-renders don't show a
-    // false replay-time clock.
+    // forge_title produces a bare header — just the indent + title, no
+    // timestamp bracket, no glyph.
     #[test]
-    fn forge_title_omits_timestamp_when_none() {
-        let with_ts = phi_tui::strip_ansi(&forge_title(0, Some("12:00:01"), "read x"));
-        let no_ts = phi_tui::strip_ansi(&forge_title(0, None, "read x"));
-        assert!(with_ts.contains("[12:00:01]"), "{with_ts}");
-        assert!(!no_ts.contains('['), "{no_ts}");
-        assert!(!no_ts.contains("●"), "{no_ts}");
+    fn forge_title_is_bare_header() {
+        let header = phi_tui::strip_ansi(&forge_title(0, "read x"));
+        assert_eq!(header, "read x", "{header}");
+        assert!(!header.contains('['), "{header}");
+        assert!(!header.contains("●"), "{header}");
     }
 
     // `indent` keeps the 2-cells-per-depth nesting budget, and the result
@@ -919,7 +916,6 @@ mod tests {
             usize::MAX,
             Some("rust"),
             false,
-            None,
         );
         let panel = ui.panel_width();
         for line in &lines {
@@ -949,7 +945,6 @@ mod tests {
             usize::MAX,
             Some("rust"),
             false,
-            None,
         );
         let plain = lines
             .iter()
@@ -1102,7 +1097,6 @@ mod tests {
             usize::MAX,
             Some("rust"),
             false,
-            None,
         );
         let plain: String = rows
             .iter()
@@ -1128,7 +1122,6 @@ mod tests {
             usize::MAX,
             None,
             false,
-            None,
         );
         let plain: String = rows
             .iter()
@@ -1157,7 +1150,6 @@ mod tests {
             usize::MAX,
             None,
             false,
-            None,
         );
         let plain: String = rows
             .iter()

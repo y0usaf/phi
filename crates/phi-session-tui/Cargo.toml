@@ -10,7 +10,6 @@ directories.workspace = true
 dirs.workspace = true
 futures.workspace = true
 ignore.workspace = true
-jiff.workspace = true
 mlua.workspace = true
 phi-ai.workspace = true
 phi-builtins.workspace = true
