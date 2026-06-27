@@ -3,7 +3,7 @@
 //! so the sidebar stays canonical with the filesystem as source of truth.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use notify::{EventHandler, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use phi_session::session::sessions_dir;
@@ -36,7 +36,7 @@ impl SessionWatcher {
 
     /// Start watching a project's session directory. Idempotent: if a
     /// watcher for this index already exists, it is replaced.
-    pub fn add_watch(&mut self, index: usize, cwd: &PathBuf) {
+    pub fn add_watch(&mut self, index: usize, cwd: &Path) {
         let dir = match sessions_dir(cwd) {
             Ok(dir) => dir,
             Err(_) => return,
@@ -46,7 +46,6 @@ impl SessionWatcher {
         let _ = std::fs::create_dir_all(&dir);
 
         let tx = self.tx.clone();
-        let index = index;
         let handler = SessionEventHandler { tx, index };
 
         match notify::recommended_watcher(handler) {
@@ -83,7 +82,7 @@ impl SessionWatcher {
                 },
             };
             if needs_watch {
-                self.add_watch(*index, *cwd);
+                self.add_watch(*index, cwd);
             }
         }
     }

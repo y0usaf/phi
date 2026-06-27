@@ -19,7 +19,7 @@ use crate::grid::theme;
 /// frame. When the user scrolls up, `auto_scroll_paused` becomes `true` and
 /// the viewport stays at the user's scroll offset until they scroll back to
 /// the bottom or explicitly resume.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct ViewportState {
     /// Current scroll offset (lines from the top of the content).
     scroll_offset: usize,
@@ -31,18 +31,6 @@ pub struct ViewportState {
     offscreen_below: usize,
     /// Resolved max scroll for the current frame.
     max_scroll: usize,
-}
-
-impl Default for ViewportState {
-    fn default() -> Self {
-        Self {
-            scroll_offset: 0,
-            auto_scroll_paused: false,
-            offscreen_above: 0,
-            offscreen_below: 0,
-            max_scroll: 0,
-        }
-    }
 }
 
 impl ViewportState {
@@ -176,7 +164,7 @@ impl ViewportState {
         // Up indicator (top-right)
         if self.offscreen_above > 0 {
             let indicator = format!("\u{2191}{}", self.offscreen_above);
-            let indicator_len: i32 = indicator.chars().map(|c| char_cell_width(c)).sum();
+            let indicator_len: i32 = indicator.chars().map(char_cell_width).sum();
             let col = area.col + area.cols - indicator_len - 1;
             if col >= 0 {
                 surface.put_text(col, area.row, area.cols, muted, bg, &indicator);
@@ -186,7 +174,7 @@ impl ViewportState {
         // Down indicator (bottom-right) -- only when auto-follow is paused
         if self.auto_scroll_paused && self.offscreen_below > 0 {
             let indicator = format!("\u{2193}{}", self.offscreen_below);
-            let indicator_len: i32 = indicator.chars().map(|c| char_cell_width(c)).sum();
+            let indicator_len: i32 = indicator.chars().map(char_cell_width).sum();
             let col = area.col + area.cols - indicator_len - 1;
             let row = area.row + area.rows - 1;
             if col >= 0 && row < area.row + area.rows {
@@ -247,7 +235,7 @@ impl PromptPreview {
 
         let prompt_number = prompt_idx + 1;
         let prefix = format!("{}\u{203a} ", prompt_number);
-        let prefix_width: i32 = prefix.chars().map(|c| char_cell_width(c)).sum();
+        let prefix_width: i32 = prefix.chars().map(char_cell_width).sum();
         let content_width = (area_width - prefix_width - 2).max(1) as usize;
 
         let flat = trimmed.replace('\n', " ");
@@ -274,9 +262,9 @@ impl PromptPreview {
             return 0;
         }
         let prefix = format!("{}\u{203a} ", self.prompt_number);
-        let prefix_width: i32 = prefix.chars().map(|c| char_cell_width(c)).sum();
+        let prefix_width: i32 = prefix.chars().map(char_cell_width).sum();
         let content_width = (area_width - prefix_width - 2).max(1) as usize;
-        let display_width: i32 = self.preview_text.chars().map(|c| char_cell_width(c)).sum();
+        let display_width: i32 = self.preview_text.chars().map(char_cell_width).sum();
         if display_width as usize > content_width {
             2
         } else {
@@ -297,7 +285,7 @@ impl PromptPreview {
         let text_fg = theme::TEXT;
 
         let prefix = format!("{}\u{203a} ", self.prompt_number);
-        let prefix_width: i32 = prefix.chars().map(|c| char_cell_width(c)).sum();
+        let prefix_width: i32 = prefix.chars().map(char_cell_width).sum();
         let content_width = (area.cols - prefix_width - 1).max(1);
 
         // Truncate the preview text to the content width.

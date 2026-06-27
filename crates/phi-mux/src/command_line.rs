@@ -77,7 +77,8 @@ impl CommandLineState {
                     self.move_end();
                 }
                 KeyCode::Char(ch) if !ch.is_control() => {
-                    self.insert_str(&ch.to_string());
+                    self.input.insert(self.cursor, ch);
+                    self.cursor += ch.len_utf8();
                 }
                 _ => {}
             }
@@ -255,9 +256,7 @@ fn prefix_to_cells(value: &str, max_cols: usize) -> String {
 }
 
 fn command_char_width(ch: char) -> usize {
-    unicode_width::UnicodeWidthChar::width(ch)
-        .unwrap_or(1)
-        .max(1)
+    unicode_width::UnicodeWidthChar::width(ch).unwrap_or(1)
 }
 
 pub fn command_line_start_col(layout: &CellLayout, surface_cols: i32) -> i32 {

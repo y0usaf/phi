@@ -56,7 +56,7 @@ impl PersistedState {
             self.selected_project = self
                 .projects
                 .contains(&normalized)
-                .then_some(normalized.clone());
+                .then_some(normalized);
         }
     }
 

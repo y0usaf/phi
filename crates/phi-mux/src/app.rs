@@ -233,7 +233,7 @@ impl MuxApp {
                     while let Ok(idx) = watcher_rx.try_recv() {
                         changed.insert(idx);
                     }
-                    let mut notes: Vec<String> = Vec::new();
+                    let mut notes = Vec::new();
                     for index in changed {
                         let delta = self.workspace.refresh_project(index);
                         notes.extend(delta.archived);
@@ -273,7 +273,7 @@ impl MuxApp {
                     changed.insert(idx);
                 }
                 if !changed.is_empty() {
-                    let mut notes: Vec<String> = Vec::new();
+                    let mut notes = Vec::new();
                     for index in changed {
                         let delta = self.workspace.refresh_project(index);
                         notes.extend(delta.archived);
@@ -378,7 +378,7 @@ impl MuxApp {
         }
 
         // Collect sessions that still need an embedded handle.
-        let mut specs: Vec<(SessionKey, PathBuf, Option<PathBuf>)> = Vec::new();
+        let mut specs = Vec::new();
         for project in &self.workspace.projects {
             for session in &project.sessions {
                 if session.handle.is_none() {
@@ -403,7 +403,7 @@ impl MuxApp {
         let results = futures::future::join_all(futures).await;
 
         // Assign handles (or crash status) back to the workspace.
-        let mut errors: Vec<String> = Vec::new();
+        let mut errors = Vec::new();
         for ((key, _, _), result) in specs.into_iter().zip(results) {
             let session = self
                 .workspace
