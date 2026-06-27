@@ -341,8 +341,16 @@ mod env_info_tests {
 
     #[test]
     fn is_git_repo_detects_repository_root() {
-        // This repo is a git repo (the crate root's parent chain has .git).
-        assert!(is_git_repo(Path::new(env!("CARGO_MANIFEST_DIR"))));
+        // Use a temp dir with a .git marker so the test does not depend on
+        // the build environment being inside a real git repo (Nix sandboxes
+        // copy sources to /build/source without .git).
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join(".git")).unwrap();
+        assert!(is_git_repo(dir.path()));
+        // A subdir should also detect the parent's .git.
+        let sub = dir.path().join("nested");
+        std::fs::create_dir(&sub).unwrap();
+        assert!(is_git_repo(&sub));
         // A non-existent path is not a git repo.
         assert!(!is_git_repo(Path::new("/nonexistent/path/that/does/not/exist")));
     }
