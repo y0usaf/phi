@@ -799,7 +799,7 @@ pub(super) fn render_table_with_width(
                 let padded = format!("{}{}", display_text, " ".repeat(pad));
 
                 if i > 0 {
-                    line.push_str("│");
+                    line.push('│');
                 }
                 line.push_str(&padded);
             }
