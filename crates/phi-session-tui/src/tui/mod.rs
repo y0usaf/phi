@@ -21,7 +21,7 @@ use phi_tui::crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, KeyMo
 use phi_tui::{
     Editor, EditorAction, LiveCursor, RawModeGuard, Selector, SelectorItem,
     SelectorOutcome, Spinner, Terminal, detect_terminal_colors, fuzzy_filter, highlight_code,
-    highlight_diff_line, highlight_output, render_markdown, visible_width, wrap_ansi,
+    highlight_diff_line, highlight_output, render_markdown, wrap_ansi,
     wrap_ansi_locate,
 };
 
@@ -284,9 +284,10 @@ pub async fn run(setup: TuiSetup, mut io: SessionIo) -> Result<()> {
         None => InputSource::Tty(EventStream::new()),
     };
     let mut ticker = tokio::time::interval(Duration::from_millis(40));
-    // Coalesce redraws to ~60fps (pi-style): bursts of stream deltas collapse
-    // into one frame instead of repainting per SSE chunk.
-    const FRAME: Duration = Duration::from_millis(16);
+    // Coalesce redraws to the same 40ms cadence as the spinner tick: bursts
+    // of stream deltas collapse into one frame instead of repainting per
+    // SSE chunk. Terminals bottleneck at ~25fps anyway.
+    const FRAME: Duration = Duration::from_millis(40);
     let mut last_draw = tokio::time::Instant::now();
     let mut dirty = false;
 
@@ -470,8 +471,9 @@ struct Ui {
     pub(super) selector: Option<(SelectorKind, Selector)>,
     /// On-disk session store recording the conversation tree.
     pub(super) store: SessionStore,
-    /// Time of the last esc on an idle, empty editor; a second one within
-    /// 500ms opens the session tree (pi's double-escape).
+    /// Time of the last esc.  When idle with an empty editor, a second esc
+    /// within 500ms opens the session tree (pi's double-escape).  When a run
+    /// is in flight, a second esc within 500ms cancels the run.
     pub(super) last_esc: Option<std::time::Instant>,
     /// Worktree file search backing `@` completion.
     pub(super) files: FileSearcher,
@@ -770,23 +772,6 @@ mod tests {
         assert!(!title.contains('\t'), "{title}");
     }
 
-    #[test]
-    fn panel_row_does_not_paint_box_body_background() {
-        let p = InlinePalette::default_const();
-        let row = panel_row("\x1b[31mred\x1b[0m", 12, &p.user_border);
-        assert!(!row.contains("\x1b[48;"), "{row:?}");
-        assert_eq!(visible_width(&row), 12, "{row:?}");
-    }
-
-    #[test]
-    fn panel_border_reopens_color_after_label_reset() {
-        let p = InlinePalette::default_const();
-        let border = panel_border(&format!("{BOLD}Input{RESET}"), "Input", 12, &p.user_border);
-        assert!(
-            border.contains(&format!("{RESET}{}", p.user_border)),
-            "{border:?}"
-        );
-    }
 
     // Flat form: a bare header line (no trailing `─…─` rule) plus a body
     // indented under a 2-space result gutter. No glyph — the header is just
@@ -848,11 +833,11 @@ mod tests {
         assert_eq!(indent_width(0), 0);
         assert_eq!(indent_width(1), 2);
         assert_eq!(indent_width(3), 6);
-        assert_eq!(visible_width(&indent(3)), 6);
+        assert_eq!(phi_tui::visible_width(&indent(3)), 6);
         // Result gutter is 2 cells at every depth (indent + 2).
         for depth in 0..=4 {
             assert_eq!(result_prefix_width(depth), indent_width(depth) + 2, "depth {depth}");
-            assert_eq!(visible_width(&result_prefix(depth)), result_prefix_width(depth), "depth {depth}");
+            assert_eq!(phi_tui::visible_width(&result_prefix(depth)), result_prefix_width(depth), "depth {depth}");
         }
         // card_body_width == repl_body_width - result_prefix_width.
         let ui = test_ui(80, 24);
@@ -885,9 +870,9 @@ mod tests {
         let panel = ui.panel_width();
         for line in &lines {
             assert!(
-                visible_width(line) <= panel,
+                phi_tui::visible_width(line) <= panel,
                 "{} > {} => {}",
-                visible_width(line),
+                phi_tui::visible_width(line),
                 panel,
                 line
             );

@@ -173,40 +173,7 @@ pub(crate) fn strip_tool_echoes(stdout: &str, tools: &[session::ToolCall], exec_
         .join("\n")
 }
 
-#[allow(dead_code)]
-pub(crate) fn panel_border(label: &str, label_plain: &str, width: usize, color: &str) -> String {
-    let fill = width
-        .saturating_sub(phi_tui::display_cell_width(label_plain) + 5)
-        .max(1);
-    format!("{color}┌─ {label}{color} {}┐{RESET}", "─".repeat(fill))
-}
 
-#[allow(dead_code)]
-pub(crate) fn panel_row(text: &str, width: usize, border: &str) -> String {
-    let inner = width.saturating_sub(2).max(1);
-    let body = format!(" {text}");
-    let pad = inner.saturating_sub(visible_width(&body));
-    format!("{border}│{RESET}{body}{RESET}{:pad$}{border}│{RESET}", "")
-}
-
-#[allow(dead_code)]
-pub(crate) fn panel_bottom(width: usize, color: &str) -> String {
-    format!(
-        "{color}└{}┘{RESET}",
-        "─".repeat(width.saturating_sub(2).max(1))
-    )
-}
-
-#[allow(dead_code)]
-pub(crate) fn fitted_panel_width(label_plain: &str, max_width: usize, body: &[String]) -> usize {
-    let label_width = phi_tui::display_cell_width(label_plain).saturating_add(6);
-    let body_width = body
-        .iter()
-        .map(|line| visible_width(line).saturating_add(4))
-        .max()
-        .unwrap_or(4);
-    label_width.max(body_width).min(max_width.max(1)).max(4)
-}
 
 /// Per-level nesting indent: two spaces per `depth`. Used to inset a flat
 /// header line under its enclosing unit (a repl block or an RLM subcall).

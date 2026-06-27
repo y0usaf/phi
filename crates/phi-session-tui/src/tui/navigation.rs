@@ -7,8 +7,12 @@ impl Ui {
         self.selector = Some((kind, widget));
     }
 
-    pub(super) fn session_idle(&mut self) -> bool {
-        if self.running.is_some() || self.login.is_some() {
+    pub(super) fn session_idle(&self) -> bool {
+        self.running.is_none() && self.login.is_none()
+    }
+
+    fn require_idle(&mut self) -> bool {
+        if !self.session_idle() {
             self.pending
                 .push(format!("{DIM}[wait for the current run to finish]{RESET}"));
             return false;
@@ -17,7 +21,7 @@ impl Ui {
     }
 
     pub(super) fn open_resume_selector(&mut self) {
-        if !self.session_idle() {
+        if !self.require_idle() {
             return;
         }
         let current = self.store.path().to_owned();
@@ -46,7 +50,7 @@ impl Ui {
     }
 
     pub(super) fn open_fork_selector(&mut self) {
-        if !self.session_idle() {
+        if !self.require_idle() {
             return;
         }
         let messages = self.store.user_messages();
@@ -71,7 +75,7 @@ impl Ui {
     }
 
     pub(super) fn open_tree_selector(&mut self) {
-        if !self.session_idle() {
+        if !self.require_idle() {
             return;
         }
         let leaf = self.store.leaf().map(str::to_owned);

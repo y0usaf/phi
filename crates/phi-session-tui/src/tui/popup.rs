@@ -173,11 +173,11 @@ pub(crate) fn complete(before: &str, model_names: &[String], ext_cmds: &[(String
         // Include extension commands in completion
         let ext_items: Vec<Suggestion> = ext_cmds
             .iter()
-            .filter(|(name, _)| rest.is_empty() || name.contains(rest) || rest.is_empty())
             .filter(|(name, _)| {
-                // Simple prefix/substring filter matching fuzzy_filter behaviour
-                name.to_ascii_lowercase()
-                    .contains(&rest.to_ascii_lowercase())
+                rest.is_empty()
+                    || name
+                        .to_ascii_lowercase()
+                        .contains(&rest.to_ascii_lowercase())
             })
             .map(|(name, desc)| Suggestion {
                 value: name.clone(),

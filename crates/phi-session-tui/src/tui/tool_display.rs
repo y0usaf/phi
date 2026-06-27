@@ -21,15 +21,6 @@ pub(crate) fn running_status_text(label: &str, spinner: &str) -> String {
     format!("{spinner} {label}")
 }
 
-#[allow(dead_code)] // reserved for a success-status state the status machine does not yet emit
-pub(crate) fn success_status_text(label: &str, duration_secs: f64, p: &InlinePalette) -> String {
-    format!(
-        "{}✓{RESET} {label} {numfg}{duration_secs:.1}s{RESET}",
-        &p.chrome_cost_fg,
-        numfg = &p.num_fg,
-    )
-}
-
 pub(crate) fn failed_status_text(
     label: &str,
     duration_secs: Option<f64>,
