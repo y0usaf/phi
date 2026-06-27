@@ -252,7 +252,13 @@ impl SessionStore {
         let mut header = None;
         let mut entries = Vec::new();
         let mut repls = Vec::new();
-        let mut leaf_record: Option<Option<String>> = None;
+        // Effective leaf, determined pi-style: the last durable line in
+        // file order wins. A Message entry sets the leaf to its own id
+        // (every appended entry becomes the branch tip); a Leaf record
+        // (from tree navigation) sets it to the recorded target. This
+        // ensures that messages appended after a `set_leaf` navigation
+        // correctly override the stale leaf on reload.
+        let mut leaf: Option<String> = None;
         let mut open_exchange: Option<String> = None;
         for line in content.lines() {
             if line.trim().is_empty() {
@@ -262,9 +268,12 @@ impl SessionStore {
             // the whole session.
             match serde_json::from_str::<Line>(line) {
                 Ok(Line::Session(h)) if header.is_none() => header = Some(h),
-                Ok(Line::Message(entry)) => entries.push(entry),
+                Ok(Line::Message(entry)) => {
+                    leaf = Some(entry.id.clone());
+                    entries.push(entry);
+                }
                 Ok(Line::Repl(repl)) => repls.push(repl),
-                Ok(Line::Leaf(record)) => leaf_record = Some(record.id),
+                Ok(Line::Leaf(record)) => leaf = record.id,
                 Ok(Line::ExchangeStart(start)) => open_exchange = Some(start.id),
                 Ok(Line::ExchangeEnd(end)) if open_exchange.as_deref() == Some(end.id.as_str()) => {
                     open_exchange = None;
@@ -274,14 +283,14 @@ impl SessionStore {
         }
         let header = header
             .with_context(|| format!("not a phi session file (no header): {}", path.display()))?;
-        // The last persisted leaf record wins (durable tree navigation);
-        // fall back to the newest entry for logs predating leaf records.
-        // A recorded leaf pointing at an entry the tolerant reader dropped
-        // falls back too, rather than orphaning the branch.
-        let leaf = match leaf_record {
-            Some(Some(id)) if entries.iter().any(|e| e.id == id) => Some(id),
-            Some(None) => None,
-            _ => entries.last().map(|e| e.id.clone()),
+        // Validate the leaf: a leaf pointing at an entry the tolerant
+        // reader dropped (malformed line) falls back to the newest entry
+        // rather than orphaning the branch. A None leaf (navigation to
+        // root) is preserved.
+        let leaf = match leaf {
+            Some(id) if entries.iter().any(|e| e.id == id) => Some(id),
+            Some(_) => entries.last().map(|e| e.id.clone()),
+            None => None,
         };
         // An exchange_start without its exchange_end is the durable
         // signature of a crash mid-turn: surface it instead of hiding it.
@@ -339,6 +348,13 @@ impl SessionStore {
 
     pub fn leaf(&self) -> Option<&str> {
         self.leaf.as_deref()
+    }
+
+    /// Whether the session has any message entries. Used by the TUI startup
+    /// gate to decide whether to replay the branch (resume) or show the
+    /// greeting (new session), independent of the leaf pointer.
+    pub fn has_entries(&self) -> bool {
+        !self.entries.is_empty()
     }
 
     pub fn entry(&self, id: &str) -> Option<&Entry> {
@@ -1214,5 +1230,43 @@ mod tests {
         let branch = loaded.branch();
         assert_eq!(branch.len(), 2);
         assert_eq!(branch[1].text, "a1");
+    }
+
+    #[test]
+    fn append_after_navigation_survives_reload() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut store = store_in(tmp.path());
+        store.append(Role::User, "q1").unwrap();
+        let a1 = store.append(Role::Assistant, "a1").unwrap();
+        store.append(Role::User, "q2").unwrap();
+        store.append(Role::Assistant, "a2").unwrap();
+
+        // Navigate back to a1 and take a different second turn.
+        store.set_leaf(Some(a1.clone())).unwrap();
+        store.append(Role::User, "q2-alt").unwrap();
+        store.append(Role::Assistant, "a2-alt").unwrap();
+
+        // In-memory state is correct.
+        let (exchanges, _) = store.branch_restore();
+        assert_eq!(
+            exchanges
+                .iter()
+                .map(|x| x.prompt.as_str())
+                .collect::<Vec<_>>(),
+            vec!["q1", "q2-alt"]
+        );
+
+        // After reload, the side branch must survive — the leaf must point
+        // at a2-alt, not at the stale a1 leaf record.
+        let loaded = SessionStore::load(store.path()).unwrap();
+        let (loaded_exchanges, _) = loaded.branch_restore();
+        assert_eq!(
+            loaded_exchanges
+                .iter()
+                .map(|x| (x.prompt.as_str(), x.response.as_str()))
+                .collect::<Vec<_>>(),
+            vec![("q1", "a1"), ("q2-alt", "a2-alt")],
+            "reload must preserve the most recent branch, not the stale leaf"
+        );
     }
 }
