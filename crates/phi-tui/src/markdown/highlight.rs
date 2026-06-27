@@ -80,12 +80,6 @@ pub fn highlight_code(text: &str, lang: Option<&str>, palette: &MarkdownPalette)
     highlight_code_lines(code_lines, lang, palette)
 }
 
-/// Highlight a snippet when a language hint is available, otherwise return
-/// plain lines unchanged. Useful for previews nested inside the REPL UI.
-pub fn highlight_snippet(text: &str, lang: Option<&str>, palette: &MarkdownPalette) -> Vec<String> {
-    highlight_code(text, lang, palette)
-}
-
 pub(super) fn highlight_code_lines(
     code_lines: Vec<&str>,
     lang: Option<&str>,

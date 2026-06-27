@@ -25,7 +25,8 @@ pub(super) static FALLBACK_THEME: LazyLock<Theme> = LazyLock::new(|| {
         .themes
         .remove("base16-ocean.dark")
         .expect("bundled theme")
-});/// Truecolor ANSI escapes for markdown/output highlighting, derived from the
+});
+/// Truecolor ANSI escapes for markdown/output highlighting, derived from the
 /// host terminal's reported colors when available. Mirrors opencode's
 /// `generateSystem` mapping: ANSI accents → palette roles. `default()` returns
 /// the previous hardcoded values (base16-ocean family) as the fallback.
@@ -79,9 +80,8 @@ impl MarkdownPalette {
     /// Derive palette from terminal-reported colors (OSC 10/11/4), mirroring
     /// opencode's `generateSystem`: ANSI palette → markdown roles.
     pub fn from_terminal_colors(colors: &TerminalColors) -> Self {
-        let col = |i: usize| {
-            colors.palette[i].map(|c| format!("\x1b[38;2;{};{};{}m", c.0, c.1, c.2))
-        };
+        let col =
+            |i: usize| colors.palette[i].map(|c| format!("\x1b[38;2;{};{};{}m", c.0, c.1, c.2));
         let fallback = Self::default_const();
         Self {
             repl_fence: col(5).unwrap_or_else(|| fallback.repl_fence.clone()),
@@ -125,7 +125,6 @@ pub(super) fn generate_syntax_theme(colors: &TerminalColors) -> Theme {
     let ansi = |i: usize| colors.palette[i].map(to_color).unwrap_or(fg);
 
     let items = syntax_items(SyntaxColors {
-        foreground: fg,
         comment: ansi(8),
         keyword: ansi(5),
         string: ansi(2),
@@ -151,8 +150,6 @@ pub(super) fn generate_syntax_theme(colors: &TerminalColors) -> Theme {
 }
 
 struct SyntaxColors {
-    #[allow(dead_code)]
-    foreground: Color,
     comment: Color,
     keyword: Color,
     string: Color,
@@ -166,7 +163,12 @@ struct SyntaxColors {
 }
 
 fn to_color(c: Rgb) -> Color {
-    Color { r: c.0, g: c.1, b: c.2, a: 0xff }
+    Color {
+        r: c.0,
+        g: c.1,
+        b: c.2,
+        a: 0xff,
+    }
 }
 
 /// Build syntax scope rules from a color set, mirroring opencode's
@@ -273,9 +275,7 @@ mod tests {
         let colors = TerminalColors {
             background: Rgb(20, 20, 26),
             foreground: Rgb(220, 220, 220),
-            palette: std::array::from_fn(|i| {
-                Some(Rgb(i as u8 * 15, i as u8 * 10, i as u8 * 5))
-            }),
+            palette: std::array::from_fn(|i| Some(Rgb(i as u8 * 15, i as u8 * 10, i as u8 * 5))),
         };
         let p = MarkdownPalette::from_terminal_colors(&colors);
         // repl_fence follows ANSI 5 (magenta)
@@ -302,17 +302,42 @@ mod tests {
         let colors = TerminalColors {
             background: Rgb(20, 20, 26),
             foreground: Rgb(220, 220, 220),
-            palette: std::array::from_fn(|i| {
-                Some(Rgb(i as u8 * 15, i as u8 * 10, i as u8 * 5))
-            }),
+            palette: std::array::from_fn(|i| Some(Rgb(i as u8 * 15, i as u8 * 10, i as u8 * 5))),
         };
         let theme = generate_syntax_theme(&colors);
-        assert_eq!(theme.settings.foreground, Some(Color { r: 220, g: 220, b: 220, a: 0xff }));
-        assert_eq!(theme.settings.background, Some(Color { r: 20, g: 20, b: 26, a: 0xff }));
+        assert_eq!(
+            theme.settings.foreground,
+            Some(Color {
+                r: 220,
+                g: 220,
+                b: 220,
+                a: 0xff
+            })
+        );
+        assert_eq!(
+            theme.settings.background,
+            Some(Color {
+                r: 20,
+                g: 20,
+                b: 26,
+                a: 0xff
+            })
+        );
         // Comment scope should exist and use bright-black (ANSI 8)
-        let comment = theme.scopes.iter().find(|s| s.scope == ScopeSelectors::from_str("comment").unwrap());
+        let comment = theme
+            .scopes
+            .iter()
+            .find(|s| s.scope == ScopeSelectors::from_str("comment").unwrap());
         assert!(comment.is_some(), "comment scope missing");
         // ANSI 8 = 8*15=120, 8*10=80, 8*5=40
-        assert_eq!(comment.unwrap().style.foreground, Some(Color { r: 120, g: 80, b: 40, a: 0xff }));
+        assert_eq!(
+            comment.unwrap().style.foreground,
+            Some(Color {
+                r: 120,
+                g: 80,
+                b: 40,
+                a: 0xff
+            })
+        );
     }
 }

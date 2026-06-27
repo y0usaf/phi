@@ -125,7 +125,7 @@ pub fn truncate_line_to_width(line: &str, width: usize) -> String {
             let len = ansi_escape_len(after) + 1;
             let esc = &rest[..len];
             out.push_str(esc);
-            sgr_active = if sgr_is_reset(esc) { false } else { true };
+            sgr_active = !sgr_is_reset(esc);
             rest = &rest[len..];
             continue;
         }
@@ -179,7 +179,7 @@ pub fn truncate_line_with_ellipsis_to_width(line: &str, width: usize) -> String 
             let len = ansi_escape_len(after) + 1;
             let esc = &rest[..len];
             out.push_str(esc);
-            sgr_active = if sgr_is_reset(esc) { false } else { true };
+            sgr_active = !sgr_is_reset(esc);
             rest = &rest[len..];
             continue;
         }
@@ -264,7 +264,10 @@ mod tests {
 
     #[test]
     fn truncate_line_to_width_wide_chars() {
-        assert_eq!(truncate_line_to_width("\u{65e5}\u{672c}\u{8a9e}", 4), "\u{65e5}\u{672c}");
+        assert_eq!(
+            truncate_line_to_width("\u{65e5}\u{672c}\u{8a9e}", 4),
+            "\u{65e5}\u{672c}"
+        );
     }
 
     #[test]

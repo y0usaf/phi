@@ -142,7 +142,11 @@ fn derive_trail_colors(bright: Rgb, bg: Rgb, steps: usize) -> Vec<Rgb> {
             let r = (bright.0 as f64 * brightness).min(255.0);
             let g = (bright.1 as f64 * brightness).min(255.0);
             let b = (bright.2 as f64 * brightness).min(255.0);
-            Rgb(blend(r, bg.0 as f64, alpha), blend(g, bg.1 as f64, alpha), blend(b, bg.2 as f64, alpha))
+            Rgb(
+                blend(r, bg.0 as f64, alpha),
+                blend(g, bg.1 as f64, alpha),
+                blend(b, bg.2 as f64, alpha),
+            )
         })
         .collect()
 }
@@ -187,7 +191,10 @@ fn build_frames(accent: Rgb, background: Rgb) -> Vec<String> {
                 if idx >= 0 && (idx as usize) < trail.len() {
                     // Active / trail cell — full trail color (no fade).
                     let c = trail[idx as usize];
-                    frame.push_str(&format!("\x1b[38;2;{};{};{}m{}", c.0, c.1, c.2, GLYPH_ACTIVE));
+                    frame.push_str(&format!(
+                        "\x1b[38;2;{};{};{}m{}",
+                        c.0, c.1, c.2, GLYPH_ACTIVE
+                    ));
                 } else {
                     // Inactive cell — apply fade by blending inactive against bg.
                     let a = INACTIVE_FACTOR * fade;
@@ -196,7 +203,10 @@ fn build_frames(accent: Rgb, background: Rgb) -> Vec<String> {
                         blend(accent.1 as f64, background.1 as f64, a),
                         blend(accent.2 as f64, background.2 as f64, a),
                     );
-                    frame.push_str(&format!("\x1b[38;2;{};{};{}m{}", c.0, c.1, c.2, GLYPH_INACTIVE));
+                    frame.push_str(&format!(
+                        "\x1b[38;2;{};{};{}m{}",
+                        c.0, c.1, c.2, GLYPH_INACTIVE
+                    ));
                 }
             }
             frame.push_str(RESET);
@@ -281,10 +291,12 @@ mod tests {
     fn bidirectional_sweep_visits_all_positions() {
         let _s = Spinner::default();
         // Collect the active position at each forward frame.
-        let positions: Vec<usize> = (0..WIDTH).map(|fi| {
-            let st = get_scanner_state(fi);
-            st.active_position
-        }).collect();
+        let positions: Vec<usize> = (0..WIDTH)
+            .map(|fi| {
+                let st = get_scanner_state(fi);
+                st.active_position
+            })
+            .collect();
         assert_eq!(positions, (0..WIDTH).collect::<Vec<_>>());
     }
 
@@ -324,10 +336,10 @@ mod tests {
     fn calculate_color_index_forward_trail() {
         // Forward: active_position=3, so trail is at positions 2,1,0.
         let state = get_scanner_state(3); // forward, position 3
-        assert_eq!(calculate_color_index(3, &state), 0);   // lead
-        assert_eq!(calculate_color_index(2, &state), 1);   // trail 1
-        assert_eq!(calculate_color_index(0, &state), 3);  // trail 3
-        assert_eq!(calculate_color_index(4, &state), -1);  // ahead → inactive
+        assert_eq!(calculate_color_index(3, &state), 0); // lead
+        assert_eq!(calculate_color_index(2, &state), 1); // trail 1
+        assert_eq!(calculate_color_index(0, &state), 3); // trail 3
+        assert_eq!(calculate_color_index(4, &state), -1); // ahead → inactive
     }
 
     #[test]
@@ -339,7 +351,7 @@ mod tests {
         assert_eq!(flexible_position(&state), WIDTH - 2);
         assert_eq!(calculate_color_index(WIDTH - 2, &state), 0); // lead
         assert_eq!(calculate_color_index(WIDTH - 1, &state), 1); // trail (to the right)
-        assert_eq!(calculate_color_index(0, &state), -1);       // behind → inactive
+        assert_eq!(calculate_color_index(0, &state), -1); // behind → inactive
     }
 
     fn flexible_position(s: &ScannerState) -> usize {
@@ -349,8 +361,8 @@ mod tests {
     #[test]
     fn hold_frames_shift_trail_offscreen() {
         // During hold at end, holdProgress grows, pushing trail color indices up.
-        let s0 = get_scanner_state(WIDTH);          // first hold-end frame
-        let s5 = get_scanner_state(WIDTH + 5);      // 5th hold-end frame
+        let s0 = get_scanner_state(WIDTH); // first hold-end frame
+        let s5 = get_scanner_state(WIDTH + 5); // 5th hold-end frame
         // At position WIDTH-2 (one behind the lead):
         let idx0 = calculate_color_index(WIDTH - 2, &s0);
         let idx5 = calculate_color_index(WIDTH - 2, &s5);

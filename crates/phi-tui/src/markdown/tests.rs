@@ -1,10 +1,9 @@
-use super::constants::{MarkdownPalette, RESET, BOLD, CYAN, DIM, UNDERLINE};
+use super::constants::{BOLD, CYAN, DIM, MarkdownPalette, RESET, UNDERLINE};
 use super::highlight::*;
 
 use crate::highlight_code;
 use crate::highlight_diff_line;
 use crate::highlight_output;
-use crate::highlight_snippet;
 use crate::render_markdown;
 use crate::terminal::visible_width;
 
@@ -76,7 +75,11 @@ fn wrapped_list_items_hang_under_text() {
     assert!(p[1].starts_with("  ") && !p[1].starts_with("   "), "{p:?}");
     assert!(p.iter().any(|l| l.starts_with("• short")), "{p:?}");
 
-    let p = plain(&render_markdown("1. alpha beta gamma delta epsilon", 20, &palette()));
+    let p = plain(&render_markdown(
+        "1. alpha beta gamma delta epsilon",
+        20,
+        &palette(),
+    ));
     assert!(p[0].starts_with("1. alpha"), "{p:?}");
     assert!(
         p[1].starts_with("   ") && !p[1].starts_with("    "),
@@ -171,19 +174,6 @@ fn repl_highlighting_marks_known_calls() {
         lines[0].contains(&p.repl_fn),
         "known repl call not highlighted: {lines:?}"
     );
-}
-
-#[test]
-fn highlight_snippet_plain_without_lang() {
-    let lines = highlight_snippet("plain text", None, &palette());
-    assert_eq!(lines, vec!["plain text"]);
-}
-
-#[test]
-fn highlight_snippet_with_lang_uses_syntax_theme() {
-    let lines = highlight_snippet("fn main() {}", Some("rust"), &palette());
-    assert_eq!(lines.len(), 1);
-    assert!(lines[0].contains("\x1b[38;2;"), "no highlight: {lines:?}");
 }
 
 #[test]
@@ -355,7 +345,6 @@ fn markdown_renders_repl_fences_literally() {
     assert_eq!(p.first().unwrap(), "```repl");
     assert_eq!(p.last().unwrap(), "```");
 }
-
 
 #[test]
 fn over_wide_tokens_are_hard_split() {

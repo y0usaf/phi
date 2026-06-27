@@ -5,6 +5,7 @@
 pub mod cells;
 pub mod editor;
 pub mod fuzzy;
+#[cfg(feature = "markdown")]
 pub mod markdown;
 pub mod palette;
 pub mod selector;
@@ -19,9 +20,9 @@ pub use cells::{
 pub use crossterm;
 pub use editor::{Editor, EditorAction};
 pub use fuzzy::{fuzzy_filter, fuzzy_match};
+#[cfg(feature = "markdown")]
 pub use markdown::{
-    highlight_code, highlight_diff_line, highlight_output, highlight_snippet, render_markdown,
-    MarkdownPalette,
+    MarkdownPalette, highlight_code, highlight_diff_line, highlight_output, render_markdown,
 };
 pub use palette::{Rgb, TerminalColors, detect_terminal_colors};
 pub use selector::{Selector, SelectorItem, SelectorOutcome};

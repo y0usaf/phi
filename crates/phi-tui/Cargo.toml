@@ -6,10 +6,14 @@ license.workspace = true
 
 [dependencies]
 crossterm.workspace = true
-pulldown-cmark.workspace = true
-syntect.workspace = true
+pulldown-cmark = { workspace = true, optional = true }
+syntect = { workspace = true, optional = true }
 unicode-segmentation.workspace = true
 unicode-width.workspace = true
+
+[features]
+default = ["markdown"]
+markdown = ["dep:pulldown-cmark", "dep:syntect"]
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

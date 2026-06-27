@@ -1,7 +1,7 @@
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use super::constants::{BOLD, DIM, ITALIC, RESET, UNDERLINE, CYAN, MarkdownPalette};
+use super::constants::{BOLD, CYAN, DIM, ITALIC, MarkdownPalette, RESET, UNDERLINE};
 use super::highlight::highlight_code_cached;
 /// Kind of markdown block, used to determine spacing behaviour at block
 /// boundaries.
@@ -426,8 +426,7 @@ impl<'p> Renderer<'p> {
                 if let Some((vp_start, vp_end)) = self.lazy_viewport {
                     // Lazy mode: decide whether to highlight or use placeholder
                     let code_line_count = self.code_block_content.lines().count();
-                    let block_range = self
-                        .code_block_start_line
+                    let block_range = self.code_block_start_line
                         ..(self.code_block_start_line + code_line_count + 2);
                     let is_visible = ranges_overlap(block_range, vp_start..vp_end);
 
@@ -499,8 +498,7 @@ impl<'p> Renderer<'p> {
             TagEnd::Table => {
                 let rows = std::mem::take(&mut self.table_rows);
                 let alignments = std::mem::take(&mut self.table_alignments);
-                let table_lines =
-                    render_table_with_width(&rows, &alignments, self.width);
+                let table_lines = render_table_with_width(&rows, &alignments, self.width);
                 self.lines.extend(table_lines);
                 self.in_table = false;
                 self.table_current_cell.clear();
@@ -831,64 +829,4 @@ pub(super) fn render_table_with_width(
     }
 
     lines
-}
-
-/// Type of structured block that can be centered.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StructuredBlockType {
-    Code,
-    Math,
-    Table,
-}
-
-/// Compute the left padding needed to center a structured block within the
-/// available terminal width.
-///
-/// Takes the block type (for future per-type policy), the block's display
-/// width, and the total terminal width.  Returns the number of leading
-/// spaces to prepend to each line of the block.  If the block is wider than
-/// or equal to the terminal, returns 0 (no padding).
-pub fn center_structured_block_ranges(
-    _block_type: StructuredBlockType,
-    block_width: usize,
-    terminal_width: usize,
-) -> usize {
-    if terminal_width == 0 || block_width >= terminal_width {
-        return 0;
-    }
-    (terminal_width - block_width) / 2
-}
-
-/// Apply horizontal centering padding to a slice of rendered ANSI lines.
-///
-/// Computes the block width as the widest non-empty line (ANSI-aware), then
-/// prepends `center_structured_block_ranges(...)` spaces to each non-empty
-/// line.  Blank lines are skipped to avoid trailing-whitespace artefacts.
-pub fn apply_centering(
-    lines: &mut [String],
-    block_type: StructuredBlockType,
-    terminal_width: usize,
-) {
-    if terminal_width == 0 || lines.is_empty() {
-        return;
-    }
-
-    let block_width = lines
-        .iter()
-        .filter(|l| !l.is_empty())
-        .map(|l| crate::terminal::visible_width(l))
-        .max()
-        .unwrap_or(0);
-
-    let pad = center_structured_block_ranges(block_type, block_width, terminal_width);
-    if pad == 0 {
-        return;
-    }
-
-    let pad_str = " ".repeat(pad);
-    for line in lines.iter_mut() {
-        if !line.is_empty() {
-            line.insert_str(0, &pad_str);
-        }
-    }
 }

@@ -31,7 +31,8 @@ fn cursor_at(width: u16, live_text: &str, col: usize) -> (u16, u16) {
     let buf = Buf::default();
     let mut term = Terminal::new(buf.clone(), width, 6);
     let live = vec![live_text.to_owned()];
-    term.render(&[], &live, Some(LiveCursor { line: 0, col })).unwrap();
+    term.render(&[], &live, Some(LiveCursor { line: 0, col }))
+        .unwrap();
     let mut parser = vt100::Parser::new(6, width, 5000);
     parser.process(&buf.take());
     let (r, c) = parser.screen().cursor_position();
@@ -45,7 +46,11 @@ fn trailing_space_advances_cursor() {
     assert_eq!(before, (0, 5));
     // Typing a space should move the cursor; it must not stay at (0, 5).
     let after = cursor_at(5, "hello ", 6);
-    assert_ne!(after, (0, 5), "cursor froze at (0,5) after typing a space: {after:?}");
+    assert_ne!(
+        after,
+        (0, 5),
+        "cursor froze at (0,5) after typing a space: {after:?}"
+    );
 }
 
 #[test]

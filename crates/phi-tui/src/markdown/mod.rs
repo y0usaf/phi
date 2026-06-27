@@ -9,6 +9,9 @@ mod render;
 mod tests;
 
 pub use constants::MarkdownPalette;
-pub use highlight::{highlight_code, highlight_snippet};
+pub use highlight::highlight_code;
 pub use output::highlight_output;
-pub use render::{highlight_diff_line, render_markdown, render_markdown_lazy, center_structured_block_ranges, apply_centering, StructuredBlockType, MarkdownSpacingMode, MarkdownBlockKind, spacing_separates_after};
+pub use render::{
+    MarkdownBlockKind, MarkdownSpacingMode, highlight_diff_line, render_markdown,
+    render_markdown_lazy, spacing_separates_after,
+};

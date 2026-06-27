@@ -103,7 +103,13 @@ fn read_available(chunk: &mut [u8], deadline: Instant) -> std::io::Result<usize>
     if n <= 0 || pfd.revents & libc::POLLIN == 0 {
         return Ok(0);
     }
-    let n = unsafe { libc::read(libc::STDIN_FILENO, chunk.as_mut_ptr() as *mut _, chunk.len()) };
+    let n = unsafe {
+        libc::read(
+            libc::STDIN_FILENO,
+            chunk.as_mut_ptr() as *mut _,
+            chunk.len(),
+        )
+    };
     if n < 0 {
         return Err(std::io::Error::last_os_error());
     }
@@ -126,9 +132,7 @@ fn parse_complete(buf: &[u8]) -> bool {
     let Some(p) = parse_responses(buf) else {
         return false;
     };
-    p.foreground.is_some()
-        && p.background.is_some()
-        && p.palette.iter().all(Option::is_some)
+    p.foreground.is_some() && p.background.is_some() && p.palette.iter().all(Option::is_some)
 }
 
 fn parse_responses(buf: &[u8]) -> Option<Parsed> {
@@ -157,11 +161,7 @@ fn parse_responses(buf: &[u8]) -> Option<Parsed> {
         let step = 2 + payload_len + term_len;
         i += step.max(1);
     }
-    if found_any {
-        Some(p)
-    } else {
-        None
-    }
+    if found_any { Some(p) } else { None }
 }
 
 /// Returns `(payload_len, terminator_len)` for the first BEL or ST in `slice`.
@@ -251,7 +251,10 @@ fn parse_int_channel(s: &str) -> Option<u8> {
 
 fn normalize(p: Parsed) -> TerminalColors {
     let background = p.background.or(p.palette[0]).unwrap_or(Rgb(0, 0, 0));
-    let foreground = p.foreground.or(p.palette[7]).unwrap_or(Rgb(0xff, 0xff, 0xff));
+    let foreground = p
+        .foreground
+        .or(p.palette[7])
+        .unwrap_or(Rgb(0xff, 0xff, 0xff));
     TerminalColors {
         background,
         foreground,
