@@ -80,29 +80,12 @@ fn ansi_escape_len(after_esc: &str) -> usize {
     }
 }
 
-/// Active SGR (color/attribute) state at a point in an ANSI string.
-#[derive(Clone, Default)]
-struct SgrState {
-    codes: Vec<String>,
-}
-
-impl SgrState {
-    /// Update state from a full escape sequence (`\x1b[...m`).
-    fn apply(&mut self, esc: &str) {
-        if let Some(body) = esc.strip_prefix("\x1b[")
-            && body.ends_with('m')
-        {
-            if matches!(body, "m" | "0m") {
-                self.codes.clear();
-            } else {
-                self.codes.push(esc.to_owned());
-            }
-        }
-    }
-
-    fn is_active(&self) -> bool {
-        !self.codes.is_empty()
-    }
+/// Track whether any SGR (color/attribute) escape is currently active.
+/// We only need to know *whether* style is open at the truncation point so we
+/// can emit a trailing `RESET` — the actual codes are already in the output
+/// buffer, so a simple boolean suffices.
+fn sgr_is_reset(esc: &str) -> bool {
+    matches!(esc, "\x1b[0m" | "\x1b[m")
 }
 
 /// Visible (display) width of `s`, ignoring ANSI escape sequences.
@@ -130,7 +113,7 @@ pub fn truncate_line_to_width(line: &str, width: usize) -> String {
         return String::new();
     }
     let mut out = String::with_capacity(line.len().min(width * 4));
-    let mut state = SgrState::default();
+    let mut sgr_active = false;
     let mut remaining = width;
 
     let mut rest = line;
@@ -142,7 +125,7 @@ pub fn truncate_line_to_width(line: &str, width: usize) -> String {
             let len = ansi_escape_len(after) + 1;
             let esc = &rest[..len];
             out.push_str(esc);
-            state.apply(esc);
+            sgr_active = if sgr_is_reset(esc) { false } else { true };
             rest = &rest[len..];
             continue;
         }
@@ -156,7 +139,7 @@ pub fn truncate_line_to_width(line: &str, width: usize) -> String {
         rest = &rest[ch.len_utf8()..];
     }
 
-    if state.is_active() {
+    if sgr_active {
         out.push_str("\x1b[0m");
     }
     out
@@ -184,7 +167,7 @@ pub fn truncate_line_with_ellipsis_to_width(line: &str, width: usize) -> String 
     // Reserve 1 cell for the ellipsis.
     let budget = width - 1;
     let mut out = String::with_capacity(line.len().min(width * 4));
-    let mut state = SgrState::default();
+    let mut sgr_active = false;
     let mut remaining = budget;
 
     let mut rest = line;
@@ -196,7 +179,7 @@ pub fn truncate_line_with_ellipsis_to_width(line: &str, width: usize) -> String 
             let len = ansi_escape_len(after) + 1;
             let esc = &rest[..len];
             out.push_str(esc);
-            state.apply(esc);
+            sgr_active = if sgr_is_reset(esc) { false } else { true };
             rest = &rest[len..];
             continue;
         }
@@ -213,7 +196,7 @@ pub fn truncate_line_with_ellipsis_to_width(line: &str, width: usize) -> String 
     // The ellipsis inherits the active SGR state (escape codes are already
     // in `out` and haven't been reset).
     out.push('\u{2026}');
-    if state.is_active() {
+    if sgr_active {
         out.push_str("\x1b[0m");
     }
     out
