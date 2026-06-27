@@ -48,7 +48,6 @@ pub fn usage_breakdowns_for_model(model: String, usage: Usage) -> Vec<UsageBreak
 /// A persistent multi-turn RLM conversation. The REPL env survives across
 /// turns (variables persist); each completed exchange is exposed in the env
 /// as `history_N`. Usage accumulates across the whole session.
-
 pub fn history_snippet(index: usize, history: &[ChatMessage], response: &str) -> String {
     let mut messages: Vec<Value> = history
         .iter()

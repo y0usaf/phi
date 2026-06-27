@@ -11,6 +11,12 @@ use tokio_util::sync::CancellationToken;
 #[derive(Clone)]
 pub struct RunState(Arc<Mutex<(CancellationToken, Instant)>>);
 
+impl Default for RunState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RunState {
     pub fn new() -> Self {
         Self(Arc::new(Mutex::new((

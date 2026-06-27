@@ -101,7 +101,8 @@ fn truncate_chars(text: String, max_chars: usize) -> String {
         return text;
     }
     let mut out: String = text.chars().take(max_chars).collect();
-    out.push_str(&format!("... + [{} chars...]", total - max_chars));
+    use std::fmt::Write;
+    let _ = write!(out, "... + [{} chars...]", total - max_chars);
     out
 }
 

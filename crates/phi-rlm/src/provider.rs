@@ -157,7 +157,7 @@ impl LanguageModel for ProviderLm {
     }
 
     fn set_tools(&self, tools: Vec<ToolDefinition>) {
-        *self.tools.write().unwrap() = tools;
+        ProviderLm::set_tools(self, tools);
     }
 
     async fn complete_streaming(
@@ -328,8 +328,7 @@ impl ProviderLm {
         let stop_reason = match message.stop_reason {
             AiStopReason::ToolUse => StopReason::ToolUse,
             AiStopReason::Length => StopReason::Length,
-            AiStopReason::Error => StopReason::Error,
-            AiStopReason::Aborted => StopReason::Error,
+            AiStopReason::Error | AiStopReason::Aborted => StopReason::Error,
             AiStopReason::Stop => StopReason::Stop,
         };
         Ok(Completion {
