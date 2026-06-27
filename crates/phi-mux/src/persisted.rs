@@ -53,10 +53,7 @@ impl PersistedState {
             .collect();
         if let Some(selected) = &self.selected_project {
             let normalized = normalize_path(Path::new(selected));
-            self.selected_project = self
-                .projects
-                .contains(&normalized)
-                .then_some(normalized);
+            self.selected_project = self.projects.contains(&normalized).then_some(normalized);
         }
     }
 

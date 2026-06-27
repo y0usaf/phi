@@ -2,10 +2,10 @@
 //! `app::sidebar`, with status derived from `SessionStatus` instead of the
 //! sidecar runtime flags).
 
-use crate::status::SessionStatus;
-use crate::workspace::{MuxProject, MuxSession};
 use crate::grid::color::Color;
 use crate::grid::theme::{HEADING, MUTED, TEXT};
+use crate::status::SessionStatus;
+use crate::workspace::{MuxProject, MuxSession};
 
 pub const SIDEBAR_ANIMATION_FRAME_MS: u64 = 40;
 pub const SIDEBAR_SPINNER_FRAME_TICKS: u64 = 2;

@@ -57,7 +57,10 @@ impl SessionWatcher {
                 self.watchers.insert(index, (watcher, dir));
             }
             Err(e) => {
-                eprintln!("watcher: failed to create watcher for {}: {e}", dir.display());
+                eprintln!(
+                    "watcher: failed to create watcher for {}: {e}",
+                    dir.display()
+                );
             }
         }
     }

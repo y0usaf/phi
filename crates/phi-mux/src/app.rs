@@ -14,16 +14,7 @@ use phi_tui::crossterm::event::{
 };
 use tokio::sync::mpsc;
 
-use crate::clipboard::MuxClipboard;
-use crate::keys::{AppAction, KeyStroke, Keymap, KeymapMatch, MuxCommand, parse_command};
 use super::command_line::{CommandLineEvent, CommandLineState, command_line_start_col};
-use crate::driver::{self as driver, MuxChannels, SessionKey};
-use crate::persisted::{self as persisted, PersistedState};
-use crate::status::SessionStatus;
-use crate::grid::ansi::{AnsiRenderer, HardwareCursor};
-use crate::grid::theme;
-use crate::grid::cell_surface::CellSurface;
-use crate::grid::layout::{CellLayout, SIDEBAR_WIDTH_DEFAULT, compute_cell_layout};
 use super::ui::overlays::archive::{ArchiveOutcome, ArchiveViewerState, render_archive_viewer};
 use super::ui::overlays::help::{HelpOverlayState, render_help_overlay};
 use super::ui::overlays::model::{ModelOverlayOutcome, ModelOverlayState, render_model_overlay};
@@ -31,12 +22,21 @@ use super::ui::overlays::usage::{UsageOverlayState, render_usage_overlay};
 use super::ui::scene::{
     Chrome, MuxMode, ScenePalette, StatusNoteKind, render_scene, statusline_status,
 };
-use crate::grid::selection::{SelectionPoint, TerminalSelection, selected_text};
 use super::ui::sidebar::{
     SidebarRowKind, build_sidebar_rows, ensure_sidebar_selection_visible, project_sidebar_title,
     scroll_sidebar_by_rows_value, selected_sidebar_selection_span, session_sidebar_title,
     sidebar_has_spinner, sidebar_viewport_items, sticky_sidebar_anchor_row,
 };
+use crate::clipboard::MuxClipboard;
+use crate::driver::{self as driver, MuxChannels, SessionKey};
+use crate::grid::ansi::{AnsiRenderer, HardwareCursor};
+use crate::grid::cell_surface::CellSurface;
+use crate::grid::layout::{CellLayout, SIDEBAR_WIDTH_DEFAULT, compute_cell_layout};
+use crate::grid::selection::{SelectionPoint, TerminalSelection, selected_text};
+use crate::grid::theme;
+use crate::keys::{AppAction, KeyStroke, Keymap, KeymapMatch, MuxCommand, parse_command};
+use crate::persisted::{self as persisted, PersistedState};
+use crate::status::SessionStatus;
 use crate::watcher::SessionWatcher;
 use crate::workspace::{self as workspace, Workspace};
 use phi_session::config::MuxConfig;
@@ -138,7 +138,14 @@ pub async fn run(shared: SharedResources, mux_config: MuxConfig, cwd: PathBuf) -
     };
 
     let result = app
-        .main_loop(&guard, status_rx, redraw_rx, suspend_rx, host_modal_rx, watcher_rx)
+        .main_loop(
+            &guard,
+            status_rx,
+            redraw_rx,
+            suspend_rx,
+            host_modal_rx,
+            watcher_rx,
+        )
         .await;
 
     app.persist_now();
@@ -412,11 +419,9 @@ impl MuxApp {
         // independent tokio task; `join_all` just awaits them in parallel.
         let shared = &self.shared;
         let channels = &self.channels;
-        let futures = specs
-            .iter()
-            .map(|(key, cwd, resume)| {
-                driver::spawn(*key, cwd, resume.as_deref(), pane, shared, channels)
-            });
+        let futures = specs.iter().map(|(key, cwd, resume)| {
+            driver::spawn(*key, cwd, resume.as_deref(), pane, shared, channels)
+        });
         let results = futures::future::join_all(futures).await;
 
         // Assign handles (or crash status) back to the workspace.

@@ -105,11 +105,7 @@ impl DirtyRegion {
 
     /// Iterate flat row-major cell indices covered by the dirty rects,
     /// clamped to `(cols, rows)`.
-    pub fn iter_indices(
-        &self,
-        cols: i32,
-        rows: i32,
-    ) -> impl Iterator<Item = usize> + '_ {
+    pub fn iter_indices(&self, cols: i32, rows: i32) -> impl Iterator<Item = usize> + '_ {
         let cols_us = cols as usize;
         let bounds = Rect::new(0, 0, cols, rows);
         self.rects
@@ -120,9 +116,7 @@ impl DirtyRegion {
                 let start_y = r.y as usize;
                 let end_x = (r.x + r.width) as usize;
                 let end_y = (r.y + r.height) as usize;
-                (start_y..end_y).flat_map(move |y| {
-                    (start_x..end_x).map(move |x| y * cols_us + x)
-                })
+                (start_y..end_y).flat_map(move |y| (start_x..end_x).map(move |x| y * cols_us + x))
             })
     }
 }

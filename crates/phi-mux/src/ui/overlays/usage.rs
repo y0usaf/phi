@@ -7,8 +7,8 @@ use phi_tui::truncate_to_cells;
 use super::dialog::render_dialog_title_line;
 use crate::grid::cell_surface::{CellSurface, draw_box, render_cell_scrollbar};
 use crate::grid::layout::CellRect as Rect;
-use crate::ui::scene::ScenePalette;
 use crate::grid::theme;
+use crate::ui::scene::ScenePalette;
 use phi_session::usage::{
     self, UsageReport, is_usage_separator_line, is_usage_total_line, usage_header_line,
     usage_overlay_line_count, usage_overlay_lines, usage_separator_line, usage_total_line,
@@ -121,7 +121,9 @@ pub fn render_usage_overlay(
     surface.fill_rect(inner, palette.fg, palette.bg);
 
     let count = format!(" {} ", usage.report.entries);
-    render_dialog_title_line(surface, inner.row, inner.col, inner.cols, " USAGE ", &count, palette);
+    render_dialog_title_line(
+        surface, inner.row, inner.col, inner.cols, " USAGE ", &count, palette,
+    );
 
     let header_row = inner.row + 1;
     let header_separator_row = inner.row + 2;

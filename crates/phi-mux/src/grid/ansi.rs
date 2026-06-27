@@ -481,8 +481,7 @@ fn render_diff<W: Write>(
     // scroll would also move the sidebar. When a scroll is detected but unsafe
     // to emit (sidebar up), we fall through to the dirty diff below, which
     // repaints the shifted cells correctly.
-    let pane_full_width =
-        term_pane.col == 0 && term_pane.col + term_pane.cols == surface.cols;
+    let pane_full_width = term_pane.col == 0 && term_pane.col + term_pane.cols == surface.cols;
 
     let scroll = if pane_full_width
         && let Some(prev_hashes) = prev_row_hashes.as_ref()
@@ -557,11 +556,7 @@ fn emit_scroll<W: Write>(
 
 /// Group dirty cell indices into Move/Style/Text run patches. Cells are
 /// assumed to be row-major flat indices into `surface.cells`.
-fn collect_dirty_patches(
-    surface: &CellSurface,
-    indices: &[usize],
-    cols: usize,
-) -> Vec<Patch> {
+fn collect_dirty_patches(surface: &CellSurface, indices: &[usize], cols: usize) -> Vec<Patch> {
     let mut patches = Vec::new();
     let mut idx_iter = indices.iter().copied().peekable();
     while let Some(start_idx) = idx_iter.next() {
@@ -893,7 +888,11 @@ mod tests {
         // The shifted rows are NOT re-emitted as text runs (no "row" beyond
         // what the bottom repaint needs).
         let row_count = diff.matches("row").count();
-        assert_eq!(row_count, 0, "shifted rows should be scrolled, not repainted; diff={:?}", diff);
+        assert_eq!(
+            row_count, 0,
+            "shifted rows should be scrolled, not repainted; diff={:?}",
+            diff
+        );
     }
 
     #[test]
@@ -922,7 +921,15 @@ mod tests {
 
         // No scroll escape (would smear the sidebar); the dirty diff repaints
         // the changed pane cells instead.
-        assert!(!diff.contains("\x1b[1S"), "no scroll escape with sidebar; diff={:?}", diff);
-        assert!(diff.contains("T"), "changed pane cells repainted; diff={:?}", diff);
+        assert!(
+            !diff.contains("\x1b[1S"),
+            "no scroll escape with sidebar; diff={:?}",
+            diff
+        );
+        assert!(
+            diff.contains("T"),
+            "changed pane cells repainted; diff={:?}",
+            diff
+        );
     }
 }

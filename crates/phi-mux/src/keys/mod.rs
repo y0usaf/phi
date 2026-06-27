@@ -4,10 +4,7 @@ mod keymap;
 
 pub use keymap::*;
 
-
-
 use std::path::PathBuf;
-
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MuxCommand {

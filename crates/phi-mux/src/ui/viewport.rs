@@ -62,7 +62,12 @@ impl ViewportState {
 
     /// Scroll the viewport up by `amount` lines. Pauses auto-follow. Returns
     /// `true` if the scroll position changed.
-    pub fn scroll_up(&mut self, amount: usize, _total_lines: usize, _viewport_height: usize) -> bool {
+    pub fn scroll_up(
+        &mut self,
+        amount: usize,
+        _total_lines: usize,
+        _viewport_height: usize,
+    ) -> bool {
         if amount == 0 {
             return false;
         }
@@ -79,7 +84,12 @@ impl ViewportState {
 
     /// Scroll the viewport down by `amount` lines. If this reaches the bottom,
     /// auto-follow resumes. Returns `true` if the position changed.
-    pub fn scroll_down(&mut self, amount: usize, total_lines: usize, viewport_height: usize) -> bool {
+    pub fn scroll_down(
+        &mut self,
+        amount: usize,
+        total_lines: usize,
+        viewport_height: usize,
+    ) -> bool {
         if amount == 0 {
             return false;
         }

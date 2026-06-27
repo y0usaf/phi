@@ -1,19 +1,19 @@
 //! Frame composition (port of pi-harness `app::scene`): sidebar, embedded
 //! terminal blit, and the bottom statusline.
 
-use crate::status::SessionStatus;
+use super::sidebar::{
+    SIDEBAR_ANIMATION_FRAME_MS, SidebarRow, SidebarRowKind, SidebarStatusKind, SidebarViewportItem,
+    sidebar_status_glyph,
+};
+use super::terminal_view::for_each_terminal_screen_cell;
 use crate::grid::cell_surface::{
     CellSurface, display_cell_width, render_cell_scrollbar, truncate_to_cells,
 };
 use crate::grid::color::Color;
 use crate::grid::layout::{CellLayout, CellRect};
 use crate::grid::selection::SelectionRange;
-use super::sidebar::{
-    SIDEBAR_ANIMATION_FRAME_MS, SidebarRow, SidebarRowKind, SidebarStatusKind, SidebarViewportItem,
-    sidebar_status_glyph,
-};
-use super::terminal_view::for_each_terminal_screen_cell;
 use crate::grid::theme;
+use crate::status::SessionStatus;
 use phi_tui::palette::TerminalColors;
 
 const SCROLLBAR_TRACK_GLYPH: &str = "│";
@@ -1074,14 +1074,8 @@ mod tests {
             &ScenePalette::default(),
         )
         .unwrap();
-        assert_eq!(
-            surface.resolve_text(surface.cell(1, 1).unwrap().text),
-            "h"
-        );
-        assert_eq!(
-            surface.resolve_text(surface.cell(2, 1).unwrap().text),
-            "i"
-        );
+        assert_eq!(surface.resolve_text(surface.cell(1, 1).unwrap().text), "h");
+        assert_eq!(surface.resolve_text(surface.cell(2, 1).unwrap().text), "i");
         assert_eq!((cursor.col, cursor.row), (3, 1));
     }
 

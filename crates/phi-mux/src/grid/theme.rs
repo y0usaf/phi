@@ -257,14 +257,22 @@ pub fn generate_system(colors: &TerminalColors) -> GeneratedTheme {
 pub fn default_terminal_colors() -> TerminalColors {
     use phi_tui::palette::Rgb;
     const STD: [Rgb; 16] = [
-        Rgb(0x00, 0x00, 0x00), Rgb(0x80, 0x00, 0x00),
-        Rgb(0x00, 0x80, 0x00), Rgb(0x80, 0x80, 0x00),
-        Rgb(0x00, 0x00, 0x80), Rgb(0x80, 0x00, 0x80),
-        Rgb(0x00, 0x80, 0x80), Rgb(0xc0, 0xc0, 0xc0),
-        Rgb(0x80, 0x80, 0x80), Rgb(0xff, 0x00, 0x00),
-        Rgb(0x00, 0xff, 0x00), Rgb(0xff, 0xff, 0x00),
-        Rgb(0x00, 0x00, 0xff), Rgb(0xff, 0x00, 0xff),
-        Rgb(0x00, 0xff, 0xff), Rgb(0xff, 0xff, 0xff),
+        Rgb(0x00, 0x00, 0x00),
+        Rgb(0x80, 0x00, 0x00),
+        Rgb(0x00, 0x80, 0x00),
+        Rgb(0x80, 0x80, 0x00),
+        Rgb(0x00, 0x00, 0x80),
+        Rgb(0x80, 0x00, 0x80),
+        Rgb(0x00, 0x80, 0x80),
+        Rgb(0xc0, 0xc0, 0xc0),
+        Rgb(0x80, 0x80, 0x80),
+        Rgb(0xff, 0x00, 0x00),
+        Rgb(0x00, 0xff, 0x00),
+        Rgb(0xff, 0xff, 0x00),
+        Rgb(0x00, 0x00, 0xff),
+        Rgb(0xff, 0x00, 0xff),
+        Rgb(0x00, 0xff, 0xff),
+        Rgb(0xff, 0xff, 0xff),
     ];
     TerminalColors {
         background: Rgb(0x00, 0x00, 0x00),
@@ -330,13 +338,13 @@ fn generate_gray_scale(bg: Color, mode: Mode) -> [Color; 13] {
 fn scale_toward(r: u8, g: u8, b: u8, ratio: f64, floor: bool) -> (u8, u8, u8) {
     let clamp = |v: f64| {
         let v = v * ratio;
-        if floor {
-            v.max(0.0)
-        } else {
-            v.min(255.0)
-        }
+        if floor { v.max(0.0) } else { v.min(255.0) }
     };
-    (clamp(f64::from(r)) as u8, clamp(f64::from(g)) as u8, clamp(f64::from(b)) as u8)
+    (
+        clamp(f64::from(r)) as u8,
+        clamp(f64::from(g)) as u8,
+        clamp(f64::from(b)) as u8,
+    )
 }
 
 /// Port of opencode's `generateMutedTextColor`: a neutral gray tuned to the
@@ -421,7 +429,10 @@ pub fn header_session_color() -> Color {
 /// Spinner frames for animated status. Keep these single-cell because the
 /// fast spinner-only renderer patches one status cell between full TUI
 /// redraws. This sequence should read as a circular spin, not a pulse.
-const SPINNER_FRAMES: &[&str] = &["\u{280b}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283c}", "\u{2834}", "\u{2826}", "\u{2827}", "\u{2807}", "\u{280f}"];
+const SPINNER_FRAMES: &[&str] = &[
+    "\u{280b}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283c}", "\u{2834}", "\u{2826}", "\u{2827}",
+    "\u{2807}", "\u{280f}",
+];
 
 /// Frame rate for slow, full-line "liveness" indicators that can only be
 /// repainted by a full TUI redraw (e.g. a running-tool progress bar) when
@@ -569,15 +580,16 @@ mod tests {
         TerminalColors {
             background: bg,
             foreground: fg,
-            palette: std::array::from_fn(|i| {
-                Some(Rgb(i as u8 * 8, i as u8 * 8, i as u8 * 8))
-            }),
+            palette: std::array::from_fn(|i| Some(Rgb(i as u8 * 8, i as u8 * 8, i as u8 * 8))),
         }
     }
 
     #[test]
     fn terminal_mode_splits_on_background_luminance() {
-        assert_eq!(terminal_mode(&colors_from(Rgb(0, 0, 0), Rgb(255, 255, 255))), Mode::Dark);
+        assert_eq!(
+            terminal_mode(&colors_from(Rgb(0, 0, 0), Rgb(255, 255, 255))),
+            Mode::Dark
+        );
         assert_eq!(
             terminal_mode(&colors_from(Rgb(255, 255, 255), Rgb(0, 0, 0))),
             Mode::Light

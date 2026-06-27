@@ -122,8 +122,10 @@ impl CellSurface {
         if self.dirty_region.is_empty() {
             return Some(Vec::new());
         }
-        let indices: Vec<usize> =
-            self.dirty_region.iter_indices(self.cols, self.rows).collect();
+        let indices: Vec<usize> = self
+            .dirty_region
+            .iter_indices(self.cols, self.rows)
+            .collect();
         self.dirty_region.clear();
         Some(indices)
     }
@@ -170,11 +172,9 @@ impl CellSurface {
             return;
         }
         let text = text.as_ref();
-        let packed_text = self.interner.get_or_intern(if text.is_empty() {
-            " "
-        } else {
-            text
-        });
+        let packed_text = self
+            .interner
+            .get_or_intern(if text.is_empty() { " " } else { text });
         let index = self.index(col, row).unwrap();
         self.write_cell(
             index,
@@ -213,11 +213,9 @@ impl CellSurface {
         bold: bool,
     ) {
         let span = span.max(1);
-        let main_text = self.interner.get_or_intern(if text.is_empty() {
-            " "
-        } else {
-            text
-        });
+        let main_text = self
+            .interner
+            .get_or_intern(if text.is_empty() { " " } else { text });
         let cont_text = self.interner.get_or_intern(" ");
         for offset in 0..span {
             let cell_col = col + offset;

@@ -4,11 +4,11 @@
 use phi_tui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::dialog::render_dialog_title_line;
-use crate::keys::{AppAction, Keymap};
 use crate::grid::cell_surface::{CellSurface, draw_box, render_cell_scrollbar, truncate_to_cells};
 use crate::grid::layout::CellRect as Rect;
-use crate::ui::scene::ScenePalette;
 use crate::grid::theme;
+use crate::keys::{AppAction, Keymap};
+use crate::ui::scene::ScenePalette;
 
 #[derive(Clone, Debug, Default)]
 pub struct HelpOverlayState {

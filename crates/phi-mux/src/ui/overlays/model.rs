@@ -8,8 +8,8 @@ use super::dialog::render_dialog_title_line;
 use crate::driver::SessionKey;
 use crate::grid::cell_surface::{CellSurface, draw_box, render_cell_scrollbar, truncate_to_cells};
 use crate::grid::layout::CellRect as Rect;
-use crate::ui::scene::ScenePalette;
 use crate::grid::theme;
+use crate::ui::scene::ScenePalette;
 
 #[derive(Debug)]
 pub enum ModelOverlayOutcome {
@@ -170,7 +170,9 @@ pub fn render_model_overlay(
         " SWITCH SUB MODEL "
     };
     let info = format!(" {}/{} ", model.filtered.len(), model.models.len());
-    render_dialog_title_line(surface, inner.row, inner.col, inner.cols, title, &info, palette);
+    render_dialog_title_line(
+        surface, inner.row, inner.col, inner.cols, title, &info, palette,
+    );
 
     let query_row = inner.row + 2;
     let list_row = inner.row + 4;

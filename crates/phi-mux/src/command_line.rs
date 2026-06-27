@@ -5,8 +5,6 @@ use phi_tui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crate::grid::cell_surface::display_cell_width;
 use crate::grid::layout::CellLayout;
 
-
-
 /// What the mux loop should do after the command line consumed a key.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CommandLineEvent {

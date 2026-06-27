@@ -4,8 +4,8 @@
 //! color, packed cells, damage, layout, selection, ANSI, theme) are in the
 //! `grid` module.
 
+pub mod overlays;
 pub mod scene;
 pub mod sidebar;
 pub mod terminal_view;
 pub mod viewport;
-pub mod overlays;
