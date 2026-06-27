@@ -451,13 +451,13 @@ impl SseHandler for Parser {
                         name: entry.name.clone(),
                     });
                 }
-                if let Some(args) = tc["function"]["arguments"].as_str() {
-                    if !args.is_empty() {
-                        sink.push(AssistantEvent::ToolCallDelta {
-                            index: ours,
-                            delta: args.to_owned(),
-                        });
-                    }
+                if let Some(args) = tc["function"]["arguments"].as_str()
+                    && !args.is_empty()
+                {
+                    sink.push(AssistantEvent::ToolCallDelta {
+                        index: ours,
+                        delta: args.to_owned(),
+                    });
                 }
             }
         }
