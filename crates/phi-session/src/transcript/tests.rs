@@ -74,7 +74,7 @@ fn non_finalized_block_does_not_enter_scrollback() {
 }
 
 #[test]
-fn viewport_commits_scrolled_finalized_rows() {
+fn finalized_blocks_flush_to_scrollback_immediately() {
     let mut tx = Transcript::new();
     let frame = render(
         &mut tx,
@@ -87,7 +87,7 @@ fn viewport_commits_scrolled_finalized_rows() {
         ],
     );
     assert_eq!(frame.full, vec!["a", "", "b", "", "c", "", "d"]);
-    assert_eq!(frame.scrollback, vec!["a", "", "b", ""]);
-    assert_eq!(frame.live, vec!["c", "", "d"]);
-    assert_eq!(frame.committed_rows, 4);
+    assert_eq!(frame.scrollback, vec!["a", "", "b", "", "c", "", "d"]);
+    assert_eq!(frame.live, Vec::<String>::new());
+    assert_eq!(frame.committed_rows, 7);
 }
