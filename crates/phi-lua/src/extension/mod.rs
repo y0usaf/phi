@@ -104,10 +104,10 @@ impl phi_ext::Extension for LuaExtension {
         for event_name in event_names {
             let kind = parse_event_kind(&event_name)?;
             let tx2 = Arc::clone(&tx);
-            let name2 = event_name.clone();
+            let name2 = event_name;
             host.subscribe(EventHandlerRegistration {
                 event: kind,
-                label: format!("lua:{}:{}", self.path.display(), event_name),
+                label: format!("lua:{}:{}", self.path.display(), &name2),
                 handler: Arc::new(move |event: LifecycleEvent| {
                     let payload_json = serde_json::to_string(&event.payload)?;
                     let (rtx, rrx) = std::sync::mpsc::sync_channel(1);
@@ -128,7 +128,7 @@ impl phi_ext::Extension for LuaExtension {
             let tx3 = Arc::clone(&tx);
             let name3 = cmd_name.clone();
             host.register_command(CommandSpec {
-                name: cmd_name.clone(),
+                name: cmd_name,
                 description,
                 handler: Arc::new(move |inv: CommandInvocation| {
                     let (rtx, rrx) = std::sync::mpsc::sync_channel(1);

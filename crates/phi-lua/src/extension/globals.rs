@@ -21,7 +21,7 @@ pub(super) fn setup_phi_global(lua: &mlua::Lua) -> mlua::Result<()> {
     let on_fn = lua.create_function(|lua, (event_name, handler): (String, mlua::Function)| {
         let globals = lua.globals();
         let handlers: mlua::Table = globals.get("_phi_handlers")?;
-        handlers.set(event_name.clone(), handler)?;
+        handlers.set(event_name.as_str(), handler)?;
         let reg: mlua::Table = globals.get("_phi_registered_events")?;
         let len = reg.raw_len();
         reg.raw_set(len + 1, event_name)?;
@@ -33,7 +33,7 @@ pub(super) fn setup_phi_global(lua: &mlua::Lua) -> mlua::Result<()> {
     let register_command_fn = lua.create_function(|lua, (name, opts): (String, mlua::Table)| {
         let globals = lua.globals();
         let commands: mlua::Table = globals.get("_phi_commands")?;
-        commands.set(name.clone(), opts)?;
+        commands.set(name.as_str(), opts)?;
         let reg: mlua::Table = globals.get("_phi_registered_commands")?;
         let len = reg.raw_len();
         reg.raw_set(len + 1, name)?;
