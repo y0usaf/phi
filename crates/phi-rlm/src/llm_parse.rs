@@ -26,7 +26,8 @@ pub fn split_at_first_block(text: &str) -> Option<(&str, &str)> {
 
 /// Byte offset just past the closing fence of the last complete ```repl
 /// block, or `None` when the text has no complete block.
-pub fn last_block_end(text: &str) -> Option<usize> {
+#[allow(dead_code)]
+pub(crate) fn last_block_end(text: &str) -> Option<usize> {
     CODE_BLOCK.find_iter(text).last().map(|m| m.end())
 }
 

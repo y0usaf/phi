@@ -1,28 +1,35 @@
-//! Rlm struct + impl: the main engine loop.
+//! Rlm struct, lifecycle methods, and main run_loop.
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::LazyLock;
 use std::time::Instant;
 
-use phi_ai::{ToolDefinition, Usage};
+use phi_ai::ToolDefinition;
 use phi_repl::{EnvSetup, ReplEnv, ReplResult, SubcallHandler};
-use serde_json::{Value, json};
+use serde_json::json;
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 use tokio_util::sync::CancellationToken;
 
+use phi_ext::AppRuntime;
 use phi_ext::{EventKind, EventPayload, LifecycleEvent};
-use phi_runtime::AppRuntime;
 
-use crate::lm_core::{DeltaSink, LanguageModel, LmHandler, ThinkingSink, ToolCallEvent, ToolCallSink, UsageBreakdown};
+use crate::config::{
+    EnvFactory, Events, LimitKind, PythonEnvFactory, RlmCompletion, RlmConfig, RlmEvent,
+    SavePointFn, StopCause,
+};
 use crate::llm_parse::{ExecutedBlock, format_execution_result};
+use crate::lm_core::{ChatMessage, ContextPayload, LanguageModel, LmHandler, Role};
+use crate::prompts::{
+    DEFAULT_ANSWER_NUDGE, QueryMetadata, SystemPromptOptions, build_system_prompt,
+    build_user_prompt, metadata_user_prompt,
+};
 
-/// A tool call result arriving from the streaming sink, carrying the code
-/// extracted from the tool call's arguments for eager execution.
-struct ToolCallResult {
-    code: Option<String>,
-}
-use crate::prompts::{DEFAULT_ANSWER_NUDGE, QueryMetadata, SystemPromptOptions, build_system_prompt, build_user_prompt, metadata_user_prompt};
-use std::sync::LazyLock;
+use super::super::TurnState;
+use super::super::helpers::dispatch_event;
+use super::super::state::RunState;
+use super::super::subcalls::{EngineSubcalls, Outcome};
+
 use regex_lite::Regex;
 
 static TASK_COMPLETE_RE: LazyLock<Regex> = LazyLock::new(|| {
@@ -36,10 +43,16 @@ static TASK_COMPLETE_RE: LazyLock<Regex> = LazyLock::new(|| {
 /// genuinely stuck model before exhausting `max_iterations`.
 const MAX_CONSECUTIVE_PROSE: usize = 4;
 
+/// A tool call result arriving from the streaming sink, carrying the code
+/// extracted from the tool call's arguments for eager execution.
+pub struct ToolCallResult {
+    pub code: Option<String>,
+}
+
 /// The native tool definition for the `repl` tool. The model calls this
 /// instead of writing ```repl fences; the `code` argument is executed in the
 /// Python REPL and the result is returned as a tool result.
-fn repl_tool_definition() -> ToolDefinition {
+pub fn repl_tool_definition() -> ToolDefinition {
     ToolDefinition {
         name: "repl".to_owned(),
         description: "Execute Python code in the REPL. The REPL persists across calls. Use print(...) to see output. Set answer['content'] and answer['ready'] = True to submit a final answer.".to_owned(),
@@ -55,14 +68,6 @@ fn repl_tool_definition() -> ToolDefinition {
         }),
     }
 }
-
-use crate::lm_core::{ChatMessage, ContextPayload, Role};
-
-use crate::config::{EnvFactory, Events, LimitKind, PythonEnvFactory, RlmCompletion, RlmConfig, RlmEvent, SavePointFn, StopCause};
-use super::helpers::{dispatch_event, usage_breakdowns_for_model};
-use super::state::RunState;
-use super::TurnState;
-use super::subcalls::{EngineSubcalls, Outcome};
 
 #[derive(Clone)]
 pub struct Rlm {
@@ -156,7 +161,7 @@ impl Rlm {
             .await
     }
 
-    pub async fn completion_with(
+    pub(crate) async fn completion_with(
         &self,
         payload: ContextPayload,
         root_prompt: Option<&str>,
@@ -207,24 +212,16 @@ impl Rlm {
                     self.initial_history(metadata, root_prompt)
                 };
                 if let Some(rt) = &self.runtime
-                    && let Some(sys_msg) = history.iter_mut().find(|m| m.role == Role::System) {
-                        sys_msg.content = rt
-                            .filter_system_prompt(&root_prompt_str, sys_msg.content.clone())
-                            .await
-                            .unwrap_or_else(|_| sys_msg.content.clone());
-                    }
+                    && let Some(sys_msg) = history.iter_mut().find(|m| m.role == Role::System)
+                {
+                    sys_msg.content = rt
+                        .filter_system_prompt(&root_prompt_str, sys_msg.content.clone())
+                        .await
+                        .unwrap_or_else(|_| sys_msg.content.clone());
+                }
                 self.register_repl_tool();
                 let outcome = self
-                    .run_loop(
-                        &mut env,
-                        &handler,
-                        &mut history,
-                        1,
-                        0,
-                        false,
-                        cancel,
-                        None,
-                    )
+                    .run_loop(&mut env, &handler, &mut history, 1, 0, false, cancel, None)
                     .await;
                 env.shutdown().await;
                 outcome
@@ -249,7 +246,10 @@ impl Rlm {
             ContextPayload::Str(s) => (None, Some(s)),
             ContextPayload::Json(v) => (Some(v), None),
         };
-        let mut env = PythonEnvFactory { python: self.python.clone() }.create(subcalls);
+        let mut env = PythonEnvFactory {
+            python: self.python.clone(),
+        }
+        .create(subcalls);
         let setup = EnvSetup {
             context,
             context_str,
@@ -274,19 +274,19 @@ impl Rlm {
             ChatMessage {
                 role: Role::System,
                 content: build_system_prompt(&self.system_prompt_options()),
-            ..Default::default()
+                ..Default::default()
             },
             ChatMessage {
                 role: Role::User,
                 content: metadata_user_prompt(metadata, root_prompt),
-            ..Default::default()
+                ..Default::default()
             },
         ];
         if let Some(prologue) = &self.config.user_prologue {
             history.push(ChatMessage {
                 role: Role::User,
                 content: prologue.clone(),
-            ..Default::default()
+                ..Default::default()
             });
         }
         history
@@ -748,194 +748,4 @@ impl Rlm {
             }
         }
     }
-
-    fn delta_sink(&self, iteration: usize) -> DeltaSink {
-        let events = self.events.clone();
-        let depth = self.depth;
-        Arc::new(move |delta: &str| {
-            events.emit(RlmEvent::RootDelta {
-                depth,
-                iteration,
-                delta: delta.to_owned(),
-            });
-            true
-        })
-    }
-
-    fn thinking_sink(&self, iteration: usize) -> ThinkingSink {
-        let events = self.events.clone();
-        let depth = self.depth;
-        Arc::new(move |delta: &str| {
-            events.emit(RlmEvent::RootThinkingDelta {
-                depth,
-                iteration,
-                delta: delta.to_owned(),
-            });
-        })
-    }
-
-    /// Tool-call sink that executes code eagerly during the stream. When a
-    /// `ToolCallEnd` event fires, the `code` argument is extracted from the
-    /// tool call's arguments and pushed into `tool_tx` for immediate execution
-    /// by the `exec` task in `run_loop`.
-    fn tool_call_sink(
-        &self,
-        _iteration: usize,
-        tool_tx: UnboundedSender<ToolCallResult>,
-    ) -> ToolCallSink {
-        let tx = tool_tx.clone();
-        Arc::new(move |event: ToolCallEvent| {
-            if let ToolCallEvent::End { arguments, .. } = &event {
-                let code = arguments
-                    .get("code")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_owned());
-                let _ = tx.send(ToolCallResult { code });
-            }
-        })
-    }
-
-    /// `depth >= max_rlm_depth`: the RLM is just an LM.
-    pub async fn fallback(&self, payload: ContextPayload, start: Instant, cancel: &CancellationToken) -> RlmCompletion {
-        let content = match payload {
-            ContextPayload::Str(s) => s,
-            ContextPayload::Json(Value::String(s)) => s,
-            ContextPayload::Json(v) => v.to_string(),
-        };
-        let messages = [ChatMessage {
-            role: Role::User,
-            content,
-        ..Default::default()
-        }];
-        let (response, usage, usage_by_model, stop, error) =
-            match self.root.complete(&messages, cancel).await {
-                Ok(completion) => {
-                    let usage_by_model =
-                        usage_breakdowns_for_model(self.root.name(), completion.usage);
-                    (
-                        completion.text,
-                        completion.usage,
-                        usage_by_model,
-                        StopCause::Fallback,
-                        None,
-                    )
-                }
-                Err(e) => (
-                    format!("Error: LM query failed at max depth - {e}"),
-                    Usage::default(),
-                    Vec::new(),
-                    StopCause::Failed,
-                    Some(e),
-                ),
-            };
-        let duration = start.elapsed();
-        self.events.emit(RlmEvent::RunEnd {
-            depth: self.depth,
-            stop,
-            iterations: 0,
-            duration,
-        });
-        RlmCompletion {
-            response,
-            usage,
-            usage_by_model,
-            iterations: 0,
-            duration,
-            stop,
-            error,
-        }
-    }
-
-    fn complete_run(&self, outcome: Outcome, handler: &LmHandler, start: Instant) -> RlmCompletion {
-        let duration = start.elapsed();
-        dispatch_event(
-            &self.runtime,
-            LifecycleEvent {
-                kind: EventKind::AgentEnd,
-                payload: EventPayload::AgentEnd {
-                    stop_cause: format!("{:?}", outcome.stop),
-                },
-            },
-        );
-        self.events.emit(RlmEvent::RunEnd {
-            depth: self.depth,
-            stop: outcome.stop,
-            iterations: outcome.iterations,
-            duration,
-        });
-        RlmCompletion {
-            response: outcome.response,
-            usage: handler.usage(),
-            usage_by_model: handler.usage_by_model(),
-            iterations: outcome.iterations,
-            duration,
-            stop: outcome.stop,
-            error: outcome.error,
-        }
-    }
-
-    pub fn complete_run_since(
-        &self,
-        outcome: Outcome,
-        handler: &LmHandler,
-        usage_before: &Usage,
-        usage_by_model_before: &[UsageBreakdown],
-        start: Instant,
-    ) -> RlmCompletion {
-        let duration = start.elapsed();
-        dispatch_event(
-            &self.runtime,
-            LifecycleEvent {
-                kind: EventKind::AgentEnd,
-                payload: EventPayload::AgentEnd {
-                    stop_cause: format!("{:?}", outcome.stop),
-                },
-            },
-        );
-        self.events.emit(RlmEvent::RunEnd {
-            depth: self.depth,
-            stop: outcome.stop,
-            iterations: outcome.iterations,
-            duration,
-        });
-        RlmCompletion {
-            response: outcome.response,
-            usage: handler.usage_since(usage_before),
-            usage_by_model: handler.usage_by_model_since(usage_by_model_before),
-            iterations: outcome.iterations,
-            duration,
-            stop: outcome.stop,
-            error: outcome.error,
-        }
-    }
-
-    fn limit_outcome(
-        &self,
-        kind: LimitKind,
-        detail: String,
-        best_partial: Option<String>,
-        iterations: usize,
-    ) -> Outcome {
-        self.events.emit(RlmEvent::LimitHit {
-            depth: self.depth,
-            limit: kind,
-            detail: detail.clone(),
-        });
-        Outcome {
-            stop: StopCause::Limit(kind),
-            response: best_partial.unwrap_or_else(|| format!("Error: {detail}")),
-            error: Some(detail),
-            iterations,
-        }
-    }
-
-    fn cancelled_outcome(&self, best_partial: Option<String>, iterations: usize) -> Outcome {
-        Outcome {
-            stop: StopCause::Cancelled,
-            response: best_partial.unwrap_or_else(|| "Execution cancelled".to_owned()),
-            error: Some("Execution cancelled".to_owned()),
-            iterations,
-        }
-    }
 }
-

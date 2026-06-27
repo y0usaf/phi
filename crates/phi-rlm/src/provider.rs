@@ -6,13 +6,15 @@ use std::sync::{Arc, RwLock};
 use async_trait::async_trait;
 use phi_ai::{
     AssistantContent, AssistantEvent, AssistantMessage, AuthStorage, Context, Message, Model,
-    Registry, StopReason as AiStopReason, StreamOptions, ThinkingLevel, ToolDefinition,
-    ToolResultMessage, UserMessage,
+    Registry, StreamOptions, ThinkingLevel, ToolCall, ToolDefinition, ToolResultMessage,
+    UserMessage,
 };
 use tokio_util::sync::CancellationToken;
 
-use crate::lm_core::{Completion, DeltaSink, LanguageModel, StopReason, ThinkingSink, ToolCall, ToolCallEvent, ToolCallSink};
 use crate::lm_core::{ChatMessage, Role};
+use crate::lm_core::{
+    Completion, DeltaSink, LanguageModel, ThinkingSink, ToolCallEvent, ToolCallSink,
+};
 
 pub struct ProviderLm {
     registry: Arc<Registry>,
@@ -115,22 +117,18 @@ impl ProviderLm {
                         });
                     }
                     for tc in &message.tool_calls {
-                        assistant.content.push(AssistantContent::ToolCall(
-                            phi_ai::ToolCall {
-                                id: tc.id.clone(),
-                                name: tc.name.clone(),
-                                arguments: tc.arguments.clone(),
-                            },
-                        ));
+                        assistant.content.push(AssistantContent::ToolCall(ToolCall {
+                            id: tc.id.clone(),
+                            name: tc.name.clone(),
+                            arguments: tc.arguments.clone(),
+                        }));
                     }
                     ctx.messages.push(Message::Assistant(assistant));
                 }
                 Role::Tool => {
                     if let Some(tool_call_id) = &message.tool_call_id {
-                        let mut result = ToolResultMessage::new(
-                            tool_call_id.clone(),
-                            message.content.clone(),
-                        );
+                        let mut result =
+                            ToolResultMessage::new(tool_call_id.clone(), message.content.clone());
                         if message.content.starts_with("Error:") {
                             result = result.with_error(true);
                         }
@@ -151,9 +149,19 @@ impl LanguageModel for ProviderLm {
         format!("{}/{}", model.provider, model.id)
     }
 
-    async fn complete(&self, prompt: &[ChatMessage], cancel: &CancellationToken) -> Result<Completion, String> {
-        self.complete_streaming(prompt, std::sync::Arc::new(|_: &str| true), None, None, cancel)
-            .await
+    async fn complete(
+        &self,
+        prompt: &[ChatMessage],
+        cancel: &CancellationToken,
+    ) -> Result<Completion, String> {
+        self.complete_streaming(
+            prompt,
+            std::sync::Arc::new(|_: &str| true),
+            None,
+            None,
+            cancel,
+        )
+        .await
     }
 
     fn set_tools(&self, tools: Vec<ToolDefinition>) {
@@ -181,7 +189,13 @@ impl LanguageModel for ProviderLm {
                 inner(delta)
             });
             match self
-                .attempt_streaming(prompt, wrapped, on_thinking.clone(), on_tool_call.clone(), cancel)
+                .attempt_streaming(
+                    prompt,
+                    wrapped,
+                    on_thinking.clone(),
+                    on_tool_call.clone(),
+                    cancel,
+                )
                 .await
             {
                 Ok(completion) => return Ok(completion),
@@ -325,17 +339,11 @@ impl ProviderLm {
                 }
             })
             .collect();
-        let stop_reason = match message.stop_reason {
-            AiStopReason::ToolUse => StopReason::ToolUse,
-            AiStopReason::Length => StopReason::Length,
-            AiStopReason::Error | AiStopReason::Aborted => StopReason::Error,
-            AiStopReason::Stop => StopReason::Stop,
-        };
         Ok(Completion {
             text: message.text(),
             usage: message.usage,
             tool_calls,
-            stop_reason,
+            stop_reason: message.stop_reason,
         })
     }
 }

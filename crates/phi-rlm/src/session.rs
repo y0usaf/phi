@@ -7,17 +7,20 @@ use phi_ai::Usage;
 use phi_repl::{ReplEnv, ReplResult};
 use tokio_util::sync::CancellationToken;
 
+use phi_ext::AppRuntime;
 use phi_ext::{EventKind, EventPayload, LifecycleEvent};
-use phi_runtime::AppRuntime;
 
-use crate::lm_core::LmHandler;
 use crate::llm_parse::{ExecutedBlock, format_iteration};
-use crate::prompts::QueryMetadata;
+use crate::lm_core::LmHandler;
 use crate::lm_core::{ChatMessage, ContextPayload, Role};
+use crate::prompts::QueryMetadata;
 
 use crate::config::{RlmCompletion, RlmConfig, RlmEvent, StopCause};
-use crate::engine::helpers::{context_snippet, dispatch_event, history_snippet, push_repl_turns, RestoredExchange, RestoredRepl};
 use crate::engine::Rlm;
+use crate::engine::helpers::{
+    RestoredExchange, RestoredRepl, context_snippet, dispatch_event, history_snippet,
+    push_repl_turns,
+};
 use crate::engine::state::RunState;
 use crate::engine::subcalls::Outcome;
 
@@ -128,8 +131,7 @@ impl RlmSession {
         let env = self.env.as_mut().expect("env started above");
         let metadata = QueryMetadata::from_payload(&self.payload);
         let mut history = if self.transcript.is_empty() {
-            self.rlm
-                .initial_history(metadata, Some(prompt))
+            self.rlm.initial_history(metadata, Some(prompt))
         } else {
             // Warm send: replay the conversation so far in-band, then append
             // the new prompt as its own user message. If older exchanges were
@@ -143,13 +145,13 @@ impl RlmSession {
                         "Session summary (older conversation compacted for context):
 {summary}"
                     ),
-                ..Default::default()
+                    ..Default::default()
                 });
                 history.push(ChatMessage {
                     role: Role::Assistant,
                     content: "Understood — I have the session summary and will build on it."
                         .to_owned(),
-                ..Default::default()
+                    ..Default::default()
                 });
             }
             history.extend(self.transcript.iter().cloned());
@@ -157,17 +159,18 @@ impl RlmSession {
             history.push(ChatMessage {
                 role: Role::User,
                 content: format!("Answer the following: {prompt}"),
-            ..Default::default()
+                ..Default::default()
             });
             history
         };
         if let Some(rt) = &self.rlm.runtime
-            && let Some(sys_msg) = history.iter_mut().find(|m| m.role == Role::System) {
-                sys_msg.content = rt
-                    .filter_system_prompt(prompt, sys_msg.content.clone())
-                    .await
-                    .unwrap_or_else(|_| sys_msg.content.clone());
-            }
+            && let Some(sys_msg) = history.iter_mut().find(|m| m.role == Role::System)
+        {
+            sys_msg.content = rt
+                .filter_system_prompt(prompt, sys_msg.content.clone())
+                .await
+                .unwrap_or_else(|_| sys_msg.content.clone());
+        }
         // Drain pending shell executions for cold sends (warm sends already
         // drained above). This is a no-op for warm sends because Vec::append
         // empties the source vector.
@@ -195,12 +198,12 @@ impl RlmSession {
             self.transcript.push(ChatMessage {
                 role: Role::User,
                 content: format!("Answer the following: {prompt}"),
-            ..Default::default()
+                ..Default::default()
             });
             self.transcript.push(ChatMessage {
                 role: Role::Assistant,
                 content: outcome.response.clone(),
-            ..Default::default()
+                ..Default::default()
             });
             // Compaction: once the in-band transcript exceeds the threshold,
             // fold the oldest exchange pairs into `session_summary` so the
@@ -235,7 +238,7 @@ impl RlmSession {
             self.pending_shell.push(ChatMessage {
                 role: Role::Assistant,
                 content: format!("```repl\n{code}\n```"),
-            ..Default::default()
+                ..Default::default()
             });
             let block = ExecutedBlock {
                 code: code.to_owned(),
@@ -248,7 +251,7 @@ impl RlmSession {
                 self.pending_shell.push(ChatMessage {
                     role: Role::User,
                     content: outputs,
-                ..Default::default()
+                    ..Default::default()
                 });
             }
         }
@@ -308,7 +311,7 @@ impl RlmSession {
             history.push(ChatMessage {
                 role: Role::User,
                 content: format!("Answer the following: {}", exchange.prompt),
-            ..Default::default()
+                ..Default::default()
             });
             for repl in &exchange.repls {
                 push_repl_turns(&mut history, repl, self.rlm.config.max_output_chars);
@@ -321,12 +324,12 @@ impl RlmSession {
             self.transcript.push(ChatMessage {
                 role: Role::User,
                 content: format!("Answer the following: {}", exchange.prompt),
-            ..Default::default()
+                ..Default::default()
             });
             self.transcript.push(ChatMessage {
                 role: Role::Assistant,
                 content: exchange.response.clone(),
-            ..Default::default()
+                ..Default::default()
             });
         }
         for repl in pending {
@@ -402,5 +405,3 @@ impl RlmSession {
         }
     }
 }
-
-

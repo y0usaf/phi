@@ -1,7 +1,7 @@
 use super::constants::*;
 
 /// Per-turn user prompt. `iteration` is 0-based.
-pub fn build_user_prompt(
+pub(crate) fn build_user_prompt(
     iteration: usize,
     max_iterations: Option<usize>,
     context_count: usize,
@@ -129,7 +129,9 @@ pub fn build_system_prompt(opts: &SystemPromptOptions) -> String {
     if let Some(tools) = opts.custom_tools
         && !tools.is_empty()
     {
-        sections.push(format!("Custom tools and data available in the REPL:\n{tools}"));
+        sections.push(format!(
+            "Custom tools and data available in the REPL:\n{tools}"
+        ));
     }
 
     // mechanics
@@ -163,7 +165,10 @@ pub fn build_system_prompt(opts: &SystemPromptOptions) -> String {
             .iter()
             .map(|f| format!("<file name=\"{}\">\n{}\n</file>", f.name, f.content))
             .collect();
-        sections.push(format!("<project_context>\n{}\n</project_context>", blocks.join("\n")));
+        sections.push(format!(
+            "<project_context>\n{}\n</project_context>",
+            blocks.join("\n")
+        ));
     }
 
     // available_skills

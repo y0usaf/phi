@@ -8,11 +8,11 @@ use phi_ai::Usage;
 use phi_repl::ReplResult;
 use serde_json::Value;
 
+use phi_ext::AppRuntime;
 use phi_ext::LifecycleEvent;
-use phi_runtime::AppRuntime;
 
-use crate::lm_core::UsageBreakdown;
 use crate::llm_parse::{ExecutedBlock, format_iteration};
+use crate::lm_core::UsageBreakdown;
 use crate::lm_core::{ChatMessage, Role};
 
 pub fn truncate_preview(text: &str, max: usize) -> String {
@@ -88,11 +88,15 @@ pub struct RestoredExchange {
 
 /// Append a restored execution as the same (assistant code, user output)
 /// message pair the model sees live.
-pub fn push_repl_turns(history: &mut Vec<ChatMessage>, repl: &RestoredRepl, max_output_chars: usize) {
+pub fn push_repl_turns(
+    history: &mut Vec<ChatMessage>,
+    repl: &RestoredRepl,
+    max_output_chars: usize,
+) {
     history.push(ChatMessage {
         role: Role::Assistant,
         content: format!("```repl\n{}\n```", repl.code),
-    ..Default::default()
+        ..Default::default()
     });
     let block = ExecutedBlock {
         code: repl.code.clone(),
@@ -109,7 +113,7 @@ pub fn push_repl_turns(history: &mut Vec<ChatMessage>, repl: &RestoredRepl, max_
         history.push(ChatMessage {
             role: Role::User,
             content: outputs,
-        ..Default::default()
+            ..Default::default()
         });
     }
 }
@@ -129,4 +133,3 @@ pub fn dispatch_event(runtime: &Option<Arc<AppRuntime>>, event: LifecycleEvent) 
         });
     }
 }
-

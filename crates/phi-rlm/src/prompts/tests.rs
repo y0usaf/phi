@@ -1,5 +1,3 @@
-
-
 use super::*;
 use crate::lm_core::ContextPayload;
 use serde_json::json;
@@ -191,7 +189,9 @@ fn identity_neutral_cyber_risk_default_on() {
 fn cyber_risk_section_sits_between_identity_and_core_tools() {
     let prompt = build_system_prompt(&SystemPromptOptions::default());
     let identity = prompt.find("You are a Recursive Language Model").unwrap();
-    let cyber = prompt.find("Assist with authorized security testing").unwrap();
+    let cyber = prompt
+        .find("Assist with authorized security testing")
+        .unwrap();
     let core = prompt.find("Available in the REPL:").unwrap();
     assert!(identity < cyber, "cyber_risk must follow identity");
     assert!(cyber < core, "cyber_risk must precede core_tools");

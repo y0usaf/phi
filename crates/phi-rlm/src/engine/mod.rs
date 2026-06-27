@@ -1,16 +1,13 @@
-//! Harness-phase / turn-snapshot types.
-//!
-//! These live in the `engine` module (rather than `phi-harness`) to avoid
-//! a dependency cycle: `phi-harness` depends on `phi-rlm`, so types referenced
-//! by `Rlm::completion_with` must be defined here.
+//! Engine: single-turn completion loop, sub-calls, harness state types,
+//! and the orchestration layer (harness).
 
 use std::fmt;
 use std::sync::Arc;
 
 use phi_ai::ThinkingLevel;
 
-use crate::lm_core::{ChatMessage, ContextPayload, LanguageModel};
 use crate::config::RlmConfig;
+use crate::lm_core::{ChatMessage, ContextPayload, LanguageModel};
 
 /// Operational phase of the harness.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -59,21 +56,21 @@ pub enum HarnessError {
 
 /// Immutable snapshot of everything one RLM iteration needs.
 #[derive(Clone)]
-pub struct TurnState {
-    pub messages: Vec<ChatMessage>,
-    pub system_prompt: String,
-    pub root_model: Arc<dyn LanguageModel>,
-    pub sub_model: Arc<dyn LanguageModel>,
-    pub thinking: Option<ThinkingLevel>,
-    pub config: RlmConfig,
-    pub session_id: String,
-    pub iteration: usize,
-    pub tools_section: Option<String>,
-    pub context: ContextPayload,
+pub(crate) struct TurnState {
+    pub(crate) messages: Vec<ChatMessage>,
+    pub(crate) system_prompt: String,
+    pub(crate) root_model: Arc<dyn LanguageModel>,
+    pub(crate) sub_model: Arc<dyn LanguageModel>,
+    pub(crate) thinking: Option<ThinkingLevel>,
+    pub(crate) config: RlmConfig,
+    pub(crate) session_id: String,
+    pub(crate) iteration: usize,
+    pub(crate) tools_section: Option<String>,
+    pub(crate) context: ContextPayload,
 }
 
 impl TurnState {
-    pub fn with_queued_messages(mut self, queued: Vec<ChatMessage>) -> Self {
+    pub(crate) fn with_queued_messages(mut self, queued: Vec<ChatMessage>) -> Self {
         self.messages.extend(queued);
         self
     }
@@ -95,14 +92,12 @@ impl fmt::Debug for TurnState {
     }
 }
 
+pub mod harness;
+pub(crate) mod helpers;
+pub(crate) mod rlm;
+pub(crate) mod state;
+pub(crate) mod subcalls;
 
-pub mod helpers;
-pub mod rlm;
-pub mod state;
-pub mod subcalls;
-
+pub use harness::PhiHarness;
 pub use helpers::{RestoredExchange, RestoredRepl};
 pub use rlm::Rlm;
-
-// Re-export config types for convenience
-pub use crate::config::{RlmCompletion, RlmEvent, StopCause};

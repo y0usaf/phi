@@ -1,101 +1,16 @@
-//! The recursion primitive (`LanguageModel`) and the per-completion
-//! `LmHandler` that routes sub-calls and rolls up usage across the tree.
+//! The per-completion `LmHandler` that routes sub-calls and rolls up usage
+//! across the recursion tree.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 
-use async_trait::async_trait;
-use phi_ai::{ToolDefinition, Usage};
+use phi_ai::{
+    ChatMessage, Completion, DeltaSink, LanguageModel, Role, ThinkingSink, ToolCallSink, Usage,
+};
 use tokio_util::sync::CancellationToken;
 
-use super::{ChatMessage, Role, ToolCall};
-
-/// Why the model stopped generating.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum StopReason {
-    #[default]
-    Stop,
-    Length,
-    ToolUse,
-    Error,
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct Completion {
-    pub text: String,
-    pub usage: Usage,
-    /// Tool calls the model emitted (native `tool_use` blocks), if any.
-    pub tool_calls: Vec<ToolCall>,
-    /// Why the model stopped generating.
-    pub stop_reason: StopReason,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct UsageBreakdown {
-    pub model: String,
-    pub usage: Usage,
-}
-
-/// Receives streamed text chunks during a completion. Returns `false` to
-/// stop generation early (the model drops the stream and returns the text
-/// accumulated so far).
-pub type DeltaSink = Arc<dyn Fn(&str) -> bool + Send + Sync>;
-
-/// Receives streamed provider-thinking chunks during a completion.
-/// Observational only: thinking never affects generation control flow.
-pub type ThinkingSink = Arc<dyn Fn(&str) + Send + Sync>;
-
-/// Receives streamed tool-call events during a completion.
-/// `ToolCallStart` fires when a tool call begins, `ToolCallDelta` streams
-/// partial argument JSON, and `ToolCallEnd` fires when arguments are complete.
-pub type ToolCallSink = Arc<dyn Fn(ToolCallEvent) + Send + Sync>;
-
-/// A streamed tool-call event.
-#[derive(Clone, Debug)]
-pub enum ToolCallEvent {
-    Start {
-        id: String,
-        name: String,
-    },
-    Delta {
-        id: String,
-        delta: String,
-    },
-    End {
-        id: String,
-        name: String,
-        arguments: serde_json::Value,
-    },
-}
-
-/// Implemented by plain provider-backed models (phi-runtime wires phi-ai in)
-/// and by `Rlm` itself — recursion is just trait recursion.
-#[async_trait]
-pub trait LanguageModel: Send + Sync {
-    fn name(&self) -> String;
-    async fn complete(&self, prompt: &[ChatMessage], cancel: &CancellationToken) -> Result<Completion, String>;
-
-    /// Stream text deltas through `on_delta` and tool-call events through
-    /// `on_tool_call` while completing. Models without streaming support fall
-    /// back to a single non-streamed completion.
-    async fn complete_streaming(
-        &self,
-        prompt: &[ChatMessage],
-        on_delta: DeltaSink,
-        on_thinking: Option<ThinkingSink>,
-        on_tool_call: Option<ToolCallSink>,
-        cancel: &CancellationToken,
-    ) -> Result<Completion, String> {
-        let _ = (on_delta, on_thinking, on_tool_call);
-        self.complete(prompt, cancel).await
-    }
-
-    /// Set the tool definitions the model can call natively. Models that
-    /// don't support native tool calls (e.g. scripted test models) ignore this.
-    fn set_tools(&self, _tools: Vec<ToolDefinition>) {
-        // Default: no-op. Overridden by ProviderLm.
-    }
-}
+/// Per-model usage breakdown for a set of completions.
+// (UsageBreakdown now lives in phi_ai::lm)
 
 #[derive(Clone, Default)]
 struct UsageLedger {
@@ -136,11 +51,21 @@ impl LmHandler {
 
     /// Add usage from a child RLM completion (rolls up the recursion tree).
     pub fn add_child_usage(&self, child_usage: &Usage) {
-        self.usage.lock().unwrap_or_else(|e| e.into_inner()).total.add(child_usage);
+        self.usage
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .total
+            .add(child_usage);
     }
 
-    pub fn usage_by_model(&self) -> Vec<UsageBreakdown> {
-        Self::breakdowns_from_ledger(&self.usage.lock().unwrap_or_else(|e| e.into_inner()).by_model)
+    pub fn usage_by_model(&self) -> Vec<phi_ai::UsageBreakdown> {
+        Self::breakdowns_from_ledger(
+            &self
+                .usage
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .by_model,
+        )
     }
 
     pub fn usage_since(&self, snapshot: &Usage) -> Usage {
@@ -148,8 +73,16 @@ impl LmHandler {
         usage_delta(&usage, snapshot)
     }
 
-    pub fn usage_by_model_since(&self, snapshot: &[UsageBreakdown]) -> Vec<UsageBreakdown> {
-        let current = self.usage.lock().unwrap_or_else(|e| e.into_inner()).by_model.clone();
+    pub fn usage_by_model_since(
+        &self,
+        snapshot: &[phi_ai::UsageBreakdown],
+    ) -> Vec<phi_ai::UsageBreakdown> {
+        let current = self
+            .usage
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .by_model
+            .clone();
         let mut previous = BTreeMap::<String, Usage>::new();
         for item in snapshot {
             previous.insert(item.model.clone(), item.usage);
@@ -166,11 +99,11 @@ impl LmHandler {
         )
     }
 
-    fn breakdowns_from_ledger(ledger: &BTreeMap<String, Usage>) -> Vec<UsageBreakdown> {
+    fn breakdowns_from_ledger(ledger: &BTreeMap<String, Usage>) -> Vec<phi_ai::UsageBreakdown> {
         ledger
             .iter()
             .filter(|(_, usage)| usage_has_tokens_or_cost(usage))
-            .map(|(model, usage)| UsageBreakdown {
+            .map(|(model, usage)| phi_ai::UsageBreakdown {
                 model: model.clone(),
                 usage: *usage,
             })
@@ -186,7 +119,7 @@ impl LmHandler {
         ledger.by_model.entry(model.into()).or_default().add(usage);
     }
 
-    pub fn track_breakdowns(&self, breakdowns: &[UsageBreakdown]) {
+    pub fn track_breakdowns(&self, breakdowns: &[phi_ai::UsageBreakdown]) {
         for breakdown in breakdowns {
             self.track_model(breakdown.model.clone(), &breakdown.usage);
         }
@@ -202,11 +135,21 @@ impl LmHandler {
     ) -> Result<Completion, String> {
         let model = self.root.name();
         let completion = match (on_delta, on_thinking, on_tool_call) {
-            (Some(sink), thinking, tool_call) => self.root.complete_streaming(prompt, sink, thinking, tool_call, cancel).await?,
+            (Some(sink), thinking, tool_call) => {
+                self.root
+                    .complete_streaming(prompt, sink, thinking, tool_call, cancel)
+                    .await?
+            }
             (None, None, None) => self.root.complete(prompt, cancel).await?,
             (None, thinking, tool_call) => {
                 self.root
-                    .complete_streaming(prompt, Arc::new(|_: &str| true), thinking, tool_call, cancel)
+                    .complete_streaming(
+                        prompt,
+                        Arc::new(|_: &str| true),
+                        thinking,
+                        tool_call,
+                        cancel,
+                    )
                     .await?
             }
         };
@@ -229,7 +172,7 @@ impl LmHandler {
         let messages = [ChatMessage {
             role: Role::User,
             content: prompt.to_owned(),
-        ..Default::default()
+            ..Default::default()
         }];
         let completion = lm.complete(&messages, cancel).await?;
         self.track_model(model_name, &completion.usage);

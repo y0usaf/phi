@@ -7,13 +7,13 @@ use std::time::Instant;
 use async_trait::async_trait;
 use phi_repl::{SubcallHandler, SubcallRequest, SubcallResponse, ToolEvent};
 
-use crate::lm_core::LmHandler;
 use crate::lm_core::ContextPayload;
+use crate::lm_core::LmHandler;
 
-use crate::config::{RlmEvent, StopCause};
 use super::helpers::{prompt_preview, truncate_preview};
 use super::rlm::Rlm;
 use super::state::RunState;
+use crate::config::{RlmEvent, StopCause};
 
 pub struct EngineSubcalls {
     pub rlm: Rlm,
@@ -36,7 +36,10 @@ impl EngineSubcalls {
         });
         let start = Instant::now();
         let cancel = self.run.cancel();
-        let result = self.handler.complete_sub(&prompt, model.as_deref(), &cancel).await;
+        let result = self
+            .handler
+            .complete_sub(&prompt, model.as_deref(), &cancel)
+            .await;
         let (outcome, error, result_preview) = match result {
             Ok(completion) => {
                 let preview = truncate_preview(&completion.text, 240);
@@ -232,4 +235,3 @@ impl Outcome {
         }
     }
 }
-

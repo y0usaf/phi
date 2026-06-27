@@ -54,7 +54,7 @@ impl QueryMetadata {
 }
 
 /// The metadata user message that follows the system prompt.
-pub fn metadata_user_prompt(metadata: QueryMetadata, root_prompt: Option<&str>) -> String {
+pub(crate) fn metadata_user_prompt(metadata: QueryMetadata, root_prompt: Option<&str>) -> String {
     let body = format!(
         "Your context is a {} of {} total characters. Each sub-LLM call can handle roughly ~100k tokens at once.",
         metadata.context_type, metadata.context_total_length

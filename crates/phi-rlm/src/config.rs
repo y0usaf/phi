@@ -9,10 +9,10 @@ use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::lm_core::UsageBreakdown;
 use crate::lm_core::ChatMessage;
+use crate::lm_core::UsageBreakdown;
 
-pub type SavePointFn = dyn Fn(usize) -> Vec<ChatMessage> + Send + Sync;
+pub(crate) type SavePointFn = dyn Fn(usize) -> Vec<ChatMessage> + Send + Sync;
 
 #[derive(Clone, Debug)]
 pub struct RlmConfig {
@@ -188,7 +188,6 @@ pub enum RlmEvent {
     SubcallEnd {
         depth: usize,
         model: String,
-        #[allow(dead_code)]
         result_preview: Option<String>,
         #[serde(serialize_with = "duration_secs")]
         duration: Duration,
@@ -229,11 +228,11 @@ impl Events {
 
 /// Creates a fresh `ReplEnv` per completion, wired to the engine's
 /// subcall handler.
-pub trait EnvFactory: Send + Sync {
+pub(crate) trait EnvFactory: Send + Sync {
     fn create(&self, handler: Arc<dyn SubcallHandler>) -> Box<dyn ReplEnv>;
 }
 
-pub struct PythonEnvFactory {
+pub(crate) struct PythonEnvFactory {
     pub python: String,
 }
 
