@@ -18,7 +18,7 @@ pub(crate) fn subcall_title(model: &str, prompt_preview: &str, p: &InlinePalette
 }
 
 pub(crate) fn running_status_text(label: &str, spinner: &str) -> String {
-    format!("{CYAN}{spinner}{RESET} {label}")
+    format!("{spinner} {label}")
 }
 
 #[allow(dead_code)] // reserved for a success-status state the status machine does not yet emit

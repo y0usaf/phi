@@ -268,6 +268,7 @@ pub async fn run(setup: TuiSetup, mut io: SessionIo) -> Result<()> {
         && let Some(colors) = detect_terminal_colors(Duration::from_millis(150))
     {
         ui.palette = InlinePalette::from_terminal_colors(&colors);
+        ui.spinner = Spinner::new(ui.palette.spinner_accent, ui.palette.terminal_bg);
     }
     let restoring = ui.store.leaf().is_some();
     if restoring {
@@ -278,7 +279,7 @@ pub async fn run(setup: TuiSetup, mut io: SessionIo) -> Result<()> {
         Some(rx) => InputSource::Forwarded(rx),
         None => InputSource::Tty(EventStream::new()),
     };
-    let mut ticker = tokio::time::interval(Duration::from_millis(100));
+    let mut ticker = tokio::time::interval(Duration::from_millis(40));
     // Coalesce redraws to ~60fps (pi-style): bursts of stream deltas collapse
     // into one frame instead of repainting per SSE chunk.
     const FRAME: Duration = Duration::from_millis(16);
@@ -598,7 +599,7 @@ impl Ui {
         Self {
             term,
             editor: Editor::new(),
-            spinner: Spinner::new(),
+            spinner: Spinner::default(),
             palette: InlinePalette::default_const(),
             running: None,
             login: None,

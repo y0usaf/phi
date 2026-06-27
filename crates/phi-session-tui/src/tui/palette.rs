@@ -1,6 +1,6 @@
 //! Inline TUI palette and terminal-derived colors.
 
-use phi_tui::MarkdownPalette;
+use phi_tui::{MarkdownPalette, Rgb};
 
 pub struct InlinePalette {
     /// Warm gold for tool verbs.
@@ -48,6 +48,10 @@ pub struct InlinePalette {
     pub warning_fg: String,
     /// Inverted bg for the input-box separator, mirroring phi-mux's statusbar bg.
     pub statusbar_bg: String,
+    /// Bright accent color (raw RGB) for the Knight Rider scanner.
+    pub spinner_accent: Rgb,
+    /// Terminal background (raw RGB), used to blend the scanner trail.
+    pub terminal_bg: Rgb,
     /// Markdown/output highlighting palette.
     pub markdown: MarkdownPalette,
 }
@@ -81,6 +85,8 @@ impl InlinePalette {
             error_fg: s("\x1b[31m"),
             warning_fg: s("\x1b[33m"),
             statusbar_bg: s("\x1b[48;2;45;44;53m"),
+            spinner_accent: Rgb(100, 200, 220),
+            terminal_bg: Rgb(20, 20, 26),
             markdown: MarkdownPalette::default_const(),
         }
     }
@@ -122,6 +128,8 @@ impl InlinePalette {
             error_fg: col(1).unwrap_or_else(|| fallback.error_fg.clone()),
             warning_fg: col(3).unwrap_or_else(|| fallback.warning_fg.clone()),
             statusbar_bg: statusbar_bg_from_terminal(colors, &fallback.statusbar_bg),
+            spinner_accent: colors.palette[6].unwrap_or(fallback.spinner_accent),
+            terminal_bg: colors.background,
             markdown: MarkdownPalette::from_terminal_colors(colors),
         }
     }
