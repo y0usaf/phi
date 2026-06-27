@@ -337,3 +337,441 @@ async fn prelude_internals_hidden_from_vars() {
     assert!(!r.vars.contains(&"bash".to_owned()), "vars: {:?}", r.vars);
     repl.shutdown().await;
 }
+
+
+#[tokio::test]
+async fn hashline_envelope_markers() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("env.txt");
+    let path = path.to_str().unwrap();
+    std::fs::write(path, "alpha\nbeta\n").unwrap();
+    let (mut repl, _events) = started().await;
+
+    let r = repl
+        .exec(
+            &format!(
+                r#"view = read_file({path:?})
+header = view.splitlines()[0]
+patch = "*** Begin Patch\n" + header + "\nSWAP 1.=1:\n+ALPHA\n*** End Patch"
+print(edit_file(patch=patch))"#
+            ),
+            EXEC_TIMEOUT,
+        )
+        .await
+        .unwrap();
+    assert!(r.stdout.contains("1:ALPHA"), "stdout: {}", r.stdout);
+    repl.shutdown().await;
+}
+
+#[tokio::test]
+async fn hashline_apply_patch_contamination_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("contam.py");
+    let path = path.to_str().unwrap();
+    std::fs::write(path, "a\nb\nc\n").unwrap();
+    let (mut repl, _events) = started().await;
+
+    let r = repl
+        .exec(
+            &format!(
+                r#"print(edit_file(patch='*** Update File: {path}\nSWAP 1.=1:\n+X'))"#
+            ),
+            EXEC_TIMEOUT,
+        )
+        .await
+        .unwrap();
+    assert!(
+        r.stdout.contains("apply_patch sentinel"),
+        "stdout: {}",
+        r.stdout
+    );
+    repl.shutdown().await;
+}
+
+#[tokio::test]
+async fn hashline_unified_diff_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("diff.txt");
+    let path = path.to_str().unwrap();
+    std::fs::write(path, "line1\nline2\n").unwrap();
+    let (mut repl, _events) = started().await;
+
+    let r = repl
+        .exec(
+            &format!(
+                r#"print(edit_file(patch='@@ -1,2 +1,2 @@\n-line1\n+LINE1'))"#
+            ),
+            EXEC_TIMEOUT,
+        )
+        .await
+        .unwrap();
+    assert!(
+        r.stdout.contains("unified-diff"),
+        "stdout: {}",
+        r.stdout
+    );
+    repl.shutdown().await;
+}
+
+#[tokio::test]
+async fn hashline_lenient_range_separators() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("sep.txt");
+    let path = path.to_str().unwrap();
+    std::fs::write(path, "a\nb\nc\nd\ne\n").unwrap();
+    let (mut repl, _events) = started().await;
+
+    let r = repl
+        .exec(
+            &format!(
+                r#"view = read_file({path:?})
+header = view.splitlines()[0]
+patch = header + "\nSWAP 2..3:\n+X\n+Y"
+print(edit_file(patch=patch))"#
+            ),
+            EXEC_TIMEOUT,
+        )
+        .await
+        .unwrap();
+    assert!(r.stdout.contains("2:X"), "stdout: {}", r.stdout);
+    assert!(r.stdout.contains("3:Y"), "stdout: {}", r.stdout);
+    repl.shutdown().await;
+}
+
+#[tokio::test]
+async fn hashline_missing_colon_on_headers() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("noc.txt");
+    let path = path.to_str().unwrap();
+    std::fs::write(path, "a\nb\nc\n").unwrap();
+    let (mut repl, _events) = started().await;
+
+    let r = repl
+        .exec(
+            &format!(
+                r#"view = read_file({path:?})
+header = view.splitlines()[0]
+patch = header + "\nSWAP 2.=2\n+BEE"
+print(edit_file(patch=patch))"#
+            ),
+            EXEC_TIMEOUT,
+        )
+        .await
+        .unwrap();
+    assert!(r.stdout.contains("2:BEE"), "stdout: {}", r.stdout);
+    repl.shutdown().await;
+}
+
+#[tokio::test]
+async fn hashline_auto_pipe_bare_body_rows() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("bare.txt");
+    let path = path.to_str().unwrap();
+    std::fs::write(path, "a\nb\nc\n").unwrap();
+    let (mut repl, _events) = started().await;
+
+    let r = repl
+        .exec(
+            &format!(
+                r#"view = read_file({path:?})
+header = view.splitlines()[0]
+patch = header + "\nSWAP 2.=2:\nBEE"
+print(edit_file(patch=patch))"#
+            ),
+            EXEC_TIMEOUT,
+        )
+        .await
+        .unwrap();
+    assert!(r.stdout.contains("2:BEE"), "stdout: {}", r.stdout);
+    assert!(
+        r.stdout.contains("Auto-prefixed"),
+        "should warn about auto-pipe: {}",
+        r.stdout
+    );
+    repl.shutdown().await;
+}
+
+#[tokio::test]
+async fn hashline_strips_read_output_prefixes_in_bare_body() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("prefix.txt");
+    let path = path.to_str().unwrap();
+    std::fs::write(path, "aaa\nbbb\nccc\nddd\neee\n").unwrap();
+    let (mut repl, _events) = started().await;
+
+    let r = repl
+        .exec(
+            &format!(
+                r#"view = read_file({path:?})
+header = view.splitlines()[0]
+patch = header + "\nSWAP 2.=4:\nline one\n2:line two"
+print(edit_file(patch=patch))"#
+            ),
+            EXEC_TIMEOUT,
+        )
+        .await
+        .unwrap();
+    assert!(
+        r.stdout.contains("2:line one"),
+        "stdout: {}",
+        r.stdout
+    );
+    assert!(
+        r.stdout.contains("3:line two"),
+        "should have stripped prefix: {}",
+        r.stdout
+    );
+    repl.shutdown().await;
+}
+
+#[tokio::test]
+async fn hashline_boundary_repair_drops_duplicated_closer() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("closers.txt");
+    let path = path.to_str().unwrap();
+    std::fs::write(path, "it('a', () => {\n\tsetup();\n\trun();\n});\nafter();\n").unwrap();
+    let (mut repl, _events) = started().await;
+
+    let r = repl
+        .exec(
+            &format!(
+                r#"view = read_file({path:?})
+header = view.splitlines()[0]
+patch = header + "\nSWAP 2.=3:\n+\tsetup2();\n+\trun2();\n+}});"
+print(edit_file(patch=patch))"#
+            ),
+            EXEC_TIMEOUT,
+        )
+        .await
+        .unwrap();
+    let closer_count = r.stdout.matches("});").count();
+    assert_eq!(
+        closer_count, 1,
+        "should have exactly one closer, got {}: {}",
+        closer_count, r.stdout
+    );
+    assert!(
+        r.stdout.contains("delimiter-balance"),
+        "should warn about delimiter-balance repair: {}",
+        r.stdout
+    );
+    repl.shutdown().await;
+}
+
+#[tokio::test]
+async fn hashline_rich_mismatch_message() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("mismatch.txt");
+    let path = path.to_str().unwrap();
+    std::fs::write(path, "a\nb\nc\n").unwrap();
+    let (mut repl, _events) = started().await;
+
+    let r = repl
+        .exec(
+            &format!(
+                r#"view = read_file({path:?})
+header = view.splitlines()[0]
+import builtins
+with builtins.open({path:?}, 'w') as f:
+    f.write('a\nMODIFIED\nc\n')
+patch = header + "\nSWAP 2.=2:\n+B"
+print(edit_file(patch=patch))"#
+            ),
+            EXEC_TIMEOUT,
+        )
+        .await
+        .unwrap();
+    assert!(
+        r.stdout.contains("Recovered from stale hash tag")
+            || r.stdout.contains("file changed between read and edit")
+            || r.stdout.contains("stale anchor")
+            || r.stdout.contains("Error:"),
+        "should mention mismatch/recovery/stale: {}",
+        r.stdout
+    );
+    repl.shutdown().await;
+}
+
+#[tokio::test]
+async fn hashline_bom_preserved_on_edit() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("bom.txt");
+    let path = path.to_str().unwrap();
+    std::fs::write(path, "\u{FEFF}hello\nworld\n").unwrap();
+    let (mut repl, _events) = started().await;
+
+    let r = repl
+        .exec(
+            &format!(
+                r#"view = read_file({path:?})
+header = view.splitlines()[0]
+patch = header + "\nSWAP 2.=2:\n+WORLD"
+print(edit_file(patch=patch))"#
+            ),
+            EXEC_TIMEOUT,
+        )
+        .await
+        .unwrap();
+    assert!(r.stdout.contains("2:WORLD"), "stdout: {}", r.stdout);
+
+    let raw = std::fs::read(path).unwrap();
+    assert!(
+        raw.starts_with(&[0xEF, 0xBB, 0xBF]),
+        "BOM should be preserved, got: {:?}",
+        &raw[..4.min(raw.len())]
+    );
+    repl.shutdown().await;
+}
+
+#[tokio::test]
+async fn hashline_crlf_preserved_on_edit() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("crlf.txt");
+    let path = path.to_str().unwrap();
+    std::fs::write(path, "line1\r\nline2\r\nline3\r\n").unwrap();
+    let (mut repl, _events) = started().await;
+
+    let r = repl
+        .exec(
+            &format!(
+                r#"view = read_file({path:?})
+header = view.splitlines()[0]
+patch = header + "\nSWAP 2.=2:\n+REPLACED"
+print(edit_file(patch=patch))"#
+            ),
+            EXEC_TIMEOUT,
+        )
+        .await
+        .unwrap();
+    assert!(r.stdout.contains("2:REPLACED"), "stdout: {}", r.stdout);
+
+    let raw = std::fs::read_to_string(path).unwrap();
+    assert!(
+        raw.contains("\r\n"),
+        "CRLF should be preserved, got: {:?}",
+        raw
+    );
+    repl.shutdown().await;
+}
+
+#[tokio::test]
+async fn hashline_atomic_write() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("atomic.txt");
+    let path = path.to_str().unwrap();
+    std::fs::write(path, "a\nb\nc\n").unwrap();
+    let (mut repl, _events) = started().await;
+
+    let r = repl
+        .exec(
+            &format!(
+                r#"view = read_file({path:?})
+header = view.splitlines()[0]
+patch = header + "\nSWAP 1.=1:\n+A"
+print(edit_file(patch=patch))"#
+            ),
+            EXEC_TIMEOUT,
+        )
+        .await
+        .unwrap();
+    assert!(r.stdout.contains("1:A"), "stdout: {}", r.stdout);
+
+    let dir_listing = std::fs::read_dir(dir.path()).unwrap();
+    let tmp_files: Vec<_> = dir_listing
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().ends_with(".phi-tmp"))
+        .collect();
+    assert!(
+        tmp_files.is_empty(),
+        "no .phi-tmp files should remain: {:?}",
+        tmp_files
+    );
+    repl.shutdown().await;
+}
+
+#[tokio::test]
+async fn hashline_apply_patch_path_noise_stripped() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("noise.txt");
+    let path = path.to_str().unwrap();
+    std::fs::write(path, "a\nb\nc\n").unwrap();
+    let (mut repl, _events) = started().await;
+
+    let r = repl
+        .exec(
+            &format!(
+                r#"view = read_file({path:?})
+header = view.splitlines()[0]
+tag = header.split('#')[1].rstrip(']')
+noise_header = "[*** Update File: {path}#" + tag + "]"
+patch = noise_header + "\nSWAP 2.=2:\n+BEE"
+print(edit_file(patch=patch))"#
+            ),
+            EXEC_TIMEOUT,
+        )
+        .await
+        .unwrap();
+    assert!(
+        r.stdout.contains("2:BEE"),
+        "should strip path noise: {}",
+        r.stdout
+    );
+    repl.shutdown().await;
+}
+
+#[tokio::test]
+async fn hashline_minus_row_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("minus.txt");
+    let path = path.to_str().unwrap();
+    std::fs::write(path, "a\nb\nc\n").unwrap();
+    let (mut repl, _events) = started().await;
+
+    let r = repl
+        .exec(
+            &format!(
+                r#"view = read_file({path:?})
+header = view.splitlines()[0]
+patch = header + "\nSWAP 2.=2:\n-old line\n+new line"
+print(edit_file(patch=patch))"#
+            ),
+            EXEC_TIMEOUT,
+        )
+        .await
+        .unwrap();
+    assert!(
+        r.stdout.contains("`-` rows are not valid"),
+        "should reject minus rows: {}",
+        r.stdout
+    );
+    repl.shutdown().await;
+}
+
+#[tokio::test]
+async fn hashline_noop_detection() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("noop.txt");
+    let path = path.to_str().unwrap();
+    std::fs::write(path, "a\nb\nc\n").unwrap();
+    let (mut repl, _events) = started().await;
+
+    let r = repl
+        .exec(
+            &format!(
+                r#"view = read_file({path:?})
+header = view.splitlines()[0]
+patch = header + "\nSWAP 2.=2:\n+b"
+print(edit_file(patch=patch))"#
+            ),
+            EXEC_TIMEOUT,
+        )
+        .await
+        .unwrap();
+    assert!(
+        r.stdout.contains("noop"),
+        "should detect noop: {}",
+        r.stdout
+    );
+    repl.shutdown().await;
+}
+

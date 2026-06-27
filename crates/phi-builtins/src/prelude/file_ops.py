@@ -1,6 +1,8 @@
 def read_file(path, offset=0, limit=2000, raw=False):
     with open(path, errors="replace") as f:
-        full_text = f.read()
+        raw_text = f.read()
+    _bom, full_text = _hashline_strip_bom(raw_text)
+    full_text = _hashline_normalize_to_lf(full_text)
     lines = _hashline_lines(full_text)
     if raw:
         chunk = lines[offset : offset + limit]
@@ -54,8 +56,19 @@ def edit_file(path=None, old=None, new=None, replace_all=False, patch=None):
                 planned.append(_hashline_prepare_section(section))
             rendered = []
             for item in planned:
-                with open(item["path"], "w") as f:
-                    f.write(item["after"])
+                after_normalized = item["after"]
+                if item.get("bom"):
+                    after_normalized = item["bom"] + after_normalized
+                if item.get("line_ending") and item["line_ending"] != "\n":
+                    after_normalized = _hashline_restore_line_endings(after_normalized, item["line_ending"])
+                _path = item["path"]
+                _dir = _os.path.dirname(_os.path.abspath(_path))
+                if _dir:
+                    _os.makedirs(_dir, exist_ok=True)
+                _tmp = _path + ".phi-tmp"
+                with open(_tmp, "w") as f:
+                    f.write(after_normalized)
+                _os.replace(_tmp, _path)
                 lines = _hashline_lines(item["after"])
                 display_limit = min(len(lines), 2000)
                 seen = range(1, display_limit + 1)
