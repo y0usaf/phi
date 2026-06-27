@@ -219,21 +219,37 @@ impl Ui {
             self.branch = git_branch(&self.cwd);
             self.branch_at = std::time::Instant::now();
         }
-        let pwd = display_path(&self.cwd);
+        // Always render the statusbar first (separator + header), whether a
+        // selector is open or not — like Pi's permanent footer.
+        let sep = "\u{2500}".repeat(width);
+        lines.push(format!("{}{sep}{RESET}", &p.statusbar_bg));
 
-        let framed = self.selector.is_some();
-        if framed {
-            let header_plain = "φ";
-            let header_fill = width
-                .saturating_sub(header_plain.chars().count() + 5)
-                .max(1);
-            lines.push(format!(
-                "{chrome_border}┌─ {BOLD}φ{RESET} {}┐{RESET}",
-                "─".repeat(header_fill),
-                chrome_border = &p.chrome_border,
+        let current_dir = self
+            .cwd
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(String::from)
+            .unwrap_or_else(|| ".".to_string());
+        let mut header = self.render_chrome_agent();
+        header.push_str(&format!(
+            "  {}{} {current_dir}{RESET}",
+            &self.palette.chrome_dir_fg,
+            dir_symbol()
+        ));
+        if let Some(branch) = &self.branch
+            && branch != &current_dir
+        {
+            header.push_str(&format!(
+                "  {}{} {branch}{RESET}",
+                &self.palette.chrome_dir_fg,
+                branch_symbol()
             ));
         }
+        header.push_str(&format!("  {}", self.render_chrome_model()));
+        lines.push(header);
 
+        // Render the selector (if open) or the editor underneath the
+        // statusbar.  No box borders — minimalist like Pi.
         let cursor;
         if let Some((_, widget)) = &self.selector {
             let avail = self.term.height().saturating_sub(lines.len() + 2).max(1);
@@ -245,9 +261,9 @@ impl Ui {
             });
             lines.extend(sel_lines);
             let hint = if widget.searchable() {
-                "type to filter · up/down select · enter confirm · esc cancel"
+                "type to filter \u{00b7} up/down select \u{00b7} enter confirm \u{00b7} esc cancel"
             } else {
-                "up/down select · enter confirm · esc cancel"
+                "up/down select \u{00b7} enter confirm \u{00b7} esc cancel"
             };
             lines.push(format!("{muted_fg}{hint}{RESET}", muted_fg = &p.muted_fg));
         } else {
@@ -262,37 +278,6 @@ impl Ui {
                 .editor_scroll
                 .min(editor_lines.len().saturating_sub(max_visible));
             let end = (self.editor_scroll + max_visible).min(editor_lines.len());
-
-            // Separator line with the same bg inversion as phi-mux's statusbar.
-            let sep_width = width;
-            let sep = "\u{2500}".repeat(sep_width);
-            lines.push(format!("{}{sep}{RESET}", &p.statusbar_bg));
-
-            // Forgecode-style header: all left-aligned.
-            //   PHI  dir  branch  model  effort
-            let current_dir = self
-                .cwd
-                .file_name()
-                .and_then(|name| name.to_str())
-                .map(String::from)
-                .unwrap_or_else(|| ".".to_string());
-            let mut header = self.render_chrome_agent();
-            header.push_str(&format!(
-                "  {}{} {current_dir}{RESET}",
-                &self.palette.chrome_dir_fg,
-                dir_symbol()
-            ));
-            if let Some(branch) = &self.branch
-                && branch != &current_dir
-            {
-                header.push_str(&format!(
-                    "  {}{} {branch}{RESET}",
-                    &self.palette.chrome_dir_fg,
-                    branch_symbol()
-                ));
-            }
-            header.push_str(&format!("  {}", self.render_chrome_model()));
-            lines.push(header);
 
             // Editor prompt: chevron on row 0, 2-space indent on continuation.
             let editor_top = lines.len();
@@ -371,50 +356,6 @@ impl Ui {
             for hint in hints {
                 lines.push(format!("{muted_fg}{hint}{RESET}", muted_fg = &p.muted_fg));
             }
-        }
-
-
-        // Footer: only rendered in framed (selector) mode.  The non-framed
-        // REPL path puts all metadata in the forgecode-style header above.
-        let footer = if !framed {
-            String::new()
-        } else {
-            let left = if self.usage.total_tokens > 0 {
-                format!(
-                    "\u{2191}{} \u{2193}{} ${:.4}",
-                    format_tokens(self.usage.input),
-                    format_tokens(self.usage.output),
-                    self.usage.cost.total
-                )
-            } else {
-                String::new()
-            };
-            let mut right = format!(
-                "phi \u{00b7} {} \u{00b7} thinking:{}",
-                self.model_label,
-                self.root_lm.thinking().as_str()
-            );
-            right.push_str(" \u{00b7} ");
-            right.push_str(&pwd);
-            if let Some(branch) = &self.branch {
-                right.push_str(" \u{00b7} ");
-                right.push_str(branch);
-            }
-            match (left.is_empty(), right.is_empty()) {
-                (true, true) => String::new(),
-                (true, false) => right,
-                (false, true) => left,
-                (false, false) => format!("{left} \u{00b7} {right}"),
-            }
-        };
-        if framed {
-            let footer_fill = width.saturating_sub(footer.chars().count() + 5).max(1);
-            lines.push(format!(
-                "{chrome_border}\u{2514}\u{2500} {muted_fg}{footer}{RESET} {}\u{2518}{RESET}",
-                "\u{2500}".repeat(footer_fill),
-                chrome_border = &p.chrome_border,
-                muted_fg = &p.muted_fg,
-            ));
         }
         (lines, cursor)
     }
