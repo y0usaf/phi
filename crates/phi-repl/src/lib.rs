@@ -83,7 +83,7 @@ pub enum SubcallRequest {
         prompt: String,
         model: Option<String>,
     },
-    /// `rlm_query`: recursive RLM sub-call (engine may fall back to plain LM).
+    /// `subagent`: recursive RLM sub-call (engine may fall back to plain LM).
     Rlm {
         prompt: String,
         model: Option<String>,

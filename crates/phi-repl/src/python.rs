@@ -479,7 +479,7 @@ mod tests {
             .unwrap();
         assert_eq!(r.stdout, "llm:hi\n");
         let r = repl
-            .exec("print(rlm_query('deep'))", EXEC_TIMEOUT)
+            .exec("print(subagent('deep'))", EXEC_TIMEOUT)
             .await
             .unwrap();
         assert_eq!(r.stdout, "rlm:deep\n");

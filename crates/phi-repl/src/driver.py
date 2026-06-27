@@ -306,8 +306,8 @@ class Env:
             "SHOW_VARS": self._show_vars,
             "llm_query": self._llm_query,
             "llm_query_batched": self._llm_query_batched,
-            "rlm_query": self._rlm_query,
-            "rlm_query_batched": self._rlm_query_batched,
+            "subagent": self._subagent,
+            "subagent_batched": self._subagent_batched,
             "bg": self._bg,
             "jobs": self._jobs_fn,
             "job_status": self._job_status,
@@ -357,7 +357,7 @@ class Env:
             return "Error: %s" % frame["error"]
         return frame.get("text", "")
 
-    def _rlm_query(self, prompt, model=None):
+    def _subagent(self, prompt, model=None):
         frame = _subcall({"kind": "rlm", "prompt": str(prompt), "model": model})
         if frame.get("error") is not None:
             return "Error: %s" % frame["error"]
@@ -376,8 +376,8 @@ class Env:
     def _llm_query_batched(self, prompts, model=None):
         return self._batched(self._llm_query, prompts, model)
 
-    def _rlm_query_batched(self, prompts, model=None):
-        return self._batched(self._rlm_query, prompts, model)
+    def _subagent_batched(self, prompts, model=None):
+        return self._batched(self._subagent, prompts, model)
 
     def _restore_scaffold(self):
         """Undo model overwrites of scaffold names so the next cell still works."""

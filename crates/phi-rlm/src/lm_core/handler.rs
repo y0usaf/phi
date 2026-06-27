@@ -214,7 +214,7 @@ impl LmHandler {
         Ok(completion)
     }
 
-    /// Sub-LLM completion for `llm_query` (and `rlm_query` at max depth).
+    /// Sub-LLM completion for `llm_query` (and `subagent` at max depth).
     /// Unknown model names fall back to the default sub model.
     pub async fn complete_sub(
         &self,

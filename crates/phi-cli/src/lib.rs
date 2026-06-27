@@ -27,17 +27,17 @@ pub struct Args {
     #[arg(long)]
     pub thinking: Option<String>,
 
-    /// Thinking level for the llm_query/rlm_query sub-model.
+    /// Thinking level for the llm_query/subagent sub-model.
     /// Defaults to --thinking when omitted.
     #[arg(long, value_name = "LEVEL")]
     pub sub_model_thinking: Option<String>,
 
-    /// Maximum turns for each recursive rlm_query child [default: 30].
+    /// Maximum turns for each recursive subagent child [default: 30].
     /// The top-level RLM is not capped by this setting.
     #[arg(long)]
     pub max_iterations: Option<usize>,
 
-    /// Maximum rlm_query recursion depth [default: 3 in the TUI, 2 one-shot]
+    /// Maximum subagent recursion depth [default: 3 in the TUI, 2 one-shot]
     #[arg(long)]
     pub max_rlm_depth: Option<usize>,
 

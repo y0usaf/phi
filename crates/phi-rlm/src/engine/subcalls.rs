@@ -1,4 +1,4 @@
-//! Subcall routing: `llm_query` to the sub model, `rlm_query` to a child
+//! Subcall routing: `llm_query` to the sub model, `subagent` to a child
 //! RLM, host fns to the registered handler.
 
 use std::sync::Arc;

@@ -722,14 +722,14 @@ const TRANSCRIPT_COMPACTION_THRESHOLD: usize = 20;
     }
 
     #[tokio::test]
-    async fn rlm_query_spawns_child_rlm() {
+    async fn subagent_spawns_child_rlm() {
         // Parent and child share the same root model: responses pop in
         // call order — parent iter 1, child iters 1-2, parent iter 2.
         let root = Arc::new(
             ScriptedLm::new(
                 "root-model",
                 &[
-                    "Delegating.\n```repl\nr = rlm_query('child task')\nprint(r)\n```",
+                    "Delegating.\n```repl\nr = subagent('child task')\nprint(r)\n```",
                     "Probing.\n```repl\nprint(context)\n```",
                     "```repl\nanswer['content'] = 'child saw: ' + context\nanswer['ready'] = True\n```",
                     "```repl\nanswer['content'] = r\nanswer['ready'] = True\n```",
@@ -762,7 +762,7 @@ const TRANSCRIPT_COMPACTION_THRESHOLD: usize = 20;
         assert_eq!(result.usage_by_model[0].model, "root-model");
         assert_eq!(result.usage_by_model[0].usage.input, 4);
 
-        // The child gets the rlm_query prompt as its own context.
+        // The child gets the subagent prompt as its own context.
         let prompts = root.recorded_prompts();
         assert!(
             prompts[1][1]
@@ -827,11 +827,11 @@ const TRANSCRIPT_COMPACTION_THRESHOLD: usize = 20;
     }
 
     #[tokio::test]
-    async fn rlm_query_preview_is_single_line() {
+    async fn subagent_preview_is_single_line() {
         let root = Arc::new(ScriptedLm::new(
             "root-model",
             &[
-                "```repl\nr = rlm_query(\"\"\"first line\n\nsecond\tline\"\"\")\n```",
+                "```repl\nr = subagent(\"\"\"first line\n\nsecond\tline\"\"\")\n```",
                 "```repl\nanswer['content'] = 'child ok'\nanswer['ready'] = True\n```",
                 "```repl\nanswer['content'] = r\nanswer['ready'] = True\n```",
             ],
@@ -866,11 +866,11 @@ const TRANSCRIPT_COMPACTION_THRESHOLD: usize = 20;
     }
 
     #[tokio::test]
-    async fn rlm_query_model_override_roots_the_child() {
+    async fn subagent_model_override_roots_the_child() {
         let root = Arc::new(ScriptedLm::new(
             "root-model",
             &[
-                "```repl\nr = rlm_query('task', model='fast')\n```",
+                "```repl\nr = subagent('task', model='fast')\n```",
                 "```repl\nanswer['content'] = r\nanswer['ready'] = True\n```",
             ],
         ));
@@ -909,12 +909,12 @@ const TRANSCRIPT_COMPACTION_THRESHOLD: usize = 20;
     }
 
     #[tokio::test]
-    async fn rlm_query_at_max_rlm_depth_is_plain_completion() {
+    async fn subagent_at_max_rlm_depth_is_plain_completion() {
         // Default max_rlm_depth = 1: no child run, the sub model answers.
         let root = Arc::new(ScriptedLm::new(
             "root-model",
             &[
-                "```repl\nr = rlm_query('q')\n```",
+                "```repl\nr = subagent('q')\n```",
                 "```repl\nanswer['content'] = r\nanswer['ready'] = True\n```",
             ],
         ));
@@ -940,12 +940,12 @@ const TRANSCRIPT_COMPACTION_THRESHOLD: usize = 20;
     }
 
     #[tokio::test]
-    async fn rlm_query_budget_exhausted_blocks_child_spawn() {
+    async fn subagent_budget_exhausted_blocks_child_spawn() {
         let mut usage = Usage::default();
         usage.cost.total = 1.0;
         let root = Arc::new(
             ScriptedLm::new("root-model", &[])
-                .with_default("```repl\nprint(rlm_query('q'))\n```")
+                .with_default("```repl\nprint(subagent('q'))\n```")
                 .with_usage(usage),
         );
         let config = RlmConfig {

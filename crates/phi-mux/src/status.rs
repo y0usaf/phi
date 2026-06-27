@@ -26,7 +26,7 @@ impl SessionStatus {
 }
 
 /// Status implied by an engine event. Only depth-0 events count: nested
-/// (rlm_query) activity stays under the root run's status.
+/// (subagent) activity stays under the root run's status.
 pub fn status_for_event(event: &RlmEvent) -> Option<SessionStatus> {
     Some(match event {
         RlmEvent::RunStart { depth: 0 } => SessionStatus::Thinking,
