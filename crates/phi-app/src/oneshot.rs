@@ -59,7 +59,7 @@ pub async fn run(
     }
 
     let config = RlmConfig {
-        max_depth: settings.max_depth,
+        max_rlm_depth: settings.max_rlm_depth,
         max_iterations: settings.max_iterations,
         max_concurrent_subcalls: settings.max_concurrent_subcalls,
         setup_code: Some(CODING_PRELUDE.to_owned()),

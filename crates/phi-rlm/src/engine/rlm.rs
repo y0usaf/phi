@@ -177,7 +177,7 @@ impl Rlm {
         let turn_config = turn.map(|t| &t.config);
         let effective_config = turn_config.unwrap_or(&self.config);
 
-        if self.depth >= effective_config.max_depth {
+        if self.depth >= effective_config.max_rlm_depth {
             return self.fallback(payload, start, cancel).await;
         }
 
@@ -794,7 +794,7 @@ impl Rlm {
         })
     }
 
-    /// `depth >= max_depth`: the RLM is just an LM.
+    /// `depth >= max_rlm_depth`: the RLM is just an LM.
     pub async fn fallback(&self, payload: ContextPayload, start: Instant, cancel: &CancellationToken) -> RlmCompletion {
         let content = match payload {
             ContextPayload::Str(s) => s,

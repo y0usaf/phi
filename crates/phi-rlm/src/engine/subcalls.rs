@@ -70,7 +70,7 @@ impl EngineSubcalls {
     ) -> Result<SubcallResponse, String> {
         let next_depth = self.rlm.depth + 1;
         let parent = &self.rlm.config;
-        if next_depth >= parent.max_depth {
+        if next_depth >= parent.max_rlm_depth {
             return self.query(prompt, model, "RLM").await;
         }
 

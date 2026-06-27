@@ -39,7 +39,7 @@ pub struct Args {
 
     /// Maximum rlm_query recursion depth [default: 3 in the TUI, 2 one-shot]
     #[arg(long)]
-    pub max_depth: Option<usize>,
+    pub max_rlm_depth: Option<usize>,
 
     /// Maximum spend in USD across the run.
     #[arg(long, value_name = "USD")]
@@ -127,7 +127,7 @@ impl Args {
             sub_model_thinking: self.sub_model_thinking.clone(),
             python: self.python.clone(),
             max_iterations: self.max_iterations,
-            max_depth: self.max_depth,
+            max_rlm_depth: self.max_rlm_depth,
             budget: self.budget,
             max_tokens: self.max_tokens,
             timeout: self.timeout,

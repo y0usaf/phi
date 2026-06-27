@@ -16,7 +16,7 @@ pub type SavePointFn = dyn Fn(usize) -> Vec<ChatMessage> + Send + Sync;
 
 #[derive(Clone, Debug)]
 pub struct RlmConfig {
-    pub max_depth: usize,
+    pub max_rlm_depth: usize,
     pub max_iterations: usize,
     pub max_budget: Option<f64>,
     pub max_timeout: Option<Duration>,
@@ -47,7 +47,7 @@ pub struct RlmConfig {
 impl Default for RlmConfig {
     fn default() -> Self {
         Self {
-            max_depth: 1,
+            max_rlm_depth: 1,
             max_iterations: 30,
             max_budget: None,
             max_timeout: None,
@@ -85,7 +85,7 @@ pub enum StopCause {
     Answer,
     /// Iterations exhausted; answer synthesized from the trajectory.
     DefaultAnswer,
-    /// `depth >= max_depth`: plain LM completion, no REPL.
+    /// `depth >= max_rlm_depth`: plain LM completion, no REPL.
     Fallback,
     Limit(LimitKind),
     Cancelled,

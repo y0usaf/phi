@@ -596,7 +596,7 @@ const TRANSCRIPT_COMPACTION_THRESHOLD: usize = 20;
             ],
         ));
         let config = RlmConfig {
-            max_depth: 2,
+            max_rlm_depth: 2,
             max_iterations: 2,
             ..RlmConfig::default()
         };
@@ -741,7 +741,7 @@ const TRANSCRIPT_COMPACTION_THRESHOLD: usize = 20;
             }),
         );
         let config = RlmConfig {
-            max_depth: 2,
+            max_rlm_depth: 2,
             ..RlmConfig::default()
         };
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -837,7 +837,7 @@ const TRANSCRIPT_COMPACTION_THRESHOLD: usize = 20;
             ],
         ));
         let config = RlmConfig {
-            max_depth: 2,
+            max_rlm_depth: 2,
             ..RlmConfig::default()
         };
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -879,7 +879,7 @@ const TRANSCRIPT_COMPACTION_THRESHOLD: usize = 20;
             &["```repl\nanswer['content'] = 'from fast'\nanswer['ready'] = True\n```"],
         ));
         let config = RlmConfig {
-            max_depth: 2,
+            max_rlm_depth: 2,
             ..RlmConfig::default()
         };
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -909,8 +909,8 @@ const TRANSCRIPT_COMPACTION_THRESHOLD: usize = 20;
     }
 
     #[tokio::test]
-    async fn rlm_query_at_max_depth_is_plain_completion() {
-        // Default max_depth = 1: no child run, the sub model answers.
+    async fn rlm_query_at_max_rlm_depth_is_plain_completion() {
+        // Default max_rlm_depth = 1: no child run, the sub model answers.
         let root = Arc::new(ScriptedLm::new(
             "root-model",
             &[
@@ -949,7 +949,7 @@ const TRANSCRIPT_COMPACTION_THRESHOLD: usize = 20;
                 .with_usage(usage),
         );
         let config = RlmConfig {
-            max_depth: 2,
+            max_rlm_depth: 2,
             max_budget: Some(0.5),
             ..RlmConfig::default()
         };
@@ -978,7 +978,7 @@ const TRANSCRIPT_COMPACTION_THRESHOLD: usize = 20;
     }
 
     #[tokio::test]
-    async fn falls_back_to_plain_lm_at_max_depth() {
+    async fn falls_back_to_plain_lm_at_max_rlm_depth() {
         let root = Arc::new(ScriptedLm::new("root-model", &["plain answer"]));
         let engine = rlm(RlmConfig::default(), root.clone(), quiet_sub()).at_depth(1);
         let result = engine

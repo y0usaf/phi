@@ -21,7 +21,7 @@ pub struct Config {
     pub sub_model_thinking: Option<String>,
     pub python: Option<String>,
     pub max_iterations: Option<usize>,
-    pub max_depth: Option<usize>,
+    pub max_rlm_depth: Option<usize>,
     pub budget: Option<f64>,
     pub max_tokens: Option<u64>,
     pub timeout: Option<u64>,
@@ -104,7 +104,7 @@ impl Config {
             sub_model_thinking,
             python,
             max_iterations,
-            max_depth,
+            max_rlm_depth,
             budget,
             max_tokens,
             timeout,
@@ -133,7 +133,7 @@ pub struct CliArgs {
     pub sub_model_thinking: Option<String>,
     pub python: Option<String>,
     pub max_iterations: Option<usize>,
-    pub max_depth: Option<usize>,
+    pub max_rlm_depth: Option<usize>,
     pub budget: Option<f64>,
     pub max_tokens: Option<u64>,
     pub timeout: Option<u64>,
@@ -149,7 +149,7 @@ pub struct Settings {
     pub sub_model_thinking: String,
     pub python: String,
     pub max_iterations: usize,
-    pub max_depth: usize,
+    pub max_rlm_depth: usize,
     pub budget: Option<f64>,
     pub max_tokens: Option<u64>,
     pub timeout: Option<u64>,
@@ -183,9 +183,9 @@ impl Settings {
                 .or(config.python)
                 .unwrap_or_else(|| "python3".to_owned()),
             max_iterations: args.max_iterations.or(config.max_iterations).unwrap_or(30),
-            max_depth: args
-                .max_depth
-                .or(config.max_depth)
+            max_rlm_depth: args
+                .max_rlm_depth
+                .or(config.max_rlm_depth)
                 .unwrap_or(if tui_mode { 3 } else { 2 }),
             budget: args.budget.or(config.budget),
             max_tokens: args.max_tokens.or(config.max_tokens),
@@ -237,23 +237,23 @@ mod tests {
     }
 
     #[test]
-    fn max_depth_default_depends_on_mode() {
+    fn max_rlm_depth_default_depends_on_mode() {
         let args = CliArgs::default();
         assert_eq!(
-            Settings::resolve(&args, Config::default(), true).max_depth,
+            Settings::resolve(&args, Config::default(), true).max_rlm_depth,
             3
         );
         assert_eq!(
-            Settings::resolve(&args, Config::default(), false).max_depth,
+            Settings::resolve(&args, Config::default(), false).max_rlm_depth,
             2
         );
 
-        let config = eval("return { max_depth = 5 }").unwrap();
-        assert_eq!(Settings::resolve(&args, config, true).max_depth, 5);
+        let config = eval("return { max_rlm_depth = 5 }").unwrap();
+        assert_eq!(Settings::resolve(&args, config, true).max_rlm_depth, 5);
 
-        let args = CliArgs { max_depth: Some(7), ..Default::default() };
+        let args = CliArgs { max_rlm_depth: Some(7), ..Default::default() };
         assert_eq!(
-            Settings::resolve(&args, Config::default(), true).max_depth,
+            Settings::resolve(&args, Config::default(), true).max_rlm_depth,
             7
         );
     }

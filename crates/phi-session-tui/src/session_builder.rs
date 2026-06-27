@@ -110,7 +110,7 @@ fn build_rlm_config(cwd: &Path, settings: &Settings, runtime: &phi_runtime::AppR
     let (prompt_override, append_prompt) = phi_session::prompts::discover_prompt_overrides(cwd);
 
     RlmConfig {
-        max_depth: settings.max_depth,
+        max_rlm_depth: settings.max_rlm_depth,
         max_iterations: settings.max_iterations,
         max_concurrent_subcalls: settings.max_concurrent_subcalls,
         custom_system_prompt: prompt_override,
