@@ -17,11 +17,9 @@ pub static malloc_conf: Option<&'static [u8; 78]> =
 use std::io::IsTerminal;
 use std::sync::Arc;
 
+use crate::cli::Args;
 use anyhow::{Context as _, Result, bail};
-use phi_ai::{
-    AuthStorage, LoginMethod, OAuthProviderId, PrintCallbacks, Registry,
-};
-use phi_cli::Args;
+use phi_ai::{AuthStorage, LoginMethod, OAuthProviderId, PrintCallbacks, Registry};
 use phi_mux as mux;
 use phi_session::config;
 use phi_session_tui::{session_builder, tui};
@@ -72,6 +70,8 @@ async fn main() -> Result<()> {
     run(args, storage, registry).await
 }
 
+mod cli;
+mod event_print;
 mod format;
 mod oneshot;
 mod render;
@@ -101,7 +101,8 @@ async fn run(args: Args, storage: Arc<AuthStorage>, registry: Arc<Registry>) -> 
                 bail!("--mux does not take a prompt or --context");
             }
             let shared = session_builder::SharedResources {
-                args,
+                cli_args: args.to_session_args(),
+                projects: args.project.clone(),
                 storage,
                 registry,
             };
@@ -111,7 +112,8 @@ async fn run(args: Args, storage: Arc<AuthStorage>, registry: Arc<Registry>) -> 
 
     if tui_mode {
         let shared = session_builder::SharedResources {
-            args,
+            cli_args: args.to_session_args(),
+            projects: args.project.clone(),
             storage,
             registry,
         };

@@ -57,9 +57,7 @@ fn format_usage_summary_shows_breakdown_and_total() {
 fn observational_tools_hide_args_and_prettify_names() {
     assert_eq!(tool_display_name("read_file"), "Read File");
     assert!(!tool_shows_args_section("read_file"));
-    assert!(
-        tool_input_lines("read_file", &serde_json::json!({"path": "src/main.rs"})).is_empty()
-    );
+    assert!(tool_input_lines("read_file", &serde_json::json!({"path": "src/main.rs"})).is_empty());
     // write_file's path is the canonical key (shown in the title suffix), so the
     // Args section strips it and keeps only the residual (content).
     let write_args = tool_input_lines(
@@ -68,7 +66,10 @@ fn observational_tools_hide_args_and_prettify_names() {
     );
     let joined = write_args.join("\n");
     assert!(!joined.is_empty(), "write_file should keep residual args");
-    assert!(joined.contains("content"), "residual should keep content: {joined}");
+    assert!(
+        joined.contains("content"),
+        "residual should keep content: {joined}"
+    );
     assert!(
         !joined.contains("src/main.rs"),
         "residual should drop the path already in the title: {joined}"
@@ -91,7 +92,10 @@ fn call_anchor_shows_identity_once() {
         "Read File — src/main.rs"
     );
     assert_eq!(
-        call_anchor("edit_file", &serde_json::json!({"path": "a.rs", "content": "x"})),
+        call_anchor(
+            "edit_file",
+            &serde_json::json!({"path": "a.rs", "content": "x"})
+        ),
         "Edit File — a.rs"
     );
     // bash: first command line inlined; multi-line truncated.
@@ -105,7 +109,10 @@ fn call_anchor_shows_identity_once() {
     );
     // grep: pattern (and path) inlined.
     assert_eq!(
-        call_anchor("grep", &serde_json::json!({"pattern": "foo", "path": "src"})),
+        call_anchor(
+            "grep",
+            &serde_json::json!({"pattern": "foo", "path": "src"})
+        ),
         "Grep — foo in src"
     );
 }
@@ -124,10 +131,12 @@ fn residual_args_strips_canonical_key_only() {
     let u = residual_args("custom_tool", &serde_json::json!({"a": 1, "b": 2}));
     assert_eq!(u.as_object().unwrap().len(), 2);
     // edit_file with only a path -> empty residual (no Args section).
-    assert!(residual_args("edit_file", &serde_json::json!({"path": "a.rs"}))
-        .as_object()
-        .unwrap()
-        .is_empty());
+    assert!(
+        residual_args("edit_file", &serde_json::json!({"path": "a.rs"}))
+            .as_object()
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]

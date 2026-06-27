@@ -1,8 +1,11 @@
-
 /// First non-empty line of `text`, trimmed and truncated to `max` chars with a
 /// trailing `…` when either the line or the whole text was cut.
 fn first_line_trunc(text: &str, max: usize) -> String {
-    let first = text.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
+    let first = text
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("")
+        .trim();
     let short: String = first.chars().take(max).collect();
     if short.len() < first.len() || text.lines().filter(|l| !l.trim().is_empty()).count() > 1 {
         format!("{short}…")
@@ -102,7 +105,6 @@ pub(crate) fn depth_tag(depth: usize) -> String {
         format!(" d{depth}")
     }
 }
-
 
 pub(crate) fn preview(text: &str, max_lines: usize, verbose: bool) -> String {
     let text = text.trim_end();
