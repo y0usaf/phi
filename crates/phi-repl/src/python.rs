@@ -15,7 +15,11 @@ use crate::{
     SubcallResponse, ToolEvent,
 };
 
-const DRIVER: &str = include_str!("driver.py");
+const DRIVER: &str = concat!(
+    include_str!("builtins.py"),
+    include_str!("jobs.py"),
+    include_str!("router.py"),
+);
 const SETUP_TIMEOUT: Duration = Duration::from_secs(30);
 const ANSWER_STATE_TIMEOUT: Duration = Duration::from_secs(10);
 /// Extra wait beyond the driver's soft timeout. The driver backgrounds
@@ -158,7 +162,8 @@ impl PythonRepl {
                                                 continue;
                                             }
                                         },
-                                        args: args.unwrap_or_else(|| Value::Object(Default::default())),
+                                        args: args
+                                            .unwrap_or_else(|| Value::Object(Default::default())),
                                     },
                                     other => {
                                         let frame = json!({"type": "subcall_result", "id": id, "error": format!("unknown subcall kind: {other}")});
@@ -211,7 +216,8 @@ impl PythonRepl {
                                 };
                                 handler.notify_tool(event);
                             }
-                            DriverFrame::ExecResult { id, .. } | DriverFrame::AnswerState { id, .. } => {
+                            DriverFrame::ExecResult { id, .. }
+                            | DriverFrame::AnswerState { id, .. } => {
                                 let mut p = pending_for_reader.lock().await;
                                 if let Some(tx) = p.remove(&id) {
                                     let _ = tx.send(frame);
@@ -235,7 +241,9 @@ impl PythonRepl {
             // Drain any pending waiters on EOF/Error
             let mut p = pending_for_reader.lock().await;
             for (_, tx) in p.drain() {
-                let _ = tx.send(DriverFrame::Fatal { error: "driver exited".into() });
+                let _ = tx.send(DriverFrame::Fatal {
+                    error: "driver exited".into(),
+                });
             }
         });
 
@@ -263,7 +271,7 @@ impl PythonRepl {
 
         let (tx, rx) = oneshot::channel::<DriverFrame>();
         proc.pending.lock().await.insert(0, tx);
-        
+
         let ready = tokio::time::timeout(SETUP_TIMEOUT, rx).await;
         let ready = ready
             .map_err(|_| ReplError::Timeout(SETUP_TIMEOUT))?
@@ -291,7 +299,12 @@ impl PythonRepl {
         }
     }
 
-    async fn wait_frame(&mut self, id: u64, timeout: Duration, frame_kind: &str) -> Result<DriverFrame, ReplError> {
+    async fn wait_frame(
+        &mut self,
+        id: u64,
+        timeout: Duration,
+        frame_kind: &str,
+    ) -> Result<DriverFrame, ReplError> {
         let proc = self.proc.as_mut().ok_or(ReplError::NotStarted)?;
         let (tx, rx) = oneshot::channel::<DriverFrame>();
         proc.pending.lock().await.insert(id, tx);
@@ -300,7 +313,8 @@ impl PythonRepl {
         match result {
             Ok(Ok(frame)) => {
                 if frame_kind == "exec"
-                    && let DriverFrame::Fatal { error } = &frame {
+                    && let DriverFrame::Fatal { error } = &frame
+                {
                     let stderr_msg = {
                         let buf = proc.stderr.lock().unwrap();
                         format!("{}: {}", error, buf.trim())
@@ -311,10 +325,14 @@ impl PythonRepl {
                 Ok(frame)
             }
             Ok(Err(_)) => {
-                let stderr_msg = self.proc.as_ref().map(|p| {
-                    let buf = p.stderr.lock().unwrap();
-                    format!("driver exited unexpectedly: {}", buf.trim())
-                }).unwrap_or_else(|| "driver exited unexpectedly".to_owned());
+                let stderr_msg = self
+                    .proc
+                    .as_ref()
+                    .map(|p| {
+                        let buf = p.stderr.lock().unwrap();
+                        format!("driver exited unexpectedly: {}", buf.trim())
+                    })
+                    .unwrap_or_else(|| "driver exited unexpectedly".to_owned());
                 self.respawn().await;
                 Err(ReplError::Protocol(stderr_msg))
             }
@@ -389,7 +407,9 @@ impl ReplEnv for PythonRepl {
         let frame = self.wait_frame(id, ANSWER_STATE_TIMEOUT, "answer").await?;
         match frame {
             DriverFrame::AnswerState { content, ready, .. } => Ok(AnswerState { content, ready }),
-            _ => Err(ReplError::Protocol("unexpected frame for answer_state".into())),
+            _ => Err(ReplError::Protocol(
+                "unexpected frame for answer_state".into(),
+            )),
         }
     }
 

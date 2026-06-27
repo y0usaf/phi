@@ -119,94 +119,8 @@ def _clean(text):
     return text.encode("utf-8", "replace").decode("utf-8")
 
 
-# Safe builtins - blocks dangerous operations like eval/exec/input.
-_SAFE_BUILTINS = {
-    "print": print,
-    "len": len,
-    "str": str,
-    "int": int,
-    "float": float,
-    "list": list,
-    "dict": dict,
-    "set": set,
-    "tuple": tuple,
-    "bool": bool,
-    "type": type,
-    "isinstance": isinstance,
-    "issubclass": issubclass,
-    "enumerate": enumerate,
-    "zip": zip,
-    "map": map,
-    "filter": filter,
-    "sorted": sorted,
-    "reversed": reversed,
-    "range": range,
-    "min": min,
-    "max": max,
-    "sum": sum,
-    "abs": abs,
-    "round": round,
-    "any": any,
-    "all": all,
-    "pow": pow,
-    "divmod": divmod,
-    "chr": chr,
-    "ord": ord,
-    "hex": hex,
-    "bin": bin,
-    "oct": oct,
-    "repr": repr,
-    "ascii": ascii,
-    "format": format,
-    "hash": hash,
-    "id": id,
-    "iter": iter,
-    "next": next,
-    "slice": slice,
-    "callable": callable,
-    "hasattr": hasattr,
-    "getattr": getattr,
-    "setattr": setattr,
-    "delattr": delattr,
-    "dir": dir,
-    "vars": vars,
-    "bytes": bytes,
-    "bytearray": bytearray,
-    "memoryview": memoryview,
-    "complex": complex,
-    "object": object,
-    "super": super,
-    "property": property,
-    "staticmethod": staticmethod,
-    "classmethod": classmethod,
-    "__import__": __import__,
-    "open": open,
-    "Exception": Exception,
-    "BaseException": BaseException,
-    "ValueError": ValueError,
-    "TypeError": TypeError,
-    "KeyError": KeyError,
-    "IndexError": IndexError,
-    "AttributeError": AttributeError,
-    "FileNotFoundError": FileNotFoundError,
-    "OSError": OSError,
-    "IOError": IOError,
-    "RuntimeError": RuntimeError,
-    "NameError": NameError,
-    "ImportError": ImportError,
-    "StopIteration": StopIteration,
-    "AssertionError": AssertionError,
-    "NotImplementedError": NotImplementedError,
-    "ArithmeticError": ArithmeticError,
-    "LookupError": LookupError,
-    "Warning": Warning,
-    "input": None,
-    "eval": None,
-    "exec": None,
-    "compile": None,
-    "globals": None,
-    "locals": None,
-}
+
+
 
 
 class _AnswerDict(dict):
@@ -227,68 +141,9 @@ class _AnswerDict(dict):
                 pass
 
 
-_jobs = {}
-_jobs_lock = threading.Lock()
-_job_counter = [0]
 
 
-class _Job:
-    """One execution on its own thread, output captured via the routers."""
 
-    def __init__(self, code, env):
-        with _jobs_lock:
-            _job_counter[0] += 1
-            self.id = _job_counter[0]
-            _jobs[self.id] = self
-        self.code = code
-        self.env = env
-        self.out = io.StringIO()
-        self.err = io.StringIO()
-        self.status = "running"
-        self.started = time.time()
-        self.finished = None
-        self.thread = threading.Thread(target=self._run, daemon=True)
-        self.thread.start()
-
-    def _run(self):
-        _stdout_router.register(self.out)
-        _stderr_router.register(self.err)
-        try:
-            self.env._run_code(self.code)
-            self.status = "done"
-        except BaseException as e:
-            self.err.write("\n%s: %s" % (type(e).__name__, e))
-            self.status = "error"
-        finally:
-            self.finished = time.time()
-
-    def runtime(self):
-        end = self.finished if self.finished is not None else time.time()
-        return end - self.started
-
-    def output(self):
-        out = self.out.getvalue()
-        err = self.err.getvalue()
-        if not err:
-            return out
-        if out and not out.endswith("\n"):
-            out += "\n"
-        return out + err
-
-    def describe(self):
-        if isinstance(self.code, str):
-            head = " ".join(self.code.split())[:60]
-        else:
-            head = getattr(self.code, "__name__", repr(self.code))
-        return "job %d [%s, %.1fs]: %s" % (self.id, self.status, self.runtime(), head)
-
-
-def _get_job(jid):
-    with _jobs_lock:
-        job = _jobs.get(jid)
-    if job is None:
-        raise KeyError("no such job: %r" % (jid,))
-    return job
 
 
 class Env:
