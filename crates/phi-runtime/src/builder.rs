@@ -38,12 +38,11 @@ impl RuntimeBuilder {
         self
     }
 
-    pub fn register_extension<E>(mut self, extension: E) -> Self
+    pub fn register_extension<E>(self, extension: E) -> Self
     where
         E: Extension + 'static,
     {
-        self.extensions.push(Box::new(extension));
-        self
+        self.register_boxed_extension(Box::new(extension))
     }
 
     pub fn register_boxed_extension(mut self, extension: Box<dyn Extension>) -> Self {

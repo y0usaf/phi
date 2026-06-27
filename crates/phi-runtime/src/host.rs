@@ -12,19 +12,27 @@ pub(crate) struct RegistryHost {
 
 impl ExtensionHost for RegistryHost {
     fn register_tool(&mut self, tool: ToolSpec) -> Result<()> {
-        if self.tools.contains_key(&tool.name) {
-            bail!("tool '{}' is already registered", tool.name);
+        use std::collections::btree_map::Entry;
+        let name = tool.name.clone();
+        match self.tools.entry(name) {
+            Entry::Vacant(v) => {
+                v.insert(tool);
+                Ok(())
+            }
+            Entry::Occupied(_) => bail!("tool '{}' is already registered", tool.name),
         }
-        self.tools.insert(tool.name.clone(), tool);
-        Ok(())
     }
 
     fn register_command(&mut self, command: CommandSpec) -> Result<()> {
-        if self.commands.contains_key(&command.name) {
-            bail!("command '{}' is already registered", command.name);
+        use std::collections::btree_map::Entry;
+        let name = command.name.clone();
+        match self.commands.entry(name) {
+            Entry::Vacant(v) => {
+                v.insert(command);
+                Ok(())
+            }
+            Entry::Occupied(_) => bail!("command '{}' is already registered", command.name),
         }
-        self.commands.insert(command.name.clone(), command);
-        Ok(())
     }
 
     fn subscribe(&mut self, handler: EventHandlerRegistration) -> Result<()> {
