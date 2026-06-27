@@ -9,6 +9,7 @@ use phi_ext::ToolSpec;
 
 /// Harness configuration shared across turns. Updated by `set_model`,
 /// `set_thinking`, `set_tools`; read when creating a fresh [`TurnState`](crate::engine::TurnState).
+#[allow(dead_code)]
 pub(crate) struct HarnessConfig {
     /// Root model for completions.
     pub(crate) root_model: Arc<dyn LanguageModel>,

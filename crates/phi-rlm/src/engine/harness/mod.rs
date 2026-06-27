@@ -6,7 +6,7 @@ pub(crate) mod config;
 pub(crate) mod queue;
 
 pub(crate) use config::HarnessConfig;
-pub(crate) use queue::{QueueSource, QueuedMessage, Queues};
+pub(crate) use queue::Queues;
 
 // Re-export phase/error types that already live in the engine module.
 pub use super::HarnessError;
@@ -64,6 +64,7 @@ impl PhiHarness {
     }
 
     /// Set the live harness config (replaces the default).
+    #[allow(dead_code)]
     pub(crate) fn with_config(mut self, config: HarnessConfig) -> Self {
         self.config = RwLock::new(config);
         self
@@ -72,10 +73,12 @@ impl PhiHarness {
     pub fn rlm(&self) -> &Rlm {
         &self.rlm
     }
+    #[allow(dead_code)]
     pub(crate) fn queues(&self) -> &Queues {
         &self.queues
     }
 
+    #[allow(dead_code)]
     pub(crate) async fn phase(&self) -> HarnessPhase {
         *self.phase.lock().await
     }
@@ -153,6 +156,7 @@ impl PhiHarness {
     }
 
     /// Abort the current run. Allowed during [`HarnessPhase::Turn`].
+    #[allow(dead_code)]
     pub(crate) async fn abort(&self) -> Result<(), HarnessError> {
         if let Some(token) = self.cancel.lock().await.take() {
             token.cancel();
@@ -163,26 +167,32 @@ impl PhiHarness {
 
     // ── Queue ops (allowed during Turn) ─────────────────────────────────────
 
+    #[allow(dead_code)]
     pub(crate) async fn steer(&self, text: &str) -> Result<String, HarnessError> {
         Ok(self.queues.enqueue_steer(text).await)
     }
+    #[allow(dead_code)]
     pub(crate) async fn follow_up(&self, text: &str) -> Result<String, HarnessError> {
         Ok(self.queues.enqueue_follow_up(text).await)
     }
+    #[allow(dead_code)]
     pub(crate) async fn next_turn(&self, text: &str) -> Result<String, HarnessError> {
         Ok(self.queues.enqueue_next_turn(text).await)
     }
 
     // ── Config setters (affect next snapshot) ───────────────────────────────
 
+    #[allow(dead_code)]
     pub(crate) async fn set_model(&self, model: Arc<dyn LanguageModel>) {
         self.config.write().await.root_model = model;
     }
 
+    #[allow(dead_code)]
     pub(crate) async fn set_thinking(&self, level: Option<ThinkingLevel>) {
         self.config.write().await.thinking = level;
     }
 
+    #[allow(dead_code)]
     pub(crate) async fn set_tools(&self, tools: Vec<ToolSpec>, active: Vec<String>) {
         let mut cfg = self.config.write().await;
         cfg.tools = tools;

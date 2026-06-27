@@ -5,6 +5,7 @@ use crate::highlight_code;
 use crate::highlight_diff_line;
 use crate::highlight_output;
 use crate::render_markdown;
+use crate::strip_ansi;
 use crate::terminal::visible_width;
 
 fn palette() -> MarkdownPalette {

@@ -234,30 +234,6 @@ pub(super) fn soften_rgb(r: u8, g: u8, b: u8) -> (u8, u8, u8) {
     (br, bg, bb)
 }
 
-pub(super) fn strip_ansi(text: &str) -> String {
-    let bytes = text.as_bytes();
-    let mut out = String::with_capacity(text.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == 0x1b {
-            i += 1;
-            if i < bytes.len() && bytes[i] == b'[' {
-                i += 1;
-                while i < bytes.len() && bytes[i] != b'm' {
-                    i += 1;
-                }
-                if i < bytes.len() {
-                    i += 1;
-                }
-            }
-        } else {
-            out.push(bytes[i] as char);
-            i += 1;
-        }
-    }
-    out
-}
-
 pub(super) fn next_visible_char(text: &str, i: usize) -> Option<(usize, char)> {
     let bytes = text.as_bytes();
     let mut j = i;
@@ -315,7 +291,7 @@ pub(super) fn highlight_known_repl_calls(
         "bg",
     ];
     let line = line.as_ref();
-    let plain = strip_ansi(line);
+    let plain = crate::strip_ansi(line);
     let mut hits: Vec<String> = NAMES
         .iter()
         .copied()

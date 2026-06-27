@@ -56,6 +56,7 @@ pub enum HarnessError {
 
 /// Immutable snapshot of everything one RLM iteration needs.
 #[derive(Clone)]
+#[allow(dead_code)]
 pub(crate) struct TurnState {
     pub(crate) messages: Vec<ChatMessage>,
     pub(crate) system_prompt: String,
@@ -69,6 +70,7 @@ pub(crate) struct TurnState {
     pub(crate) context: ContextPayload,
 }
 
+#[allow(dead_code)]
 impl TurnState {
     pub(crate) fn with_queued_messages(mut self, queued: Vec<ChatMessage>) -> Self {
         self.messages.extend(queued);
