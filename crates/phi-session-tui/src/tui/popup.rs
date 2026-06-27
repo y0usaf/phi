@@ -75,8 +75,6 @@ pub(crate) enum PopupKind {
     Argument,
     /// `@token` fuzzy file search; directories keep completing.
     File,
-    /// Tab path completion (no `@` prefix).
-    Path,
 }
 
 /// What a confirmed selector value means (pi-style editor-swap selectors).
@@ -268,10 +266,5 @@ pub(crate) fn single_line(text: &str) -> String {
     }
 }
 
-/// Path-like token ending at the cursor for Tab completion: the last
-/// whitespace-delimited word (always returned; Tab forces completion).
-pub(crate) fn extract_path_token(before: &str) -> String {
-    let start = before.rfind([' ', '\t']).map_or(0, |i| i + 1);
-    before[start..].to_owned()
-}
+
 

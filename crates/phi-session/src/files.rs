@@ -162,55 +162,6 @@ fn expand_home(path: &str) -> String {
     path.to_owned()
 }
 
-/// Tab completion: list entries of the prefix's parent directory whose names
-/// start with the prefix's last segment (case-insensitive), directories
-/// first. Returns (value, label) pairs; values keep the original prefix form
-/// (`./`, `~/`, absolute, or relative).
-pub fn complete_path(cwd: &Path, prefix: &str) -> Vec<(String, String)> {
-    let expanded = expand_home(prefix);
-    let (dir_part, name_part) = match expanded.rfind('/') {
-        Some(i) => (&expanded[..=i], &expanded[i + 1..]),
-        None => ("", expanded.as_str()),
-    };
-    let (display_dir, _) = match prefix.rfind('/') {
-        Some(i) => (&prefix[..=i], ()),
-        None => ("", ()),
-    };
-    let search_dir = if dir_part.is_empty() {
-        cwd.to_owned()
-    } else if Path::new(dir_part).is_absolute() {
-        PathBuf::from(dir_part)
-    } else {
-        cwd.join(dir_part)
-    };
-    let Ok(entries) = std::fs::read_dir(&search_dir) else {
-        return Vec::new();
-    };
-
-    let needle = name_part.to_lowercase();
-    let mut out: Vec<(String, String, bool)> = entries
-        .flatten()
-        .filter_map(|entry| {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if !name.to_lowercase().starts_with(&needle) {
-                return None;
-            }
-            let is_dir = entry
-                .file_type()
-                .map(|t| {
-                    t.is_dir()
-                        || (t.is_symlink() && entry.path().canonicalize().is_ok_and(|p| p.is_dir()))
-                })
-                .unwrap_or(false);
-            let value = format!("{display_dir}{name}{}", if is_dir { "/" } else { "" });
-            let label = format!("{name}{}", if is_dir { "/" } else { "" });
-            Some((value, label, is_dir))
-        })
-        .collect();
-    out.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.1.cmp(&b.1)));
-    out.into_iter().map(|(v, l, _)| (v, l)).collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -265,15 +216,4 @@ mod tests {
         assert_eq!(completion_value("src/main.rs", false), "@src/main.rs");
     }
 
-    #[test]
-    fn tab_completion_lists_directories_first() {
-        let dir = fixture();
-        let hits = complete_path(dir.path(), "");
-        let labels: Vec<&str> = hits.iter().map(|(_, l)| l.as_str()).collect();
-        let src = labels.iter().position(|l| *l == "src/").unwrap();
-        let readme = labels.iter().position(|l| *l == "README.md").unwrap();
-        assert!(src < readme);
-        let hits = complete_path(dir.path(), "src/ne");
-        assert_eq!(hits[0].0, "src/nested/");
-    }
 }

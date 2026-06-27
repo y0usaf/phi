@@ -31,7 +31,7 @@ impl Ui {
                 self.apply_completion();
                 match kind {
                     PopupKind::Command => PopupOutcome::Pass,
-                    PopupKind::Argument | PopupKind::File | PopupKind::Path => {
+                    PopupKind::Argument | PopupKind::File => {
                         PopupOutcome::Handled
                     }
                 }
@@ -52,37 +52,15 @@ impl Ui {
             PopupKind::Command => format!("/{} ", item.value),
             PopupKind::Argument => item.value.clone(),
             PopupKind::File if !is_dir => format!("{} ", item.value),
-            PopupKind::File | PopupKind::Path => item.value.clone(),
+            PopupKind::File => item.value.clone(),
         };
         let kind = popup.kind;
         self.editor.replace_prefix(&popup.prefix, &replacement);
         if is_dir {
             match kind {
                 PopupKind::File => self.refresh_popup(),
-                PopupKind::Path => self.open_path_popup(),
                 _ => {}
             }
-        }
-    }
-
-    pub(super) fn open_path_popup(&mut self) {
-        let before = self.editor.before_cursor().to_owned();
-        let prefix = extract_path_token(&before);
-        let items: Vec<Suggestion> = files::complete_path(&self.cwd, &prefix)
-            .into_iter()
-            .map(|(value, label)| Suggestion {
-                value,
-                label,
-                desc: String::new(),
-            })
-            .collect();
-        if !items.is_empty() {
-            self.popup = Some(Popup {
-                items,
-                selected: 0,
-                prefix,
-                kind: PopupKind::Path,
-            });
         }
     }
 

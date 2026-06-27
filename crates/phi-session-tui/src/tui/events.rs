@@ -131,16 +131,15 @@ impl Ui {
                     return false;
                 }
                 if key.code == KeyCode::Tab && self.login.is_none() {
-                    // handle_popup_key consumed Tab if a popup was open;
-                    // otherwise Tab force-triggers path completion (pi-style).
-                    // But when the agent is running and the editor is empty
+                    // handle_popup_key consumed Tab if a popup was open
+                    // (e.g. from an @-mention). Otherwise Tab does nothing —
+                    // file completion only happens via @ mentions.
+                    // When the agent is running and the editor is empty
                     // (e.g. right after queuing a message), Tab cycles the
-                    // send mode instead of listing every file in the cwd.
+                    // send mode.
                     if self.running.is_some() && self.editor.is_empty() {
                         self.cycle_send_mode();
-                        return false;
                     }
-                    self.open_path_popup();
                     return false;
                 }
                 if key.code == KeyCode::Char('x') && ctrl {
