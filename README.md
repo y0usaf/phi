@@ -22,8 +22,6 @@ Rust-first coding harness scaffold with an extension-first runtime and native CL
 - `crates/phi-harness`: orchestration layer between the RLM engine and frontends
 - `crates/phi-lua`: Lua extension loader
 - `crates/phi-memory`: persistent memory extension
-- `crates/phi-protocol`: client-server wire protocol and Unix socket transport
-- `crates/phi-server`: daemon that owns the RLM engine
 - `crates/xtask`: workspace tasks (model registry generation)
 - `ref/`: local checkouts of upstream reference implementations (`pi/`, `rlm/`), ignored by git
 

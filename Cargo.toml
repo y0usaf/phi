@@ -63,8 +63,6 @@ phi-runtime = { path = "crates/phi-runtime" }
 phi-tui = { path = "crates/phi-tui" }
 phi-lua = { path = "crates/phi-lua" }
 phi-harness = { path = "crates/phi-harness" }
-phi-protocol = { path = "crates/phi-protocol" }
-phi-server = { path = "crates/phi-server" }
 
 [profile.dev]
 debug = 0

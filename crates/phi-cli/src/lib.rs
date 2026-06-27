@@ -1,17 +1,5 @@
 pub use clap;
-use clap::{Parser, Subcommand};
-
-/// Optional subcommand. When `None`, the flat arg surface (prompt/context/
-/// flags) drives the default one-shot or TUI mode.
-#[derive(Debug, Clone, Subcommand)]
-pub enum Command {
-    /// Start the agent server (background daemon).
-    Serve,
-    /// Connect to a running server.
-    Connect,
-    /// Stop a running server.
-    Stop,
-}
+use clap::Parser;
 
 #[derive(Debug, Clone, Parser)]
 #[command(name = "phi", about = "Recursive Language Model (RLM) coding agent")]
@@ -19,11 +7,6 @@ pub struct Args {
     /// One-shot prompt; without it (on a TTY) the interactive TUI starts.
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     pub prompt: Vec<String>,
-
-    /// Optional subcommand (`serve`, `connect`, `stop`). When absent, the flat
-    /// arg surface drives the default one-shot/TUI/mux mode.
-    #[command(subcommand)]
-    pub command: Option<Command>,
 
     /// Long context handed to the REPL: a file path, or '-' for stdin.
     /// Without it, the prompt itself becomes the context.

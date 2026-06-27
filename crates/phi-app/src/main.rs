@@ -21,10 +21,8 @@ use anyhow::{Context as _, Result, bail};
 use phi_ai::{
     AuthStorage, LoginMethod, OAuthProviderId, PrintCallbacks, Registry,
 };
-use phi_cli::{Args, Command};
+use phi_cli::Args;
 use phi_mux as mux;
-use phi_protocol as protocol;
-use phi_server as server;
 use phi_session::config;
 use phi_session_tui::{session_builder, tui};
 use tokio_util::sync::CancellationToken;
@@ -33,16 +31,6 @@ use tokio_util::sync::CancellationToken;
 async fn main() -> Result<()> {
     let args = Args::parse();
     let storage = Arc::new(AuthStorage::new(auth_path()?));
-
-    // Dispatch subcommands (serve / connect / stop) before the legacy flat-arg
-    // surface, mirroring ref/jcode's `cli::dispatch::run_main`.
-    if let Some(command) = &args.command {
-        match command {
-            Command::Serve => return run_serve().await,
-            Command::Connect => return run_connect().await,
-            Command::Stop => return run_stop().await,
-        }
-    }
 
     if let Some(provider) = &args.logout {
         let provider = parse_oauth_provider(provider)?;
@@ -132,92 +120,6 @@ async fn run(args: Args, storage: Arc<AuthStorage>, registry: Arc<Registry>) -> 
     }
 
     oneshot::run(args, storage, registry, cwd).await
-}
-
-/// Start the agent server daemon. Mirrors ref/jcode's `Command::Serve`.
-async fn run_serve() -> Result<()> {
-    let srv = server::Server::new();
-    srv.run().await
-}
-
-/// Connect to a running server as a simple line-mode client. Mirrors
-/// ref/jcode's `tui_launch::run_client`.
-async fn run_connect() -> Result<()> {
-    use std::io::{self, Write as _};
-
-    let mut client = server::Client::connect().await?;
-
-    if !client.ping().await? {
-        bail!("Failed to ping server");
-    }
-
-    println!("Connected to phi server");
-    println!("Type your message, or 'quit' to exit.
-");
-
-    loop {
-        print!("> ");
-        io::stdout().flush()?;
-
-        let mut input = String::new();
-        io::stdin().read_line(&mut input)?;
-        let input = input.trim();
-        if input.is_empty() {
-            continue;
-        }
-        if input == "quit" || input == "exit" {
-            break;
-        }
-
-        match client.send_message(input).await {
-            Ok(msg_id) => loop {
-                match client.read_event().await {
-                    Ok(event) => {
-                        use protocol::ServerEvent;
-                        match event {
-                            ServerEvent::TextDelta { text } => {
-                                print!("{text}");
-                                let _ = io::stdout().flush();
-                            }
-                            ServerEvent::Done { id } if id == msg_id => {
-                                break;
-                            }
-                            ServerEvent::Error { id, message, .. } if id == msg_id => {
-                                eprintln!("
-Error: {message}");
-                                break;
-                            }
-                            _ => {}
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("
-Event error: {e}");
-                        break;
-                    }
-                }
-            },
-            Err(e) => {
-                eprintln!("Error: {e}");
-            }
-        }
-
-        println!();
-    }
-
-    Ok(())
-}
-
-/// Stop a running server by connecting and sending a Shutdown request.
-async fn run_stop() -> Result<()> {
-    if !server::Server::is_running().await {
-        println!("No server running on {}", protocol::socket_path().display());
-        return Ok(());
-    }
-    let mut client = server::Client::connect().await?;
-    client.shutdown().await?;
-    println!("Server shutdown requested");
-    Ok(())
 }
 
 fn auth_path() -> Result<std::path::PathBuf> {
