@@ -82,8 +82,11 @@ impl Ui {
                         }
                         return false;
                     }
-                    if self.running.is_some() {
+                    if self.running.is_some() && !self.queued.is_empty() {
+                        // A message is queued: simply unqueue it back to the
+                        // editor without interrupting the in-flight run.
                         self.restore_queued();
+                        return false;
                     }
                     self.cancel_run();
                     self.cancel_login();
