@@ -589,37 +589,30 @@ impl Ui {
 
     fn handle_root_text(&mut self, text: String) {
         self.flush_thinking();
-        // Commit the iteration's prose as durable cards, splitting on
-        // fences so each becomes one assistant card (apart from the
-        // explicit REPL/code cards). Prose preceding each executed
-        // block was already committed eagerly by `CodeExecStart`, which
-        // consumed it from `stream` to keep it ordered above the block;
-        // for a streamed message only the uncommitted tail left in
-        // `stream` may be flushed here. Re-splitting the full `text`
-        // would re-render those earlier segments a second time, leaving
-        // duplicated prose trailing each code block. When the model did
-        // not stream, `stream` is empty and `RootText` carries the only
-        // copy, so fall back to `text`.
+        // Commit the iteration's prose as a single assistant card. With
+        // native tool calls, the model's text stream is pure prose — code
+        // arrives via `CodeExecStart`/`CodeExecEnd` events, never as
+        // ```repl fences in the text. For a streamed message only the
+        // uncommitted tail in `stream` is flushed; when the model did not
+        // stream, `stream` is empty and `RootText` carries the only copy.
         let source = if self.streamed {
             std::mem::take(&mut self.stream)
         } else {
             text
         };
-        for segment in split_prose(&source) {
-            self.push_prose(segment);
-        }
+        self.push_prose(&source);
         self.stream.clear();
         self.streamed = false;
     }
 
     fn handle_code_exec_start(&mut self, depth: usize, code: String) {
         if depth == 0 {
-            // The fence just closed mid-stream: flush the prose before
-            // it and consume both from the live tail.
-            if let Some((prose, rest)) = split_at_first_block(&self.stream) {
-                let (prose, rest) = (prose.to_owned(), rest.to_owned());
+            // Flush any streamed prose above the code block. With tool
+            // calls, code never appears in the text stream, so the entire
+            // stream buffer is prose.
+            let prose = std::mem::take(&mut self.stream);
+            if !prose.is_empty() {
                 self.push_prose(&prose);
-                self.stream = rest;
             }
             self.status = "running code...".to_owned();
             self.live_tools.clear();

@@ -16,8 +16,7 @@ use phi_ai::{
 };
 use phi_rlm::{
     ContextPayload, ProviderLm, ReplResult, RestoredExchange, RestoredRepl, Rlm, RlmCompletion,
-    RlmEvent, RlmSession, StopCause, could_open_block, find_code_blocks, split_at_first_block,
-    split_prose,
+    RlmEvent, RlmSession, StopCause,
 };
 use phi_tui::crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers};
 use phi_tui::{
@@ -1179,10 +1178,13 @@ mod tests {
         assert!(live_plain.contains("print(1)"), "{live_plain}");
 
         // Persisted assistant message rendered after the run completes (run
-        // no longer active): also plain, no `repl`/`turn` label.
+        // no longer active): also plain, no `repl`/`turn` label. With native
+        // tool calls, the assistant text is pure prose; code is replayed
+        // separately via `push_repl_replay`.
         ui.running = None;
         ui.pending.clear();
-        ui.push_assistant_message("Here is code:\n\n```repl\nprint(1)\n```\n");
+        ui.push_assistant_message("Here is code that ran:");
+        ui.push_repl_replay("print(1)", "1\n", "", 0.005, &[], &[]);
         let replay_plain = pending_plain(&ui);
         assert!(!replay_plain.contains("turn"), "{replay_plain}");
         assert!(replay_plain.contains("print(1)"), "{replay_plain}");
@@ -1468,36 +1470,6 @@ match1
     }
 
     #[test]
-    fn stable_prefix_flushes_completed_paragraphs() {
-        // No completed blank line yet: nothing stable.
-        assert_eq!(stable_prefix("hello wor"), 0);
-        assert_eq!(stable_prefix("hello\n"), 0);
-        // A finished blank line marks the paragraph as stable.
-        assert_eq!(stable_prefix("para one\n\npara two"), 10);
-        // The trailing blank line itself must be complete.
-        let two = "a\n\nb\n\n";
-        assert_eq!(stable_prefix(two), two.len());
-    }
-
-    #[test]
-    fn stable_prefix_respects_fences_and_repl_blocks() {
-        // Blank lines inside an open fence are not boundaries.
-        assert_eq!(stable_prefix("```python\nx = 1\n\ny = 2\n"), 0);
-        let closed = "```python\nx = 1\n```\n\ntail";
-        assert_eq!(stable_prefix(closed), closed.len() - "tail".len());
-        // Never flush past the start of a complete ```repl block: it is
-        // consumed from the stream by CodeExecStart.
-        let with_block = "intro\n\n```repl\nprint(1)\n```\n\nafter";
-        assert_eq!(stable_prefix(with_block), "intro\n\n".len());
-        // The engine's regex matches mid-line fences, so blank lines inside
-        // a still-open block glued to prose are not boundaries either.
-        let mid_line = "para\n\nintro.```repl\nx = 1\n\ny = 2\n";
-        assert_eq!(stable_prefix(mid_line), "para\n\n".len());
-        // A trailing partial fence opening is held back too.
-        assert_eq!(stable_prefix("para\n\n```re"), "para\n\n".len());
-    }
-
-    #[test]
     fn streamed_paragraphs_commit_as_one_assistant_message_card() {
         let mut ui = test_ui(80, 24);
         ui.running = Some(CancellationToken::new());
@@ -1542,20 +1514,22 @@ match1
     #[test]
     fn streamed_prose_around_block_is_not_recommitted_by_root_text() {
         // Regression: prose before an executed block was committed once by
-        // `CodeExecStart` (to sit above the block) and a second time by
-        // `RootText` re-splitting the full message, leaving the earlier prose
-        // re-rendered after the code block.
+        // `CodeExecStart` and a second time by `RootText`, leaving earlier
+        // prose re-rendered after the code block. With tool calls, the
+        // stream is pure prose (no fences); CodeExecStart flushes the
+        // stream buffer as prose, then RootText flushes only the remaining
+        // tail (which is empty when streaming completed).
         let mut ui = test_ui(80, 24);
         ui.running = Some(CancellationToken::new());
         ui.handle_rlm_event(RlmEvent::IterationStart {
             depth: 0,
             iteration: 0,
         });
-        // The model streams: intro prose, a repl block, then trailing prose.
+        // The model streams: intro prose, then a code tool call fires.
         ui.handle_rlm_event(RlmEvent::RootDelta {
             depth: 0,
             iteration: 0,
-            delta: "intro line\n\n```repl\nprint(1)\n```".to_owned(),
+            delta: "intro line".to_owned(),
         });
         ui.handle_rlm_event(RlmEvent::CodeExecStart {
             depth: 0,
@@ -1577,7 +1551,7 @@ match1
         ui.handle_rlm_event(RlmEvent::RootText {
             depth: 0,
             iteration: 0,
-            text: "intro line\n\n```repl\nprint(1)\n```\n\ntrailing line".to_owned(),
+            text: "intro line\n\ntrailing line".to_owned(),
         });
 
         let intro_cards = ui
@@ -1725,40 +1699,6 @@ match1
         let expanded = ui.pending.join("\n");
         assert!(expanded.contains("line6"), "{expanded}");
         assert!(!expanded.contains("… (1 more lines)"), "{expanded}");
-    }
-
-    #[test]
-    fn first_block_start_guards_repl_fences() {
-        // Complete, unclosed, and partial fences all stop the prefix.
-        assert_eq!(first_block_start("a\n```repl\nx\n```\nb"), 2);
-        assert_eq!(first_block_start("a.```repl\nx = 1"), 2);
-        assert_eq!(first_block_start("text ```re"), 5);
-        // Ordinary fences and inline code are not held back.
-        let python = "```python\nx\n```\ndone";
-        assert_eq!(first_block_start(python), python.len());
-        let inline = "use `foo` here";
-        assert_eq!(first_block_start(inline), inline.len());
-        // A bare trailing ``` could still grow into ```repl: held back.
-        assert_eq!(first_block_start("done\n```"), "done\n".len());
-    }
-
-    #[test]
-    fn live_block_body_streams_open_and_closed_repl_blocks() {
-        assert_eq!(live_block_body("text ```re"), None);
-        assert_eq!(live_block_body("text ```repl"), None);
-        assert_eq!(live_block_body("text ```repl \t"), None);
-        assert_eq!(live_block_body("text ```python\nx = 1"), None);
-
-        assert_eq!(live_block_body("text ```repl\n"), Some(""));
-        assert_eq!(live_block_body("text ```repl\nprint(1)"), Some("print(1)"));
-        assert_eq!(
-            live_block_body("text ```repl\nprint(1)\n```\nafter"),
-            Some("print(1)")
-        );
-        assert_eq!(
-            live_block_body("text\n```repl \t\nanswer = 42\nmore"),
-            Some("answer = 42\nmore")
-        );
     }
 
     #[test]

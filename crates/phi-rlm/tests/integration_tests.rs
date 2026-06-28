@@ -126,12 +126,10 @@ impl LanguageModel for ScriptedLm {
 /// Parse a raw response string: extract ```repl fences as tool calls,
 /// strip the fences from the text, and determine the stop reason.
 fn parse_response(raw: &str) -> (String, Vec<ToolCall>, StopReason) {
-    let blocks = find_code_blocks(raw);
+    let (text, blocks) = extract_repl_fences(raw);
     if blocks.is_empty() {
         return (raw.to_owned(), Vec::new(), StopReason::Stop);
     }
-    // Strip fences from the text, keeping surrounding prose.
-    let text = split_prose(raw).join("");
     let tool_calls = blocks
         .iter()
         .enumerate()
@@ -142,6 +140,33 @@ fn parse_response(raw: &str) -> (String, Vec<ToolCall>, StopReason) {
         })
         .collect();
     (text, tool_calls, StopReason::ToolUse)
+}
+
+/// Local ```repl fence parser for the test harness. Returns (prose-without-
+/// fences, extracted code blocks). A simple state machine: it scans line by
+/// line, toggling in/out of a ```repl block; lines inside become the code
+/// body, lines outside become prose.
+fn extract_repl_fences(raw: &str) -> (String, Vec<String>) {
+    let mut prose = String::new();
+    let mut blocks = Vec::new();
+    let mut in_block = false;
+    let mut current = String::new();
+    for line in raw.split_inclusive('\n') {
+        let trimmed = line.trim_end_matches('\n').trim_end_matches('\r');
+        if !in_block && trimmed.starts_with("```repl") {
+            in_block = true;
+            current.clear();
+        } else if in_block && trimmed.starts_with("```") {
+            in_block = false;
+            blocks.push(current.trim().to_owned());
+            current.clear();
+        } else if in_block {
+            current.push_str(line);
+        } else {
+            prose.push_str(line);
+        }
+    }
+    (prose, blocks)
 }
 
 fn rlm(config: RlmConfig, root: Arc<ScriptedLm>, sub: Arc<ScriptedLm>) -> Rlm {

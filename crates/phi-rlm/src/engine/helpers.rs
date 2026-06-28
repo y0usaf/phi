@@ -12,8 +12,7 @@ use phi_ext::AppRuntime;
 use phi_ext::LifecycleEvent;
 
 use crate::llm_parse::{ExecutedBlock, format_iteration};
-use crate::lm_core::UsageBreakdown;
-use crate::lm_core::{ChatMessage, Role};
+use crate::lm_core::{ChatMessage, Role, ToolCall, UsageBreakdown};
 
 pub fn truncate_preview(text: &str, max: usize) -> String {
     if text.len() <= max {
@@ -86,18 +85,21 @@ pub struct RestoredExchange {
     pub response: String,
 }
 
-/// Append a restored execution as the same (assistant code, user output)
+/// Append a restored execution as the same (assistant tool call, tool result)
 /// message pair the model sees live.
 pub fn push_repl_turns(
     history: &mut Vec<ChatMessage>,
     repl: &RestoredRepl,
     max_output_chars: usize,
 ) {
-    history.push(ChatMessage {
-        role: Role::Assistant,
-        content: format!("```repl\n{}\n```", repl.code),
-        ..Default::default()
-    });
+    history.push(ChatMessage::assistant_with_tools(
+        String::new(),
+        vec![ToolCall {
+            id: String::new(),
+            name: "repl".to_owned(),
+            arguments: serde_json::json!({ "code": repl.code }),
+        }],
+    ));
     let block = ExecutedBlock {
         code: repl.code.clone(),
         result: ReplResult {
@@ -110,11 +112,7 @@ pub fn push_repl_turns(
         },
     };
     if let Some(outputs) = format_iteration(std::slice::from_ref(&block), max_output_chars) {
-        history.push(ChatMessage {
-            role: Role::User,
-            content: outputs,
-            ..Default::default()
-        });
+        history.push(ChatMessage::tool_result(String::new(), outputs));
     }
 }
 

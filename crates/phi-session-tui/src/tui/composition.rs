@@ -110,22 +110,13 @@ impl Ui {
                 }
             }
 
-            let visible = self.stream[..first_block_start(&self.stream)].trim();
+            // first_block_start always returns stream.len() now (no fences),
+            // so the entire stream is visible prose.
+            let visible = self.stream.trim();
             if !visible.is_empty() {
                 blocks.push(TranscriptBlock {
                     key: "live:stream-prose".to_owned(),
                     lines: self.assistant_card_lines(visible),
-                    finalized: false,
-                });
-            }
-
-            if let Some(block) = live_block_body(&self.stream) {
-                blocks.push(TranscriptBlock {
-                    key: "live:preview-repl".to_owned(),
-                    lines: render_repl_block(
-                        &self.repl_code_lines(0, block, self.code_limit()),
-                        None,
-                    ),
                     finalized: false,
                 });
             }

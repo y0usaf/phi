@@ -3,7 +3,7 @@
 //!
 //! Modules:
 //! - `lm_core`: message types + `LanguageModel` trait
-//! - `llm_parse`: code-block extraction and prose splitting
+//! - `llm_parse`: iteration formatting (REPL output → user message)
 //! - `provider`: concrete `ProviderLm` impl
 //! - `prompts`: system/user prompt rendering
 //! - `config`: config, limits, events, `EnvFactory`
@@ -29,7 +29,7 @@ pub(crate) mod session;
 // Flat re-exports for the public API.
 pub use config::{LimitKind, RlmCompletion, RlmConfig, RlmEvent, StopCause};
 pub use engine::{HarnessError, HarnessPhase, PhiHarness, RestoredExchange, RestoredRepl, Rlm};
-pub use llm_parse::{could_open_block, find_code_blocks, split_at_first_block, split_prose};
+
 pub use prompts::{DEFAULT_ANSWER_NUDGE, Skill, SystemPromptOptions, build_system_prompt};
 pub use provider::ProviderLm;
 pub use session::RlmSession;

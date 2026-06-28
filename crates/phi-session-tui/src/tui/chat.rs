@@ -459,16 +459,11 @@ impl Ui {
             self.push_preview(0, thinking, usize::MAX);
         }
 
-        let blocks = find_code_blocks(text);
-        let segments = split_prose(text);
-        for (i, segment) in segments.iter().enumerate() {
-            self.push_prose(segment);
-            if let Some(code) = blocks.get(i) {
-                self.begin_block();
-                self.push_repl_block(0, code, self.code_limit());
-                self.commit_block();
-            }
-        }
+        // With native tool calls, the assistant message text is pure prose.
+        // Code blocks are replayed separately via `push_repl_replay`, which
+        // is called by the session-replay path for each persisted REPL
+        // execution interleaved between assistant messages.
+        self.push_prose(text);
     }
 
     pub(super) fn push_repl_replay(

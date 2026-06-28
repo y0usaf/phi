@@ -67,68 +67,7 @@ pub(crate) fn split_assistant_display_text(text: &str) -> (Option<&str>, &str) {
     }
 }
 
-/// Byte offset of the first position in `text` that is, or could still grow
-/// into, a ```repl fence. The engine's block regex matches mid-line (the
-/// model sometimes glues ```repl to the end of a sentence), so this scans
-/// raw byte positions rather than line starts.
-pub(crate) fn first_block_start(text: &str) -> usize {
-    text.char_indices()
-        .filter(|&(_, c)| c == '`')
-        .map(|(i, _)| i)
-        .find(|&i| could_open_block(&text[i..]))
-        .unwrap_or(text.len())
-}
 
-/// Byte length of the prefix of `text` that is safe to flush into scrollback
-/// while streaming: it ends at a completed blank line, leaves no code fence
-/// open, and stops before anything that is or could become a ```repl block
-/// (which `CodeExecStart` will consume from the stream).
-#[cfg(test)]
-pub(crate) fn stable_prefix(text: &str) -> usize {
-    let limit = first_block_start(text);
-    let mut fence_open = false;
-    let mut boundary = 0;
-    let mut pos = 0;
-    for line in text.split_inclusive('\n') {
-        pos += line.len();
-        if pos > limit {
-            break;
-        }
-        if line.trim_start().starts_with("```") {
-            fence_open = !fence_open;
-        } else if !fence_open && line.ends_with('\n') && line.trim().is_empty() {
-            boundary = pos;
-        }
-    }
-    boundary
-}
-
-/// Body of the first live ```repl block once its header newline has landed.
-/// Partial headers still return `None`; a closing fence, if already present,
-/// is excluded so the body can be previewed before `CodeExecStart` arrives.
-pub(crate) fn live_block_body(text: &str) -> Option<&str> {
-    let start = first_block_start(text);
-    let tail = &text[start..];
-    let rest = tail.strip_prefix("```repl")?;
-    let mut header_len = "```repl".len();
-    let mut saw_newline = false;
-    for (i, c) in rest.char_indices() {
-        match c {
-            ' ' | '\t' => continue,
-            '\n' => {
-                header_len += i + 1;
-                saw_newline = true;
-                break;
-            }
-            _ => return None,
-        }
-    }
-    if !saw_newline {
-        return None;
-    }
-    let body = &tail[header_len..];
-    Some(body.split_once("\n```").map_or(body, |(body, _)| body))
-}
 
 /// Cap persisted tool results at roughly the replay preview budget. The full
 /// output already lives in the repl stdout payload; storing it twice only
