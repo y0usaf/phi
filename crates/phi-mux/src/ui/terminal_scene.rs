@@ -2,7 +2,8 @@
 
 use super::palette::ScenePalette;
 use super::scene::HardwareCursorPos;
-use super::terminal_view::for_each_terminal_screen_cell;
+use super::screen_snapshot::ScreenSnapshot;
+use super::terminal_view::for_each_snapshot_screen_cell;
 use crate::grid::cell_surface::{CellSurface, render_cell_scrollbar};
 use crate::grid::layout::CellRect;
 use crate::grid::selection::SelectionRange;
@@ -13,7 +14,7 @@ const SCROLLBAR_THUMB_GLYPH: &str = "┃";
 pub(super) fn render_terminal(
     surface: &mut CellSurface,
     rect: CellRect,
-    screen: Option<&vt100::Screen>,
+    screen: Option<&ScreenSnapshot>,
     selection: Option<SelectionRange>,
     scrollback_total: usize,
     palette: &ScenePalette,
@@ -41,7 +42,7 @@ pub(super) fn render_terminal(
         }
     };
 
-    for_each_terminal_screen_cell(
+    for_each_snapshot_screen_cell(
         screen,
         rect.rows.max(0) as u16,
         rect.cols.max(0) as u16,
@@ -72,7 +73,7 @@ pub(super) fn render_terminal(
 fn render_terminal_scrollback(
     surface: &mut CellSurface,
     rect: CellRect,
-    screen: &vt100::Screen,
+    screen: &ScreenSnapshot,
     scrollback_total: usize,
     palette: &ScenePalette,
 ) {
@@ -99,7 +100,10 @@ fn render_terminal_scrollback(
     );
 }
 
-fn hardware_cursor_for_screen(rect: CellRect, screen: &vt100::Screen) -> Option<HardwareCursorPos> {
+fn hardware_cursor_for_screen(
+    rect: CellRect,
+    screen: &ScreenSnapshot,
+) -> Option<HardwareCursorPos> {
     if screen.scrollback() != 0 || screen.hide_cursor() || rect.cols <= 0 || rect.rows <= 0 {
         return None;
     }
@@ -112,6 +116,7 @@ fn hardware_cursor_for_screen(rect: CellRect, screen: &vt100::Screen) -> Option<
 
 #[cfg(test)]
 mod tests {
+    use super::super::screen_snapshot::ScreenSnapshot;
     use super::*;
     use crate::grid::theme;
 
@@ -119,12 +124,13 @@ mod tests {
     fn terminal_blit_writes_screen_text_and_cursor() {
         let mut parser = vt100::Parser::new(4, 10, 0);
         parser.process(b"hi");
+        let snapshot = ScreenSnapshot::from_screen(parser.screen());
         let mut surface = CellSurface::new(12, 6, theme::TEXT, theme::TRANSPARENT);
         let rect = CellRect::new(1, 1, 10, 4);
         let cursor = render_terminal(
             &mut surface,
             rect,
-            Some(parser.screen()),
+            Some(&snapshot),
             None,
             0,
             &ScenePalette::default(),

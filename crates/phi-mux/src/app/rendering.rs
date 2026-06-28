@@ -50,24 +50,40 @@ impl MuxApp {
             .focused_session()
             .and_then(|s| s.handle.as_ref())
             .map(|h| h.parser.clone());
-        let mut parser_guard = focused_parser.as_ref().map(|p| driver::lock_parser(p));
-        let scrollback_total = parser_guard
-            .as_deref_mut()
-            .map(|p| {
-                let screen = p.screen_mut();
-                let offset = screen.scrollback();
-                screen.set_scrollback(usize::MAX);
-                let total = screen.scrollback();
-                screen.set_scrollback(offset);
-                total
-            })
-            .unwrap_or(0);
-        let screen = parser_guard.as_deref().map(|p| p.screen());
+
+        // Snapshot the vt100 screen under the lock, then release immediately
+        // so the session's ParserWriter never blocks during compositing.
+        // The snapshot copies only the visible cells (~61KB for 80x24), not
+        // the full scrollback buffer.
+        let snapshot = focused_parser.as_ref().map(|p| {
+            let mut guard = driver::lock_parser(p);
+            let screen = guard.screen();
+            let mut snap = ScreenSnapshot::from_screen(screen);
+            // Compute the total scrollback under the lock (the only time we
+            // touch the mutable offset), then restore it. Since we snapshot
+            // only the visible region, this is the only mutation needed.
+            let s = guard.screen_mut();
+            let offset = s.scrollback();
+            s.set_scrollback(usize::MAX);
+            let total = s.scrollback();
+            s.set_scrollback(offset);
+            snap.scrollback_total = total;
+            snap
+        });
+
+        // Use the cached scrollback total when available; update the cache
+        // when it changes so the scrollbar stays accurate without recomputing
+        // on every frame if the value hasn't changed.
+        let scrollback_total = snapshot.as_ref().map(|s| s.scrollback_total).unwrap_or(0);
+        if scrollback_total > self.cached_scrollback_total {
+            self.cached_scrollback_total = scrollback_total;
+        }
+        let scrollback_total = self.cached_scrollback_total.max(scrollback_total);
 
         // Alt-screen transition hook (Priority 4): entering/leaving the
         // alternate screen replaces the whole pane, so drop scroll history and
         // force a full repaint to avoid scrolling primary content into history.
-        let alt_active = screen.map(|s| s.alternate_screen()).unwrap_or(false);
+        let alt_active = snapshot.as_ref().is_some_and(|s| s.alternate_screen());
         if alt_active != self.alt_screen_active {
             self.alt_screen_active = alt_active;
             surface.invalidate();
@@ -79,7 +95,7 @@ impl MuxApp {
             &layout,
             &sidebar_rows,
             &viewport,
-            screen,
+            snapshot.as_ref(),
             selection,
             &chrome,
             &palette,
@@ -91,7 +107,6 @@ impl MuxApp {
             col: pos.col,
             row: pos.row,
         });
-        drop(parser_guard);
 
         if let Some(command_line) = &self.command_line {
             let start_col = command_line_start_col(&layout, i32::from(cols));

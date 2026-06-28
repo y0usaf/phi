@@ -1,6 +1,7 @@
 //! Visit visible vt100 screen cells with resolved colors (port of
 //! pi-harness `app::terminal_view`).
 
+use super::screen_snapshot::ScreenSnapshot;
 use crate::grid::color::Color;
 use crate::grid::selection::{SelectionRange, selection_span};
 use crate::grid::theme::screen_cell_colors;
@@ -17,9 +18,12 @@ pub struct TerminalCellView<'a> {
     pub underline: bool,
 }
 
+/// Visit visible cells of a [`ScreenSnapshot`] with resolved colors.
+/// This replaces the previous `for_each_terminal_screen_cell` (`&vt100::Screen`)
+/// path; rendering now always goes through the lock-free snapshot.
 #[allow(clippy::too_many_arguments)]
-pub fn for_each_terminal_screen_cell<F>(
-    screen: &vt100::Screen,
+pub fn for_each_snapshot_screen_cell<F>(
+    screen: &ScreenSnapshot,
     rows: u16,
     cols: u16,
     selection: Option<SelectionRange>,
@@ -69,15 +73,16 @@ pub fn for_each_terminal_screen_cell<F>(
                 ansi_palette,
             );
 
+            let text = if cell.contents().is_empty() {
+                " "
+            } else {
+                cell.contents()
+            };
             visit(TerminalCellView {
                 row,
                 col,
                 span,
-                text: if cell.contents().is_empty() {
-                    " "
-                } else {
-                    cell.contents()
-                },
+                text,
                 fg,
                 bg,
                 bold: cell.bold(),

@@ -7,6 +7,7 @@
 pub mod overlays;
 pub mod palette;
 pub mod scene;
+pub mod screen_snapshot;
 pub mod sidebar;
 pub mod statusbar;
 pub mod terminal_scene;

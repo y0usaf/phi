@@ -2,6 +2,7 @@
 //! terminal blit, and the bottom statusline.
 
 use super::palette::ScenePalette;
+use super::screen_snapshot::ScreenSnapshot;
 use super::sidebar::{
     SIDEBAR_ANIMATION_FRAME_MS, SidebarRow, SidebarRowKind, SidebarStatusKind, SidebarViewportItem,
     sidebar_status_glyph,
@@ -64,7 +65,7 @@ pub fn render_scene(
     layout: &CellLayout,
     sidebar_rows: &[SidebarRow],
     sidebar_viewport: &[SidebarViewportItem],
-    screen: Option<&vt100::Screen>,
+    screen: Option<&ScreenSnapshot>,
     selection: Option<SelectionRange>,
     chrome: &Chrome,
     palette: &ScenePalette,

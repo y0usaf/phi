@@ -104,6 +104,11 @@ pub struct Terminal<W: Write> {
     cursor_col: usize,
     /// Whether the cursor was left visible by the previous render.
     cursor_shown: bool,
+    /// When true, output goes to an embedded vt100 parser (via ParserWriter),
+    /// not a real terminal. In this mode the line-diff and SYNC markers are
+    /// pure waste: the mux re-derives everything from vt100 cells and emits
+    /// its own outer SYNC wrapper, and the vt100 parser ignores ?2026.
+    embedded: bool,
 }
 
 impl<W: Write> Terminal<W> {
@@ -116,7 +121,15 @@ impl<W: Write> Terminal<W> {
             cursor_row: 0,
             cursor_col: 0,
             cursor_shown: false,
+            embedded: false,
         }
+    }
+
+    /// Mark this terminal as embedded in a mux's vt100 parser. In embedded
+    /// mode, the line-diff and synchronized-update markers are skipped:
+    /// the mux composites from vt100 cells and emits its own SYNC wrapper.
+    pub fn set_embedded(&mut self, embedded: bool) {
+        self.embedded = embedded;
     }
 
     pub fn width(&self) -> usize {
@@ -194,7 +207,10 @@ impl<W: Write> Terminal<W> {
 
         // Scrollback pushes the live region down, so it forces a repaint from
         // the origin; otherwise diff against the previous frame.
-        let full = !scrollback.is_empty() || self.prev.is_empty();
+        // In embedded mode, skip the early-return: the mux composites from
+        // vt100 cells, so this diff is pure waste. The vt100 parser handles
+        // cell-level diffing.
+        let full = !scrollback.is_empty() || self.prev.is_empty() || self.embedded;
         if !full
             && rows == self.prev
             && target_row == self.cursor_row
@@ -205,7 +221,11 @@ impl<W: Write> Terminal<W> {
         }
 
         let mut buf = String::new();
-        buf.push_str(SYNC_BEGIN);
+        // Skip SYNC markers in embedded mode: the vt100 parser ignores ?2026
+        // and the mux emits its own outer SYNC wrapper.
+        if !self.embedded {
+            buf.push_str(SYNC_BEGIN);
+        }
         buf.push_str(HIDE_CURSOR);
         let mut cur = self.cursor_row;
 
@@ -273,7 +293,9 @@ impl<W: Write> Terminal<W> {
         if cursor.is_some() {
             buf.push_str(SHOW_CURSOR);
         }
-        buf.push_str(SYNC_END);
+        if !self.embedded {
+            buf.push_str(SYNC_END);
+        }
 
         self.prev = rows;
         self.cursor_row = target_row;

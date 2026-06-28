@@ -1,5 +1,11 @@
 use super::*;
 
+/// Minimum interval between non-user-initiated renders (background redraw
+/// nudges, status updates, spinner ticks). Mirrors pi's
+/// `MIN_RENDER_INTERVAL_MS = 16` — bursts of background events collapse into
+/// one draw per 16ms, preventing double rendering from desynchronized clocks.
+const MIN_RENDER_INTERVAL: Duration = Duration::from_millis(16);
+
 impl MuxApp {
     pub(crate) async fn main_loop(
         &mut self,
@@ -17,6 +23,8 @@ impl MuxApp {
 
         self.ensure_all_sessions().await;
         self.draw();
+        let mut last_render_at = tokio::time::Instant::now();
+        let mut pending_render = false;
 
         while !self.quit {
             let mut dirty = false;
@@ -123,7 +131,63 @@ impl MuxApp {
                 if focus_changed {
                     self.ensure_focused_session().await;
                 }
+                // User interactions (focus_changed) draw immediately for
+                // instant feedback; background events (redraws, status,
+                // spinner ticks) set pending_render so bursts collapse into
+                // one draw at the next MIN_RENDER_INTERVAL boundary,
+                // mirroring pi's requestRender / scheduleRender debounce.
+                if focus_changed {
+                    self.draw();
+                    last_render_at = tokio::time::Instant::now();
+                    pending_render = false;
+                } else {
+                    pending_render = true;
+                }
+            }
+
+            // If a background render is pending and the minimum interval has
+            // elapsed, draw now. Otherwise the next iteration of the select!
+            // includes a render-timer arm (below) that fires when ready.
+            if pending_render && last_render_at.elapsed() >= MIN_RENDER_INTERVAL {
                 self.draw();
+                last_render_at = tokio::time::Instant::now();
+                pending_render = false;
+            }
+
+            // Render-timer arm: when a background render is pending but the
+            // minimum interval hasn't elapsed, wait for the timer while still
+            // processing events. This is the pi `scheduleRender` pattern —
+            // events are never blocked by the debounce.
+            if pending_render {
+                let remaining = MIN_RENDER_INTERVAL.saturating_sub(last_render_at.elapsed());
+                tokio::select! {
+                    biased;
+                    _ = tokio::time::sleep(remaining) => {
+                        if pending_render {
+                            self.draw();
+                            last_render_at = tokio::time::Instant::now();
+                            pending_render = false;
+                        }
+                    }
+                    event = events.next() => {
+                        match event {
+                            Some(Ok(event)) => {
+                                self.handle_event(event).await;
+                                self.draw();
+                                last_render_at = tokio::time::Instant::now();
+                                pending_render = false;
+                            }
+                            Some(Err(_)) | None => break,
+                        }
+                    }
+                    Some(()) = redraw_rx.recv() => {
+                        pending_render = true;
+                    }
+                    Some((key, status)) = status_rx.recv() => {
+                        self.apply_status(key, status);
+                        pending_render = true;
+                    }
+                }
             }
         }
         Ok(())
@@ -338,6 +402,7 @@ impl MuxApp {
                 .screen_mut()
                 .set_scrollback(0);
         }
+        self.cached_scrollback_total = 0;
         // The new focused session's content is unrelated to the previous
         // frame's row hashes; drop them so scroll detection can't mistake the
         // session switch for a scroll, and force a clean repaint.

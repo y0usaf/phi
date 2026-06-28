@@ -20,6 +20,7 @@ use super::ui::overlays::model::{ModelOverlayOutcome, ModelOverlayState, render_
 use super::ui::overlays::usage::{UsageOverlayState, render_usage_overlay};
 use super::ui::palette::ScenePalette;
 use super::ui::scene::{Chrome, MuxMode, StatusNoteKind, render_scene, statusline_status};
+use super::ui::screen_snapshot::ScreenSnapshot;
 use super::ui::sidebar::{
     SidebarRowKind, build_sidebar_rows, ensure_sidebar_selection_visible, project_sidebar_title,
     scroll_sidebar_by_rows_value, selected_sidebar_selection_span, session_sidebar_title,
@@ -41,7 +42,7 @@ use phi_session::config::MuxConfig;
 use phi_session_tui::session_builder::SharedResources;
 use phi_session_tui::tui::{self, HostModalKind, HostModalRequest};
 
-const ANIMATION_TICK: Duration = Duration::from_millis(60);
+const ANIMATION_TICK: Duration = Duration::from_millis(16);
 const NOTE_TTL: Duration = Duration::from_secs(4);
 const WHEEL_LINES: i32 = 3;
 const ARCHIVE_MAX_AGE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
@@ -128,6 +129,7 @@ pub async fn run(shared: SharedResources, mux_config: MuxConfig, cwd: PathBuf) -
         surface: CellSurface::default(),
         palette,
         alt_screen_active: false,
+        cached_scrollback_total: 0,
         sidebar_scroll: 0,
         note: None,
         channels: MuxChannels {
@@ -187,6 +189,11 @@ struct MuxApp {
     /// Whether the focused session's screen was in the alternate screen last
     /// frame; a transition drops scroll history and forces a full repaint.
     alt_screen_active: bool,
+    /// Cached total scrollback lines for the focused session. Recomputed only
+    /// when a scrollback-affecting event occurs (session switch, new content),
+    /// not every frame — avoiding the set_scrollback(MAX)/restore dance that
+    /// mutates shared vt100 state on every render.
+    cached_scrollback_total: usize,
     sidebar_scroll: usize,
     note: Option<(String, StatusNoteKind, Instant)>,
     channels: MuxChannels,

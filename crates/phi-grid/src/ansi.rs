@@ -401,7 +401,14 @@ impl AnsiRenderer {
         // Cache the terminal pane's row hashes so the next frame can detect a
         // uniform shift. Scoped to the pane (not the whole surface): the
         // sidebar/statusbar don't shift with terminal scrolls.
-        self.prev_row_hashes = Some(pane_row_hashes(surface, term_pane));
+        //
+        // Skip when the pane doesn't span the full width (sidebar present):
+        // scroll detection is bypassed in that case, so the cached hashes would
+        // never be consulted — the computation is pure dead work.
+        let pane_full_width = term_pane.col == 0 && term_pane.col + term_pane.cols == surface.cols;
+        if pane_full_width {
+            self.prev_row_hashes = Some(pane_row_hashes(surface, term_pane));
+        }
 
         out.flush()
     }

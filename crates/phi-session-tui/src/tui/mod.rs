@@ -254,8 +254,10 @@ pub async fn run(setup: TuiSetup, mut io: SessionIo) -> Result<()> {
         .writer
         .take()
         .unwrap_or_else(|| Box::new(std::io::stdout()));
+    let mut term = Terminal::new(writer, width, height);
+    term.set_embedded(io.embedded);
     let mut ui = Ui::new(
-        Terminal::new(writer, width, height),
+        term,
         ui_setup,
         login_tx,
         io.cwd.clone(),
@@ -284,11 +286,11 @@ pub async fn run(setup: TuiSetup, mut io: SessionIo) -> Result<()> {
         Some(rx) => InputSource::Forwarded(rx),
         None => InputSource::Tty(EventStream::new()),
     };
-    let mut ticker = tokio::time::interval(Duration::from_millis(40));
-    // Coalesce redraws to the same 40ms cadence as the spinner tick: bursts
-    // of stream deltas collapse into one frame instead of repainting per
-    // SSE chunk. Terminals bottleneck at ~25fps anyway.
-    const FRAME: Duration = Duration::from_millis(40);
+    let mut ticker = tokio::time::interval(Duration::from_millis(16));
+    // Coalesce redraws to a 16ms cadence (matching the mux's ANIMATION_TICK
+    // and pi's MIN_RENDER_INTERVAL_MS): bursts of stream deltas collapse into
+    // one frame instead of repainting per SSE chunk.
+    const FRAME: Duration = Duration::from_millis(16);
     let mut last_draw = tokio::time::Instant::now();
     let mut dirty = false;
 
