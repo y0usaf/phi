@@ -60,7 +60,7 @@ use events::LoginState;
 use events::python_quote;
 
 pub use palette::InlinePalette;
-pub(crate) use render::{OpenSubcallRow, OpenToolRow, SubagentBox, TranscriptBlock};
+pub(crate) use render::{OpenSubcallRow, OpenToolRow, TranscriptBlock};
 pub(crate) use tool_display::{format_model_pricing, format_tokens, tool_identity, tool_title};
 
 use popup::*;
@@ -340,7 +340,6 @@ pub async fn run(setup: TuiSetup, mut io: SessionIo) -> Result<()> {
             _ = ticker.tick(), if ui.running.is_some() => {
                 ui.spinner.tick();
                 ui.refresh_open_activity_rows();
-                ui.refresh_subagent_box_spinners();
                 for msg in ui.runtime.drain_notifications() {
                     ui.pending.push(msg);
                 }
@@ -476,8 +475,6 @@ struct Ui {
     /// Worktree file search backing `@` completion.
     pub(super) files: FileSearcher,
     pub(super) cwd: std::path::PathBuf,
-    /// First visible logical editor line (viewport scrolling).
-    pub(super) editor_scroll: usize,
     /// Set by ctrl+g; the run loop opens $VISUAL/$EDITOR on the buffer.
     pub(super) external_edit: bool,
     /// ctrl+o: show full code/output instead of previews across the
@@ -523,15 +520,6 @@ struct Ui {
     pub(super) live_subcalls: Vec<session::SubcallRecord>,
     /// Live subcall status rows inside the buffered block.
     pub(super) open_subcall_rows: std::collections::VecDeque<OpenSubcallRow>,
-    /// Active subagent collapsible boxes, keyed by the subcall's depth.
-    /// While a subagent runs, its child events (tool calls, REPL blocks,
-    /// nested subcalls) are collected in the box's `action_rows` in the
-    /// background. By default the box is collapsed — only the header line
-    /// is shown — and the user can expand it with ctrl+o to see all
-    /// accumulated action rows. On `SubcallEnd` the box collapses to a
-    /// compact result card.
-    pub(super) active_subagent_boxes: std::collections::HashMap<usize, SubagentBox>,
-
     /// Prose flushed while a block is active; committed after the block so
     /// scrollback stays chronological.
     pub(super) after_block: Vec<String>,
@@ -622,7 +610,6 @@ impl Ui {
             last_esc: None,
             files: FileSearcher::new(cwd.clone()),
             cwd,
-            editor_scroll: 0,
             external_edit: false,
             expand_tools: false,
             expand_thinking: false,
@@ -640,7 +627,6 @@ impl Ui {
             open_tool_rows: std::collections::HashMap::new(),
             live_subcalls: Vec::new(),
             open_subcall_rows: std::collections::VecDeque::new(),
-            active_subagent_boxes: std::collections::HashMap::new(),
             after_block: Vec::new(),
             last_activity: false,
             stream: String::new(),

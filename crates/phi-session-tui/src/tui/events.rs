@@ -627,25 +627,10 @@ impl Ui {
             self.open_tool_args.clear();
             self.open_tool_rows.clear();
             self.open_subcall_rows.clear();
-            self.active_subagent_boxes.clear();
             self.begin_block();
             self.live_code = Some(code.clone());
         }
-        if depth >= 1 && self.has_subagent_box(depth) {
-            // Child REPL block inside a top-level subagent: route
-            // the code preview into the box as action rows.
-            for row in self.repl_code_lines(depth, &code, self.code_limit()) {
-                self.add_subagent_action(depth, row);
-            }
-        } else if depth >= 1 && self.has_subagent_box(depth - 1) {
-            // Child REPL block inside a nested subagent: route into
-            // the parent box.
-            for row in self.repl_code_lines(depth, &code, self.code_limit()) {
-                self.add_subagent_action(depth - 1, row);
-            }
-        } else {
-            self.push_repl_block(depth, &code, self.code_limit());
-        }
+        self.push_repl_block(depth, &code, self.code_limit());
     }
 
     fn handle_code_exec_end(
@@ -664,7 +649,6 @@ impl Ui {
             self.open_tool_args.clear();
             self.open_tool_rows.clear();
             self.open_subcall_rows.clear();
-            self.active_subagent_boxes.clear();
             if let Some(code) = self.live_code.take() {
                 let duration_secs = duration.as_secs_f64();
                 let tools = std::mem::take(&mut self.live_tools);
@@ -693,30 +677,8 @@ impl Ui {
         } else {
             self.last_activity = true;
             let filtered = strip_tool_echoes(&stdout, &self.live_tools, depth);
-            if depth >= 1 && self.has_subagent_box(depth) {
-                // Child REPL output inside a top-level subagent: route into the box.
-                let rows = self.preview_rows_with_lang(depth, &filtered, self.output_limit(), None);
-                for row in rows {
-                    self.add_subagent_action(depth, row);
-                }
-                let rows = self.preview_rows_with_lang(depth, &stderr, self.output_limit(), None);
-                for row in rows {
-                    self.add_subagent_action(depth, row);
-                }
-            } else if depth >= 1 && self.has_subagent_box(depth - 1) {
-                // Child REPL output inside a nested subagent: route into parent box.
-                let rows = self.preview_rows_with_lang(depth, &filtered, self.output_limit(), None);
-                for row in rows {
-                    self.add_subagent_action(depth - 1, row);
-                }
-                let rows = self.preview_rows_with_lang(depth, &stderr, self.output_limit(), None);
-                for row in rows {
-                    self.add_subagent_action(depth - 1, row);
-                }
-            } else {
-                self.push_preview(depth, &filtered, self.output_limit());
-                self.push_preview(depth, &stderr, self.output_limit());
-            }
+            self.push_preview(depth, &filtered, self.output_limit());
+            self.push_preview(depth, &stderr, self.output_limit());
         }
     }
 
@@ -732,34 +694,7 @@ impl Ui {
             self.open_tool_args.insert(key, args.clone());
         }
         let label = tool_title(&name, &args, &self.palette);
-        if self.has_subagent_box(depth) {
-            // Tool inside a top-level subagent: route the status row
-            // into the box's action window.
-            let spinner = self.spinner.frame();
-            self.add_subagent_action(depth, running_status_text(&label, spinner));
-            self.open_tool_rows.insert(
-                key,
-                OpenToolRow {
-                    depth: depth + 1,
-                    label,
-                    start: 0,
-                    len: 0,
-                },
-            );
-        } else if self.has_subagent_box(depth - 1) {
-            // Tool inside a nested subagent: route into the parent box.
-            let spinner = self.spinner.frame();
-            self.add_subagent_action(depth - 1, running_status_text(&label, spinner));
-            self.open_tool_rows.insert(
-                key,
-                OpenToolRow {
-                    depth: depth + 1,
-                    label,
-                    start: 0,
-                    len: 0,
-                },
-            );
-        } else if let Some((start, len)) =
+        if let Some((start, len)) =
             self.push_status(depth + 1, running_status_text(&label, self.spinner.frame()))
         {
             self.open_tool_rows.insert(
@@ -813,21 +748,7 @@ impl Ui {
             lang,
             error.is_some(),
         );
-        if self.has_subagent_box(depth) {
-            // Tool result inside a top-level subagent: add as action rows.
-            for row in &rows {
-                self.add_subagent_action(depth, row.clone());
-            }
-            self.open_tool_rows.remove(&key);
-            self.last_activity = true;
-        } else if self.has_subagent_box(depth - 1) {
-            // Tool result inside a nested subagent: route into parent box.
-            for row in &rows {
-                self.add_subagent_action(depth - 1, row.clone());
-            }
-            self.open_tool_rows.remove(&key);
-            self.last_activity = true;
-        } else if let Some(row) = self.open_tool_rows.remove(&key) {
+        if let Some(row) = self.open_tool_rows.remove(&key) {
             self.replace_block_rows(row.start, row.len, rows);
             self.last_activity = true;
         } else {
@@ -843,23 +764,7 @@ impl Ui {
 
     fn handle_subcall_start(&mut self, depth: usize, model: String, prompt_preview: String) {
         let label = subcall_title(&model, &prompt_preview, &self.palette);
-        if self.live_code.is_some() && depth >= 1 && !self.has_subagent_box(depth - 1) {
-            // Top-level subagent inside the root REPL block: create a
-            // fixed-height box that collects the agent's actions.
-            self.start_subagent_box(depth, label.clone(), prompt_preview.clone());
-            self.open_subcall_rows.push_back(OpenSubcallRow {
-                depth,
-                prompt_preview: prompt_preview.clone(),
-                label,
-                start: 0,
-                len: 0,
-            });
-        } else if self.live_code.is_some() && depth >= 1 && self.has_subagent_box(depth - 1) {
-            // Nested subagent: route into the parent box as action
-            // rows instead of creating a separate box (avoids block
-            // position conflicts between parent and child boxes).
-            let spinner = self.spinner.frame();
-            self.add_subagent_action(depth - 1, running_status_text(&label, spinner));
+        if self.live_code.is_some() && depth >= 1 {
             self.open_subcall_rows.push_back(OpenSubcallRow {
                 depth,
                 prompt_preview: prompt_preview.clone(),
@@ -920,48 +825,19 @@ impl Ui {
 
         // If a subagent box is active at this depth, finalize it:
         // collapse the fixed box to a compact header + result card.
-        if self.has_subagent_box(depth) {
-            self.finalize_subagent_box(
-                depth,
-                &label,
-                content,
-                self.output_limit(),
-                error.is_some(),
-            );
-        } else if self.has_subagent_box(depth - 1) {
-            // Nested subagent: route the result card into the parent
-            // box as action rows.
-            let rows = self.subcall_result_rows(
-                depth,
-                &label,
-                content,
-                self.output_limit(),
-                error.is_some(),
-            );
-            for row in rows {
-                self.add_subagent_action(depth - 1, row);
-            }
+        let rows =
+            self.subcall_result_rows(depth, &label, content, self.output_limit(), error.is_some());
+        if let Some(row) = open {
+            self.replace_block_rows(row.start, row.len, rows);
             self.last_activity = true;
         } else {
-            let rows = self.subcall_result_rows(
-                depth,
-                &label,
-                content,
-                self.output_limit(),
-                error.is_some(),
-            );
-            if let Some(row) = open {
-                self.replace_block_rows(row.start, row.len, rows);
-                self.last_activity = true;
-            } else {
-                if depth == 0 && !self.last_activity && !self.block_active {
-                    self.pending.push(String::new());
-                }
-                for row in rows {
-                    self.push_row(row);
-                }
-                self.last_activity = true;
+            if depth == 0 && !self.last_activity && !self.block_active {
+                self.pending.push(String::new());
             }
+            for row in rows {
+                self.push_row(row);
+            }
+            self.last_activity = true;
         }
     }
 
@@ -982,19 +858,7 @@ impl Ui {
             if iterations == 1 { "" } else { "s" },
             duration.as_secs_f64()
         );
-        if self.has_subagent_box(depth) {
-            let rows = render_flat(&format!("{DIM}{bar_text}{RESET}"), depth, &[]);
-            for row in rows {
-                self.add_subagent_action(depth, row);
-            }
-        } else if self.has_subagent_box(depth - 1) {
-            let rows = render_flat(&format!("{DIM}{bar_text}{RESET}"), depth, &[]);
-            for row in rows {
-                self.add_subagent_action(depth - 1, row);
-            }
-        } else {
-            self.push_bar(depth, bar_text);
-        }
+        self.push_bar(depth, bar_text);
     }
 
     pub(super) fn handle_done(&mut self, done: Done, cmd_tx: &mpsc::UnboundedSender<Cmd>) {

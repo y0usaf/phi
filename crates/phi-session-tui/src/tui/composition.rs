@@ -277,24 +277,12 @@ impl Ui {
             lines.push(format!("{muted_fg}{hint}{RESET}", muted_fg = &p.muted_fg));
         } else {
             let (editor_lines, (row, col)) = self.editor.render();
-            let max_visible = (self.term.height() * 3 / 10).max(5);
-            if row < self.editor_scroll {
-                self.editor_scroll = row;
-            } else if row + 1 > self.editor_scroll + max_visible {
-                self.editor_scroll = row + 1 - max_visible;
-            }
-            self.editor_scroll = self
-                .editor_scroll
-                .min(editor_lines.len().saturating_sub(max_visible));
-            let end = (self.editor_scroll + max_visible).min(editor_lines.len());
-
             // Editor prompt: chevron on row 0, 2-space indent on continuation.
             let editor_top = lines.len();
             let input_inner = width.saturating_sub(2).max(1);
             let mut input_cursor = None;
             let mut rendered_rows_before_cursor = 0usize;
-            for (i, line) in editor_lines[self.editor_scroll..end].iter().enumerate() {
-                let absolute_row = i + self.editor_scroll;
+            for (absolute_row, line) in editor_lines.iter().enumerate() {
                 let content = if absolute_row == 0 {
                     if line.is_empty() {
                         format!(
@@ -340,13 +328,6 @@ impl Ui {
                         lines.push(r);
                     }
                 }
-            }
-            if end < editor_lines.len() {
-                let below = editor_lines.len() - end;
-                lines.push(format!(
-                    "{muted_fg}  \u{2193} {below} more{RESET}",
-                    muted_fg = &p.muted_fg
-                ));
             }
             cursor = input_cursor;
 

@@ -181,10 +181,6 @@ impl Ui {
             let Some(row) = self.open_tool_rows.get(&id).cloned() else {
                 continue;
             };
-            // Skip tools managed by a subagent box (len == 0 sentinel).
-            if row.len == 0 {
-                continue;
-            }
             let new_len = self.replace_block_rows(
                 row.start,
                 row.len,
@@ -206,11 +202,6 @@ impl Ui {
             let Some(row) = self.open_subcall_rows.get(idx).cloned() else {
                 continue;
             };
-            // Skip subcalls managed by a subagent box (len == 0 sentinel);
-            // their spinner is refreshed by refresh_subagent_box_spinners.
-            if row.len == 0 {
-                continue;
-            }
             let new_len = self.replace_block_rows(
                 row.start,
                 row.len,
@@ -233,10 +224,6 @@ impl Ui {
             let Some(row) = self.open_tool_rows.remove(&id) else {
                 continue;
             };
-            // Skip tools managed by a subagent box (len == 0 sentinel).
-            if row.len == 0 {
-                continue;
-            }
             self.replace_block_rows(
                 row.start,
                 row.len,
@@ -247,21 +234,14 @@ impl Ui {
             );
         }
         while let Some(row) = self.open_subcall_rows.pop_back() {
-            // If this subcall had a subagent box, finalize it with a failed
-            // status instead of trying to replace the (non-existent) inline
-            // status row.
-            if self.has_subagent_box(row.depth) {
-                self.finalize_subagent_box(row.depth, &row.label, None, self.output_limit(), true);
-            } else {
-                self.replace_block_rows(
-                    row.start,
-                    row.len,
-                    self.status_rows(
-                        row.depth,
-                        &failed_status_text(&row.label, None, None, &self.palette),
-                    ),
-                );
-            }
+            self.replace_block_rows(
+                row.start,
+                row.len,
+                self.status_rows(
+                    row.depth,
+                    &failed_status_text(&row.label, None, None, &self.palette),
+                ),
+            );
         }
     }
 
@@ -280,7 +260,6 @@ impl Ui {
         self.block.clear();
         self.open_tool_rows.clear();
         self.open_subcall_rows.clear();
-        self.active_subagent_boxes.clear();
         self.block_active = true;
     }
 
@@ -299,7 +278,6 @@ impl Ui {
         self.pending.extend(render_repl_block(&body, turn));
         self.open_tool_rows.clear();
         self.open_subcall_rows.clear();
-        self.active_subagent_boxes.clear();
         let after = std::mem::take(&mut self.after_block);
         self.pending.extend(after);
     }
@@ -420,184 +398,6 @@ impl Ui {
             .map(|text| self.preview_rows_with_lang(depth, text, max, None))
             .unwrap_or_default();
         render_flat(label, depth, &body)
-    }
-
-    // ── Subagent collapsible box ───────────────────────────────────────────
-
-    /// Render the subagent box in collapsed or expanded mode.
-    ///
-    /// When collapsed (`box_data.expanded == false`): only the header line is
-    /// rendered, with a dim `(ctrl+o to expand)` hint. No action rows.
-    ///
-    /// When expanded (`box_data.expanded == true`): the header (without hint)
-    /// plus ALL action rows, each prefixed with `result_prefix(depth)`.
-    fn subagent_box_rows(
-        &self,
-        box_data: &SubagentBox,
-        running: bool,
-        spinner: &str,
-    ) -> Vec<String> {
-        let depth = box_data.depth;
-
-        if !box_data.expanded {
-            // Collapsed: just the header line with the expand hint.
-            let header = if running {
-                format!(
-                    "{}{} {DIM}(ctrl+o to expand){RESET}",
-                    indent(depth),
-                    running_status_text(&box_data.label, spinner),
-                )
-            } else {
-                format!(
-                    "{}{} {DIM}(ctrl+o to expand){RESET}",
-                    indent(depth),
-                    box_data.label,
-                )
-            };
-            return vec![header];
-        }
-
-        // Expanded: header (no hint) + all action rows.
-        let header = if running {
-            format!(
-                "{}{}",
-                indent(depth),
-                running_status_text(&box_data.label, spinner),
-            )
-        } else {
-            format!("{}{}", indent(depth), box_data.label)
-        };
-
-        let mut out = vec![header];
-
-        let prefix = result_prefix(depth);
-        let blank = indent(depth);
-
-        for row in &box_data.action_rows {
-            if row.is_empty() {
-                out.push(blank.clone());
-            } else {
-                out.push(format!("{prefix}{row}"));
-            }
-        }
-
-        out
-    }
-
-    /// Start a subagent box: push the collapsed header (with expand hint)
-    /// into the block and register the box state.
-    pub(super) fn start_subagent_box(
-        &mut self,
-        depth: usize,
-        label: String,
-        _prompt_preview: String,
-    ) {
-        // The block is always active when a subagent spawns (live_code.is_some()
-        // guarantees a depth-0 REPL block is open), so the header goes straight
-        // into self.block via push_row. The initial render is the 1-line
-        // collapsed header with the (ctrl+o to expand) hint.
-        let header = format!(
-            "{}{} {DIM}(ctrl+o to expand){RESET}",
-            indent(depth),
-            running_status_text(&label, self.spinner.frame()),
-        );
-
-        let start = self.block.len();
-        let len = 1;
-        self.push_row(header);
-
-        self.active_subagent_boxes.insert(
-            depth,
-            SubagentBox {
-                depth,
-                label,
-                action_rows: Vec::new(),
-                expanded: false,
-                block_start: start,
-                block_len: len,
-            },
-        );
-        self.last_activity = true;
-    }
-
-    /// Add an action row to the active subagent box at `depth` (if one exists)
-    /// and re-render its visible window in the block.  Returns `true` if the
-    /// row was consumed by a box, `false` if no box is active at that depth.
-    pub(super) fn add_subagent_action(&mut self, depth: usize, row: String) -> bool {
-        // Push the action row and clone the box state in one scope, then
-        // release the borrow before calling other self methods.
-        let box_clone = {
-            let Some(box_data) = self.active_subagent_boxes.get_mut(&depth) else {
-                return false;
-            };
-            box_data.action_rows.push(row);
-            box_data.clone()
-        };
-
-        let spinner = self.spinner.frame().to_owned();
-        let new_rows = self.subagent_box_rows(&box_clone, true, &spinner);
-        let new_len = self.replace_block_rows(box_clone.block_start, box_clone.block_len, new_rows);
-        if let Some(b) = self.active_subagent_boxes.get_mut(&depth) {
-            b.block_len = new_len;
-        }
-        true
-    }
-
-    /// Whether a subagent box is currently active at the given depth.
-    pub(super) fn has_subagent_box(&self, depth: usize) -> bool {
-        self.active_subagent_boxes.contains_key(&depth)
-    }
-
-    /// Finalize the subagent box at `depth`: collapse it to a compact
-    /// result card. When not expanded, a dim `(ctrl+o to expand)` hint is
-    /// appended to the label. When expanded, the full result content is
-    /// shown without the hint. Removes the box from the active set.
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn finalize_subagent_box(
-        &mut self,
-        depth: usize,
-        label: &str,
-        content: Option<&str>,
-        max: usize,
-        failed: bool,
-    ) {
-        let Some(box_data) = self.active_subagent_boxes.remove(&depth) else {
-            return;
-        };
-
-        // Render the compact result card (same shape as a regular subcall
-        // result, at the box's nesting depth). When collapsed, append the
-        // expand hint to the label; when expanded, show the full content.
-        let display_label = if box_data.expanded {
-            label.to_owned()
-        } else {
-            format!("{label} {DIM}(ctrl+o to expand){RESET}")
-        };
-        let rows = self.subcall_result_rows(depth, &display_label, content, max, failed);
-        self.replace_block_rows(box_data.block_start, box_data.block_len, rows);
-        self.last_activity = true;
-    }
-
-    /// Refresh all active subagent boxes' spinner frames (called from the
-    /// ticker loop).
-    pub(super) fn refresh_subagent_box_spinners(&mut self) {
-        if self.active_subagent_boxes.is_empty() {
-            return;
-        }
-        let spinner = self.spinner.frame().to_owned();
-        // Collect depths first to avoid borrow issues.
-        let depths: Vec<usize> = self.active_subagent_boxes.keys().copied().collect();
-        for depth in depths {
-            let Some(box_data) = self.active_subagent_boxes.get(&depth).cloned() else {
-                continue;
-            };
-            let new_rows = self.subagent_box_rows(&box_data, true, &spinner);
-            let new_len =
-                self.replace_block_rows(box_data.block_start, box_data.block_len, new_rows);
-            if let Some(b) = self.active_subagent_boxes.get_mut(&depth) {
-                b.block_len = new_len;
-            }
-        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -760,26 +560,6 @@ impl Ui {
 
     pub(super) fn toggle_tools(&mut self) {
         self.expand_tools = !self.expand_tools;
-
-        // Sync all active subagent boxes' expanded flag with the global toggle.
-        if !self.active_subagent_boxes.is_empty() {
-            let spinner = self.spinner.frame().to_owned();
-            let depths: Vec<usize> = self.active_subagent_boxes.keys().copied().collect();
-            for depth in depths {
-                let Some(box_data) = self.active_subagent_boxes.get_mut(&depth) else {
-                    continue;
-                };
-                box_data.expanded = self.expand_tools;
-                let box_clone = box_data.clone();
-                let new_rows = self.subagent_box_rows(&box_clone, true, &spinner);
-                let new_len =
-                    self.replace_block_rows(box_clone.block_start, box_clone.block_len, new_rows);
-                if let Some(b) = self.active_subagent_boxes.get_mut(&depth) {
-                    b.block_len = new_len;
-                }
-            }
-        }
-
         self.replay_transcript_if_idle();
     }
 
