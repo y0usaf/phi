@@ -1,10 +1,8 @@
-//! Multi-line input editor: grapheme-aware cursor movement, emacs bindings,
-//! input history, bracketed paste. Rendering is left to the caller (the
-//! editor reports logical lines + a display-column cursor).
+//! Multi-line input editor: emacs bindings, input history, bracketed paste.
+//! Rendering is left to the caller (the editor reports logical lines + a
+//! byte-offset cursor).
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use unicode_segmentation::UnicodeSegmentation;
-use unicode_width::UnicodeWidthStr;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum EditorAction {
@@ -17,18 +15,14 @@ pub enum EditorAction {
     Quit,
 }
 
-const UNDO_MAX: usize = 100;
-
 pub struct Editor {
     lines: Vec<String>,
     row: usize,
-    /// Grapheme index within `lines[row]`.
+    /// Byte offset within `lines[row]`.
     col: usize,
     history: Vec<String>,
     history_idx: Option<usize>,
     draft: Option<Vec<String>>,
-    kill_ring: Option<String>,
-    undo_stack: Vec<(Vec<String>, usize, usize)>,
 }
 
 impl Default for Editor {
@@ -46,8 +40,6 @@ impl Editor {
             history: Vec::new(),
             history_idx: None,
             draft: None,
-            kill_ring: None,
-            undo_stack: Vec::new(),
         }
     }
 
@@ -65,7 +57,7 @@ impl Editor {
             self.lines.push(String::new());
         }
         self.row = self.lines.len() - 1;
-        self.col = grapheme_count(&self.lines[self.row]);
+        self.col = self.lines[self.row].len();
     }
 
     pub fn cursor_row(&self) -> usize {
@@ -74,8 +66,7 @@ impl Editor {
 
     /// Text on the cursor's line, up to the cursor.
     pub fn before_cursor(&self) -> &str {
-        let line = &self.lines[self.row];
-        &line[..byte_index(line, self.col)]
+        &self.lines[self.row][..self.col]
     }
 
     /// Replace `prefix` (which must end at the cursor) with `replacement`,
@@ -85,13 +76,11 @@ impl Editor {
         if !self.before_cursor().ends_with(prefix) {
             return;
         }
-        self.snapshot();
-        let count = grapheme_count(prefix);
+        let count = prefix.len();
         let line = &mut self.lines[self.row];
-        let start = byte_index(line, self.col - count);
-        let end = byte_index(line, self.col);
-        line.replace_range(start..end, "");
-        self.col -= count;
+        let start = self.col - count;
+        line.replace_range(start..self.col, "");
+        self.col = start;
         self.insert_raw(replacement);
     }
 
@@ -101,9 +90,6 @@ impl Editor {
         self.col = 0;
         self.history_idx = None;
         self.draft = None;
-        // A fresh buffer starts with no undo history (jcode's
-        // clear_input_undo_history on submit).
-        self.undo_stack.clear();
     }
 
     /// Add a submitted prompt to the recall history used by Up/Down.
@@ -127,23 +113,19 @@ impl Editor {
         self.draft = None;
     }
 
-    /// Logical lines and the cursor as (line index, display column). The
+    /// Logical lines and the cursor as (line index, byte column). The
     /// caller prepends its prompt and adjusts the first line's column.
     pub fn render(&self) -> (&[String], (usize, usize)) {
-        let line = &self.lines[self.row];
-        let col = width_of_graphemes(line, self.col);
-        (&self.lines, (self.row, col))
+        (&self.lines, (self.row, self.col))
     }
 
     pub fn insert_str(&mut self, text: &str) {
-        self.snapshot();
         self.insert_raw(text);
     }
 
     /// Insert pasted text, normalizing line endings and stripping control
     /// characters.
     pub fn insert_paste(&mut self, text: &str) {
-        self.snapshot();
         let clean = normalize_paste(text);
         self.insert_raw(&clean);
     }
@@ -159,9 +141,8 @@ impl Editor {
             if i > 0 {
                 self.insert_newline();
             }
-            let byte = byte_index(&self.lines[self.row], self.col);
-            self.lines[self.row].insert_str(byte, part);
-            self.col += grapheme_count(part);
+            self.lines[self.row].insert_str(self.col, part);
+            self.col += part.len();
         }
     }
 
@@ -179,22 +160,18 @@ impl Editor {
                 if self.is_empty() {
                     return EditorAction::Quit;
                 }
-                self.snapshot();
                 self.delete_forward();
             }
             KeyCode::Enter if shift => {
-                self.snapshot();
                 self.insert_newline();
             }
             KeyCode::Char('j') if ctrl => {
-                self.snapshot();
                 self.insert_newline();
             }
             KeyCode::Enter => {
                 // Backslash continuation: terminals without shift+enter
                 // support type `\` then enter for a newline (pi-compatible).
                 if self.before_cursor().ends_with('\\') {
-                    self.snapshot();
                     self.delete_back();
                     self.insert_newline();
                     return EditorAction::None;
@@ -209,23 +186,18 @@ impl Editor {
             }
             KeyCode::Backspace if ctrl || alt => self.delete_word_back(),
             KeyCode::Backspace => {
-                self.snapshot();
                 self.delete_back();
             }
             KeyCode::Delete if alt => self.delete_word_forward(),
             KeyCode::Delete => {
-                self.snapshot();
                 self.delete_forward();
             }
             KeyCode::Char('w') if ctrl => self.delete_word_back(),
             KeyCode::Char('d') if alt => self.delete_word_forward(),
             KeyCode::Char('a') if ctrl => self.col = 0,
-            KeyCode::Char('e') if ctrl => self.col = grapheme_count(&self.lines[self.row]),
+            KeyCode::Char('e') if ctrl => self.col = self.lines[self.row].len(),
             KeyCode::Char('k') if ctrl => self.kill_to_eol(),
             KeyCode::Char('u') if ctrl => self.kill_to_bol(),
-            KeyCode::Char('z') if ctrl => self.undo(),
-            KeyCode::Char('r') if ctrl => self.yank(),
-            KeyCode::Char('-' | '_') if ctrl => self.undo(),
             KeyCode::Char('b') if alt => self.move_word_back(),
             KeyCode::Char('f') if alt => self.move_word_forward(),
             KeyCode::Char('b') if ctrl => self.move_left(),
@@ -237,20 +209,19 @@ impl Editor {
             KeyCode::Up => self.move_up(),
             KeyCode::Down => self.move_down(),
             KeyCode::Home => self.col = 0,
-            KeyCode::End => self.col = grapheme_count(&self.lines[self.row]),
+            KeyCode::End => self.col = self.lines[self.row].len(),
             KeyCode::PageUp => {
                 self.row = 0;
                 self.col = 0;
             }
             KeyCode::PageDown => {
                 self.row = self.lines.len() - 1;
-                self.col = grapheme_count(&self.lines[self.row]);
+                self.col = self.lines[self.row].len();
             }
             KeyCode::Char(c) if !ctrl && !alt => {
-                self.snapshot();
-                let byte = byte_index(&self.lines[self.row], self.col);
+                let byte = self.col;
                 self.lines[self.row].insert(byte, c);
-                self.col += 1;
+                self.col += c.len_utf8();
             }
             _ => {}
         }
@@ -258,8 +229,7 @@ impl Editor {
     }
 
     fn insert_newline(&mut self) {
-        let byte = byte_index(&self.lines[self.row], self.col);
-        let rest = self.lines[self.row].split_off(byte);
+        let rest = self.lines[self.row].split_off(self.col);
         self.lines.insert(self.row + 1, rest);
         self.row += 1;
         self.col = 0;
@@ -267,16 +237,17 @@ impl Editor {
 
     fn move_left(&mut self) {
         if self.col > 0 {
-            self.col -= 1;
+            self.col = prev_char_boundary(&self.lines[self.row], self.col);
         } else if self.row > 0 {
             self.row -= 1;
-            self.col = grapheme_count(&self.lines[self.row]);
+            self.col = self.lines[self.row].len();
         }
     }
 
     fn move_right(&mut self) {
-        if self.col < grapheme_count(&self.lines[self.row]) {
-            self.col += 1;
+        let line = &self.lines[self.row];
+        if self.col < line.len() {
+            self.col = next_char_boundary(line, self.col);
         } else if self.row + 1 < self.lines.len() {
             self.row += 1;
             self.col = 0;
@@ -285,10 +256,8 @@ impl Editor {
 
     fn move_up(&mut self) {
         if self.row > 0 {
-            let current_visual = width_of_graphemes(&self.lines[self.row], self.col);
             self.row -= 1;
-            let target_line = &self.lines[self.row];
-            self.col = grapheme_index_at_width(target_line, current_visual);
+            self.col = self.col.min(self.lines[self.row].len());
         } else {
             self.history_prev();
         }
@@ -296,10 +265,8 @@ impl Editor {
 
     fn move_down(&mut self) {
         if self.row + 1 < self.lines.len() {
-            let current_visual = width_of_graphemes(&self.lines[self.row], self.col);
             self.row += 1;
-            let target_line = &self.lines[self.row];
-            self.col = grapheme_index_at_width(target_line, current_visual);
+            self.col = self.col.min(self.lines[self.row].len());
         } else {
             self.history_next();
         }
@@ -329,32 +296,30 @@ impl Editor {
             let draft = self.draft.take().unwrap_or_else(|| vec![String::new()]);
             self.lines = draft;
             self.row = self.lines.len() - 1;
-            self.col = grapheme_count(&self.lines[self.row]);
+            self.col = self.lines[self.row].len();
         }
     }
 
     fn delete_back(&mut self) {
         if self.col > 0 {
             let line = &mut self.lines[self.row];
-            let start = byte_index(line, self.col - 1);
-            let end = byte_index(line, self.col);
-            line.replace_range(start..end, "");
-            self.col -= 1;
+            let start = prev_char_boundary(line, self.col);
+            line.replace_range(start..self.col, "");
+            self.col = start;
         } else if self.row > 0 {
             let removed = self.lines.remove(self.row);
             self.row -= 1;
-            self.col = grapheme_count(&self.lines[self.row]);
+            self.col = self.lines[self.row].len();
             self.lines[self.row].push_str(&removed);
         }
     }
 
     fn delete_forward(&mut self) {
-        let count = grapheme_count(&self.lines[self.row]);
-        if self.col < count {
+        let line_len = self.lines[self.row].len();
+        if self.col < line_len {
             let line = &mut self.lines[self.row];
-            let start = byte_index(line, self.col);
-            let end = byte_index(line, self.col + 1);
-            line.replace_range(start..end, "");
+            let end = next_char_boundary(line, self.col);
+            line.replace_range(self.col..end, "");
         } else if self.row + 1 < self.lines.len() {
             let next = self.lines.remove(self.row + 1);
             self.lines[self.row].push_str(&next);
@@ -362,17 +327,12 @@ impl Editor {
     }
 
     fn kill_to_eol(&mut self) {
-        let count = grapheme_count(&self.lines[self.row]);
-        if self.col < count {
-            self.snapshot();
-            let byte = byte_index(&self.lines[self.row], self.col);
-            let killed = self.lines[self.row].split_off(byte);
-            self.kill(killed);
+        let line_len = self.lines[self.row].len();
+        if self.col < line_len {
+            self.lines[self.row].truncate(self.col);
         } else if self.row + 1 < self.lines.len() {
-            self.snapshot();
             let next = self.lines.remove(self.row + 1);
             self.lines[self.row].push_str(&next);
-            self.kill("\n".to_owned());
         }
     }
 
@@ -380,81 +340,34 @@ impl Editor {
         if self.col == 0 {
             return;
         }
-        self.snapshot();
-        let byte = byte_index(&self.lines[self.row], self.col);
-        let killed = self.lines[self.row][..byte].to_owned();
-        self.lines[self.row].replace_range(..byte, "");
+        self.lines[self.row].replace_range(..self.col, "");
         self.col = 0;
-        self.kill(killed);
     }
 
     fn delete_word_back(&mut self) {
         if self.col == 0 {
             if self.row > 0 {
-                self.snapshot();
                 self.delete_back();
             }
             return;
         }
-        self.snapshot();
         let target = self.word_back_col();
         let line = &mut self.lines[self.row];
-        let start = byte_index(line, target);
-        let end = byte_index(line, self.col);
-        let killed = line[start..end].to_owned();
-        line.replace_range(start..end, "");
+        line.replace_range(target..self.col, "");
         self.col = target;
-        self.kill(killed);
     }
 
     fn delete_word_forward(&mut self) {
-        let count = grapheme_count(&self.lines[self.row]);
-        if self.col == count {
+        let line_len = self.lines[self.row].len();
+        if self.col == line_len {
             if self.row + 1 < self.lines.len() {
-                self.snapshot();
                 self.delete_forward();
             }
             return;
         }
-        self.snapshot();
         let target = self.word_forward_col();
         let line = &mut self.lines[self.row];
-        let start = byte_index(line, self.col);
-        let end = byte_index(line, target);
-        let killed = line[start..end].to_owned();
-        line.replace_range(start..end, "");
-        self.kill(killed);
-    }
-
-    fn kill(&mut self, text: String) {
-        if text.is_empty() {
-            return;
-        }
-        self.kill_ring = Some(text);
-    }
-
-    fn yank(&mut self) {
-        let Some(text) = self.kill_ring.clone() else {
-            return;
-        };
-        self.snapshot();
-        self.insert_raw(&text);
-    }
-
-    fn snapshot(&mut self) {
-        self.undo_stack
-            .push((self.lines.clone(), self.row, self.col));
-        if self.undo_stack.len() > UNDO_MAX {
-            self.undo_stack.remove(0);
-        }
-    }
-
-    fn undo(&mut self) {
-        if let Some((lines, row, col)) = self.undo_stack.pop() {
-            self.lines = lines;
-            self.row = row;
-            self.col = col;
-        }
+        line.replace_range(self.col..target, "");
     }
 
     fn move_word_back(&mut self) {
@@ -466,8 +379,8 @@ impl Editor {
     }
 
     fn move_word_forward(&mut self) {
-        let count = grapheme_count(&self.lines[self.row]);
-        if self.col == count {
+        let line_len = self.lines[self.row].len();
+        if self.col == line_len {
             self.move_right();
         } else {
             self.col = self.word_forward_col();
@@ -475,27 +388,35 @@ impl Editor {
     }
 
     fn word_back_col(&self) -> usize {
-        let graphemes: Vec<&str> = self.lines[self.row].graphemes(true).collect();
-        let mut i = self.col;
-        while i > 0 && !is_word(graphemes[i - 1]) {
+        let s = &self.lines[self.row];
+        let chars: Vec<(usize, char)> = s.char_indices().collect();
+        let mut i = chars
+            .iter()
+            .position(|(b, _)| *b >= self.col)
+            .unwrap_or(chars.len());
+        while i > 0 && !is_word_char(chars[i - 1].1) {
             i -= 1;
         }
-        while i > 0 && is_word(graphemes[i - 1]) {
+        while i > 0 && is_word_char(chars[i - 1].1) {
             i -= 1;
         }
-        i
+        if i < chars.len() { chars[i].0 } else { s.len() }
     }
 
     fn word_forward_col(&self) -> usize {
-        let graphemes: Vec<&str> = self.lines[self.row].graphemes(true).collect();
-        let mut i = self.col;
-        while i < graphemes.len() && !is_word(graphemes[i]) {
+        let s = &self.lines[self.row];
+        let chars: Vec<(usize, char)> = s.char_indices().collect();
+        let mut i = chars
+            .iter()
+            .position(|(b, _)| *b >= self.col)
+            .unwrap_or(chars.len());
+        while i < chars.len() && !is_word_char(chars[i].1) {
             i += 1;
         }
-        while i < graphemes.len() && is_word(graphemes[i]) {
+        while i < chars.len() && is_word_char(chars[i].1) {
             i += 1;
         }
-        i
+        if i < chars.len() { chars[i].0 } else { s.len() }
     }
 }
 
@@ -510,38 +431,30 @@ fn normalize_paste(text: &str) -> String {
         .collect()
 }
 
-fn is_word(grapheme: &str) -> bool {
-    grapheme.chars().any(|c| c.is_alphanumeric() || c == '_')
+fn is_word_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
 }
 
-fn grapheme_count(s: &str) -> usize {
-    s.graphemes(true).count()
-}
-
-fn byte_index(s: &str, grapheme_idx: usize) -> usize {
-    s.grapheme_indices(true)
-        .nth(grapheme_idx)
-        .map_or(s.len(), |(i, _)| i)
-}
-
-fn width_of_graphemes(s: &str, count: usize) -> usize {
-    s.graphemes(true).take(count).map(|g| g.width()).sum()
-}
-
-fn grapheme_index_at_width(s: &str, target_width: usize) -> usize {
-    if target_width == 0 {
+fn prev_char_boundary(s: &str, idx: usize) -> usize {
+    if idx == 0 || idx > s.len() {
         return 0;
     }
-    let mut width = 0;
-    let mut index = 0;
-    for grapheme in s.graphemes(true) {
-        width += grapheme.width();
-        index += 1;
-        if width >= target_width {
-            return index;
-        }
+    let mut i = idx - 1;
+    while i > 0 && !s.is_char_boundary(i) {
+        i -= 1;
     }
-    index
+    i
+}
+
+fn next_char_boundary(s: &str, idx: usize) -> usize {
+    if idx >= s.len() {
+        return s.len();
+    }
+    let mut i = idx + 1;
+    while i < s.len() && !s.is_char_boundary(i) {
+        i += 1;
+    }
+    i
 }
 
 #[cfg(test)]
@@ -597,10 +510,10 @@ mod tests {
     }
 
     #[test]
-    fn grapheme_aware_cursor_and_backspace() {
+    fn multibyte_cursor_and_backspace() {
         let mut ed = Editor::new();
         ed.insert_str("aé日");
-        assert_eq!(ed.render().1, (0, 4)); // 1 + 1 + 2 display cols
+        assert_eq!(ed.render().1, (0, 6)); // 1 + 2 + 3 bytes
         ed.handle_key(key(KeyCode::Backspace));
         assert_eq!(ed.text(), "aé");
         ed.handle_key(key(KeyCode::Left));
@@ -737,43 +650,6 @@ mod tests {
         assert_eq!(ed.render().1, (0, 4));
         ed.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL));
         assert_eq!(ed.render().1, (0, 7));
-    }
-
-    #[test]
-    fn kill_ring_yank() {
-        let mut ed = Editor::new();
-        type_str(&mut ed, "alpha beta");
-        ed.handle_key(ctrl('w')); // kill "beta"
-        ed.handle_key(ctrl('u')); // kill "alpha "
-        assert_eq!(ed.text(), "");
-        ed.handle_key(ctrl('r'));
-        assert_eq!(ed.text(), "alpha ");
-    }
-
-    #[test]
-    fn undo_reverts_edits() {
-        let mut ed = Editor::new();
-        type_str(&mut ed, "ab");
-        ed.handle_key(ctrl('w'));
-        assert_eq!(ed.text(), "");
-        let undo = KeyEvent::new(KeyCode::Char('-'), KeyModifiers::CONTROL);
-        ed.handle_key(undo);
-        assert_eq!(ed.text(), "ab");
-        ed.handle_key(undo);
-        assert_eq!(ed.text(), "a");
-        ed.handle_key(undo);
-        assert_eq!(ed.text(), "");
-    }
-
-    #[test]
-    fn ctrl_z_undo() {
-        let mut ed = Editor::new();
-        type_str(&mut ed, "abc");
-        // Undo twice via Ctrl+Z.
-        ed.handle_key(ctrl('z'));
-        assert_eq!(ed.text(), "ab");
-        ed.handle_key(ctrl('z'));
-        assert_eq!(ed.text(), "a");
     }
 
     #[test]
