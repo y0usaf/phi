@@ -444,7 +444,6 @@ mod tests {
                 description: "Run code".to_owned(),
                 input_schema: json!({"type": "object"}),
             }],
-            ..Default::default()
         };
         let opts = StreamOptions::new(Auth::ApiKey("k".to_owned()));
         let body = build_body(&model(), &ctx, &opts);

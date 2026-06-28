@@ -394,7 +394,7 @@ async fn hashline_unified_diff_rejected() {
 
     let r = repl
         .exec(
-            &format!(r#"print(edit_file(patch='@@ -1,2 +1,2 @@\n-line1\n+LINE1'))"#),
+            r#"print(edit_file(patch='@@ -1,2 +1,2 @@\n-line1\n+LINE1'))"#,
             EXEC_TIMEOUT,
         )
         .await

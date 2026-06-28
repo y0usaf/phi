@@ -143,10 +143,7 @@ mod tests {
         assert_eq!(json["description"], "A test command");
         // handler should be skipped
         assert!(json.get("handler").is_none());
-        assert_eq!(
-            serde_json::to_string(&spec).unwrap().contains("handler"),
-            false
-        );
+        assert!(!serde_json::to_string(&spec).unwrap().contains("handler"));
     }
 
     // --- ToolParam tests ---

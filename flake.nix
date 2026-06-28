@@ -124,6 +124,7 @@
           default = {
             type = "app";
             program = "${self.packages.${system}.phi-app}/bin/phi";
+            meta = { description = "Phi coding harness"; mainProgram = "phi"; };
           };
         }
       );
@@ -135,6 +136,9 @@
             { pkgs, ... }:
             {
               networking.hostName = "phi";
+              fileSystems."/".fsType = "ext4";
+              fileSystems."/".device = "/dev/disk/by-label/nixos";
+              boot.loader.grub.device = "nodev";
               environment.systemPackages = with pkgs; [
                 cargo
                 clippy

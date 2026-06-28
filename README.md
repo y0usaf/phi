@@ -16,10 +16,8 @@ Rust-first coding harness scaffold with an extension-first runtime and native CL
 - `crates/phi-session`: session config, transcript, usage, and JSONL store
 - `crates/phi-session-tui`: TUI session loop and session builder
 - `crates/phi-ext`: host runtime and extension registry
-- `crates/phi-ext`: extension API surface
 - `crates/phi-builtins`: bundled extensions that use the same host API
 - `crates/phi-lua`: Lua extension loader
-- `crates/phi-memory`: persistent memory extension
 - `crates/xtask`: workspace tasks (model registry generation)
 - `ref/`: local checkouts of upstream reference implementations (`pi/`, `rlm/`), ignored by git
 
