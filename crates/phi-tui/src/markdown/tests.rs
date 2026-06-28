@@ -109,8 +109,8 @@ fn links_show_styled_text_and_url() {
 fn fenced_code_is_highlighted_and_closed() {
     let lines = render_markdown("```rust\nlet x = 1;\n```", 80, &palette());
     let p = plain(&lines);
-    assert_eq!(p.first().unwrap(), "\u{258d} rust");
-    assert!(p.last().unwrap().starts_with('\u{258f}'), "{p:?}");
+    assert_eq!(p.first().unwrap(), "\u{2502} rust");
+    assert!(p.last().unwrap().starts_with('\u{2502}'), "{p:?}");
     // Highlighted lines carry truecolor escapes, not plain DIM.
     let code = lines
         .iter()
@@ -159,22 +159,6 @@ fn highlight_code_treats_repl_as_python() {
     let lines = highlight_code("print(1)", Some("repl"), &palette());
     assert_eq!(lines.len(), 1);
     assert!(lines[0].contains("\x1b[38;2;"), "no highlight: {lines:?}");
-}
-
-#[test]
-fn repl_highlighting_marks_known_calls() {
-    let p = palette();
-    let lines = highlight_code("print(bash('echo hi'))", Some("repl"), &p);
-    assert_eq!(lines.len(), 1);
-    let stripped = strip_ansi(&lines[0]);
-    assert!(
-        stripped.contains("bash"),
-        "known repl call missing: {lines:?}"
-    );
-    assert!(
-        lines[0].contains(&p.repl_fn),
-        "known repl call not highlighted: {lines:?}"
-    );
 }
 
 #[test]

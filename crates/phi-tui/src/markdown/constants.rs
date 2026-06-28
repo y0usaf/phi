@@ -33,7 +33,6 @@ pub(super) static FALLBACK_THEME: LazyLock<Theme> = LazyLock::new(|| {
 #[derive(Clone)]
 pub struct MarkdownPalette {
     pub repl_fence: String,
-    pub repl_fn: String,
     pub marker_accent: String,
     pub task_done: String,
     pub quote_bar: String,
@@ -58,7 +57,6 @@ impl MarkdownPalette {
     pub fn default_const() -> Self {
         Self {
             repl_fence: s("\x1b[38;2;180;140;255m"),
-            repl_fn: s("\x1b[38;2;255;210;120m"),
             marker_accent: s("\x1b[38;2;130;160;230m"),
             task_done: s("\x1b[38;2;130;200;130m"),
             quote_bar: s("\x1b[38;2;150;130;220m"),
@@ -85,7 +83,6 @@ impl MarkdownPalette {
         let fallback = Self::default_const();
         Self {
             repl_fence: col(5).unwrap_or_else(|| fallback.repl_fence.clone()),
-            repl_fn: col(3).unwrap_or_else(|| fallback.repl_fn.clone()),
             marker_accent: col(4).unwrap_or_else(|| fallback.marker_accent.clone()),
             task_done: col(2).unwrap_or_else(|| fallback.task_done.clone()),
             quote_bar: col(5).unwrap_or_else(|| fallback.quote_bar.clone()),

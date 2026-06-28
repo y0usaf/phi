@@ -3,56 +3,6 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use super::constants::{BOLD, CYAN, DIM, ITALIC, MarkdownPalette, RESET, UNDERLINE};
 use super::highlight::highlight_code_cached;
-/// Kind of markdown block, used to determine spacing behaviour at block
-/// boundaries.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MarkdownBlockKind {
-    Heading,
-    Paragraph,
-    List,
-    BlockQuote,
-    CodeBlock,
-    DisplayMath,
-    Rule,
-    HtmlBlock,
-}
-
-/// Semantic spacing mode controlling vertical separation between blocks.
-///
-/// * `Compact` — minimal spacing; headings are followed by a separator blank
-///   line but other blocks (paragraphs, lists, code, etc.) are packed tightly.
-/// * `Document` — generous spacing; every block is followed by a separator
-///   blank line.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub enum MarkdownSpacingMode {
-    #[default]
-    Compact,
-    Document,
-}
-
-/// Return the number of blank lines to insert after a block of `kind` under
-/// the given spacing `mode`.
-///
-/// Ported from jcode's `spacing_separates_after`. The original jcode function
-/// returns a `bool`; this port returns `usize` (0 or 1) so callers can insert
-/// the correct number of blank lines directly.
-///
-/// * **Compact mode** — only headings get a trailing separator; everything
-///   else is packed with no inter-block blank line.
-/// * **Document mode** — every block type gets a trailing separator blank
-///   line.
-pub fn spacing_separates_after(kind: MarkdownBlockKind, mode: MarkdownSpacingMode) -> usize {
-    match mode {
-        MarkdownSpacingMode::Compact => {
-            if matches!(kind, MarkdownBlockKind::Heading) {
-                1
-            } else {
-                0
-            }
-        }
-        MarkdownSpacingMode::Document => 1,
-    }
-}
 
 /// Color a diff-preview line: additions green, deletions red, hunk headers
 /// violet. File headers (`+++`/`---`) and context lines return None.
@@ -127,59 +77,6 @@ pub fn render_markdown(text: &str, width: usize, palette: &MarkdownPalette) -> V
         quote_depth: 0,
         in_code_block: false,
         code_lang: None,
-        code_block_content: String::new(),
-        code_block_start_line: 0,
-        lazy_viewport: None,
-        link: None,
-        started: false,
-        palette,
-        active_prefix: String::new(),
-        in_table: false,
-        table_rows: Vec::new(),
-        table_alignments: Vec::new(),
-        table_current_row: Vec::new(),
-        table_current_cell: String::new(),
-    };
-    r.run(parser);
-    r.flush_line();
-    while r.lines.last().is_some_and(|l| l.is_empty()) {
-        r.lines.pop();
-    }
-    r.lines
-}
-
-/// Render markdown with viewport-aware code block highlighting.
-///
-/// Only code blocks whose line range intersects `[viewport_start,
-/// viewport_end)` are syntax-highlighted; off-screen blocks use a cheap
-/// dimmed placeholder. All non-code-block elements are rendered identically
-/// to [`render_markdown`].
-pub fn render_markdown_lazy(
-    text: &str,
-    width: usize,
-    viewport_start: usize,
-    viewport_end: usize,
-    palette: &MarkdownPalette,
-) -> Vec<String> {
-    let width = width.max(1);
-    let options =
-        Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TABLES | Options::ENABLE_TASKLISTS;
-    let parser = Parser::new_ext(text, options);
-
-    let mut r = Renderer {
-        width,
-        lines: Vec::new(),
-        current: String::new(),
-        col: 0,
-        indent: String::new(),
-        style: Style::default(),
-        list_stack: Vec::new(),
-        quote_depth: 0,
-        in_code_block: false,
-        code_lang: None,
-        code_block_content: String::new(),
-        code_block_start_line: 0,
-        lazy_viewport: Some((viewport_start, viewport_end)),
         link: None,
         started: false,
         palette,
@@ -219,13 +116,6 @@ pub(super) struct Renderer<'p> {
     /// Language of the current fenced code block (drives highlighting and
     /// the closing fence line).
     code_lang: Option<String>,
-    /// Accumulated code block content for lazy (viewport-aware) highlighting.
-    code_block_content: String,
-    /// Line index where the current code block started (for viewport checks).
-    code_block_start_line: usize,
-    /// When set, only syntax-highlight code blocks intersecting this range;
-    /// off-screen blocks get a cheap dimmed placeholder instead.
-    lazy_viewport: Option<(usize, usize)>,
     /// Current link target and whether the link text equals it (autolinks
     /// skip the trailing `(url)`).
     link: Option<(String, bool)>,
@@ -320,8 +210,6 @@ impl<'p> Renderer<'p> {
                 self.blank_line();
                 self.in_code_block = true;
                 self.code_lang = None;
-                self.code_block_content.clear();
-                self.code_block_start_line = self.lines.len();
                 if let CodeBlockKind::Fenced(lang) = kind
                     && !lang.is_empty()
                 {
@@ -329,7 +217,7 @@ impl<'p> Renderer<'p> {
                         let fence = &self.palette.repl_fence;
                         self.lines.push(format!("{fence}```repl{RESET}"));
                     } else {
-                        self.lines.push(format!("{DIM}\u{258d} {lang}{RESET}"));
+                        self.lines.push(format!("{DIM}\u{2502}{RESET} {lang}"));
                     }
                     self.code_lang = Some(lang.to_string());
                 }
@@ -423,34 +311,6 @@ impl<'p> Renderer<'p> {
                 self.flush_line();
             }
             TagEnd::CodeBlock => {
-                if let Some((vp_start, vp_end)) = self.lazy_viewport {
-                    // Lazy mode: decide whether to highlight or use placeholder
-                    let code_line_count = self.code_block_content.lines().count();
-                    let block_range = self.code_block_start_line
-                        ..(self.code_block_start_line + code_line_count + 2);
-                    let is_visible = ranges_overlap(block_range, vp_start..vp_end);
-
-                    let code_lines = if is_visible {
-                        highlight_code_cached(
-                            &self.code_block_content,
-                            self.code_lang.as_deref(),
-                            self.palette,
-                        )
-                    } else {
-                        // Cheap placeholder: dimmed text without highlighting
-                        self.code_block_content
-                            .lines()
-                            .map(|line| format!("{DIM}{line}{RESET}"))
-                            .collect::<Vec<_>>()
-                    };
-
-                    for line in code_lines {
-                        self.lines
-                            .push(format!("{DIM}\u{258f}{RESET} {line}{RESET}"));
-                    }
-                    self.started = true;
-                    self.code_block_content.clear();
-                }
                 if self
                     .code_lang
                     .as_deref()
@@ -577,15 +437,10 @@ impl<'p> Renderer<'p> {
     }
 
     fn push_code_text(&mut self, text: &str) {
-        if self.lazy_viewport.is_some() {
-            // Lazy mode: accumulate content; highlight or placeholder at end
-            self.code_block_content.push_str(text);
-            return;
-        }
         let highlighted = highlight_code_cached(text, self.code_lang.as_deref(), self.palette);
         for line in highlighted {
             self.lines
-                .push(format!("{DIM}\u{258f}{RESET} {line}{RESET}"));
+                .push(format!("{DIM}\u{2502}{RESET} {line}{RESET}"));
         }
         self.started = true;
     }
@@ -620,11 +475,6 @@ impl<'p> Renderer<'p> {
             self.started = true;
         }
     }
-}
-
-/// Check if two half-open ranges overlap.
-fn ranges_overlap(a: std::ops::Range<usize>, b: std::ops::Range<usize>) -> bool {
-    a.start < b.end && b.start < a.end
 }
 
 /// Split text into words and single-space separators (runs collapse).

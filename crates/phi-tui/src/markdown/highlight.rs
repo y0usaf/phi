@@ -5,7 +5,7 @@ use std::sync::{LazyLock, Mutex};
 use syntect::easy::HighlightLines;
 use syntect::util::as_24_bit_terminal_escaped;
 
-use super::constants::{MarkdownPalette, RESET, SYNTAXES};
+use super::constants::{MarkdownPalette, SYNTAXES};
 
 /// Maximum number of highlighted code blocks kept in the cache.
 const HIGHLIGHT_CACHE_LIMIT: usize = 256;
@@ -128,15 +128,11 @@ pub(super) fn highlight_repl_lines(
                         .highlight_line(line, &SYNTAXES)
                         .map(|ranges| as_24_bit_terminal_escaped(&ranges, false))
                         .unwrap_or_else(|_| line.to_owned());
-                    let softened = soften_ansi(&base);
-                    highlight_known_repl_calls(&softened, palette)
+                    soften_ansi(&base)
                 })
                 .collect()
         }
-        None => code_lines
-            .into_iter()
-            .map(|line| highlight_known_repl_calls(line, palette))
-            .collect(),
+        None => code_lines.into_iter().map(str::to_owned).collect(),
     }
 }
 
@@ -232,125 +228,4 @@ pub(super) fn soften_rgb(r: u8, g: u8, b: u8) -> (u8, u8, u8) {
         return (r, g, b);
     }
     (br, bg, bb)
-}
-
-pub(super) fn next_visible_char(text: &str, i: usize) -> Option<(usize, char)> {
-    let bytes = text.as_bytes();
-    let mut j = i;
-    while j < bytes.len() {
-        if bytes[j] == 0x1b {
-            j += 1;
-            if j < bytes.len() && bytes[j] == b'[' {
-                j += 1;
-                while j < bytes.len() && bytes[j] != b'm' {
-                    j += 1;
-                }
-                if j < bytes.len() {
-                    j += 1;
-                }
-            }
-            continue;
-        }
-        let ch = text[j..].chars().next()?;
-        return Some((j, ch));
-    }
-    None
-}
-
-pub(super) fn visible_after_call(text: &str, mut i: usize) -> bool {
-    while let Some((j, ch)) = next_visible_char(text, i) {
-        if ch == ' ' || ch == '\t' {
-            i = j + ch.len_utf8();
-            continue;
-        }
-        return ch == '(';
-    }
-    false
-}
-
-pub(super) fn highlight_known_repl_calls(
-    line: impl AsRef<str>,
-    palette: &MarkdownPalette,
-) -> String {
-    const NAMES: &[&str] = &[
-        "bash",
-        "read_file",
-        "write_file",
-        "edit_file",
-        "grep",
-        "find",
-        "ls",
-        "llm_query",
-        "llm_query_batched",
-        "subagent",
-        "subagent_batched",
-        "SHOW_VARS",
-        "jobs",
-        "job_status",
-        "job_output",
-        "bg",
-    ];
-    let line = line.as_ref();
-    let plain = crate::strip_ansi(line);
-    let mut hits: Vec<String> = NAMES
-        .iter()
-        .copied()
-        .filter(|name| {
-            let pat = format!("{name}(");
-            plain.contains(&pat) || plain.contains(&format!("{name} ("))
-        })
-        .map(str::to_owned)
-        .collect();
-    hits.sort_by_key(|s| std::cmp::Reverse(s.len()));
-
-    let bytes = line.as_bytes();
-    let mut out = String::with_capacity(line.len() + 64);
-    let mut i = 0;
-    let mut prev_visible_ident = false;
-    while i < bytes.len() {
-        if bytes[i] == 0x1b {
-            let start = i;
-            i += 1;
-            if i < bytes.len() && bytes[i] == b'[' {
-                i += 1;
-                while i < bytes.len() && bytes[i] != b'm' {
-                    i += 1;
-                }
-                if i < bytes.len() {
-                    i += 1;
-                }
-            }
-            out.push_str(&line[start..i]);
-            continue;
-        }
-
-        let mut matched = None;
-        for name in &hits {
-            if !line[i..].starts_with(name) {
-                continue;
-            }
-            if prev_visible_ident {
-                continue;
-            }
-            if visible_after_call(line, i + name.len()) {
-                matched = Some(name.as_str());
-                break;
-            }
-        }
-
-        if let Some(name) = matched {
-            out.push_str(&palette.repl_fn);
-            out.push_str(name);
-            out.push_str(RESET);
-            i += name.len();
-            prev_visible_ident = true;
-            continue;
-        }
-
-        let ch = line[i..].chars().next().unwrap();
-        out.push(ch);
-        prev_visible_ident = ch.is_ascii_alphanumeric() || ch == '_';
-        i += ch.len_utf8();
-    }
-    out
 }
