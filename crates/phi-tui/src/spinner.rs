@@ -12,8 +12,8 @@ use std::time::Instant;
 
 /// Braille dot spinner frames.
 pub const SPINNER_FRAMES: [&str; 10] = [
-    "\u{280B}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283C}", "\u{2834}", "\u{2826}",
-    "\u{2827}", "\u{2807}", "\u{280F}",
+    "\u{280B}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283C}", "\u{2834}", "\u{2826}", "\u{2827}",
+    "\u{2807}", "\u{280F}",
 ];
 
 /// Duration each spinner frame is displayed, in milliseconds.
@@ -83,7 +83,11 @@ fn fade_rgb(from: crate::palette::Rgb, to: crate::palette::Rgb, mix: u8) -> crat
         let mix = u16::from(mix);
         (((a * (255 - mix)) + (b * mix)) / 255) as u8
     };
-    crate::palette::Rgb(blend(from.0, to.0), blend(from.1, to.1), blend(from.2, to.2))
+    crate::palette::Rgb(
+        blend(from.0, to.0),
+        blend(from.1, to.1),
+        blend(from.2, to.2),
+    )
 }
 
 /// Apply a per-character left-to-right RGB gradient to `text`.
@@ -101,6 +105,53 @@ pub fn gradient_text(text: &str, from: crate::palette::Rgb, to: crate::palette::
     for (i, ch) in chars.iter().enumerate() {
         let mix = ((i as u16 * 255) / denom).min(255) as u8;
         let crate::palette::Rgb(r, g, b) = fade_rgb(from, to, mix);
+        out.push_str(&format!("\x1b[38;2;{r};{g};{b}m{ch}"));
+    }
+    out.push_str("\x1b[0m");
+    out
+}
+
+/// Animation frame duration (ms) for the thinking-gradient shimmer.
+///
+/// Matches phi-mux's `SIDEBAR_ANIMATION_FRAME_MS`: each step of the
+/// 24-step triangle wave advances every 40 ms, so a full sweep cycle
+/// takes 24 * 40 = 960 ms.
+pub const THINKING_ANIMATION_FRAME_MS: u64 = 40;
+
+/// Apply a per-character left-to-right RGB gradient with a time-driven,
+/// position-shifted shimmer overlay, mirroring phi-mux's
+/// `render_sidebar_gradient_text` for the `Active` sidebar status.
+///
+/// For each character:
+/// 1. Compute the base left->right blend (`from` -> `to`) by character index.
+/// 2. Compute a triangle-wave phase = `((elapsed_ms / FRAME_MS) + i) % 24`.
+/// 3. Intensity = `if phase < 12 { phase } else { 24 - phase }` (0..12).
+/// 4. Blend the base color toward `shimmer` by `intensity * 21` (max 252).
+///
+/// Because the phase incorporates both `elapsed_ms` (time) and `i`
+/// (position), the wave appears to sweep left-to-right across the text and
+/// cycle repeatedly -- exactly the "sliding/crawling shimmer" phi-mux shows
+/// on the active sidebar row.
+pub fn gradient_text_animated(
+    text: &str,
+    from: crate::palette::Rgb,
+    to: crate::palette::Rgb,
+    shimmer: crate::palette::Rgb,
+    elapsed_ms: u64,
+) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.is_empty() {
+        return String::new();
+    }
+    let denom = (chars.len() - 1).max(1) as u16;
+    let frame = (elapsed_ms / THINKING_ANIMATION_FRAME_MS) as usize;
+    let mut out = String::with_capacity(chars.len() * 16);
+    for (i, ch) in chars.iter().enumerate() {
+        let mix = ((i as u16 * 255) / denom).min(255) as u8;
+        let base = fade_rgb(from, to, mix);
+        let phase = (frame + i) % 24;
+        let intensity = if phase < 12 { phase } else { 24 - phase };
+        let crate::palette::Rgb(r, g, b) = fade_rgb(base, shimmer, (intensity * 21).min(255) as u8);
         out.push_str(&format!("\x1b[38;2;{r};{g};{b}m{ch}"));
     }
     out.push_str("\x1b[0m");
@@ -250,7 +301,10 @@ mod tests {
         );
         // Wraps around after the full cycle.
         let full_cycle = THINKING_EXPRESSION_MS * THINKING_EXPRESSIONS.len() as u64;
-        assert_eq!(thinking_expression(full_cycle, false), THINKING_EXPRESSIONS[0]);
+        assert_eq!(
+            thinking_expression(full_cycle, false),
+            THINKING_EXPRESSIONS[0]
+        );
     }
 
     #[test]

@@ -646,9 +646,9 @@ mod tests {
         assert_eq!(statusline_status(&SessionStatus::Thinking), "thinking");
         assert_eq!(
             statusline_status(&SessionStatus::Tool {
-                name: "bash".into()
+                name: "shell".into()
             }),
-            "tool bash"
+            "tool shell"
         );
         assert_eq!(statusline_status(&SessionStatus::Crashed), "crashed");
     }

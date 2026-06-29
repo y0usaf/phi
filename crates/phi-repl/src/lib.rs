@@ -110,7 +110,7 @@ pub enum SubcallResponse {
 }
 
 /// Notification that a tool function ran inside the environment (emitted by
-/// the prelude around `bash`, `edit_file`, ... calls). Purely informational:
+/// the prelude around `shell`, `edit_file`, ... calls). Purely informational:
 /// the tool already executed in-env; no response flows back.
 #[derive(Clone, Debug)]
 pub enum ToolEvent {

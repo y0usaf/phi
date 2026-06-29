@@ -433,7 +433,7 @@ pub fn header_session_color() -> Color {
 /// seconds. These had zero callers and drifted from the other copies. They
 /// have been removed in favor of the unified `phi_tui::spinner_frame_at`
 /// mechanism.
-pub use phi_tui::{SPINNER_FRAMES, SPINNER_FRAME_MS, spinner_frame_at, spinner_frame_index};
+pub use phi_tui::{SPINNER_FRAME_MS, SPINNER_FRAMES, spinner_frame_at, spinner_frame_index};
 
 // ---------------------------------------------------------------------------
 // Color blending utilities (port of jcode blend + color_to_floats)

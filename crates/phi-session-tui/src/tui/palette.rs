@@ -63,6 +63,10 @@ pub struct InlinePalette {
     /// Secondary accent (raw RGB, ANSI 5 / magenta) — the "to" end of the
     /// thinking-equalizer gradient, matching phi-mux's `accent_2`.
     pub accent_2: Rgb,
+    /// Shimmer accent (raw RGB, ANSI 10 / bright green) — the running status
+    /// color blended onto the thinking gradient to create the
+    /// slide-and-cycle shimmer, matching phi-mux's `running`.
+    pub shimmer_accent: Rgb,
     /// Terminal background (raw RGB), used to blend the scanner trail.
     pub terminal_bg: Rgb,
     /// Markdown/output highlighting palette.
@@ -104,6 +108,7 @@ impl InlinePalette {
             statusbar_bg: s("\x1b[48;2;45;44;53m"),
             spinner_accent: Rgb(100, 200, 220),
             accent_2: Rgb(180, 140, 255),
+            shimmer_accent: Rgb(80, 250, 120),
             terminal_bg: Rgb(20, 20, 26),
             markdown: MarkdownPalette::default_const(),
         }
@@ -150,6 +155,7 @@ impl InlinePalette {
             statusbar_bg: statusbar_bg_from_terminal(colors, &fallback.statusbar_bg),
             spinner_accent: colors.palette[6].unwrap_or(fallback.spinner_accent),
             accent_2: colors.palette[5].unwrap_or(fallback.accent_2),
+            shimmer_accent: colors.palette[10].unwrap_or(fallback.shimmer_accent),
             terminal_bg: colors.background,
             markdown: MarkdownPalette::from_terminal_colors(colors),
         }
@@ -205,7 +211,6 @@ pub(crate) fn statusbar_bg_from_terminal(
     };
     format!("\x1b[48;2;{r};{g};{b}m")
 }
-
 
 /// Derive a background-color SGR from the terminal background, blended
 /// toward an ANSI palette color. Mirrors pi's dark theme approach: the

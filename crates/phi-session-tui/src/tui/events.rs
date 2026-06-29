@@ -243,10 +243,10 @@ impl Ui {
                         .push(format!("{DIM}{:<20}{}{RESET}", usage.trim_end(), spec.desc));
                 }
                 self.pending.push(format!(
-                    "{DIM}!cmd                run bash(cmd) in the REPL; the model sees it next turn{RESET}"
+                    "{DIM}!cmd                run shell(cmd) in the REPL; the model sees it next turn{RESET}"
                 ));
                 self.pending.push(format!(
-                    "{DIM}!!cmd               run bash(cmd) without showing the model{RESET}"
+                    "{DIM}!!cmd               run shell(cmd) without showing the model{RESET}"
                 ));
                 self.pending.push(format!(
                     "{DIM}keys: enter send (mode-dependent mid-run) · shift+enter newline · tab complete/cycle send mode · up/down history{RESET}"
@@ -386,7 +386,7 @@ impl Ui {
         if cmd.is_empty() {
             return;
         }
-        let code = format!("print(bash({}))", python_quote(cmd));
+        let code = format!("print(shell({}))", python_quote(cmd));
         if record {
             self.begin_block();
             self.push_repl_block(0, &code, self.code_limit());

@@ -164,7 +164,7 @@ pub enum RlmEvent {
         #[serde(serialize_with = "duration_secs")]
         duration: Duration,
     },
-    /// A prelude tool (bash, edit_file, ...) started inside this run's REPL.
+    /// A prelude tool (shell, edit_file, ...) started inside this run's REPL.
     ToolStart {
         depth: usize,
         call_id: u64,

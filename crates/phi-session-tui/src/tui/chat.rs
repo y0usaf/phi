@@ -139,7 +139,9 @@ impl Ui {
     /// indentation (the box IS the visual structure, matching pi's
     /// ToolExecutionComponent at `isPartial: true`).
     pub(super) fn status_rows_bg(&self, _depth: usize, text: &str, bg: &str) -> Vec<String> {
-        render_boxed(&[text.to_owned()], bg, self.box_width())
+        let content_width = self.box_width().saturating_sub(2).max(1);
+        let wrapped = wrap_ansi(text, content_width);
+        render_boxed(&wrapped, bg, self.box_width())
     }
 
     pub(super) fn push_status(&mut self, depth: usize, text: String) -> Option<(usize, usize)> {
@@ -415,10 +417,16 @@ impl Ui {
         for line in &identity.body {
             content.extend(wrap_ansi(line, content_width));
         }
-        // Result output: syntax-highlighted when lang is provided, else
-        // plain toolOutput color (mirrors pi's read tool renderResult).
+        // pi-style: a blank line separates the call header from the
+        // result output. pi's renderResult implementations start their
+        // text with a leading \n (e.g. formatReadResult returns
+        // `\n${...}`, rebuildBashResultRenderComponent uses
+        // new Text(`\n${styledOutput}`, 0, 0)). Since the call and
+        // result are separate children in the same Box, that \n renders
+        // as an empty line between them.
         let trimmed = output.trim_end();
         if !trimmed.is_empty() {
+            content.push(String::new());
             let base_rows: Vec<String> = match lang {
                 Some(lang) => highlight_code(trimmed, Some(lang), &self.palette.markdown),
                 None => trimmed
@@ -471,6 +479,9 @@ impl Ui {
         if let Some(text) = content {
             let trimmed = text.trim_end();
             if !trimmed.is_empty() {
+                // pi-style blank line separating header from output
+                // (mirrors the \n prefix in pi's renderResult implementations).
+                rows.push(String::new());
                 let output_rows: Vec<String> = trimmed
                     .lines()
                     .flat_map(|line| {

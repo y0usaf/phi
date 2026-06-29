@@ -248,7 +248,7 @@ mod tests {
     #[test]
     fn status_symbols_match_plan_glyphs() {
         assert_eq!(statusline_status_symbol("thinking"), "⋯");
-        assert_eq!(statusline_status_symbol("tool bash"), "⚙");
+        assert_eq!(statusline_status_symbol("tool shell"), "⚙");
         assert_eq!(statusline_status_symbol("crashed"), "×");
         assert_eq!(statusline_status_symbol("exited"), "◌");
         assert_eq!(statusline_status_symbol("anything"), "•");

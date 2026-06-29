@@ -1,4 +1,4 @@
-def bash(cmd, timeout=120):
+def shell(cmd, timeout=120):
     try:
         proc = _subprocess.run(
             cmd, shell=True, capture_output=True, text=True, timeout=timeout

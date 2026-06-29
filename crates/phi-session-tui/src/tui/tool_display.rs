@@ -41,15 +41,15 @@ pub(crate) fn failed_status_text(
 /// the in-flight status line and the committed card header. `anchor` is the
 /// one-line form (verb + defining argument, e.g. `read src/parser.rs`,
 /// `$ cargo check`); `body` is the multi-line detail folded under it (full
-/// highlighted bash command, repl code, a long/nested unknown-tool arg).
+/// highlighted shell command, repl code, a long/nested unknown-tool arg).
 /// `tool_title` below is a thin projection over this — never duplicate the
 /// per-tool match.
 ///
 /// Anchor-once invariant: the canonical argument (path/command/pattern/value)
 /// is shown **once** across the card — in the anchor when it fits, in the body
-/// when it's richer than a one-line anchor can carry. So bash/repl keep a body
+/// when it's richer than a one-line anchor can carry. So shell/repl keep a body
 /// only for multi-line command/code (the anchor is the truncated first line);
-/// single-line bash/repl have an empty body (the anchor already shows them).
+/// single-line shell/repl have an empty body (the anchor already shows them).
 /// read/write/edit/grep/find/ls have an empty body — the identity IS the
 /// anchor. Unknown tools keep a pretty-printed body only when a value is
 /// multi-line, long, or nested; otherwise the `key=value` anchor carries it.
@@ -99,7 +99,7 @@ pub(crate) fn tool_identity(name: &str, args: &serde_json::Value, p: &InlinePale
     // detail the one-line anchor can't — a value that is multi-line, longer
     // than one line can fit, or nested (object/array). When every value fits
     // the `key=value` anchor un-truncated, the body is empty (anchor-once —
-    // the same invariant read/grep/ls/bash honor: the canonical arg appears
+    // the same invariant read/grep/ls/shell honor: the canonical arg appears
     // once total, the full text shown once when it's richer than the anchor).
     let fallback_body = || {
         if args.is_null() || args.as_object().is_some_and(|m| m.is_empty()) {
@@ -124,7 +124,7 @@ pub(crate) fn tool_identity(name: &str, args: &serde_json::Value, p: &InlinePale
         }
     };
     let (anchor, body): (String, Vec<String>) = match name {
-        "bash" => {
+        "shell" => {
             let cmd = arg("cmd");
             let multiline = cmd.lines().count() > 1;
             let anchor = if multiline {

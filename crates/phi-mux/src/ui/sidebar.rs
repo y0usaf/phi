@@ -8,7 +8,9 @@ use crate::status::SessionStatus;
 use crate::workspace::{MuxProject, MuxSession};
 
 pub const SIDEBAR_ANIMATION_FRAME_MS: u64 = 40;
-pub use phi_tui::{SPINNER_FRAMES as SIDEBAR_SPINNER_FRAMES, SPINNER_FRAME_MS as SIDEBAR_SPINNER_FRAME_MS};
+pub use phi_tui::{
+    SPINNER_FRAME_MS as SIDEBAR_SPINNER_FRAME_MS, SPINNER_FRAMES as SIDEBAR_SPINNER_FRAMES,
+};
 pub const SIDEBAR_NOTIFICATION_GLYPH: &str = "⣿";
 
 const DRAFT_SESSION_LABEL: &str = "new session";

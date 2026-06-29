@@ -164,10 +164,20 @@ impl Ui {
             let p = &self.palette;
             // Gradient the entire line — bars + phrase — from accent (cyan) →
             // accent_2 (magenta), matching phi-mux's sidebar gradient text.
+            // The animated variant overlays a time-driven, position-shifted
+            // shimmer (blending toward the running/green status color), which
+            // slides and cycles across the text — reproducing phi-mux's
+            // `render_sidebar_gradient_text` Active-status shimmer.
             let text = format!("{glyphs} {expression}");
             blocks.push(TranscriptBlock {
                 key: "live:equalizer".to_owned(),
-                lines: vec![gradient_text(&text, p.spinner_accent, p.accent_2)],
+                lines: vec![gradient_text_animated(
+                    &text,
+                    p.spinner_accent,
+                    p.accent_2,
+                    p.shimmer_accent,
+                    elapsed,
+                )],
                 finalized: false,
             });
         }

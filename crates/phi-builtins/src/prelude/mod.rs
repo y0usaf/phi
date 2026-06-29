@@ -20,7 +20,7 @@ pub const CODING_PRELUDE: &str = concat!(
 
 pub fn coding_tools_section() -> String {
     "Pre-defined helper functions (already available in the REPL — call them directly, do not redefine):
-- bash(cmd: str, timeout: int = 120) -> str — run a shell command; returns combined stdout/stderr plus a note on non-zero exit
+- shell(cmd: str, timeout: int = 120) -> str — run a shell command; returns combined stdout/stderr plus a note on non-zero exit
 - read_file(path: str, offset: int = 0, limit: int = 2000, raw: bool = False) -> str — read a file as `[path#TAG]` + `LINE:TEXT` rows (hashline format, default); pass raw=True for plain text without line numbers or tags
 - write_file(path: str, content: str) -> str — write a file, creating parent directories
 - edit_file(path: str | None = None, old: str | None = None, new: str | None = None, replace_all: bool = False, patch: str | None = None) -> str — exact string replacement (old/new) OR hashline patch application (patch); pass patch=\"...\" to apply `[path#TAG]` + `SWAP`/`DEL`/`INS.*` ops with snapshot-tag checks and stale-tag recovery
@@ -30,7 +30,7 @@ pub fn coding_tools_section() -> String {
 
 Most helpers return strings (print them to inspect); `print(...)` output is truncated to 2000 lines / 50KB.
 These run on the user's real machine in the current working directory — edits and commands have real effects.
-For long-running work (builds, test suites, servers) prefer a background job, e.g. `jid = bg(\"out = bash('cargo build', timeout=3600)\")`, then poll `job_status(jid)` / `job_output(jid)` on later turns instead of blocking this one."
+For long-running work (builds, test suites, servers) prefer a background job, e.g. `jid = bg(\"out = shell('cargo build', timeout=3600)\")`, then poll `job_status(jid)` / `job_output(jid)` on later turns instead of blocking this one."
         .to_owned()
 }
 

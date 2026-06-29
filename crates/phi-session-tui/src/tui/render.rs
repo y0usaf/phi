@@ -173,10 +173,33 @@ pub(crate) fn render_flat(title: &str, depth: usize, body: &[String]) -> Vec<Str
     out
 }
 
+/// Prepend `prefix` to a row, injecting it *inside* any background-color SGR
+/// that opens the row so the prefixed cells carry the background and the fill
+/// spans the full terminal width. Rows without a leading bg escape get a
+/// plain-space prefix (non-boxed text lines like code, exec bars, and output).
+fn prepend_indent(row: &str, prefix: &str) -> String {
+    // A background SGR always starts with `[48` (48;2;R;G;B for 24-bit,
+    // 48;5;N for 256-colour). `fill_bg` guarantees the bg escape is the very
+    // first thing on a boxed row.
+    if row.starts_with("\x1b[48") {
+        // Find the terminator of the SGR sequence (the first `m`).
+        if let Some(close) = row.find('m') {
+            // Split after the `m` and insert the prefix *inside* the bg scope
+            // so the indent cells are painted with the background colour.
+            let (esc, rest) = row.split_at(close + 1);
+            return format!("{esc}{prefix}{rest}");
+        }
+    }
+    format!("{prefix}{row}")
+}
+
 /// REPL block: its activity rows inset by one nesting level. No block header —
 /// the code and its output speak for themselves. Body rows are child headers
-/// (tool/subcall lines and their own results), so they get a plain 2-space
-/// indent on top of their own nesting.
+/// (tool/subcall lines and their own results), so they get a 2-space indent
+/// on top of their own nesting. For boxed rows (tool/subcall cards, status
+/// spinners) the indent is injected *inside* the background SGR so the
+/// coloured fill covers the full terminal width instead of starting two
+/// cells in — matching pi's `Box(1,1,bgFn)` full-width background.
 pub(crate) fn render_repl_block(body: &[String], _turn: Option<usize>) -> Vec<String> {
     let prefix = indent(1);
     let mut out = Vec::with_capacity(body.len());
@@ -184,7 +207,7 @@ pub(crate) fn render_repl_block(body: &[String], _turn: Option<usize>) -> Vec<St
         if line.is_empty() {
             out.push(prefix.clone());
         } else {
-            out.push(format!("{prefix}{line}"));
+            out.push(prepend_indent(line, &prefix));
         }
     }
     out
@@ -242,5 +265,3 @@ pub(crate) fn render_boxed(lines: &[String], bg: &str, width: usize) -> Vec<Stri
     out.push(fill_bg(pad, bg, width));
     out
 }
-
-
