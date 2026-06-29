@@ -2,7 +2,8 @@
 
 use super::palette::ScenePalette;
 use super::scene::{Chrome, MuxMode, StatusNoteKind};
-use crate::grid::cell_surface::{CellSurface, display_cell_width, truncate_to_cells};
+use super::sidebar::SIDEBAR_ANIMATION_FRAME_MS;
+use crate::grid::cell_surface::{CellSurface, char_cell_width, display_cell_width, truncate_to_cells};
 use crate::grid::color::Color;
 use crate::grid::layout::CellRect;
 use crate::grid::theme;
@@ -10,6 +11,65 @@ use crate::grid::theme;
 const STATUS_SEPARATOR_GLYPH: &str = "│";
 const STATUS_NOTE_OK_FG: Color = Color::rgb(0, 0, 0);
 const STATUS_NOTE_ERROR_FG: Color = Color::rgb(255, 255, 255);
+
+/// Render text with a sweeping shimmer highlight, mirroring the sidebar's
+/// `render_sidebar_gradient_text` triangle-wave shimmer. Each character's
+/// foreground is brightened by a shimmer intensity derived from `now_ms`
+/// and the character's column position, producing a highlight that sweeps
+/// left-to-right across the text and cycles repeatedly.
+///
+/// `phase_offset` shifts the wave start position so different segments
+/// (mode label, project, session, status) shimmer with slight phase offsets
+/// rather than all peaking at the same column simultaneously.
+#[allow(clippy::too_many_arguments)]
+fn render_shimmer_text(
+    surface: &mut CellSurface,
+    col: i32,
+    row: i32,
+    max_cols: i32,
+    fg: Color,
+    bg: Color,
+    text: &str,
+    now_ms: u64,
+    phase_offset: usize,
+    bold: bool,
+    shimmer_color: Color,
+) {
+    if max_cols <= 0 || text.is_empty() {
+        return;
+    }
+    let frame = (now_ms / SIDEBAR_ANIMATION_FRAME_MS) as usize;
+    let end = col + max_cols;
+    let mut cursor = col;
+    for ch in text.chars() {
+        if cursor >= end {
+            break;
+        }
+        let width = char_cell_width(ch);
+        if cursor + width > end {
+            break;
+        }
+        let slot = phase_offset + (cursor - col).max(0) as usize;
+        let phase = (frame + slot) % 24;
+        let intensity = if phase < 12 { phase } else { 24 - phase };
+        // Blend strongly toward the shimmer color (max ~231/255 = 91%),
+        // matching the sidebar's proven `intensity * 21` approach.
+        let shimmered = theme::fade_toward(fg, shimmer_color, (intensity * 21).min(255) as u8);
+        let mut buf = [0; 4];
+        surface.put_cell_span_styled(
+            cursor,
+            row,
+            width.max(1),
+            ch.encode_utf8(&mut buf),
+            shimmered,
+            bg,
+            false,
+            false,
+            bold,
+        );
+        cursor += width.max(1);
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum StatusbarState {
@@ -39,6 +99,7 @@ pub(super) fn render_statusbar(
     chrome: &Chrome,
     palette: &ScenePalette,
     mode: MuxMode,
+    now_ms: u64,
 ) {
     if panel.cols <= 0 || panel.rows <= 0 {
         return;
@@ -52,7 +113,7 @@ pub(super) fn render_statusbar(
 
     let row = statusline.row;
     let main_col =
-        render_statusbar_sidebar_segment(surface, statusline, sidebar_panel, palette, state, bg);
+        render_statusbar_sidebar_segment(surface, statusline, sidebar_panel, palette, state, bg, now_ms);
     let main_cols = (panel.col + panel.cols - main_col).max(0);
     if main_cols <= 0 {
         return;
@@ -75,21 +136,24 @@ pub(super) fn render_statusbar(
     let center_cols = display_cell_width(&center) as i32;
 
     if left_cols > 0 {
-        surface.put_text(main_col, row, left_cols, fg, bg, &left);
+        render_shimmer_text(surface, main_col, row, left_cols, fg, bg, &left, now_ms, 8, false, palette.running);
     }
 
     if right_cols > 0 {
         let right_fg = statusbar_right_fg(state, &chrome.status, palette);
         let bold = matches!(state, StatusbarState::Ok | StatusbarState::Error);
-        surface.put_text_styled(
+        render_shimmer_text(
+            surface,
             main_col + main_cols - right_cols,
             row,
             right_cols,
             right_fg,
             bg,
             &right,
-            false,
+            now_ms,
+            16,
             bold,
+            palette.accent,
         );
     }
 
@@ -98,7 +162,7 @@ pub(super) fn render_statusbar(
         let left_limit_col = main_col + left_cols + i32::from(left_cols > 0);
         let right_limit_col = main_col + main_cols - right_cols - i32::from(right_cols > 0);
         if centered_col >= left_limit_col && centered_col + center_cols <= right_limit_col {
-            surface.put_text(centered_col, row, center_cols, fg, bg, &center);
+            render_shimmer_text(surface, centered_col, row, center_cols, fg, bg, &center, now_ms, 12, false, palette.accent_2);
         }
     }
 }
@@ -138,18 +202,24 @@ fn render_statusbar_sidebar_segment(
     palette: &ScenePalette,
     state: StatusbarState,
     status_bg: Color,
+    now_ms: u64,
 ) -> i32 {
     let row = panel.row;
     let fg = statusbar_fg(state, palette);
     let Some(sidebar_panel) = sidebar_panel else {
         let mode_label = statusline_mode_label(state);
-        surface.put_text_bold(
+        render_shimmer_text(
+            surface,
             panel.col,
             row,
             crate::MODE_LABEL_WIDTH,
             fg,
             status_bg,
             &mode_label,
+            now_ms,
+            0,
+            true,
+            palette.running,
         );
         return crate::MODE_LABEL_WIDTH.min(panel.cols);
     };
@@ -160,13 +230,18 @@ fn render_statusbar_sidebar_segment(
     }
 
     let mode_label = statusline_mode_label(state);
-    surface.put_text_bold(
+    render_shimmer_text(
+        surface,
         panel.col,
         row,
         crate::MODE_LABEL_WIDTH.min(sidebar_cols),
         fg,
         status_bg,
         &mode_label,
+        now_ms,
+        0,
+        true,
+        palette.running,
     );
 
     let separator_col = panel.col + sidebar_cols - 1;
@@ -270,6 +345,7 @@ mod tests {
             &chrome,
             &ScenePalette::default(),
             MuxMode::Normal,
+            0,
         );
         let row: String = (0..80)
             .map(|col| {

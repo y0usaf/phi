@@ -26,6 +26,7 @@ impl MuxApp {
         let mut last_render_at = tokio::time::Instant::now();
         let mut pending_render = false;
 
+        #[allow(unused_assignments)]
         while !self.quit {
             let mut dirty = false;
             // Principle: whatever the user is looking at must not change
@@ -91,9 +92,9 @@ impl MuxApp {
                             self.note = None;
                             dirty = true;
                         }
-                    if sidebar_has_spinner(&self.workspace.projects) {
-                        dirty = true;
-                    }
+                    // Always redraw on tick so the statusbar shimmer stays
+                    // animated even when no session is busy.
+                    dirty = true;
                 }
             }
 

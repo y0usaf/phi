@@ -24,7 +24,7 @@ use super::ui::screen_snapshot::ScreenSnapshot;
 use super::ui::sidebar::{
     SidebarRowKind, build_sidebar_rows, ensure_sidebar_selection_visible, project_sidebar_title,
     scroll_sidebar_by_rows_value, selected_sidebar_selection_span, session_sidebar_title,
-    sidebar_has_spinner, sidebar_viewport_items, sticky_sidebar_anchor_row,
+    sidebar_viewport_items, sticky_sidebar_anchor_row,
 };
 use crate::clipboard::MuxClipboard;
 use crate::driver::{self as driver, MuxChannels, SessionKey};

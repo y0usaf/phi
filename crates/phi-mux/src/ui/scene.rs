@@ -101,6 +101,7 @@ pub fn render_scene(
         chrome,
         palette,
         mode,
+        now_ms,
     );
     cursor
 }
