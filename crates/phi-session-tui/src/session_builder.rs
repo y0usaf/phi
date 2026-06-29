@@ -93,6 +93,40 @@ async fn build_runtime(cwd: &Path) -> Result<Arc<phi_ext::AppRuntime>> {
     }
     let runtime = Arc::new(rt_builder.build()?);
     runtime.boot().await?;
+    runtime.start_session().await?;
+
+    // ── Extension: ProjectTrust ──────────────────────────────────────
+    // Let extensions gate project trust. If an extension says the project
+    // is untrusted, we log a warning but don't block (extensions can
+    // handle this themselves via the event).
+    match runtime
+        .check_project_trust(&cwd.display().to_string())
+        .await
+    {
+        Ok(decision) if !decision.trusted => {
+            eprintln!(
+                "Warning: project trust check returned untrusted for {}",
+                cwd.display()
+            );
+        }
+        Ok(_) => {}
+        Err(_) => {}
+    }
+
+    // ── Extension: ResourcesDiscover ─────────────────────────────────
+    // Let extensions contribute additional skills, prompts, and themes.
+    match runtime
+        .discover_resources(&cwd.display().to_string(), "startup")
+        .await
+    {
+        Ok(resources) => {
+            // Resources are available on the runtime; the prompt builder
+            // and skill discovery can query them later if needed.
+            let _ = resources;
+        }
+        Err(_) => {}
+    }
+
     Ok(runtime)
 }
 
@@ -169,6 +203,11 @@ pub async fn build_session(
     let runtime = build_runtime(cwd).await?;
     let config = build_rlm_config(cwd, &settings, &runtime);
     let (root, sub) = build_providers(registry, storage, &models, settings.max_tokens);
+
+    // Wire the extension runtime into the providers so provider
+    // request/response interception and message streaming events fire.
+    root.set_runtime(Arc::clone(&runtime));
+    sub.set_runtime(Arc::clone(&runtime));
 
     let payload = ContextPayload::Str(workspace_context(cwd));
     let store = match resume {

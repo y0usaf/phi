@@ -12,7 +12,7 @@ use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 use tokio_util::sync::CancellationToken;
 
 use phi_ext::AppRuntime;
-use phi_ext::{EventKind, EventPayload, LifecycleEvent};
+use phi_ext::{EventKind, EventPayload, EventReturn, LifecycleEvent};
 
 use crate::config::{
     EnvFactory, Events, LimitKind, PythonEnvFactory, RlmCompletion, RlmConfig, RlmEvent,
@@ -26,7 +26,7 @@ use crate::prompts::{
 };
 
 use super::super::TurnState;
-use super::super::helpers::dispatch_event;
+use super::super::helpers::{dispatch_await, dispatch_event};
 use super::super::state::RunState;
 use super::super::subcalls::{EngineSubcalls, Outcome};
 
@@ -214,10 +214,18 @@ impl Rlm {
                 if let Some(rt) = &self.runtime
                     && let Some(sys_msg) = history.iter_mut().find(|m| m.role == Role::System)
                 {
-                    sys_msg.content = rt
-                        .filter_system_prompt(&root_prompt_str, sys_msg.content.clone())
-                        .await
-                        .unwrap_or_else(|_| sys_msg.content.clone());
+                    // Race the system-prompt filter against cancellation (mirror
+                    // of the root-session path). Bind `original` first so the
+                    // future and cancel fallback own clones, isolating the
+                    // mutable borrow of `sys_msg` to the final assignment.
+                    let original = sys_msg.content.clone();
+                    let filtered = tokio::select! {
+                        r = rt.filter_system_prompt(&root_prompt_str, original.clone()) => {
+                            r.unwrap_or_else(|_| original.clone())
+                        }
+                        () = cancel.cancelled() => original.clone(),
+                    };
+                    sys_msg.content = filtered;
                 }
                 self.register_repl_tool();
                 let outcome = self
@@ -369,6 +377,37 @@ impl Rlm {
             );
             let iter_start = Instant::now();
 
+            // ── Context injection from extensions ───────────────────────────
+            // Extensions can inject (label, content) pairs that get prepended
+            // to the user prompt for this turn. This mirrors pi's `context`
+            // event with `MessageInjection` returns.
+            if let Some(rt) = &self.runtime {
+                // Race context injection against cancellation. On cancel,
+                // yield no injections and let the outer `select!` catch cancel
+                // on the next poll — a blocked Context handler can't strand the
+                // iteration.
+                let injections = tokio::select! {
+                    r = rt.context_injections(i as u32) => r.unwrap_or_default(),
+                    () = cancel.cancelled() => Vec::new(),
+                };
+                if !injections.is_empty() {
+                    let mut combined = String::new();
+                    for (label, content) in &injections {
+                        combined.push_str(&format!(
+                            "# {label}
+{content}
+
+"
+                        ));
+                    }
+                    if let Some(last) = history.last_mut() {
+                        if last.role == Role::User {
+                            last.content = format!("{combined}{}", last.content);
+                        }
+                    }
+                }
+            }
+
             // Channel for eagerly executing tool calls during the stream.
             // The sender is cloned into the tool_sink closure; we drop our
             // copy so the channel closes when the closure is dropped (after
@@ -394,33 +433,131 @@ impl Rlm {
                 let mut blocks = Vec::new();
                 while let Some(result) = tool_rx.recv().await {
                     if let Some(code) = result.code {
+                        // ── ToolCall interception ──────────────────────────
+                        // Dispatch tool_call event before execution. If any
+                        // handler returns ToolBlock, skip execution and inject
+                        // a blocked result instead.
+                        let returns = dispatch_await(
+                            &self.runtime,
+                            LifecycleEvent {
+                                kind: EventKind::ToolCall,
+                                payload: EventPayload::ToolCall {
+                                    name: "repl".to_owned(),
+                                    args: json!({ "code": code }),
+                                },
+                            },
+                        )
+                        .await;
+
+                        let blocked = returns
+                            .iter()
+                            .any(|r| matches!(r, EventReturn::ToolBlock { .. }));
+
                         self.events.emit(RlmEvent::CodeExecStart {
                             depth: self.depth,
                             iteration: i,
                             code: code.clone(),
                         });
                         let exec_start = Instant::now();
-                        let repl_result = env
-                            .exec(&code, self.config.exec_timeout)
-                            .await
-                            .unwrap_or_else(|e| ReplResult {
+
+                        // ── Extension: ToolExecutionStart ──────────────────────
+                        if let Some(rt) = &self.runtime {
+                            let call_id = format!("d{}i{}", self.depth, i);
+                            let _ = rt
+                                .on_tool_execution_start(&call_id, "repl", json!({ "code": code }))
+                                .await;
+                        }
+
+                        let repl_result = if blocked {
+                            // Find the block reason for the error message.
+                            let reason = returns
+                                .iter()
+                                .find_map(|r| {
+                                    if let EventReturn::ToolBlock { reason } = r {
+                                        Some(reason.clone())
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .unwrap_or_else(|| "Blocked by extension".to_owned());
+                            ReplResult {
                                 stdout: String::new(),
-                                stderr: e.to_string(),
+                                stderr: format!("Tool blocked: {reason}"),
                                 vars: Vec::new(),
                                 final_answer: None,
                                 duration: exec_start.elapsed(),
                                 truncated: false,
-                            });
+                            }
+                        } else {
+                            env.exec(&code, self.config.exec_timeout)
+                                .await
+                                .unwrap_or_else(|e| ReplResult {
+                                    stdout: String::new(),
+                                    stderr: e.to_string(),
+                                    vars: Vec::new(),
+                                    final_answer: None,
+                                    duration: exec_start.elapsed(),
+                                    truncated: false,
+                                })
+                        };
+
+                        // ── ToolResult interception ───────────────────────
+                        // Dispatch tool_result event after execution. If any
+                        // handler returns ToolResultOverride, use the override
+                        // content instead of the actual result.
+                        // ── Extension: ToolExecutionEnd ────────────────────────
+                        if let Some(rt) = &self.runtime {
+                            let call_id = format!("d{}i{}", self.depth, i);
+                            let _ = rt
+                                .on_tool_execution_end(
+                                    &call_id,
+                                    "repl",
+                                    serde_json::json!({
+                                        "stdout": repl_result.stdout,
+                                        "stderr": repl_result.stderr,
+                                        "duration": repl_result.duration.as_secs_f64(),
+                                    }),
+                                    !repl_result.stderr.is_empty(),
+                                )
+                                .await;
+                        }
+
+                        let result_str = format_execution_result(&repl_result);
+                        let returns = dispatch_await(
+                            &self.runtime,
+                            LifecycleEvent {
+                                kind: EventKind::ToolResult,
+                                payload: EventPayload::ToolResult {
+                                    name: "repl".to_owned(),
+                                    result: result_str.clone(),
+                                    error: if repl_result.stderr.is_empty() {
+                                        None
+                                    } else {
+                                        Some(repl_result.stderr.clone())
+                                    },
+                                },
+                            },
+                        )
+                        .await;
+
+                        let mut final_result = repl_result;
+                        for r in &returns {
+                            if let EventReturn::ToolResultOverride { content } = r {
+                                final_result.stdout = content.clone();
+                                final_result.stderr = String::new();
+                            }
+                        }
+
                         self.events.emit(RlmEvent::CodeExecEnd {
                             depth: self.depth,
                             iteration: i,
-                            stdout: repl_result.stdout.clone(),
-                            stderr: repl_result.stderr.clone(),
-                            duration: repl_result.duration,
+                            stdout: final_result.stdout.clone(),
+                            stderr: final_result.stderr.clone(),
+                            duration: final_result.duration,
                         });
                         blocks.push(ExecutedBlock {
                             code,
-                            result: repl_result,
+                            result: final_result,
                         });
                     }
                 }

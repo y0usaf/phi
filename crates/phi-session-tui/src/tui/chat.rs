@@ -697,7 +697,15 @@ impl Ui {
             .position(|l| *l == current)
             .unwrap_or(0);
         let next = ThinkingLevel::ALL[(idx + 1) % ThinkingLevel::ALL.len()];
+        let prev_str = format!("{:?}", current);
         self.root_lm.set_thinking(next);
+
+        // ── Extension: ThinkingLevelSelect ──────────────────────────────
+        let rt = self.runtime.clone();
+        let next_str = format!("{:?}", next);
+        tokio::spawn(async move {
+            let _ = rt.on_thinking_level_select(&next_str, &prev_str).await;
+        });
     }
 
     pub(super) fn replay_transcript_if_idle(&mut self) {

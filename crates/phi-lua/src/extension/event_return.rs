@@ -80,7 +80,10 @@ pub(super) fn decode_event_return(json_opt: Option<String>) -> Result<Option<Eve
 
     // Provider request override
     if obj.contains_key("provider_payload") {
-        let payload = obj.get("provider_payload").cloned().unwrap_or(serde_json::Value::Null);
+        let payload = obj
+            .get("provider_payload")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
         return Ok(Some(EventReturn::ProviderRequestOverride { payload }));
     }
 
@@ -126,7 +129,10 @@ pub(super) fn decode_event_return(json_opt: Option<String>) -> Result<Option<Eve
     // Project trust result
     if obj.contains_key("trusted") {
         let trusted = obj.get("trusted").and_then(|v| v.as_bool()).unwrap_or(true);
-        let remember = obj.get("remember").and_then(|v| v.as_bool()).unwrap_or(false);
+        let remember = obj
+            .get("remember")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         return Ok(Some(EventReturn::ProjectTrustResult { trusted, remember }));
     }
 
@@ -142,7 +148,10 @@ pub(super) fn decode_event_return(json_opt: Option<String>) -> Result<Option<Eve
 
     // Message replace
     if obj.contains_key("replace_message") {
-        let message = obj.get("replace_message").cloned().unwrap_or(serde_json::Value::Null);
+        let message = obj
+            .get("replace_message")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
         return Ok(Some(EventReturn::MessageReplace { message }));
     }
 

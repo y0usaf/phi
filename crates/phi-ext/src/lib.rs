@@ -24,7 +24,9 @@ pub use message_renderer::MessageRendererSpec;
 pub use provider::{ProviderConfig, ProviderModelConfig};
 pub use runtime::{AppRuntime, DiscoveredResources, ProjectTrustDecision, missing_named_item};
 pub use shortcut::ShortcutSpec;
-pub use snapshot::{CommandSummary, EventHandlerSummary, FlagSummary, RuntimeSnapshot, ShortcutSummary, ToolSummary};
+pub use snapshot::{
+    CommandSummary, EventHandlerSummary, FlagSummary, RuntimeSnapshot, ShortcutSummary, ToolSummary,
+};
 pub use tool::{ToolHandler, ToolInvocation, ToolOutput, ToolParam, ToolSpec};
 pub use traits::{Extension, ExtensionHost};
 

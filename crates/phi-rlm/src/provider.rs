@@ -28,6 +28,9 @@ pub struct ProviderLm {
     max_tokens: Option<u64>,
     /// Tool definitions sent to the API so the model can call them natively.
     tools: RwLock<Vec<ToolDefinition>>,
+    /// Optional extension runtime for provider request/response interception
+    /// and message streaming events. Set after construction via `set_runtime`.
+    runtime: RwLock<Option<Arc<phi_ext::AppRuntime>>>,
 }
 
 /// Transient-looking provider failures are retried; auth/4xx errors are not.
@@ -63,7 +66,14 @@ impl ProviderLm {
             thinking: RwLock::new(thinking),
             max_tokens,
             tools: RwLock::new(Vec::new()),
+            runtime: RwLock::new(None),
         }
+    }
+
+    /// Set the extension runtime for provider interception and message
+    /// streaming events. Called after construction once the runtime is built.
+    pub fn set_runtime(&self, runtime: Arc<phi_ext::AppRuntime>) {
+        *self.runtime.write().unwrap() = Some(runtime);
     }
 
     /// Set the tool definitions the model can call natively.
@@ -254,6 +264,30 @@ impl ProviderLm {
         // request includes the native `tools` array.
         context.tools = self.tools.read().unwrap().clone();
 
+        // ── Extension: BeforeProviderRequest + MessageStart ────────────────
+        // Fire-and-forget: these are observational notifications (their returns
+        // are discarded), so detaching them keeps a slow extension from stalling
+        // the start of the stream. The dispatch primitive bounds each handler.
+        let ext_rt = self.runtime.read().unwrap().clone();
+        if let Some(rt) = &ext_rt {
+            let rt = Arc::clone(rt);
+            let model_label = format!("{}/{}", model.provider, model.id);
+            let messages = prompt.len();
+            let tools = context.tools.len();
+            tokio::spawn(async move {
+                let _ = rt
+                    .before_provider_request(serde_json::json!({
+                        "model": model_label,
+                        "messages": messages,
+                        "tools": tools,
+                    }))
+                    .await;
+                let _ = rt
+                    .on_message_start(serde_json::json!({ "model": model_label }))
+                    .await;
+            });
+        }
+
         let mut stream = self.registry.stream(&model, &context, opts);
         let mut terminal = None;
         let mut accumulated = String::new();
@@ -289,7 +323,27 @@ impl ProviderLm {
                         }
                         AssistantEvent::ToolCallStart { id, name, .. } => {
                             if let Some(sink) = &on_tool_call {
-                                sink(ToolCallEvent::Start { id, name });
+                                sink(ToolCallEvent::Start { id: id.clone(), name: name.clone() });
+                            }
+                            // ── Extension: MessageUpdate (tool call start) ──────
+                            // Fire-and-forget so a slow observer can't block
+                            // stream consumption (and keep `cancel` from being
+                            // polled at this level). `id`/`name` are still owned
+                            // here — the sink call above used clones.
+                            if let Some(rt) = &ext_rt {
+                                let rt = Arc::clone(rt);
+                                tokio::spawn(async move {
+                                    let _ = rt
+                                        .on_message_update(
+                                            serde_json::json!({}),
+                                            serde_json::json!({
+                                                "type": "tool_call_start",
+                                                "id": id,
+                                                "name": name,
+                                            }),
+                                        )
+                                        .await;
+                                });
                             }
                         }
                         AssistantEvent::ToolCallDelta { delta, .. } => {
@@ -308,6 +362,10 @@ impl ProviderLm {
                                     arguments: arguments.clone(),
                                 });
                             }
+                            // ToolExecutionStart is fired by the engine
+                            // (core.rs) right before `env.exec`, with a
+                            // meaningful call_id — firing it here too would
+                            // double-dispatch the event per tool call.
                         }
                         AssistantEvent::Done { message } | AssistantEvent::Error { message } => {
                             terminal = Some(message);
@@ -323,6 +381,32 @@ impl ProviderLm {
                 .error_message
                 .unwrap_or_else(|| "provider error".to_owned()));
         }
+        // ── Extension: AfterProviderResponse + MessageEnd ────────────────
+        // Fire-and-forget: observational notifications with discarded returns,
+        // detached so they can't delay returning the completion.
+        if let Some(rt) = &ext_rt {
+            let rt = Arc::clone(rt);
+            let msg_json = serde_json::json!({
+                "text": message.text(),
+                "stop_reason": format!("{:?}", message.stop_reason),
+                "tool_calls": message.content.iter().filter_map(|block| {
+                    if let AssistantContent::ToolCall(call) = block {
+                        Some(serde_json::json!({
+                            "id": call.id,
+                            "name": call.name,
+                            "arguments": call.arguments,
+                        }))
+                    } else {
+                        None
+                    }
+                }).collect::<Vec<_>>(),
+            });
+            tokio::spawn(async move {
+                let _ = rt.after_provider_response(200, serde_json::json!({})).await;
+                let _ = rt.on_message_end(msg_json).await;
+            });
+        }
+
         // Extract tool calls from the assistant message content blocks.
         let tool_calls: Vec<ToolCall> = message
             .content

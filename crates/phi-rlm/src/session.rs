@@ -8,7 +8,7 @@ use phi_repl::{ReplEnv, ReplResult};
 use tokio_util::sync::CancellationToken;
 
 use phi_ext::AppRuntime;
-use phi_ext::{EventKind, EventPayload, LifecycleEvent};
+use phi_ext::{EventKind, EventPayload, EventReturn, InputActionKind, LifecycleEvent};
 
 use crate::llm_parse::{ExecutedBlock, format_iteration};
 use crate::lm_core::LmHandler;
@@ -99,6 +99,59 @@ impl RlmSession {
                 payload: EventPayload::Empty,
             },
         );
+
+        // ── Input event interception ───────────────────────────────────────
+        // Extensions can transform the user prompt or handle it entirely
+        // (cancel the agent loop). This mirrors pi's `input` event.
+        let mut prompt = prompt.to_owned();
+        if let Some(rt) = &self.rlm.runtime {
+            // Race the Input dispatch against cancellation. This block runs
+            // before `run.begin`, so without this race a blocked Input handler
+            // would make the turn uncancelable. On cancel, yield empty returns
+            // (no transform/handled) and fall through — `run_loop`'s
+            // `cancel.is_cancelled()` check returns the cancelled outcome.
+            let returns = tokio::select! {
+                r = rt.dispatch(LifecycleEvent {
+                    kind: EventKind::Input,
+                    payload: EventPayload::Input {
+                        text: prompt.clone(),
+                        source: Some("interactive".to_owned()),
+                    },
+                }) => r.unwrap_or_default(),
+                () = cancel.cancelled() => Vec::new(),
+            };
+            for r in returns {
+                match r {
+                    EventReturn::InputAction { action, text } => {
+                        match action {
+                            InputActionKind::Transform => {
+                                if let Some(t) = text {
+                                    prompt = t;
+                                }
+                            }
+                            InputActionKind::Handled => {
+                                // Extension handled the input; abort the agent loop.
+                                return self.rlm.complete_run_since(
+                                    Outcome {
+                                        stop: StopCause::Handled,
+                                        response: String::new(),
+                                        error: None,
+                                        iterations: 0,
+                                    },
+                                    &self.handler,
+                                    &usage_before,
+                                    &usage_by_model_before,
+                                    start,
+                                );
+                            }
+                            InputActionKind::Continue => {}
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
         self.run.begin(cancel.clone());
 
         let fresh_env = self.env.is_none();
@@ -126,12 +179,12 @@ impl RlmSession {
         // slice and feed the prompt to sub-LLMs just like any other context.
         // Best-effort: a failure here is non-fatal — the prompt is still in
         // the transcript as "Answer the following: {prompt}".
-        let _ = self.add_context(prompt).await;
+        let _ = self.add_context(&prompt).await;
 
         let env = self.env.as_mut().expect("env started above");
         let metadata = QueryMetadata::from_payload(&self.payload);
         let mut history = if self.transcript.is_empty() {
-            self.rlm.initial_history(metadata, Some(prompt))
+            self.rlm.initial_history(metadata, Some(&prompt))
         } else {
             // Warm send: replay the conversation so far in-band, then append
             // the new prompt as its own user message. If older exchanges were
@@ -166,10 +219,18 @@ impl RlmSession {
         if let Some(rt) = &self.rlm.runtime
             && let Some(sys_msg) = history.iter_mut().find(|m| m.role == Role::System)
         {
-            sys_msg.content = rt
-                .filter_system_prompt(prompt, sys_msg.content.clone())
-                .await
-                .unwrap_or_else(|_| sys_msg.content.clone());
+            // Race the system-prompt filter against cancellation. Bind the
+            // original first so the future and the cancel fallback each own a
+            // clone, isolating the mutable borrow of `sys_msg` to the final
+            // assignment.
+            let original = sys_msg.content.clone();
+            let filtered = tokio::select! {
+                r = rt.filter_system_prompt(&prompt, original.clone()) => {
+                    r.unwrap_or_else(|_| original.clone())
+                }
+                () = cancel.cancelled() => original.clone(),
+            };
+            sys_msg.content = filtered;
         }
         // Drain pending shell executions for cold sends (warm sends already
         // drained above). This is a no-op for warm sends because Vec::append
@@ -380,6 +441,23 @@ impl RlmSession {
         if pairs <= TRANSCRIPT_COMPACTION_THRESHOLD {
             return;
         }
+
+        // ── Extension: SessionBeforeCompact ──────────────────────────────
+        // Let extensions cancel compaction or supply custom instructions.
+        let mut from_extension = false;
+        if let Some(rt) = &self.rlm.runtime {
+            match rt.before_compact(None).await {
+                Ok(Some(instructions)) => {
+                    from_extension = !instructions.is_empty();
+                }
+                Ok(None) => {
+                    // Extension cancelled compaction.
+                    return;
+                }
+                Err(_) => {}
+            }
+        }
+
         // Keep the most recent threshold/2 pairs in-band; compact the rest.
         let keep_pairs = TRANSCRIPT_COMPACTION_THRESHOLD / 2;
         let compact_count = pairs - keep_pairs;
@@ -405,6 +483,16 @@ impl RlmSession {
 
         self.transcript.drain(..cut);
         self.session_summary = Some(compacted);
+
+        // ── Extension: SessionCompact (post-compaction notification) ──────
+        // Fire-and-forget: observational notification, detached so a slow
+        // handler can't delay compaction returning.
+        if let Some(rt) = &self.rlm.runtime {
+            let rt = Arc::clone(rt);
+            tokio::spawn(async move {
+                let _ = rt.on_session_compact(from_extension).await;
+            });
+        }
     }
 
     pub async fn shutdown(&mut self) {

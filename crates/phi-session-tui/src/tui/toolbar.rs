@@ -143,12 +143,24 @@ impl Ui {
         } else {
             (&self.sub_lm, "sub model")
         };
+        let previous = target.model();
+        let new_provider = model.provider.clone();
+        let new_id = model.id.clone();
         target.set_model(model.clone());
         self.model_label = model_label(&self.root_lm.model(), &self.sub_lm.model());
-        self.pending.push(format!(
-            "{DIM}[{which} → {}/{}]{RESET}",
-            model.provider, model.id
-        ));
-        self.warn_if_missing_credentials(model.provider);
+        self.pending
+            .push(format!("{DIM}[{which} → {}/{new_id}]{RESET}", new_provider));
+        self.warn_if_missing_credentials(new_provider.clone());
+
+        // ── Extension: ModelSelect ──────────────────────────────────────
+        let rt = self.runtime.clone();
+        let new_full = format!("{}/{new_id}", new_provider);
+        let prev_full = format!("{}/{}", previous.provider, previous.id);
+        let source = if root { "model" } else { "sub_model" };
+        tokio::spawn(async move {
+            let _ = rt
+                .on_model_select(&new_full, Some(&prev_full), source)
+                .await;
+        });
     }
 }

@@ -175,3 +175,30 @@ pub fn dispatch_event(runtime: &Option<Arc<AppRuntime>>, event: LifecycleEvent) 
         });
     }
 }
+
+/// Awaitable dispatch that returns the collected `EventReturn`s.
+///
+/// Unlike `dispatch_event` (fire-and-forget), this blocks until all handlers
+/// finish and returns their results, enabling interception (tool block,
+/// input transform, compaction cancel, etc.).
+pub async fn dispatch_await(
+    runtime: &Option<Arc<AppRuntime>>,
+    event: LifecycleEvent,
+) -> Vec<phi_ext::EventReturn> {
+    if let Some(rt) = runtime {
+        rt.dispatch(event).await.unwrap_or_default()
+    } else {
+        Vec::new()
+    }
+}
+
+/// Awaitable dispatch for cancelable events. Returns `true` if any handler
+/// returned `Cancel`.
+#[allow(dead_code)]
+pub async fn dispatch_cancelable(runtime: &Option<Arc<AppRuntime>>, event: LifecycleEvent) -> bool {
+    if let Some(rt) = runtime {
+        rt.dispatch_cancelable(event).await.unwrap_or(false)
+    } else {
+        false
+    }
+}

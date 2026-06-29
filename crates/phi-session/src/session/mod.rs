@@ -197,7 +197,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let mut store = store_in(tmp.path());
         store.append(Role::User, "q1").unwrap();
-        let a1 = store.append(Role::Assistant, "a1").unwrap();
+        let _a1 = store.append(Role::Assistant, "a1").unwrap();
         store
             .append_repl(ReplRecord {
                 code: "print(llm_query('hi'))".to_owned(),

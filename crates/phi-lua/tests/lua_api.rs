@@ -2,9 +2,9 @@
 //! Verifies that Lua scripts can register tools, shortcuts, flags, and providers
 //! through the `phi.*` API surface.
 
-use std::sync::Arc;
-use phi_ext::{RuntimeBuilder, EventKind, EventReturn, LifecycleEvent};
+use phi_ext::{EventKind, EventReturn, LifecycleEvent, RuntimeBuilder};
 use phi_lua::LuaExtension;
+use std::sync::Arc;
 
 /// Helper: write a Lua source to a temp file and load it as a LuaExtension.
 fn load_lua(source: &str) -> Arc<phi_ext::AppRuntime> {
@@ -207,10 +207,7 @@ end)
 "#;
     let rt = load_lua(source);
 
-    let cancelled = rt
-        .before_session_switch("new", None)
-        .await
-        .unwrap();
+    let cancelled = rt.before_session_switch("new", None).await.unwrap();
     assert!(cancelled);
 }
 
@@ -227,10 +224,51 @@ end)
 "#;
     let rt = load_lua(source);
 
-    let resources = rt
-        .discover_resources(".", "startup")
-        .await
-        .unwrap();
+    let resources = rt.discover_resources(".", "startup").await.unwrap();
     assert_eq!(resources.skill_paths, vec!["/custom/skills"]);
     assert_eq!(resources.prompt_paths, vec!["/custom/prompts"]);
+}
+
+/// A Lua handler that blocks in a **native** call (`os.execute` of a sleeping
+/// subprocess) cannot be interrupted by the instruction-counting watchdog (the
+/// hook only fires between Lua bytecode instructions). This is the real-world
+/// freeze vector. The central dispatch timeout (Fix 1) must bound it so the
+/// caller stays responsive even while the Lua OS thread is wedged.
+#[cfg(unix)]
+#[tokio::test]
+async fn lua_native_blocked_handler_is_bounded() {
+    use std::time::{Duration, Instant};
+
+    // `turn_start` is a 250ms notification. The handler sleeps 2s in a native
+    // call — far past the budget and past the watchdog's reach.
+    let source = r#"
+phi.on("turn_start", function(payload)
+    os.execute("sleep 2")
+    return nil
+end)
+"#;
+    let rt = load_lua(source);
+
+    let start = Instant::now();
+    let returns = rt
+        .dispatch(LifecycleEvent {
+            kind: EventKind::TurnStart,
+            payload: phi_ext::EventPayload::TurnStart { turn: 1 },
+        })
+        .await
+        .expect("dispatch");
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed < Duration::from_secs(1),
+        "dispatch took {elapsed:?}; expected the ~250ms budget, not the 2s native block"
+    );
+    assert!(
+        returns.is_empty(),
+        "a timed-out handler must contribute no return"
+    );
+    let notes = rt.drain_notifications().join("\n");
+    assert!(
+        notes.contains("timed out"),
+        "missing timeout notification: {notes}"
+    );
 }

@@ -1,12 +1,12 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Result;
 use phi_ext::{
     CommandInvocation, CommandOutput, CommandSpec, EventHandlerRegistration, ExtensionHost,
-    ExtensionManifest, FlagSpec, FlagType, LifecycleEvent, MessageRendererSpec,
-    ProviderConfig, ProviderModelConfig, ShortcutSpec, ToolInvocation, ToolOutput, ToolParam,
-    ToolSpec,
+    ExtensionManifest, FlagSpec, FlagType, LifecycleEvent, MessageRendererSpec, ProviderConfig,
+    ProviderModelConfig, ShortcutSpec, ToolInvocation, ToolOutput, ToolParam, ToolSpec,
 };
 
 mod bridge;
@@ -243,7 +243,9 @@ impl phi_ext::Extension for LuaExtension {
                         reply: rtx,
                     })
                     .map_err(|e| anyhow::anyhow!("lua send: {e}"))?;
-                    let json_opt = rrx.recv().map_err(|e| anyhow::anyhow!("lua recv: {e}"))??;
+                    let json_opt = rrx
+                        .recv_timeout(Duration::from_secs(10))
+                        .map_err(|e| anyhow::anyhow!("lua recv: {e}"))??;
                     decode_event_return(json_opt)
                 }),
             })?;
@@ -264,7 +266,9 @@ impl phi_ext::Extension for LuaExtension {
                         reply: rtx,
                     })
                     .map_err(|e| anyhow::anyhow!("lua send: {e}"))?;
-                    let msg_opt = rrx.recv().map_err(|e| anyhow::anyhow!("lua recv: {e}"))??;
+                    let msg_opt = rrx
+                        .recv_timeout(Duration::from_secs(10))
+                        .map_err(|e| anyhow::anyhow!("lua recv: {e}"))??;
                     Ok(CommandOutput { message: msg_opt })
                 }),
             })?;
@@ -286,7 +290,9 @@ impl phi_ext::Extension for LuaExtension {
                         reply: rtx,
                     })
                     .map_err(|e| anyhow::anyhow!("lua send: {e}"))?;
-                    let content_opt = rrx.recv().map_err(|e| anyhow::anyhow!("lua recv: {e}"))??;
+                    let content_opt = rrx
+                        .recv_timeout(Duration::from_secs(10))
+                        .map_err(|e| anyhow::anyhow!("lua recv: {e}"))??;
                     Ok(ToolOutput {
                         content: content_opt.unwrap_or_default(),
                     })
@@ -335,7 +341,9 @@ impl phi_ext::Extension for LuaExtension {
                         reply: rtx,
                     })
                     .map_err(|e| anyhow::anyhow!("lua send: {e}"))?;
-                    let result = rrx.recv().map_err(|e| anyhow::anyhow!("lua recv: {e}"))??;
+                    let result = rrx
+                        .recv_timeout(Duration::from_secs(10))
+                        .map_err(|e| anyhow::anyhow!("lua recv: {e}"))??;
                     Ok(result.unwrap_or_default())
                 }),
             })?;

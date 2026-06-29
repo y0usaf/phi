@@ -100,6 +100,8 @@ pub enum StopCause {
     Prose,
     /// Root model or environment failure.
     Failed,
+    /// Extension handled the input; agent loop did not run.
+    Handled,
 }
 
 #[derive(Clone, Debug)]

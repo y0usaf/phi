@@ -306,6 +306,15 @@ pub async fn run(setup: TuiSetup, mut io: SessionIo) -> Result<()> {
         ui.greet(&missing_credentials);
     }
     ui.draw()?;
+    // Fire-and-forget TuiReady so a slow/blocked startup handler can't freeze
+    // the UI before the event loop starts. The dispatch primitive bounds the
+    // handler; the event loop begins immediately.
+    {
+        let rt = Arc::clone(&ui.runtime);
+        tokio::spawn(async move {
+            let _ = rt.on_tui_ready().await;
+        });
+    }
 
     loop {
         let quit = tokio::select! {

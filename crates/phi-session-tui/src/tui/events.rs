@@ -344,26 +344,38 @@ impl Ui {
                 };
                 let args = args.to_owned();
                 let runtime = Arc::clone(&self.runtime);
+                // Bound the command handler so a blocked extension command can
+                // only stall the TUI for a bounded window (it still stalls —
+                // `block_in_place` parks this worker — but recovers instead of
+                // hanging forever). The full fix (spawn + a select! arm) is
+                // deferred; `invoke_command` itself is also bounded by the
+                // dispatch timeout, so this is belt-and-suspenders.
                 let result = tokio::task::block_in_place(|| {
                     let rt = runtime;
                     let cn = cmd_name.clone();
                     let ar = args.clone();
-                    tokio::runtime::Handle::current()
-                        .block_on(async move { rt.invoke_command(&cn, &ar).await })
+                    tokio::runtime::Handle::current().block_on(async move {
+                        tokio::time::timeout(Duration::from_secs(10), rt.invoke_command(&cn, &ar))
+                            .await
+                    })
                 });
                 match result {
-                    Ok(Some(output)) => {
+                    Ok(Ok(Some(output))) => {
                         if let Some(msg) = output.message {
                             self.pending.push(String::new());
                             self.pending.push(msg);
                         }
                     }
-                    Ok(None) => {
+                    Ok(Ok(None)) => {
                         self.pending
                             .push(self.warn(&format!("unknown command: {cmd_name}")));
                     }
-                    Err(e) => {
+                    Ok(Err(e)) => {
                         self.pending.push(self.err(&e));
+                    }
+                    Err(_elapsed) => {
+                        self.pending
+                            .push(self.err(&format!("command '{cmd_name}' timed out")));
                     }
                 }
             }
@@ -386,6 +398,19 @@ impl Ui {
         if cmd.is_empty() {
             return;
         }
+
+        // ── Extension: UserBash ──────────────────────────────────────
+        // Let extensions cancel or observe user-initiated bash commands.
+        // Fire-and-forget: if an extension cancels, the command still runs
+        // (cancel is a side-effect signal, not a blocking gate here).
+        let rt = self.runtime.clone();
+        let cmd_str = cmd.to_owned();
+        let exclude = !record;
+        let cwd_str = self.cwd.display().to_string();
+        tokio::spawn(async move {
+            let _ = rt.on_user_bash(&cmd_str, exclude, &cwd_str).await;
+        });
+
         let code = format!("print(bash({}))", python_quote(cmd));
         if record {
             self.begin_block();

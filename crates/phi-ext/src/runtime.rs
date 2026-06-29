@@ -1,13 +1,14 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
+use std::time::Duration;
 
 use tokio::sync::Mutex as TokioMutex;
 
 use crate::{
     CommandInvocation, CommandOutput, CommandSpec, EventHandlerRegistration, EventKind,
-    EventPayload, EventReturn, ExtensionContextRef, ExtensionMode, ExtensionManifest,
-    FlagSpec, LifecycleEvent, MessageRendererSpec, ProviderConfig, ShortcutSpec, ToolSpec,
+    EventPayload, EventReturn, ExtensionContextRef, ExtensionManifest, ExtensionMode, FlagSpec,
+    LifecycleEvent, MessageRendererSpec, ProviderConfig, ShortcutSpec, ToolSpec,
 };
 use anyhow::{Result, anyhow};
 
@@ -33,6 +34,52 @@ pub struct AppRuntime {
     labels: TokioMutex<BTreeMap<String, String>>,
     active_tools: TokioMutex<Vec<String>>,
     pending_messages: Mutex<Vec<String>>,
+}
+
+/// Per-`EventKind` timeout budget for a single extension handler, enforced by
+/// [`AppRuntime::dispatch`]. The categories:
+/// - **Notifications** (return discarded, often high-frequency on the hot path)
+///   get a tight bound so a slow extension can't stall streaming or the agent
+///   loop.
+/// - **Interception gates** (return drives control flow: input transform,
+///   tool block/override, context injection, system-prompt mod, compaction
+///   cancel) get a longer bound since their result is consumed.
+/// - **One-shot startup/lifecycle** events (may do real work: trust checks,
+///   resource discovery) get the longest bound.
+fn handler_timeout(kind: EventKind) -> Duration {
+    use EventKind::*;
+    match kind {
+        // High-frequency streaming notifications (returns discarded).
+        MessageUpdate
+        | ToolExecutionStart
+        | ToolExecutionUpdate
+        | ToolExecutionEnd
+        | MessageStart
+        | MessageEnd
+        | BeforeProviderRequest
+        | AfterProviderResponse
+        | ModelSelect
+        | ThinkingLevelSelect
+        | UserBash
+        | TurnStart
+        | TurnEnd
+        | AgentStart
+        | AgentEnd
+        | SessionShutdown
+        | SessionTree
+        | SessionBeforeTree
+        | SessionCompact
+        | SessionBeforeSwitch
+        | SessionBeforeFork => Duration::from_millis(250),
+        // Interception gates whose return drives control flow.
+        Input | ToolCall | ToolResult | Context | BeforeAgentStart | SessionBeforeCompact => {
+            Duration::from_secs(2)
+        }
+        // One-shot startup/lifecycle (may do real work: trust, resources).
+        RuntimeStart | SessionStart | TuiReady | ProjectTrust | ResourcesDiscover => {
+            Duration::from_secs(5)
+        }
+    }
 }
 
 impl AppRuntime {
@@ -84,12 +131,32 @@ impl AppRuntime {
 
     pub async fn dispatch(&self, event: LifecycleEvent) -> Result<Vec<EventReturn>> {
         let mut returns = Vec::new();
+        let timeout = handler_timeout(event.kind);
         for reg in self.event_handlers.iter().filter(|h| h.event == event.kind) {
             let h = reg.handler.clone();
             let ev = event.clone();
-            let result = tokio::task::spawn_blocking(move || h(ev)).await??;
-            if let Some(r) = result {
-                returns.push(r);
+            // Run each (sync) handler on the blocking pool, but bound the wait
+            // so a single slow/blocked extension cannot wedge whichever task
+            // dispatched the event. On timeout, error, or join failure we log a
+            // notification and CONTINUE to the next handler — one misbehaving
+            // extension must not abort dispatch for the rest, nor for the caller.
+            // (The spawned blocking task is detached on timeout: its thread keeps
+            // running until the handler returns, but we stop waiting on it.)
+            match tokio::time::timeout(timeout, tokio::task::spawn_blocking(move || h(ev))).await {
+                Ok(Ok(Ok(Some(r)))) => returns.push(r),
+                Ok(Ok(Ok(None))) => {}
+                Ok(Ok(Err(e))) => {
+                    self.push_notification(format!("handler '{}' errored: {e}", reg.label));
+                }
+                Ok(Err(e)) => {
+                    self.push_notification(format!("handler '{}' join error: {e}", reg.label));
+                }
+                Err(_elapsed) => {
+                    self.push_notification(format!(
+                        "handler '{}' timed out after {:?}",
+                        reg.label, timeout
+                    ));
+                }
             }
         }
         Ok(returns)
@@ -98,7 +165,9 @@ impl AppRuntime {
     /// Dispatch an event and check if any handler returned `Cancel`.
     pub async fn dispatch_cancelable(&self, event: LifecycleEvent) -> Result<bool> {
         let returns = self.dispatch(event).await?;
-        Ok(returns.iter().any(|r| matches!(r, EventReturn::Cancel { .. })))
+        Ok(returns
+            .iter()
+            .any(|r| matches!(r, EventReturn::Cancel { .. })))
     }
 
     // ── System prompt injection ───────────────────────────────────────────────
@@ -215,17 +284,25 @@ impl AppRuntime {
 
     // ── Provider request interception ────────────────────────────────────────
 
-    pub async fn before_provider_request(&self, payload: serde_json::Value) -> Result<serde_json::Value> {
+    pub async fn before_provider_request(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<serde_json::Value> {
         let returns = self
             .dispatch(LifecycleEvent {
                 kind: EventKind::BeforeProviderRequest,
-                payload: EventPayload::BeforeProviderRequest { payload: payload.clone() },
+                payload: EventPayload::BeforeProviderRequest {
+                    payload: payload.clone(),
+                },
             })
             .await?;
 
         let mut result = payload;
         for r in returns {
-            if let EventReturn::ProviderRequestOverride { payload: override_payload } = r {
+            if let EventReturn::ProviderRequestOverride {
+                payload: override_payload,
+            } = r
+            {
                 result = override_payload;
             }
         }
@@ -256,7 +333,10 @@ impl AppRuntime {
         .await
     }
 
-    pub async fn before_compact(&self, custom_instructions: Option<&str>) -> Result<Option<String>> {
+    pub async fn before_compact(
+        &self,
+        custom_instructions: Option<&str>,
+    ) -> Result<Option<String>> {
         let returns = self
             .dispatch(LifecycleEvent {
                 kind: EventKind::SessionBeforeCompact,
@@ -266,7 +346,10 @@ impl AppRuntime {
             })
             .await?;
 
-        if returns.iter().any(|r| matches!(r, EventReturn::Cancel { .. })) {
+        if returns
+            .iter()
+            .any(|r| matches!(r, EventReturn::Cancel { .. }))
+        {
             return Ok(None);
         }
         for r in returns {
@@ -279,11 +362,16 @@ impl AppRuntime {
 
     // ── Message interception ────────────────────────────────────────────────────
 
-    pub async fn on_message_end(&self, message: serde_json::Value) -> Result<Option<serde_json::Value>> {
+    pub async fn on_message_end(
+        &self,
+        message: serde_json::Value,
+    ) -> Result<Option<serde_json::Value>> {
         let returns = self
             .dispatch(LifecycleEvent {
                 kind: EventKind::MessageEnd,
-                payload: EventPayload::MessageEnd { message: message.clone() },
+                payload: EventPayload::MessageEnd {
+                    message: message.clone(),
+                },
             })
             .await?;
 
@@ -307,6 +395,114 @@ impl AppRuntime {
             },
         })
         .await
+    }
+
+    // ── Provider response ────────────────────────────────────────────────────
+
+    pub async fn after_provider_response(
+        &self,
+        status: u16,
+        headers: serde_json::Value,
+    ) -> Result<()> {
+        self.dispatch(LifecycleEvent {
+            kind: EventKind::AfterProviderResponse,
+            payload: EventPayload::AfterProviderResponse { status, headers },
+        })
+        .await?;
+        Ok(())
+    }
+
+    // ── Message streaming ─────────────────────────────────────────────────────
+
+    pub async fn on_message_start(&self, message: serde_json::Value) -> Result<()> {
+        self.dispatch(LifecycleEvent {
+            kind: EventKind::MessageStart,
+            payload: EventPayload::MessageStart { message },
+        })
+        .await?;
+        Ok(())
+    }
+
+    pub async fn on_message_update(
+        &self,
+        message: serde_json::Value,
+        event: serde_json::Value,
+    ) -> Result<()> {
+        self.dispatch(LifecycleEvent {
+            kind: EventKind::MessageUpdate,
+            payload: EventPayload::MessageUpdate { message, event },
+        })
+        .await?;
+        Ok(())
+    }
+
+    // ── Session compaction (post-compaction notification) ─────────────────────
+
+    pub async fn on_session_compact(&self, from_extension: bool) -> Result<()> {
+        self.dispatch(LifecycleEvent {
+            kind: EventKind::SessionCompact,
+            payload: EventPayload::SessionCompact { from_extension },
+        })
+        .await?;
+        Ok(())
+    }
+
+    // ── Tool execution lifecycle ─────────────────────────────────────────────
+
+    pub async fn on_tool_execution_start(
+        &self,
+        tool_call_id: &str,
+        tool_name: &str,
+        args: serde_json::Value,
+    ) -> Result<()> {
+        self.dispatch(LifecycleEvent {
+            kind: EventKind::ToolExecutionStart,
+            payload: EventPayload::ToolExecutionStart {
+                tool_call_id: tool_call_id.to_owned(),
+                tool_name: tool_name.to_owned(),
+                args,
+            },
+        })
+        .await?;
+        Ok(())
+    }
+
+    pub async fn on_tool_execution_update(
+        &self,
+        tool_call_id: &str,
+        tool_name: &str,
+        partial_result: serde_json::Value,
+    ) -> Result<()> {
+        self.dispatch(LifecycleEvent {
+            kind: EventKind::ToolExecutionUpdate,
+            payload: EventPayload::ToolExecutionUpdate {
+                tool_call_id: tool_call_id.to_owned(),
+                tool_name: tool_name.to_owned(),
+                partial_result,
+            },
+        })
+        .await?;
+        Ok(())
+    }
+
+    pub async fn on_tool_execution_end(
+        &self,
+        tool_call_id: &str,
+        tool_name: &str,
+        result: serde_json::Value,
+        is_error: bool,
+    ) -> Result<()> {
+        self.dispatch(LifecycleEvent {
+            kind: EventKind::ToolExecutionEnd,
+            payload: EventPayload::ToolExecutionEnd {
+                tool_call_id: tool_call_id.to_owned(),
+                tool_name: tool_name.to_owned(),
+                result,
+                is_error,
+            },
+        })
+        .await?;
+        Ok(())
     }
 
     // ── Lifecycle helpers ─────────────────────────────────────────────────────
@@ -585,9 +781,22 @@ impl AppRuntime {
         };
         let h = cmd.handler.clone();
         let args = raw_args.to_owned();
-        let output =
-            tokio::task::spawn_blocking(move || h(CommandInvocation { raw_args: args })).await??;
-        Ok(Some(output))
+        // Bound the command handler the same way `dispatch` bounds event
+        // handlers. Commands are user-initiated and may do real work, so allow
+        // more time; on timeout surface a real error (not `Ok(None)`, which the
+        // caller renders as "unknown command").
+        let timeout = Duration::from_secs(10);
+        match tokio::time::timeout(
+            timeout,
+            tokio::task::spawn_blocking(move || h(CommandInvocation { raw_args: args })),
+        )
+        .await
+        {
+            Ok(Ok(Ok(output))) => Ok(Some(output)),
+            Ok(Ok(Err(e))) => Err(anyhow!("command '{name}': {e}")),
+            Ok(Err(e)) => Err(anyhow!("command '{name}' join error: {e}")),
+            Err(_elapsed) => Err(anyhow!("command '{name}' timed out after {timeout:?}")),
+        }
     }
 
     // ── Tool invocation ───────────────────────────────────────────────────────
@@ -850,10 +1059,7 @@ mod tests {
             .build()
             .expect("build runtime");
 
-        let decision = rt
-            .check_project_trust(".")
-            .await
-            .expect("trust check");
+        let decision = rt.check_project_trust(".").await.expect("trust check");
         assert!(decision.trusted);
         assert!(!decision.remember);
     }
@@ -934,10 +1140,7 @@ mod tests {
             .build()
             .expect("build runtime");
 
-        let instructions = rt
-            .before_compact(None)
-            .await
-            .expect("before compact");
+        let instructions = rt.before_compact(None).await.expect("before compact");
         assert_eq!(instructions, Some("custom instructions".to_owned()));
     }
 
@@ -973,10 +1176,123 @@ mod tests {
             .build()
             .expect("build runtime");
 
-        let instructions = rt
-            .before_compact(None)
-            .await
-            .expect("before compact");
+        let instructions = rt.before_compact(None).await.expect("before compact");
         assert!(instructions.is_none());
+    }
+
+    // ── dispatch timeout / continue-on-error ─────────────────────────────────
+
+    #[tokio::test]
+    async fn dispatch_times_out_blocked_handler() {
+        use std::time::{Duration, Instant};
+
+        // A handler that blocks in a native call past the per-kind budget
+        // (AgentStart is a 250ms notification). Without the central timeout
+        // this would wedge the test for 2s; with it, dispatch returns ~250ms.
+        struct BlockingExt;
+        impl Extension for BlockingExt {
+            fn manifest(&self) -> ExtensionManifest {
+                ExtensionManifest {
+                    id: "test.block".to_owned(),
+                    name: "Block".to_owned(),
+                    version: "0".to_owned(),
+                    description: "test block".to_owned(),
+                }
+            }
+            fn register(&self, host: &mut dyn ExtensionHost) -> anyhow::Result<()> {
+                host.subscribe(EventHandlerRegistration {
+                    event: EventKind::AgentStart,
+                    label: "test.block".to_owned(),
+                    handler: Arc::new(|_ev| {
+                        std::thread::sleep(Duration::from_secs(2));
+                        Ok(None)
+                    }),
+                })?;
+                Ok(())
+            }
+        }
+
+        let rt = RuntimeBuilder::new()
+            .with_cwd(std::path::Path::new("."))
+            .register_extension(BlockingExt)
+            .build()
+            .expect("build runtime");
+
+        let start = Instant::now();
+        let returns = rt
+            .dispatch(LifecycleEvent::empty(EventKind::AgentStart))
+            .await
+            .expect("dispatch");
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "dispatch took {elapsed:?}; expected the ~250ms budget, not the 2s block"
+        );
+        assert!(
+            returns.is_empty(),
+            "a timed-out handler must contribute no return"
+        );
+        let notes = rt.drain_notifications().join("\n");
+        assert!(
+            notes.contains("timed out"),
+            "missing timeout notification: {notes}"
+        );
+    }
+
+    #[tokio::test]
+    async fn dispatch_continues_past_erroring_handler() {
+        // Two handlers on the same event: the first errors, the second returns
+        // a value. Continue-on-error means the second handler still runs and its
+        // return is collected (the old `??` would have aborted after the first).
+        struct MultiExt;
+        impl Extension for MultiExt {
+            fn manifest(&self) -> ExtensionManifest {
+                ExtensionManifest {
+                    id: "test.multi".to_owned(),
+                    name: "Multi".to_owned(),
+                    version: "0".to_owned(),
+                    description: "test multi".to_owned(),
+                }
+            }
+            fn register(&self, host: &mut dyn ExtensionHost) -> anyhow::Result<()> {
+                host.subscribe(EventHandlerRegistration {
+                    event: EventKind::ModelSelect,
+                    label: "test.multi.err".to_owned(),
+                    handler: Arc::new(|_ev| Err(anyhow::anyhow!("boom"))),
+                })?;
+                host.subscribe(EventHandlerRegistration {
+                    event: EventKind::ModelSelect,
+                    label: "test.multi.ok".to_owned(),
+                    handler: Arc::new(|_ev| {
+                        Ok(Some(EventReturn::SystemPromptMod {
+                            prepend: None,
+                            append: Some("ok".to_owned()),
+                        }))
+                    }),
+                })?;
+                Ok(())
+            }
+        }
+
+        let rt = RuntimeBuilder::new()
+            .with_cwd(std::path::Path::new("."))
+            .register_extension(MultiExt)
+            .build()
+            .expect("build runtime");
+
+        let returns = rt
+            .dispatch(LifecycleEvent::empty(EventKind::ModelSelect))
+            .await
+            .expect("dispatch");
+        assert_eq!(
+            returns.len(),
+            1,
+            "continue-on-error lost the second handler's return: {returns:?}"
+        );
+        let notes = rt.drain_notifications().join("\n");
+        assert!(
+            notes.contains("errored"),
+            "missing error notification: {notes}"
+        );
     }
 }

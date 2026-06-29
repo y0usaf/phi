@@ -99,15 +99,16 @@ pub(super) fn setup_phi_global(lua: &mlua::Lua) -> mlua::Result<()> {
 
     // phi.register_provider(name, config)
     // config: { base_url = "...", api_key = "...", api = "...", models = {...} }
-    let register_provider_fn = lua.create_function(|lua, (name, config): (String, mlua::Table)| {
-        let globals = lua.globals();
-        let providers: mlua::Table = globals.get("_phi_providers")?;
-        providers.set(name.as_str(), config)?;
-        let reg: mlua::Table = globals.get("_phi_registered_providers")?;
-        let len = reg.raw_len();
-        reg.raw_set(len + 1, name)?;
-        Ok(())
-    })?;
+    let register_provider_fn =
+        lua.create_function(|lua, (name, config): (String, mlua::Table)| {
+            let globals = lua.globals();
+            let providers: mlua::Table = globals.get("_phi_providers")?;
+            providers.set(name.as_str(), config)?;
+            let reg: mlua::Table = globals.get("_phi_registered_providers")?;
+            let len = reg.raw_len();
+            reg.raw_set(len + 1, name)?;
+            Ok(())
+        })?;
     phi.set("register_provider", register_provider_fn)?;
 
     // phi.register_message_renderer(custom_type, handler)
