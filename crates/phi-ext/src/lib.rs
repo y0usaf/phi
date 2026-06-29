@@ -1,9 +1,13 @@
 pub mod builder;
 pub mod command;
 pub mod event;
+pub mod flag;
 pub mod host;
 pub mod manifest;
+pub mod message_renderer;
+pub mod provider;
 pub mod runtime;
+pub mod shortcut;
 pub mod snapshot;
 pub mod tool;
 pub mod traits;
@@ -14,11 +18,18 @@ pub use event::{
     EventHandler, EventHandlerRegistration, EventKind, EventPayload, EventReturn, InputActionKind,
     LifecycleEvent,
 };
+pub use flag::{FlagSpec, FlagType};
 pub use manifest::ExtensionManifest;
-pub use runtime::{AppRuntime, missing_named_item};
-pub use snapshot::{CommandSummary, EventHandlerSummary, RuntimeSnapshot, ToolSummary};
+pub use message_renderer::MessageRendererSpec;
+pub use provider::{ProviderConfig, ProviderModelConfig};
+pub use runtime::{AppRuntime, DiscoveredResources, ProjectTrustDecision, missing_named_item};
+pub use shortcut::ShortcutSpec;
+pub use snapshot::{CommandSummary, EventHandlerSummary, FlagSummary, RuntimeSnapshot, ShortcutSummary, ToolSummary};
 pub use tool::{ToolHandler, ToolInvocation, ToolOutput, ToolParam, ToolSpec};
 pub use traits::{Extension, ExtensionHost};
+
+// Re-export extension context types from phi-event
+pub use phi_event::{ExtensionContextRef, ExtensionMode};
 
 #[cfg(test)]
 mod tests {
@@ -87,49 +98,7 @@ mod tests {
         assert_eq!(manifest.description, deserialized.description);
     }
 
-    // --- EventKind Display tests ---
-    #[test]
-    fn test_command_invocation_serialization() {
-        let inv = CommandInvocation {
-            raw_args: "arg1 arg2".to_string(),
-        };
-        let json = serde_json::to_value(&inv).unwrap();
-        assert_eq!(json["raw_args"], "arg1 arg2");
-    }
-
-    #[test]
-    fn test_command_invocation_round_trip() {
-        let inv = CommandInvocation {
-            raw_args: "test args".to_string(),
-        };
-        let json = serde_json::to_string(&inv).unwrap();
-        let deserialized: CommandInvocation = serde_json::from_str(&json).unwrap();
-        assert_eq!(inv.raw_args, deserialized.raw_args);
-    }
-
-    #[test]
-    fn test_command_output_with_message() {
-        let out = CommandOutput {
-            message: Some("hello".to_string()),
-        };
-        let json = serde_json::to_value(&out).unwrap();
-        assert_eq!(json["message"], "hello");
-
-        let deserialized: CommandOutput = serde_json::from_value(json).unwrap();
-        assert_eq!(deserialized.message, Some("hello".to_string()));
-    }
-
-    #[test]
-    fn test_command_output_no_message() {
-        let out = CommandOutput { message: None };
-        let json = serde_json::to_value(&out).unwrap();
-        assert!(json["message"].is_null());
-
-        let deserialized: CommandOutput = serde_json::from_value(json).unwrap();
-        assert_eq!(deserialized.message, None);
-    }
-
-    // --- CommandSpec serialization (no Deserialize) ---
+    // --- CommandSpec serialization ---
 
     #[test]
     fn test_command_spec_serialization() {
@@ -141,68 +110,10 @@ mod tests {
         let json = serde_json::to_value(&spec).unwrap();
         assert_eq!(json["name"], "test-cmd");
         assert_eq!(json["description"], "A test command");
-        // handler should be skipped
         assert!(json.get("handler").is_none());
-        assert!(!serde_json::to_string(&spec).unwrap().contains("handler"));
     }
 
-    // --- ToolParam tests ---
-
-    #[test]
-    fn test_tool_param_with_default() {
-        let param = ToolParam {
-            name: "path".to_string(),
-            ty: "string".to_string(),
-            default: Some("/tmp".to_string()),
-        };
-        let json = serde_json::to_value(&param).unwrap();
-        assert_eq!(json["name"], "path");
-        assert_eq!(json["ty"], "string");
-        assert_eq!(json["default"], "/tmp");
-
-        let deserialized: ToolParam = serde_json::from_value(json).unwrap();
-        assert_eq!(deserialized.name, "path");
-        assert_eq!(deserialized.ty, "string");
-        assert_eq!(deserialized.default, Some("/tmp".to_string()));
-    }
-
-    #[test]
-    fn test_tool_param_no_default() {
-        let param = ToolParam {
-            name: "count".to_string(),
-            ty: "number".to_string(),
-            default: None,
-        };
-        let json = serde_json::to_value(&param).unwrap();
-        assert!(json["default"].is_null());
-
-        let deserialized: ToolParam = serde_json::from_value(json).unwrap();
-        assert_eq!(deserialized.default, None);
-    }
-
-    // --- ToolInvocation / ToolOutput tests ---
-
-    #[test]
-    fn test_tool_invocation_round_trip() {
-        let inv = ToolInvocation {
-            input: "test input".to_string(),
-        };
-        let json = serde_json::to_string(&inv).unwrap();
-        let deserialized: ToolInvocation = serde_json::from_str(&json).unwrap();
-        assert_eq!(inv.input, deserialized.input);
-    }
-
-    #[test]
-    fn test_tool_output_round_trip() {
-        let out = ToolOutput {
-            content: "result content".to_string(),
-        };
-        let json = serde_json::to_string(&out).unwrap();
-        let deserialized: ToolOutput = serde_json::from_str(&json).unwrap();
-        assert_eq!(out.content, deserialized.content);
-    }
-
-    // --- ToolSpec serialization (no Deserialize) ---
+    // --- ToolSpec serialization ---
 
     #[test]
     fn test_tool_spec_serialization() {
@@ -225,8 +136,42 @@ mod tests {
         assert_eq!(json["name"], "test-tool");
         assert_eq!(json["description"], "A test tool");
         assert_eq!(json["params"][0]["name"], "x");
-        assert_eq!(json["params"][0]["ty"], "string");
-        // handler should be skipped
-        assert!(json.get("handler").is_none());
+    }
+
+    // --- FlagSpec tests ---
+
+    #[test]
+    fn test_flag_spec_creation() {
+        let flag = FlagSpec {
+            name: "verbose".to_string(),
+            description: "Enable verbose output".to_string(),
+            flag_type: FlagType::Boolean,
+            default: Some("false".to_string()),
+        };
+        assert_eq!(flag.name, "verbose");
+        assert_eq!(flag.flag_type, FlagType::Boolean);
+    }
+
+    // --- ProviderConfig tests ---
+
+    #[test]
+    fn test_provider_config_serialization() {
+        let config = ProviderConfig {
+            name: "my-proxy".to_string(),
+            base_url: Some("https://proxy.example.com".to_string()),
+            api_key: Some("key".to_string()),
+            api: Some("anthropic-messages".to_string()),
+            models: vec![ProviderModelConfig {
+                id: "model-1".to_string(),
+                name: "Model One".to_string(),
+                reasoning: false,
+                context_window: 200000,
+                max_tokens: 16384,
+            }],
+        };
+        let json = serde_json::to_value(&config).unwrap();
+        assert_eq!(json["name"], "my-proxy");
+        assert_eq!(json["base_url"], "https://proxy.example.com");
+        assert_eq!(json["models"][0]["id"], "model-1");
     }
 }

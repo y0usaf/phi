@@ -1,6 +1,6 @@
 use anyhow::Result;
 
-use super::bridge::{call_lua_command, call_lua_event};
+use super::bridge::{call_lua_command, call_lua_event, call_lua_tool};
 
 // ---------------------------------------------------------------------------
 // Watchdog & Timeout Configuration
@@ -25,6 +25,11 @@ pub enum LuaMsg {
     InvokeCommand {
         name: String,
         args: String,
+        reply: std::sync::mpsc::SyncSender<Result<Option<String>>>,
+    },
+    InvokeTool {
+        name: String,
+        input: String,
         reply: std::sync::mpsc::SyncSender<Result<Option<String>>>,
     },
 }
@@ -63,6 +68,12 @@ fn lua_thread_loop(lua: &mlua::Lua, rx: std::sync::mpsc::Receiver<LuaMsg>) {
             Ok(LuaMsg::InvokeCommand { name, args, reply }) => {
                 let res = run_with_timeout(lua, &deadline, DEFAULT_TIMEOUT_MS, || {
                     call_lua_command(lua, &name, &args)
+                });
+                let _ = reply.send(res);
+            }
+            Ok(LuaMsg::InvokeTool { name, input, reply }) => {
+                let res = run_with_timeout(lua, &deadline, DEFAULT_TIMEOUT_MS, || {
+                    call_lua_tool(lua, &name, &input)
                 });
                 let _ = reply.send(res);
             }
@@ -129,12 +140,5 @@ where
     let res = res.unwrap_or_else(|p| std::panic::resume_unwind(p));
 
     // Bubble up timeout or execution errors as anyhow::Error
-    res.map_err(|e| {
-        let msg = e.to_string();
-        if msg.contains("Lua execution timed out") {
-            anyhow::anyhow!("Lua timeout watchdog triggered")
-        } else {
-            e
-        }
-    })
+    res
 }

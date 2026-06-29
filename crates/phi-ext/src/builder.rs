@@ -65,7 +65,11 @@ impl RuntimeBuilder {
             manifests,
             host.tools,
             host.commands,
+            host.shortcuts,
+            host.flags,
             host.event_handlers,
+            host.message_renderers,
+            host.providers,
         ))
     }
 }

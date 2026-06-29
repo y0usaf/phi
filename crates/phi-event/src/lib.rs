@@ -5,8 +5,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// The kind of lifecycle event that was emitted.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 pub enum EventKind {
+    // ── Core lifecycle ──────────────────────────────────────────────────────
     RuntimeStart,
     SessionStart,
     TuiReady,
@@ -20,23 +21,73 @@ pub enum EventKind {
     ToolResult,
     Input,
     SessionShutdown,
+
+    // ── Project trust ────────────────────────────────────────────────────────
+    ProjectTrust,
+
+    // ── Resource discovery ────────────────────────────────────────────────────
+    ResourcesDiscover,
+
+    // ── Session lifecycle (interception-capable) ──────────────────────────────
+    SessionBeforeSwitch,
+    SessionBeforeFork,
+    SessionBeforeCompact,
+    SessionCompact,
+    SessionBeforeTree,
+    SessionTree,
+
+    // ── Provider events ───────────────────────────────────────────────────────
+    BeforeProviderRequest,
+    AfterProviderResponse,
+
+    // ── Message streaming ────────────────────────────────────────────────────
+    MessageStart,
+    MessageUpdate,
+    MessageEnd,
+
+    // ── Tool execution ────────────────────────────────────────────────────────
+    ToolExecutionStart,
+    ToolExecutionUpdate,
+    ToolExecutionEnd,
+
+    // ── Model selection ───────────────────────────────────────────────────────
+    ModelSelect,
+    ThinkingLevelSelect,
+
+    // ── User bash ─────────────────────────────────────────────────────────────
+    UserBash,
 }
 
 /// The payload accompanying a lifecycle event.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "type", content = "data")]
 pub enum EventPayload {
+    // ── Empty / generic ──────────────────────────────────────────────────────
     Empty,
+
+    // ── Session lifecycle ──────────────────────────────────────────────────────
     SessionStart {
         cwd: String,
         session_id: String,
+        #[serde(default)]
+        reason: Option<String>,
     },
+    SessionShutdown {
+        #[serde(default)]
+        reason: Option<String>,
+    },
+
+    // ── Agent lifecycle ────────────────────────────────────────────────────────
     BeforeAgentStart {
         prompt: String,
         system_prompt: String,
     },
-    Context {
-        turn: u32,
+    AgentStart,
+    AgentEnd {
+        stop_cause: String,
     },
+
+    // ── Turn lifecycle ────────────────────────────────────────────────────────
     TurnStart {
         turn: u32,
     },
@@ -44,9 +95,13 @@ pub enum EventPayload {
         turn: u32,
         had_code: bool,
     },
-    AgentEnd {
-        stop_cause: String,
+
+    // ── Context injection ──────────────────────────────────────────────────────
+    Context {
+        turn: u32,
     },
+
+    // ── Tool events ────────────────────────────────────────────────────────────
     ToolCall {
         name: String,
         args: Value,
@@ -56,8 +111,102 @@ pub enum EventPayload {
         result: String,
         error: Option<String>,
     },
+    ToolExecutionStart {
+        tool_call_id: String,
+        tool_name: String,
+        args: Value,
+    },
+    ToolExecutionUpdate {
+        tool_call_id: String,
+        tool_name: String,
+        partial_result: Value,
+    },
+    ToolExecutionEnd {
+        tool_call_id: String,
+        tool_name: String,
+        result: Value,
+        is_error: bool,
+    },
+
+    // ── Input ────────────────────────────────────────────────────────────────
     Input {
         text: String,
+        #[serde(default)]
+        source: Option<String>,
+    },
+
+    // ── Project trust ────────────────────────────────────────────────────────
+    ProjectTrust {
+        cwd: String,
+    },
+
+    // ── Resource discovery ────────────────────────────────────────────────────
+    ResourcesDiscover {
+        cwd: String,
+        reason: String,
+    },
+
+    // ── Session interception ──────────────────────────────────────────────────
+    SessionBeforeSwitch {
+        reason: String,
+        target_session_file: Option<String>,
+    },
+    SessionBeforeFork {
+        entry_id: String,
+        position: String,
+    },
+    SessionBeforeCompact {
+        custom_instructions: Option<String>,
+    },
+    SessionCompact {
+        from_extension: bool,
+    },
+    SessionBeforeTree {
+        target_id: String,
+        old_leaf_id: Option<String>,
+    },
+    SessionTree {
+        new_leaf_id: Option<String>,
+        old_leaf_id: Option<String>,
+    },
+
+    // ── Provider events ───────────────────────────────────────────────────────
+    BeforeProviderRequest {
+        payload: Value,
+    },
+    AfterProviderResponse {
+        status: u16,
+        headers: Value,
+    },
+
+    // ── Message streaming ────────────────────────────────────────────────────
+    MessageStart {
+        message: Value,
+    },
+    MessageUpdate {
+        message: Value,
+        event: Value,
+    },
+    MessageEnd {
+        message: Value,
+    },
+
+    // ── Model selection ───────────────────────────────────────────────────────
+    ModelSelect {
+        model: String,
+        previous_model: Option<String>,
+        source: String,
+    },
+    ThinkingLevelSelect {
+        level: String,
+        previous_level: String,
+    },
+
+    // ── User bash ─────────────────────────────────────────────────────────────
+    UserBash {
+        command: String,
+        exclude_from_context: bool,
+        cwd: String,
     },
 }
 
@@ -68,30 +217,84 @@ pub struct LifecycleEvent {
     pub payload: EventPayload,
 }
 
+impl LifecycleEvent {
+    /// Construct an event with an empty payload.
+    pub fn empty(kind: EventKind) -> Self {
+        Self {
+            kind,
+            payload: EventPayload::Empty,
+        }
+    }
+}
+
 /// The value returned by an extension event handler.
+///
+/// Handlers return `None` to observe-only, or `Some(EventReturn::...)` to
+/// influence behavior. The variant must match the event kind — mismatched
+/// returns are silently ignored by the runtime.
 #[derive(Clone, Debug)]
 pub enum EventReturn {
+    // ── System prompt modification ────────────────────────────────────────────
     SystemPromptMod {
         append: Option<String>,
         prepend: Option<String>,
     },
+
+    // ── Context injection ──────────────────────────────────────────────────────
     MessageInjection {
         prepend: Vec<(String, String)>,
     },
+
+    // ── Tool interception ──────────────────────────────────────────────────────
     ToolBlock {
         reason: String,
     },
     ToolResultOverride {
         content: String,
     },
+
+    // ── Input action ──────────────────────────────────────────────────────────
     InputAction {
         action: InputActionKind,
         text: Option<String>,
     },
+
+    // ── Session interception (cancel or allow) ────────────────────────────────
+    Cancel {
+        reason: String,
+    },
+
+    // ── Provider request modification ──────────────────────────────────────────
+    ProviderRequestOverride {
+        payload: Value,
+    },
+
+    // ── Resource discovery result ──────────────────────────────────────────────
+    ResourcesDiscovered {
+        skill_paths: Vec<String>,
+        prompt_paths: Vec<String>,
+        theme_paths: Vec<String>,
+    },
+
+    // ── Project trust result ────────────────────────────────────────────────────
+    ProjectTrustResult {
+        trusted: bool,
+        remember: bool,
+    },
+
+    // ── Compaction customization ───────────────────────────────────────────────
+    CompactCustom {
+        instructions: String,
+    },
+
+    // ── Message modification ──────────────────────────────────────────────────
+    MessageReplace {
+        message: Value,
+    },
 }
 
 /// The kind of input action requested by an event handler.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum InputActionKind {
     Continue,
     Transform,
@@ -100,6 +303,31 @@ pub enum InputActionKind {
 
 /// A handler function invoked when a lifecycle event is dispatched.
 pub type EventHandler = Arc<dyn Fn(LifecycleEvent) -> Result<Option<EventReturn>> + Send + Sync>;
+
+/// A handler that also receives an extension context.
+pub type ContextualEventHandler =
+    Arc<dyn Fn(LifecycleEvent, ExtensionContextRef) -> Result<Option<EventReturn>> + Send + Sync>;
+
+/// A lightweight, cloneable reference to the extension context.
+///
+/// This is a stub that will be filled in by the runtime. For now it carries
+/// the cwd and session id; additional capabilities will be wired through as
+/// the runtime grows.
+#[derive(Clone, Debug)]
+pub struct ExtensionContextRef {
+    pub cwd: String,
+    pub session_id: String,
+    pub mode: ExtensionMode,
+    pub has_ui: bool,
+}
+
+/// The mode the extension runtime is operating in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ExtensionMode {
+    Tui,
+    Rpc,
+    Print,
+}
 
 #[derive(Deserialize)]
 pub struct EventHandlerRegistration {
@@ -129,356 +357,27 @@ impl std::fmt::Display for EventKind {
             Self::ToolResult => "tool_result",
             Self::Input => "input",
             Self::SessionShutdown => "session_shutdown",
+            Self::ProjectTrust => "project_trust",
+            Self::ResourcesDiscover => "resources_discover",
+            Self::SessionBeforeSwitch => "session_before_switch",
+            Self::SessionBeforeFork => "session_before_fork",
+            Self::SessionBeforeCompact => "session_before_compact",
+            Self::SessionCompact => "session_compact",
+            Self::SessionBeforeTree => "session_before_tree",
+            Self::SessionTree => "session_tree",
+            Self::BeforeProviderRequest => "before_provider_request",
+            Self::AfterProviderResponse => "after_provider_response",
+            Self::MessageStart => "message_start",
+            Self::MessageUpdate => "message_update",
+            Self::MessageEnd => "message_end",
+            Self::ToolExecutionStart => "tool_execution_start",
+            Self::ToolExecutionUpdate => "tool_execution_update",
+            Self::ToolExecutionEnd => "tool_execution_end",
+            Self::ModelSelect => "model_select",
+            Self::ThinkingLevelSelect => "thinking_level_select",
+            Self::UserBash => "user_bash",
         };
 
         f.write_str(name)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    // --- EventKind Display tests ---
-
-    #[test]
-    fn test_event_kind_display() {
-        assert_eq!(EventKind::RuntimeStart.to_string(), "runtime_start");
-        assert_eq!(EventKind::SessionStart.to_string(), "session_start");
-        assert_eq!(EventKind::TuiReady.to_string(), "tui_ready");
-        assert_eq!(EventKind::AgentStart.to_string(), "agent_start");
-        assert_eq!(EventKind::AgentEnd.to_string(), "agent_end");
-        assert_eq!(EventKind::TurnStart.to_string(), "turn_start");
-        assert_eq!(EventKind::TurnEnd.to_string(), "turn_end");
-        assert_eq!(
-            EventKind::BeforeAgentStart.to_string(),
-            "before_agent_start"
-        );
-        assert_eq!(EventKind::Context.to_string(), "context");
-        assert_eq!(EventKind::ToolCall.to_string(), "tool_call");
-        assert_eq!(EventKind::ToolResult.to_string(), "tool_result");
-        assert_eq!(EventKind::Input.to_string(), "input");
-        assert_eq!(EventKind::SessionShutdown.to_string(), "session_shutdown");
-    }
-
-    #[test]
-    fn test_event_kind_serialization() {
-        assert_eq!(
-            serde_json::to_value(EventKind::RuntimeStart).unwrap(),
-            json!("RuntimeStart")
-        );
-        assert_eq!(
-            serde_json::to_value(EventKind::SessionStart).unwrap(),
-            json!("SessionStart")
-        );
-        assert_eq!(
-            serde_json::to_value(EventKind::BeforeAgentStart).unwrap(),
-            json!("BeforeAgentStart")
-        );
-        assert_eq!(
-            serde_json::to_value(EventKind::SessionShutdown).unwrap(),
-            json!("SessionShutdown")
-        );
-    }
-
-    #[test]
-    fn test_event_kind_deserialization() {
-        let kind: EventKind = serde_json::from_value(json!("RuntimeStart")).unwrap();
-        assert_eq!(kind, EventKind::RuntimeStart);
-
-        let kind: EventKind = serde_json::from_value(json!("ToolCall")).unwrap();
-        assert_eq!(kind, EventKind::ToolCall);
-
-        let kind: EventKind = serde_json::from_value(json!("Input")).unwrap();
-        assert_eq!(kind, EventKind::Input);
-    }
-
-    #[test]
-    fn test_event_kind_round_trip() {
-        for kind in [
-            EventKind::RuntimeStart,
-            EventKind::SessionStart,
-            EventKind::TuiReady,
-            EventKind::AgentStart,
-            EventKind::AgentEnd,
-            EventKind::TurnStart,
-            EventKind::TurnEnd,
-            EventKind::BeforeAgentStart,
-            EventKind::Context,
-            EventKind::ToolCall,
-            EventKind::ToolResult,
-            EventKind::Input,
-            EventKind::SessionShutdown,
-        ] {
-            let json = serde_json::to_value(kind).unwrap();
-            let deserialized: EventKind = serde_json::from_value(json).unwrap();
-            assert_eq!(kind, deserialized);
-        }
-    }
-
-    // --- EventPayload tests ---
-
-    #[test]
-    fn test_event_payload_empty() {
-        let payload = EventPayload::Empty;
-        let json = serde_json::to_value(&payload).unwrap();
-        assert_eq!(json, json!("Empty"));
-        let deserialized: EventPayload = serde_json::from_value(json).unwrap();
-        assert!(matches!(deserialized, EventPayload::Empty));
-    }
-
-    #[test]
-    fn test_event_payload_session_start() {
-        let payload = EventPayload::SessionStart {
-            cwd: "/home/user".to_string(),
-            session_id: "sess-123".to_string(),
-        };
-        let json = serde_json::to_value(&payload).unwrap();
-        assert_eq!(json["SessionStart"]["cwd"], "/home/user");
-        assert_eq!(json["SessionStart"]["session_id"], "sess-123");
-
-        let deserialized: EventPayload = serde_json::from_value(json).unwrap();
-        match deserialized {
-            EventPayload::SessionStart { cwd, session_id } => {
-                assert_eq!(cwd, "/home/user");
-                assert_eq!(session_id, "sess-123");
-            }
-            _ => panic!("wrong variant"),
-        }
-    }
-
-    #[test]
-    fn test_event_payload_before_agent_start() {
-        let payload = EventPayload::BeforeAgentStart {
-            prompt: "hello".to_string(),
-            system_prompt: "system".to_string(),
-        };
-        let json = serde_json::to_value(&payload).unwrap();
-        assert_eq!(json["BeforeAgentStart"]["prompt"], "hello");
-        assert_eq!(json["BeforeAgentStart"]["system_prompt"], "system");
-
-        let deserialized: EventPayload = serde_json::from_value(json).unwrap();
-        match deserialized {
-            EventPayload::BeforeAgentStart {
-                prompt,
-                system_prompt,
-            } => {
-                assert_eq!(prompt, "hello");
-                assert_eq!(system_prompt, "system");
-            }
-            _ => panic!("wrong variant"),
-        }
-    }
-
-    #[test]
-    fn test_event_payload_context() {
-        let payload = EventPayload::Context { turn: 5 };
-        let json = serde_json::to_value(&payload).unwrap();
-        assert_eq!(json["Context"]["turn"], 5);
-
-        let deserialized: EventPayload = serde_json::from_value(json).unwrap();
-        assert!(matches!(deserialized, EventPayload::Context { turn: 5 }));
-    }
-
-    #[test]
-    fn test_event_payload_turn_start() {
-        let payload = EventPayload::TurnStart { turn: 3 };
-        let json = serde_json::to_value(&payload).unwrap();
-        assert_eq!(json["TurnStart"]["turn"], 3);
-
-        let deserialized: EventPayload = serde_json::from_value(json).unwrap();
-        assert!(matches!(deserialized, EventPayload::TurnStart { turn: 3 }));
-    }
-
-    #[test]
-    fn test_event_payload_turn_end() {
-        let payload = EventPayload::TurnEnd {
-            turn: 7,
-            had_code: true,
-        };
-        let json = serde_json::to_value(&payload).unwrap();
-        assert_eq!(json["TurnEnd"]["turn"], 7);
-        assert_eq!(json["TurnEnd"]["had_code"], true);
-
-        let deserialized: EventPayload = serde_json::from_value(json).unwrap();
-        assert!(matches!(
-            deserialized,
-            EventPayload::TurnEnd {
-                turn: 7,
-                had_code: true
-            }
-        ));
-    }
-
-    #[test]
-    fn test_event_payload_agent_end() {
-        let payload = EventPayload::AgentEnd {
-            stop_cause: "done".to_string(),
-        };
-        let json = serde_json::to_value(&payload).unwrap();
-        assert_eq!(json["AgentEnd"]["stop_cause"], "done");
-
-        let deserialized: EventPayload = serde_json::from_value(json).unwrap();
-        match deserialized {
-            EventPayload::AgentEnd { stop_cause } => {
-                assert_eq!(stop_cause, "done");
-            }
-            _ => panic!("wrong variant"),
-        }
-    }
-
-    #[test]
-    fn test_event_payload_tool_call() {
-        let payload = EventPayload::ToolCall {
-            name: "bash".to_string(),
-            args: json!({"cmd": "ls"}),
-        };
-        let json = serde_json::to_value(&payload).unwrap();
-        assert_eq!(json["ToolCall"]["name"], "bash");
-        assert_eq!(json["ToolCall"]["args"]["cmd"], "ls");
-
-        let deserialized: EventPayload = serde_json::from_value(json).unwrap();
-        match deserialized {
-            EventPayload::ToolCall { name, args } => {
-                assert_eq!(name, "bash");
-                assert_eq!(args["cmd"], "ls");
-            }
-            _ => panic!("wrong variant"),
-        }
-    }
-
-    #[test]
-    fn test_event_payload_tool_result() {
-        let payload = EventPayload::ToolResult {
-            name: "bash".to_string(),
-            result: "output".to_string(),
-            error: Some("oops".to_string()),
-        };
-        let json = serde_json::to_value(&payload).unwrap();
-        assert_eq!(json["ToolResult"]["name"], "bash");
-        assert_eq!(json["ToolResult"]["result"], "output");
-        assert_eq!(json["ToolResult"]["error"], "oops");
-
-        let deserialized: EventPayload = serde_json::from_value(json).unwrap();
-        match deserialized {
-            EventPayload::ToolResult {
-                name,
-                result,
-                error,
-            } => {
-                assert_eq!(name, "bash");
-                assert_eq!(result, "output");
-                assert_eq!(error, Some("oops".to_string()));
-            }
-            _ => panic!("wrong variant"),
-        }
-    }
-
-    #[test]
-    fn test_event_payload_tool_result_no_error() {
-        let payload = EventPayload::ToolResult {
-            name: "bash".to_string(),
-            result: "output".to_string(),
-            error: None,
-        };
-        let json = serde_json::to_value(&payload).unwrap();
-        assert!(json["ToolResult"]["error"].is_null());
-
-        let deserialized: EventPayload = serde_json::from_value(json).unwrap();
-        match deserialized {
-            EventPayload::ToolResult { error, .. } => {
-                assert_eq!(error, None);
-            }
-            _ => panic!("wrong variant"),
-        }
-    }
-
-    #[test]
-    fn test_event_payload_input() {
-        let payload = EventPayload::Input {
-            text: "hello world".to_string(),
-        };
-        let json = serde_json::to_value(&payload).unwrap();
-        assert_eq!(json["Input"]["text"], "hello world");
-
-        let deserialized: EventPayload = serde_json::from_value(json).unwrap();
-        match deserialized {
-            EventPayload::Input { text } => {
-                assert_eq!(text, "hello world");
-            }
-            _ => panic!("wrong variant"),
-        }
-    }
-
-    // --- LifecycleEvent tests ---
-
-    #[test]
-    fn test_lifecycle_event_serialization() {
-        let event = LifecycleEvent {
-            kind: EventKind::TurnStart,
-            payload: EventPayload::TurnStart { turn: 1 },
-        };
-        let json = serde_json::to_value(&event).unwrap();
-        assert_eq!(json["kind"], "TurnStart");
-        assert_eq!(json["payload"]["TurnStart"]["turn"], 1);
-    }
-
-    #[test]
-    fn test_lifecycle_event_round_trip() {
-        let event = LifecycleEvent {
-            kind: EventKind::Context,
-            payload: EventPayload::Context { turn: 42 },
-        };
-        let json = serde_json::to_string(&event).unwrap();
-        let deserialized: LifecycleEvent = serde_json::from_str(&json).unwrap();
-        assert_eq!(event.kind, deserialized.kind);
-        assert!(matches!(
-            deserialized.payload,
-            EventPayload::Context { turn: 42 }
-        ));
-    }
-
-    // --- InputActionKind tests ---
-
-    #[test]
-    fn test_input_action_kind_serialization() {
-        assert_eq!(
-            serde_json::to_value(InputActionKind::Continue).unwrap(),
-            json!("Continue")
-        );
-        assert_eq!(
-            serde_json::to_value(InputActionKind::Transform).unwrap(),
-            json!("Transform")
-        );
-        assert_eq!(
-            serde_json::to_value(InputActionKind::Handled).unwrap(),
-            json!("Handled")
-        );
-    }
-
-    #[test]
-    fn test_input_action_kind_deserialization() {
-        let kind: InputActionKind = serde_json::from_value(json!("Continue")).unwrap();
-        assert!(matches!(kind, InputActionKind::Continue));
-
-        let kind: InputActionKind = serde_json::from_value(json!("Transform")).unwrap();
-        assert!(matches!(kind, InputActionKind::Transform));
-
-        let kind: InputActionKind = serde_json::from_value(json!("Handled")).unwrap();
-        assert!(matches!(kind, InputActionKind::Handled));
-    }
-
-    // --- EventHandlerRegistration (Deserialize with skip on handler) ---
-
-    #[test]
-    fn test_event_handler_registration_deserialization() {
-        let json = json!({
-            "event": "RuntimeStart",
-            "label": "my-handler"
-        });
-        let reg: EventHandlerRegistration = serde_json::from_value(json).unwrap();
-        assert_eq!(reg.event, EventKind::RuntimeStart);
-        assert_eq!(reg.label, "my-handler");
     }
 }

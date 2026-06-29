@@ -1769,6 +1769,8 @@ dependencies = [
  "mlua",
  "phi-ext",
  "serde_json",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]

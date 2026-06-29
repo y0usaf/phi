@@ -6,10 +6,30 @@ pub(super) fn setup_phi_global(lua: &mlua::Lua) -> mlua::Result<()> {
     let phi_registered_events = lua.create_table()?;
     let phi_commands = lua.create_table()?;
     let phi_registered_commands = lua.create_table()?;
+    let phi_tools = lua.create_table()?;
+    let phi_registered_tools = lua.create_table()?;
+    let phi_shortcuts = lua.create_table()?;
+    let phi_registered_shortcuts = lua.create_table()?;
+    let phi_flags = lua.create_table()?;
+    let phi_registered_flags = lua.create_table()?;
+    let phi_providers = lua.create_table()?;
+    let phi_registered_providers = lua.create_table()?;
+    let phi_renderers = lua.create_table()?;
+    let phi_registered_renderers = lua.create_table()?;
     globals.set("_phi_handlers", phi_handlers)?;
     globals.set("_phi_registered_events", phi_registered_events)?;
     globals.set("_phi_commands", phi_commands)?;
     globals.set("_phi_registered_commands", phi_registered_commands)?;
+    globals.set("_phi_tools", phi_tools)?;
+    globals.set("_phi_registered_tools", phi_registered_tools)?;
+    globals.set("_phi_shortcuts", phi_shortcuts)?;
+    globals.set("_phi_registered_shortcuts", phi_registered_shortcuts)?;
+    globals.set("_phi_flags", phi_flags)?;
+    globals.set("_phi_registered_flags", phi_registered_flags)?;
+    globals.set("_phi_providers", phi_providers)?;
+    globals.set("_phi_registered_providers", phi_registered_providers)?;
+    globals.set("_phi_renderers", phi_renderers)?;
+    globals.set("_phi_registered_renderers", phi_registered_renderers)?;
 
     // Build the phi table
     let phi = lua.create_table()?;
@@ -38,10 +58,76 @@ pub(super) fn setup_phi_global(lua: &mlua::Lua) -> mlua::Result<()> {
     })?;
     phi.set("register_command", register_command_fn)?;
 
+    // phi.register_tool(name, opts)
+    // opts: { description = "...", params = {...}, handler = function(input) ... end }
+    let register_tool_fn = lua.create_function(|lua, (name, opts): (String, mlua::Table)| {
+        let globals = lua.globals();
+        let tools: mlua::Table = globals.get("_phi_tools")?;
+        tools.set(name.as_str(), opts)?;
+        let reg: mlua::Table = globals.get("_phi_registered_tools")?;
+        let len = reg.raw_len();
+        reg.raw_set(len + 1, name)?;
+        Ok(())
+    })?;
+    phi.set("register_tool", register_tool_fn)?;
+
+    // phi.register_shortcut(key, opts)
+    // opts: { description = "...", handler = function() ... end }
+    let register_shortcut_fn = lua.create_function(|lua, (key, opts): (String, mlua::Table)| {
+        let globals = lua.globals();
+        let shortcuts: mlua::Table = globals.get("_phi_shortcuts")?;
+        shortcuts.set(key.as_str(), opts)?;
+        let reg: mlua::Table = globals.get("_phi_registered_shortcuts")?;
+        let len = reg.raw_len();
+        reg.raw_set(len + 1, key)?;
+        Ok(())
+    })?;
+    phi.set("register_shortcut", register_shortcut_fn)?;
+
+    // phi.register_flag(name, opts)
+    // opts: { description = "...", type = "boolean"|"string", default = ... }
+    let register_flag_fn = lua.create_function(|lua, (name, opts): (String, mlua::Table)| {
+        let globals = lua.globals();
+        let flags: mlua::Table = globals.get("_phi_flags")?;
+        flags.set(name.as_str(), opts)?;
+        let reg: mlua::Table = globals.get("_phi_registered_flags")?;
+        let len = reg.raw_len();
+        reg.raw_set(len + 1, name)?;
+        Ok(())
+    })?;
+    phi.set("register_flag", register_flag_fn)?;
+
+    // phi.register_provider(name, config)
+    // config: { base_url = "...", api_key = "...", api = "...", models = {...} }
+    let register_provider_fn = lua.create_function(|lua, (name, config): (String, mlua::Table)| {
+        let globals = lua.globals();
+        let providers: mlua::Table = globals.get("_phi_providers")?;
+        providers.set(name.as_str(), config)?;
+        let reg: mlua::Table = globals.get("_phi_registered_providers")?;
+        let len = reg.raw_len();
+        reg.raw_set(len + 1, name)?;
+        Ok(())
+    })?;
+    phi.set("register_provider", register_provider_fn)?;
+
+    // phi.register_message_renderer(custom_type, handler)
+    // handler: function(message) -> string
+    let register_renderer_fn =
+        lua.create_function(|lua, (custom_type, handler): (String, mlua::Function)| {
+            let globals = lua.globals();
+            let renderers: mlua::Table = globals.get("_phi_renderers")?;
+
+            let opts = lua.create_table()?;
+            opts.set("handler", handler)?;
+            renderers.set(custom_type.as_str(), opts)?;
+
+            let reg: mlua::Table = globals.get("_phi_registered_renderers")?;
+            let len = reg.raw_len();
+            reg.raw_set(len + 1, custom_type)?;
+            Ok(())
+        })?;
+    phi.set("register_message_renderer", register_renderer_fn)?;
+
     globals.set("phi", phi)?;
     Ok(())
 }
-
-// ---------------------------------------------------------------------------
-// Extension impl
-// ---------------------------------------------------------------------------

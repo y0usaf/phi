@@ -2,7 +2,11 @@ pub use clap;
 use clap::Parser;
 
 #[derive(Debug, Clone, Parser)]
-#[command(name = "phi", about = "Recursive Language Model (RLM) coding agent")]
+#[command(
+    name = "phi",
+    version,
+    about = "Recursive Language Model (RLM) coding agent"
+)]
 pub struct Args {
     /// One-shot prompt; without it (on a TTY) the interactive TUI starts.
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
