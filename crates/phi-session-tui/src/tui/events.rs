@@ -394,7 +394,7 @@ impl Ui {
             self.pending.push(String::new());
             self.pending.push(format!(
                 "{tool}${RESET} {DIM}{cmd}{RESET}",
-                tool = &self.palette.tool_accent
+                tool = &self.palette.tool_title_fg
             ));
             self.last_activity = false;
         }
@@ -414,6 +414,7 @@ impl Ui {
         let _ = self.store.begin_exchange();
         let cancel = CancellationToken::new();
         self.running = Some(cancel.clone());
+        self.anim_start = std::time::Instant::now();
         self.turn = 0;
         self.stream.clear();
         self.thinking.clear();

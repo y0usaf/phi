@@ -3,57 +3,76 @@ use super::*;
 impl Ui {
     pub(super) fn assistant_card_lines(&self, text: &str) -> Vec<String> {
         let rendered = render_markdown(text, self.markdown_width(), &self.palette.markdown);
-        let mut out = vec![forge_title(0, "Assistant")];
-        for line in rendered {
-            out.push(if line.is_empty() {
-                String::new()
-            } else {
-                format!("{fg}{line}{RESET}", fg = &self.palette.assistant_fg)
-            });
-        }
-        out
+        // pi-style: no header, no background — assistant prose is bare text
+        // separated from siblings by a spacer provided by the caller.
+        rendered
+            .into_iter()
+            .map(|line| {
+                if line.is_empty() {
+                    String::new()
+                } else {
+                    format!("{fg}{line}{RESET}", fg = &self.palette.assistant_fg)
+                }
+            })
+            .collect()
     }
 
     pub(super) fn user_card_lines(&self, text: &str) -> Vec<String> {
         let rendered = render_markdown(text, self.markdown_width(), &self.palette.markdown);
-        let mut out = vec![forge_title(0, "You")];
-        for line in rendered {
-            out.push(if line.is_empty() {
-                String::new()
-            } else {
-                format!("{fg}{line}{RESET}", fg = &self.palette.user_fg)
-            });
+        let width = self.panel_width();
+        let bg = &self.palette.user_message_bg;
+        // pi-style: full-width background fill with 1-cell padding (Box(1,1,bgFn)),
+        // no header label. OSC 133 zone markers wrap first/last lines.
+        let mut body: Vec<String> = rendered
+            .into_iter()
+            .map(|line| {
+                if line.is_empty() {
+                    String::new()
+                } else {
+                    format!("{fg}{line}{RESET}", fg = &self.palette.user_fg)
+                }
+            })
+            .collect();
+        if !body.is_empty() {
+            body[0] = format!("{OSC133_ZONE_START}{}", body[0]);
+            let last = body.len() - 1;
+            body[last] = format!("{}{OSC133_ZONE_END}{OSC133_ZONE_FINAL}", body[last]);
         }
-        out
+        render_boxed(&body, bg, width)
     }
 
     pub(super) fn tool_lines(
         &self,
-        depth: usize,
+        _depth: usize,
         title: &str,
         body: &str,
         max: usize,
     ) -> Vec<String> {
+        // Thinking/prelude block: flat lines, no depth indentation.
+        // Title on line 0, body follows. Matches pi's assistant thinking
+        // rendering: italic markdown, no box chrome.
+        let content_width = self.panel_width().max(1);
         let mut rows = Vec::new();
+        rows.extend(wrap_ansi(title, content_width));
         let trimmed = body.trim_end();
         if !trimmed.is_empty() {
             let output_rows: Vec<String> = trimmed
                 .lines()
-                .flat_map(|line| wrap_ansi(line, self.card_body_width(depth)))
+                .flat_map(|line| wrap_ansi(line, content_width))
                 .collect();
             let shown = output_rows.len().min(max);
             for row in &output_rows[..shown] {
-                rows.push(format!("{DIM}{row}{RESET}"));
+                rows.push(format!("{}{row}{RESET}", &self.palette.muted_fg));
             }
             if output_rows.len() > max {
                 rows.push(format!(
-                    "{DIM}… ({} more lines){RESET}",
+                    "{}… ({} more lines){RESET}",
+                    &self.palette.muted_fg,
                     output_rows.len() - max
                 ));
             }
         }
-
-        render_flat(title, depth, &rows)
+        rows
     }
 
     pub(super) fn repl_code_lines(&self, depth: usize, body: &str, max: usize) -> Vec<String> {
@@ -111,7 +130,16 @@ impl Ui {
     }
 
     pub(super) fn status_rows(&self, depth: usize, text: &str) -> Vec<String> {
-        vec![format!("{}{text}", indent(depth))]
+        self.status_rows_bg(depth, text, &self.palette.tool_pending_bg)
+    }
+
+    /// Status rows with an explicit background color (pending vs. failed),
+    /// rendered as a pi-style boxed block with 1-cell padding. The pending
+    /// spinner/label or failure indicator is the only content — no depth
+    /// indentation (the box IS the visual structure, matching pi's
+    /// ToolExecutionComponent at `isPartial: true`).
+    pub(super) fn status_rows_bg(&self, _depth: usize, text: &str, bg: &str) -> Vec<String> {
+        render_boxed(&[text.to_owned()], bg, self.box_width())
     }
 
     pub(super) fn push_status(&mut self, depth: usize, text: String) -> Option<(usize, usize)> {
@@ -227,9 +255,10 @@ impl Ui {
             self.replace_block_rows(
                 row.start,
                 row.len,
-                self.status_rows(
+                self.status_rows_bg(
                     row.depth,
                     &failed_status_text(&row.label, None, None, &self.palette),
+                    &self.palette.tool_error_bg,
                 ),
             );
         }
@@ -237,9 +266,10 @@ impl Ui {
             self.replace_block_rows(
                 row.start,
                 row.len,
-                self.status_rows(
+                self.status_rows_bg(
                     row.depth,
                     &failed_status_text(&row.label, None, None, &self.palette),
+                    &self.palette.tool_error_bg,
                 ),
             );
         }
@@ -275,7 +305,9 @@ impl Ui {
         // restore or after a run completes) are a different artifact with no
         // meaningful per-block turn, so they stay at a plain `repl` label.
         let turn = self.running.is_some().then_some(self.turn);
-        self.pending.extend(render_repl_block(&body, turn));
+        let rows = render_repl_block(&body, turn);
+        self.pending.push(String::new()); // spacer
+        self.pending.extend(rows);
         self.open_tool_rows.clear();
         self.open_subcall_rows.clear();
         let after = std::mem::take(&mut self.after_block);
@@ -360,44 +392,109 @@ impl Ui {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn tool_result_rows(
         &self,
-        depth: usize,
+        _depth: usize,
         name: &str,
         args: &serde_json::Value,
         output: &str,
         max: usize,
         lang: Option<&str>,
-        _failed: bool,
+        failed: bool,
     ) -> Vec<String> {
         let identity = tool_identity(name, args, &self.palette);
-        // The colored `●` carries success/failure (green/red); the in-flight
-        // spinner label uses the same anchor via `tool_title`, so running and
-        // committed render the same identity (no flicker on done). The header
-        // carries the canonical identity (path/command/pattern) once; the body
-        // folds multi-line detail (full bash command / repl code) under it. For
-        // tools whose identity IS the anchor, the body is empty and only the
-        // output preview shows.
-        let width = self.card_body_width(depth);
-        let mut body: Vec<String> = identity
-            .body
-            .into_iter()
-            .flat_map(|line| wrap_ansi(&line, width))
-            .collect();
-        body.extend(self.preview_rows_with_lang(depth, output, max, lang));
-        render_flat(&identity.anchor, depth, &body)
+        // pi-style tool card: the Box(1,1,bgFn) provides the only padding.
+        // Content is flat — no depth indentation, no gutter. The call
+        // (anchor) is the first line; the result (output) follows, each
+        // line in toolOutput color. Matches pi's ToolExecutionComponent:
+        //   renderCall → Text(bold toolTitle + colored args)
+        //   renderResult → Text(toolOutput output)
+        let content_width = self.box_width().saturating_sub(2).max(1);
+        let mut content: Vec<String> = Vec::new();
+        // Call line (anchor)
+        content.extend(wrap_ansi(&identity.anchor, content_width));
+        // Identity body (multi-line commands, etc.)
+        for line in &identity.body {
+            content.extend(wrap_ansi(line, content_width));
+        }
+        // Result output: syntax-highlighted when lang is provided, else
+        // plain toolOutput color (mirrors pi's read tool renderResult).
+        let trimmed = output.trim_end();
+        if !trimmed.is_empty() {
+            let base_rows: Vec<String> = match lang {
+                Some(lang) => highlight_code(trimmed, Some(lang), &self.palette.markdown),
+                None => trimmed
+                    .lines()
+                    .map(|line| {
+                        highlight_diff_line(line, &self.palette.markdown)
+                            .unwrap_or_else(|| highlight_output(line, &self.palette.markdown))
+                    })
+                    .collect(),
+            };
+            let output_rows: Vec<String> = base_rows
+                .into_iter()
+                .flat_map(|line| {
+                    let colored = format!("{}{line}{RESET}", &self.palette.tool_output_fg);
+                    wrap_ansi(&colored, content_width)
+                })
+                .collect();
+            let shown = output_rows.len().min(max);
+            content.extend(output_rows[..shown].to_vec());
+            if output_rows.len() > max {
+                content.push(format!(
+                    "{}… ({} more lines){RESET}",
+                    &self.palette.muted_fg,
+                    output_rows.len() - max
+                ));
+            }
+        }
+        // State-based background (pending → success/error)
+        let bg = if failed {
+            &self.palette.tool_error_bg
+        } else {
+            &self.palette.tool_success_bg
+        };
+        render_boxed(&content, bg, self.box_width())
     }
 
     pub(super) fn subcall_result_rows(
         &self,
-        depth: usize,
+        _depth: usize,
         label: &str,
         content: Option<&str>,
         max: usize,
-        _failed: bool,
+        failed: bool,
     ) -> Vec<String> {
-        let body = content
-            .map(|text| self.preview_rows_with_lang(depth, text, max, None))
-            .unwrap_or_default();
-        render_flat(label, depth, &body)
+        // pi-style: flat content (label + output) in a Box(1,1,bgFn).
+        // No depth indentation — the box is the visual structure.
+        let content_width = self.box_width().saturating_sub(2).max(1);
+        let mut rows: Vec<String> = Vec::new();
+        rows.extend(wrap_ansi(label, content_width));
+        if let Some(text) = content {
+            let trimmed = text.trim_end();
+            if !trimmed.is_empty() {
+                let output_rows: Vec<String> = trimmed
+                    .lines()
+                    .flat_map(|line| {
+                        let colored = format!("{}{line}{RESET}", &self.palette.tool_output_fg);
+                        wrap_ansi(&colored, content_width)
+                    })
+                    .collect();
+                let shown = output_rows.len().min(max);
+                rows.extend(output_rows[..shown].to_vec());
+                if output_rows.len() > max {
+                    rows.push(format!(
+                        "{}… ({} more lines){RESET}",
+                        &self.palette.muted_fg,
+                        output_rows.len() - max
+                    ));
+                }
+            }
+        }
+        let bg = if failed {
+            &self.palette.tool_error_bg
+        } else {
+            &self.palette.tool_success_bg
+        };
+        render_boxed(&rows, bg, self.box_width())
     }
 
     #[allow(clippy::too_many_arguments)]

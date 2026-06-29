@@ -95,9 +95,11 @@ impl Ui {
             }
 
             if self.block_active {
+                let mut lines = vec![String::new()];
+                lines.extend(render_repl_block(&self.block, Some(self.turn)));
                 blocks.push(TranscriptBlock {
                     key: "live:repl-block".to_owned(),
-                    lines: render_repl_block(&self.block, Some(self.turn)),
+                    lines,
                     finalized: false,
                 });
 
@@ -148,6 +150,24 @@ impl Ui {
             blocks.push(TranscriptBlock {
                 key: "live:queued".to_owned(),
                 lines,
+                finalized: false,
+            });
+        }
+
+        // Equalizer thinking animation at the very bottom of the transcript,
+        // just above the separator line. Shown while a run is in flight.
+        if self.running.is_some() {
+            let elapsed = self.anim_start.elapsed().as_millis() as u64;
+            let tool_active = !self.open_tool_rows.is_empty() || !self.open_subcall_rows.is_empty();
+            let glyphs = equalizer_glyphs(elapsed);
+            let expression = thinking_expression(elapsed, tool_active);
+            let p = &self.palette;
+            // Gradient the entire line — bars + phrase — from accent (cyan) →
+            // accent_2 (magenta), matching phi-mux's sidebar gradient text.
+            let text = format!("{glyphs} {expression}");
+            blocks.push(TranscriptBlock {
+                key: "live:equalizer".to_owned(),
+                lines: vec![gradient_text(&text, p.spinner_accent, p.accent_2)],
                 finalized: false,
             });
         }
@@ -322,10 +342,8 @@ impl Ui {
             }
             cursor = input_cursor;
 
-            // Knight Rider spinner under the >> input, like opencode.
-            if self.running.is_some() {
-                lines.push(self.spinner.frame().to_owned());
-            }
+            // (Braille spinner removed — the equalizer animation now lives
+            // in the live transcript, above the separator line.)
 
             if let Some(popup) = &self.popup {
                 lines.extend(render_popup(popup));
@@ -361,5 +379,12 @@ impl Ui {
         self.repl_body_width()
             .saturating_sub(result_prefix_width(depth))
             .max(1)
+    }
+
+    /// Width for a boxed block (pi `Box(1,1,bgFn)`) that will sit inside a
+    /// REPL block. `render_repl_block` prepends `indent(1)` to every line,
+    /// so the box must be `panel_width - indent_width(1)` to avoid overflow.
+    pub(super) fn box_width(&self) -> usize {
+        self.panel_width().saturating_sub(indent_width(1)).max(1)
     }
 }

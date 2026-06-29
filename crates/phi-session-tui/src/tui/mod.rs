@@ -21,8 +21,9 @@ use phi_rlm::{
 use phi_tui::crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers};
 use phi_tui::{
     Editor, EditorAction, LiveCursor, RawModeGuard, Selector, SelectorItem, SelectorOutcome,
-    Spinner, Terminal, detect_terminal_colors, fuzzy_filter, highlight_code, highlight_diff_line,
-    highlight_output, render_markdown, wrap_ansi, wrap_ansi_locate,
+    Spinner, Terminal, detect_terminal_colors, equalizer_glyphs, fill_bg, fuzzy_filter,
+    gradient_text, highlight_code, highlight_diff_line, highlight_output, render_markdown,
+    thinking_expression, wrap_ansi, wrap_ansi_locate,
 };
 
 use phi_session::files::FileSearcher;
@@ -457,6 +458,9 @@ struct Ui {
     pub(super) term: Terminal<Box<dyn std::io::Write + Send>>,
     pub(super) editor: Editor,
     pub(super) spinner: Spinner,
+    /// When the current run's equalizer animation started (wall-clock).
+    /// Reset each time `running` transitions to `Some`.
+    pub(super) anim_start: std::time::Instant,
     pub(super) palette: InlinePalette,
     /// Cancel token of the in-flight turn, if any.
     pub(super) running: Option<CancellationToken>,
@@ -602,6 +606,7 @@ impl Ui {
             term,
             editor: Editor::new(),
             spinner: Spinner::default(),
+            anim_start: std::time::Instant::now(),
             palette: InlinePalette::default_const(),
             running: None,
             login: None,
@@ -928,8 +933,9 @@ mod tests {
         assert!(!plain.contains('└'), "{plain}");
         assert!(!plain.contains("Activity"), "{plain}");
         assert!(!plain.contains("Output"), "{plain}");
-        // Depth-1 header is inset 2 spaces under the repl block; no `⎿` glyph.
-        assert!(plain.lines().any(|l| l.starts_with("  read")), "{plain}");
+        // Pi-style boxed block: 1-space left pad (Box(1,1)). "read" starts
+        // after 1 space. No depth indentation — the box IS the structure.
+        assert!(plain.lines().any(|l| l.starts_with(" read")), "{plain}");
         assert!(!plain.lines().any(|l| l.contains('⎿')), "{plain}");
     }
 
@@ -1503,12 +1509,14 @@ match1
             text: "para one\n\npara two".to_owned(),
         });
 
+        // pi-style: assistant messages have no header label — the prose
+        // is bare text separated by spacers.
         let assistant_cards = ui
             .pending
             .iter()
             .filter(|line| line.contains("Assistant"))
             .count();
-        assert_eq!(assistant_cards, 1, "{:?}", ui.pending);
+        assert_eq!(assistant_cards, 0, "{:?}", ui.pending);
     }
 
     #[test]

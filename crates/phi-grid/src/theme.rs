@@ -423,58 +423,17 @@ pub fn header_session_color() -> Color {
 }
 
 // ---------------------------------------------------------------------------
-// Multi-tier animation FPS settings (port of jcode spinner system)
+// Spinner — re-exported from phi-tui (single source of truth)
 // ---------------------------------------------------------------------------
 
-/// Spinner frames for animated status. Keep these single-cell because the
-/// fast spinner-only renderer patches one status cell between full TUI
-/// redraws. This sequence should read as a circular spin, not a pulse.
-const SPINNER_FRAMES: &[&str] = &[
-    "\u{280b}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283c}", "\u{2834}", "\u{2826}", "\u{2827}",
-    "\u{2807}", "\u{280f}",
-];
-
-/// Frame rate for slow, full-line "liveness" indicators that can only be
-/// repainted by a full TUI redraw (e.g. a running-tool progress bar) when
-/// decorative animations are disabled (Minimal tier, SSH, WSL, etc.). These
-/// ride the ~1 Hz passive-liveness redraw, so advancing them faster would
-/// just skip frames.
-pub const LIVENESS_INDICATOR_FPS: f32 = 1.5;
-
-/// Frame rate for the low-cost single-cell circular spinner when decorative
-/// animations are disabled. Unlike the full-line indicators above, this
-/// spinner is patched by the cheap one-cell fast path between full redraws,
-/// so it can animate at a smooth, responsive cadence well above ~1 Hz while
-/// still staying very light on resources.
-pub const LIVENESS_SPINNER_FPS: f32 = 12.5;
-
-pub fn spinner_frame_index(elapsed: f32, fps: f32) -> usize {
-    ((elapsed * fps) as usize) % SPINNER_FRAMES.len()
-}
-
-pub fn spinner_frame(elapsed: f32, fps: f32) -> &'static str {
-    SPINNER_FRAMES[spinner_frame_index(elapsed, fps)]
-}
-
-pub fn activity_indicator_frame_index(
-    elapsed: f32,
-    fps: f32,
-    enable_decorative_animations: bool,
-) -> usize {
-    if enable_decorative_animations {
-        spinner_frame_index(elapsed, fps)
-    } else {
-        spinner_frame_index(elapsed, LIVENESS_SPINNER_FPS)
-    }
-}
-
-pub fn activity_indicator(
-    elapsed: f32,
-    fps: f32,
-    enable_decorative_animations: bool,
-) -> &'static str {
-    SPINNER_FRAMES[activity_indicator_frame_index(elapsed, fps, enable_decorative_animations)]
-}
+/// Re-export the shared spinner frames and timing constants.
+///
+/// Previously this crate had its own copy of the frame array and its own
+/// `spinner_frame` / `activity_indicator` functions based on `f32` elapsed
+/// seconds. These had zero callers and drifted from the other copies. They
+/// have been removed in favor of the unified `phi_tui::spinner_frame_at`
+/// mechanism.
+pub use phi_tui::{SPINNER_FRAMES, SPINNER_FRAME_MS, spinner_frame_at, spinner_frame_index};
 
 // ---------------------------------------------------------------------------
 // Color blending utilities (port of jcode blend + color_to_floats)

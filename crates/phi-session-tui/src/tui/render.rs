@@ -46,6 +46,14 @@ pub(crate) const OUTPUT_PREVIEW_LINES: usize = 5;
 pub(crate) const ASSISTANT_THINKING_DISPLAY_OPEN: &str = "<phi-thinking>\n";
 pub(crate) const ASSISTANT_THINKING_DISPLAY_CLOSE: &str = "\n</phi-thinking>\n";
 
+/// OSC 133 zone markers, matching pi's UserMessageComponent / AssistantMessageComponent.
+/// A marks the start of a prompt input, B the end of the input, C the end of
+/// the model's reply. Shells with OSC 133 support (e.g. fish, zsh) use these
+/// to delineate commands from output in scrollback.
+pub(crate) const OSC133_ZONE_START: &str = "\x1b]133;A\x07";
+pub(crate) const OSC133_ZONE_END: &str = "\x1b]133;B\x07";
+pub(crate) const OSC133_ZONE_FINAL: &str = "\x1b]133;C\x07";
+
 pub(crate) fn assistant_display_text(response: &str, thinking: &str) -> Option<String> {
     let thinking = thinking.trim();
     if thinking.is_empty() {
@@ -66,8 +74,6 @@ pub(crate) fn split_assistant_display_text(text: &str) -> (Option<&str>, &str) {
         (None, text)
     }
 }
-
-
 
 /// Cap persisted tool results at roughly the replay preview budget. The full
 /// output already lives in the repl stdout payload; storing it twice only
@@ -173,15 +179,15 @@ pub(crate) fn render_flat(title: &str, depth: usize, body: &[String]) -> Vec<Str
 /// indent on top of their own nesting.
 pub(crate) fn render_repl_block(body: &[String], _turn: Option<usize>) -> Vec<String> {
     let prefix = indent(1);
-    body.iter()
-        .map(|line| {
-            if line.is_empty() {
-                prefix.clone()
-            } else {
-                format!("{prefix}{line}")
-            }
-        })
-        .collect()
+    let mut out = Vec::with_capacity(body.len());
+    for line in body {
+        if line.is_empty() {
+            out.push(prefix.clone());
+        } else {
+            out.push(format!("{prefix}{line}"));
+        }
+    }
+    out
 }
 
 #[derive(Clone)]
@@ -207,3 +213,34 @@ pub(crate) struct TranscriptBlock {
     pub(crate) lines: Vec<String>,
     pub(crate) finalized: bool,
 }
+
+/// Render a boxed block mirroring pi's `Box(1, 1, bgFn)` component: 1-cell
+/// padding all around, with the given background applied via `fill_bg`.
+///
+/// The `lines` are the content (already styled) that goes inside the box.
+/// The function prepends a blank bg line, left-pads each content line by one
+/// space, applies the bg fill to the full `width`, and appends a trailing
+/// blank bg line.
+pub(crate) fn render_boxed(lines: &[String], bg: &str, width: usize) -> Vec<String> {
+    if lines.is_empty() {
+        return Vec::new();
+    }
+    let pad = " ";
+    let mut out = Vec::with_capacity(lines.len() + 2);
+    // Top padding
+    out.push(fill_bg(pad, bg, width));
+    // Content with 1-space left pad
+    for line in lines {
+        let padded = if line.is_empty() {
+            pad.to_owned()
+        } else {
+            format!("{pad}{line}")
+        };
+        out.push(fill_bg(&padded, bg, width));
+    }
+    // Bottom padding
+    out.push(fill_bg(pad, bg, width));
+    out
+}
+
+

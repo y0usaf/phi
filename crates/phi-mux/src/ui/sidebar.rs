@@ -8,9 +8,7 @@ use crate::status::SessionStatus;
 use crate::workspace::{MuxProject, MuxSession};
 
 pub const SIDEBAR_ANIMATION_FRAME_MS: u64 = 40;
-pub const SIDEBAR_SPINNER_FRAME_TICKS: u64 = 2;
-pub const SIDEBAR_SPINNER_FRAME_MS: u64 = SIDEBAR_ANIMATION_FRAME_MS * SIDEBAR_SPINNER_FRAME_TICKS;
-pub const SIDEBAR_SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+pub use phi_tui::{SPINNER_FRAMES as SIDEBAR_SPINNER_FRAMES, SPINNER_FRAME_MS as SIDEBAR_SPINNER_FRAME_MS};
 pub const SIDEBAR_NOTIFICATION_GLYPH: &str = "⣿";
 
 const DRAFT_SESSION_LABEL: &str = "new session";
@@ -200,11 +198,7 @@ pub fn session_sidebar_status(session: &MuxSession) -> Option<SidebarStatusKind>
 
 pub fn sidebar_status_glyph(status: SidebarStatusKind, now_ms: u64) -> &'static str {
     match status {
-        SidebarStatusKind::Active => {
-            let frame =
-                ((now_ms / SIDEBAR_SPINNER_FRAME_MS) as usize) % SIDEBAR_SPINNER_FRAMES.len();
-            SIDEBAR_SPINNER_FRAMES[frame]
-        }
+        SidebarStatusKind::Active => phi_tui::spinner_frame_at(now_ms),
         SidebarStatusKind::Interrupted | SidebarStatusKind::Notification => {
             SIDEBAR_NOTIFICATION_GLYPH
         }

@@ -90,10 +90,10 @@ pub(crate) fn tool_identity(name: &str, args: &serde_json::Value, p: &InlinePale
             format!(
                 "{tool}{name}{RESET} {DIM}{}{RESET}",
                 pairs.join(" "),
-                tool = &p.tool_accent,
+                tool = &p.tool_title_fg,
             )
         }
-        _ => format!("{tool}{name}{RESET}", tool = &p.tool_accent),
+        _ => format!("{tool}{name}{RESET}", tool = &p.tool_title_fg),
     };
     // Fallback body: a pretty-print of the args shown only when it carries
     // detail the one-line anchor can't — a value that is multi-line, longer
@@ -133,7 +133,7 @@ pub(crate) fn tool_identity(name: &str, args: &serde_json::Value, p: &InlinePale
                 format!(
                     "{tool}${RESET} {DIM}{}{RESET}",
                     one_line(cmd),
-                    tool = &p.tool_accent,
+                    tool = &p.tool_title_fg,
                 )
             } else {
                 let echoed = one_line(cmd);
@@ -141,18 +141,18 @@ pub(crate) fn tool_identity(name: &str, args: &serde_json::Value, p: &InlinePale
                     .into_iter()
                     .next()
                     .unwrap_or(echoed);
-                format!("{tool}${RESET} {lit}{RESET}", tool = &p.tool_accent)
+                format!("{tool}${RESET} {lit}{RESET}", tool = &p.tool_title_fg)
             };
             // The body carries the full multi-line command. For a single-line
             // command the anchor already shows it — emitting a body line
             // would duplicate the canonical content (anchor-once), so the
             // body is reserved for the multi-line case (and empty cmd).
             let body = if cmd.trim().is_empty() {
-                vec![format!("{tool}${RESET}", tool = &p.tool_accent)]
+                vec![format!("{tool}${RESET}", tool = &p.tool_title_fg)]
             } else if multiline {
                 highlight_code(cmd, Some("bash"), &p.markdown)
                     .into_iter()
-                    .map(|line| format!("{tool}${RESET} {line}", tool = &p.tool_accent))
+                    .map(|line| format!("{tool}${RESET} {line}", tool = &p.tool_title_fg))
                     .collect()
             } else {
                 Vec::new()
@@ -170,7 +170,7 @@ pub(crate) fn tool_identity(name: &str, args: &serde_json::Value, p: &InlinePale
                 format!(
                     "{tool}{verb}{RESET} {pathfg}{}{RESET}",
                     path,
-                    tool = &p.tool_accent,
+                    tool = &p.tool_title_fg,
                     pathfg = &p.path_fg,
                 ),
                 Vec::new(),
@@ -184,7 +184,7 @@ pub(crate) fn tool_identity(name: &str, args: &serde_json::Value, p: &InlinePale
                 "{tool}{verb}{RESET} {strfg}{}{RESET}{pathfg}{}{RESET}",
                 one_line(pattern),
                 in_path(path),
-                tool = &p.tool_accent,
+                tool = &p.tool_title_fg,
                 strfg = &p.string_fg,
                 pathfg = &p.path_fg,
             );
@@ -195,7 +195,7 @@ pub(crate) fn tool_identity(name: &str, args: &serde_json::Value, p: &InlinePale
             let anchor = format!(
                 "{tool}ls{RESET} {pathfg}{}{RESET}",
                 path,
-                tool = &p.tool_accent,
+                tool = &p.tool_title_fg,
                 pathfg = &p.path_fg,
             )
             .trim_end()

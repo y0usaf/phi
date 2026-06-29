@@ -26,7 +26,11 @@ pub use markdown::{
 };
 pub use palette::{Rgb, TerminalColors, detect_terminal_colors};
 pub use selector::{Selector, SelectorItem, SelectorOutcome};
-pub use spinner::Spinner;
+pub use spinner::{
+    DEFAULT_TOOL_EXPRESSION, EQUALIZER_BARS, EQUALIZER_BAR_COUNT, SPINNER_FRAMES,
+    SPINNER_FRAME_MS, Spinner, THINKING_EXPRESSIONS, THINKING_EXPRESSION_MS,
+    equalizer_glyphs, gradient_text, spinner_frame_at, spinner_frame_index, thinking_expression,
+};
 pub use terminal::{
     LiveCursor, RawModeGuard, Terminal, fill_bg, strip_ansi, visible_width, wrap_ansi,
     wrap_ansi_locate,

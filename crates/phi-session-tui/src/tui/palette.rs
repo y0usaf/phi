@@ -5,6 +5,10 @@ use phi_tui::{MarkdownPalette, Rgb};
 pub struct InlinePalette {
     /// Warm gold for tool verbs.
     pub tool_accent: String,
+    /// Bold text color for tool call header (pi: `toolTitle` = bold text).
+    pub tool_title_fg: String,
+    /// Gray for tool output text (pi: `toolOutput` = gray/muted).
+    pub tool_output_fg: String,
     /// Violet for sub-LLM/rlm activity.
     pub subcall_accent: String,
     /// Soft blue for path-like args.
@@ -21,10 +25,14 @@ pub struct InlinePalette {
     pub assistant_fg: String,
     /// REPL fence / panel color.
     pub panel_repl: String,
-    /// User message border.
-    pub user_border: String,
-    /// Assistant message border.
-    pub assistant_border: String,
+    /// User message full-row background (pi: `userMessageBg`).
+    pub user_message_bg: String,
+    /// Tool block background while pending (pi: `toolPendingBg`).
+    pub tool_pending_bg: String,
+    /// Tool block background on success (pi: `toolSuccessBg`).
+    pub tool_success_bg: String,
+    /// Tool block background on error (pi: `toolErrorBg`).
+    pub tool_error_bg: String,
     /// Chrome (status/footer) border.
     pub chrome_border: String,
     /// Chrome header: agent label + usage (phi, tokens).
@@ -49,7 +57,12 @@ pub struct InlinePalette {
     /// Inverted bg for the input-box separator, mirroring phi-mux's statusbar bg.
     pub statusbar_bg: String,
     /// Bright accent color (raw RGB) for the Knight Rider scanner.
+    /// Also serves as the "from" end of the thinking-equalizer gradient
+    /// (ANSI 6 / cyan, matching phi-mux's `accent`).
     pub spinner_accent: Rgb,
+    /// Secondary accent (raw RGB, ANSI 5 / magenta) — the "to" end of the
+    /// thinking-equalizer gradient, matching phi-mux's `accent_2`.
+    pub accent_2: Rgb,
     /// Terminal background (raw RGB), used to blend the scanner trail.
     pub terminal_bg: Rgb,
     /// Markdown/output highlighting palette.
@@ -61,6 +74,8 @@ impl InlinePalette {
     pub fn default_const() -> Self {
         Self {
             tool_accent: s("\x1b[1m\x1b[38;2;255;210;120m"),
+            tool_title_fg: s("\x1b[1m\x1b[37m"),
+            tool_output_fg: s("\x1b[38;2;120;128;148m"),
             subcall_accent: s("\x1b[1m\x1b[38;2;180;140;255m"),
             path_fg: s("\x1b[38;2;130;180;230m"),
             string_fg: s("\x1b[38;2;150;190;150m"),
@@ -69,8 +84,10 @@ impl InlinePalette {
             muted_fg: s("\x1b[38;2;120;128;148m"),
             assistant_fg: s("\x1b[38;2;220;224;235m"),
             panel_repl: s("\x1b[38;2;180;140;255m"),
-            user_border: s("\x1b[38;2;96;122;196m"),
-            assistant_border: s("\x1b[38;2;84;91;116m"),
+            user_message_bg: s("\x1b[48;2;52;53;65m"),
+            tool_pending_bg: s("\x1b[48;2;40;40;50m"),
+            tool_success_bg: s("\x1b[48;2;40;50;40m"),
+            tool_error_bg: s("\x1b[48;2;60;40;40m"),
             chrome_border: s("\x1b[38;2;82;88;110m"),
             chrome_agent_fg: s("\x1b[1m\x1b[37m"),
             chrome_cost_fg: s("\x1b[1m\x1b[32m"),
@@ -86,6 +103,7 @@ impl InlinePalette {
             warning_fg: s("\x1b[33m"),
             statusbar_bg: s("\x1b[48;2;45;44;53m"),
             spinner_accent: Rgb(100, 200, 220),
+            accent_2: Rgb(180, 140, 255),
             terminal_bg: Rgb(20, 20, 26),
             markdown: MarkdownPalette::default_const(),
         }
@@ -102,6 +120,8 @@ impl InlinePalette {
         let fallback = Self::default_const();
         Self {
             tool_accent: col_bold(3).unwrap_or_else(|| fallback.tool_accent.clone()),
+            tool_title_fg: col_bold(7).unwrap_or_else(|| fallback.tool_title_fg.clone()),
+            tool_output_fg: col(8).unwrap_or_else(|| fallback.tool_output_fg.clone()),
             subcall_accent: col_bold(5).unwrap_or_else(|| fallback.subcall_accent.clone()),
             path_fg: col(4).unwrap_or_else(|| fallback.path_fg.clone()),
             string_fg: col(2).unwrap_or_else(|| fallback.string_fg.clone()),
@@ -110,8 +130,10 @@ impl InlinePalette {
             muted_fg: col(8).unwrap_or_else(|| fallback.muted_fg.clone()),
             assistant_fg: col(7).unwrap_or_else(|| fallback.assistant_fg.clone()),
             panel_repl: col(5).unwrap_or_else(|| fallback.panel_repl.clone()),
-            user_border: col(4).unwrap_or_else(|| fallback.user_border.clone()),
-            assistant_border: col(8).unwrap_or_else(|| fallback.assistant_border.clone()),
+            user_message_bg: bg_from_terminal(colors, 4, &fallback.user_message_bg),
+            tool_pending_bg: bg_from_terminal(colors, 8, &fallback.tool_pending_bg),
+            tool_success_bg: bg_from_terminal(colors, 2, &fallback.tool_success_bg),
+            tool_error_bg: bg_from_terminal(colors, 1, &fallback.tool_error_bg),
             chrome_border: col(8).unwrap_or_else(|| fallback.chrome_border.clone()),
             chrome_agent_fg: col_bold(7).unwrap_or_else(|| fallback.chrome_agent_fg.clone()),
             chrome_cost_fg: col_bold(2).unwrap_or_else(|| fallback.chrome_cost_fg.clone()),
@@ -127,6 +149,7 @@ impl InlinePalette {
             warning_fg: col(3).unwrap_or_else(|| fallback.warning_fg.clone()),
             statusbar_bg: statusbar_bg_from_terminal(colors, &fallback.statusbar_bg),
             spinner_accent: colors.palette[6].unwrap_or(fallback.spinner_accent),
+            accent_2: colors.palette[5].unwrap_or(fallback.accent_2),
             terminal_bg: colors.background,
             markdown: MarkdownPalette::from_terminal_colors(colors),
         }
@@ -180,5 +203,27 @@ pub(crate) fn statusbar_bg_from_terminal(
             (f64::from(bg.2) * ratio).max(0.0) as u8,
         )
     };
+    format!("\x1b[48;2;{r};{g};{b}m")
+}
+
+
+/// Derive a background-color SGR from the terminal background, blended
+/// toward an ANSI palette color. Mirrors pi's dark theme approach: the
+/// background is a subtle tint of the terminal bg, not a flat color.
+pub(crate) fn bg_from_terminal(
+    colors: &phi_tui::TerminalColors,
+    ansi_idx: usize,
+    _fallback: &str,
+) -> String {
+    let bg = colors.background;
+    let tint = colors.palette[ansi_idx].unwrap_or(phi_tui::Rgb(bg.0, bg.1, bg.2));
+    // Blend 20% of the tint color into the terminal background for a
+    // subtle wash, like pi's `userMsgBg` / `toolPendingBg` slots.
+    let blend = |bg_c: u8, tint_c: u8| -> u8 {
+        ((f64::from(bg_c) * 0.8) + (f64::from(tint_c) * 0.2)).round() as u8
+    };
+    let r = blend(bg.0, tint.0);
+    let g = blend(bg.1, tint.1);
+    let b = blend(bg.2, tint.2);
     format!("\x1b[48;2;{r};{g};{b}m")
 }
