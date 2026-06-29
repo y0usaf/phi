@@ -51,7 +51,12 @@ impl EngineSubcalls {
                     full,
                 )
             }
-            Err(e) => (Err(format!("{kind} query failed - {e}")), Some(e), None, None),
+            Err(e) => (
+                Err(format!("{kind} query failed - {e}")),
+                Some(e),
+                None,
+                None,
+            ),
         };
         self.rlm.events.emit(RlmEvent::SubcallEnd {
             depth: self.rlm.depth + 1,

@@ -153,8 +153,8 @@ pub fn subcalls_snippet(index: usize, repls: &[RestoredRepl]) -> Option<String> 
     if subcalls.is_empty() {
         return None;
     }
-    let encoded = base64::engine::general_purpose::STANDARD
-        .encode(Value::Array(subcalls).to_string());
+    let encoded =
+        base64::engine::general_purpose::STANDARD.encode(Value::Array(subcalls).to_string());
     Some(format!(
         "import base64 as _b64, json as _json\nsubcalls_{index} = _json.loads(_b64.b64decode(\"{encoded}\").decode(\"utf-8\"))\ndel _b64, _json"
     ))
