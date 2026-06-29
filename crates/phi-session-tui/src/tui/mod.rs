@@ -1346,6 +1346,111 @@ match1
     }
 
     #[test]
+    fn collapse_answer_assignment_triple_quoted() {
+        let code = "answer[\"content\"] = \"\"\"Hello world\nThis is a long answer.\"\"\"\nanswer[\"ready\"] = True";
+        let result = collapse_answer_assignment(code);
+        assert!(
+            result.contains("<answer>"),
+            "expected placeholder, got: {result}"
+        );
+        assert!(
+            !result.contains("Hello world"),
+            "answer text should be collapsed: {result}"
+        );
+        assert!(
+            result.contains("answer[\"ready\"] = True"),
+            "ready line should be preserved: {result}"
+        );
+    }
+
+    #[test]
+    fn collapse_answer_assignment_multi_line_triple_quoted() {
+        let code = "answer[\"content\"] = \"\"\"\nLine 1\nLine 2\nLine 3\n\"\"\"\nanswer[\"ready\"] = True";
+        let result = collapse_answer_assignment(code);
+        assert!(
+            result.contains("<answer>"),
+            "expected placeholder: {result}"
+        );
+        assert!(
+            !result.contains("Line 1"),
+            "answer text should be collapsed: {result}"
+        );
+        assert!(
+            !result.contains("Line 2"),
+            "answer text should be collapsed: {result}"
+        );
+        assert!(
+            result.contains("answer[\"ready\"] = True"),
+            "ready line preserved: {result}"
+        );
+    }
+
+    #[test]
+    fn collapse_answer_assignment_single_quoted() {
+        let code = "answer[\"content\"] = \"short answer\"";
+        let result = collapse_answer_assignment(code);
+        assert!(
+            result.contains("<answer>"),
+            "expected placeholder: {result}"
+        );
+        assert!(
+            !result.contains("short answer"),
+            "text should be collapsed: {result}"
+        );
+    }
+
+    #[test]
+    fn collapse_answer_assignment_preserves_other_code() {
+        let code = "x = 1\nprint(x)\nanswer[\"content\"] = \"\"\"the answer\"\"\"\nanswer[\"ready\"] = True";
+        let result = collapse_answer_assignment(code);
+        assert!(result.contains("x = 1"), "other code preserved: {result}");
+        assert!(
+            result.contains("print(x)"),
+            "other code preserved: {result}"
+        );
+        assert!(result.contains("<answer>"), "answer collapsed: {result}");
+        assert!(!result.contains("the answer"), "answer text gone: {result}");
+    }
+
+    #[test]
+    fn collapse_answer_assignment_no_answer_dict_unchanged() {
+        let code = "x = 1\nprint(x)";
+        let result = collapse_answer_assignment(code);
+        assert_eq!(result, code);
+    }
+
+    #[test]
+    fn collapse_answer_assignment_single_quotes_key() {
+        let code = "answer['content'] = \"\"\"the answer\"\"\"\nanswer['ready'] = True";
+        let result = collapse_answer_assignment(code);
+        assert!(
+            result.contains("<answer>"),
+            "expected placeholder: {result}"
+        );
+        assert!(
+            !result.contains("the answer"),
+            "text should be collapsed: {result}"
+        );
+    }
+
+    #[test]
+    fn collapse_answer_assignment_repl_code_lines_collapses() {
+        let ui = test_ui(80, 24);
+        let code = "answer[\"content\"] = \"\"\"This is a very long answer that should not be shown in the code block.\"\"\"\nanswer[\"ready\"] = True";
+        let rows = ui.repl_code_lines(0, code, usize::MAX);
+        let plain: Vec<String> = rows.iter().map(|r| phi_tui::strip_ansi(r)).collect();
+        let joined = plain.join("\n");
+        assert!(
+            joined.contains("<answer>"),
+            "code block should show placeholder: {joined}"
+        );
+        assert!(
+            !joined.contains("This is a very long answer"),
+            "code block should NOT contain answer text: {joined}"
+        );
+    }
+
+    #[test]
     fn repl_code_preview_uses_input_section_not_inner_fence() {
         let ui = test_ui(80, 24);
         let plain = ui

@@ -80,11 +80,15 @@ impl Ui {
         let mut rows = Vec::new();
         if !trimmed.is_empty() {
             let wrap_width = if self.block_active {
-                self.box_width().saturating_sub(2).saturating_sub(indent_width(depth)).max(1)
+                self.box_width()
+                    .saturating_sub(2)
+                    .saturating_sub(indent_width(depth))
+                    .max(1)
             } else {
                 self.card_body_width(depth)
             };
-            rows = highlight_code(trimmed, Some("repl"), &self.palette.markdown)
+            let display_code = collapse_answer_assignment(trimmed);
+            rows = highlight_code(&display_code, Some("repl"), &self.palette.markdown)
                 .into_iter()
                 .flat_map(|line| wrap_ansi(&line, wrap_width))
                 .collect();
@@ -94,7 +98,11 @@ impl Ui {
                 rows.push(format!("{DIM}… ({hidden} more lines){RESET}"));
             }
         }
-        let prefix = if self.block_active { indent(depth) } else { result_prefix(depth) };
+        let prefix = if self.block_active {
+            indent(depth)
+        } else {
+            result_prefix(depth)
+        };
         let blank = indent(depth);
         rows.into_iter()
             .map(|line| {
@@ -415,7 +423,11 @@ impl Ui {
         if rows.is_empty() {
             return;
         }
-        let prefix = if self.block_active { indent(depth) } else { result_prefix(depth) };
+        let prefix = if self.block_active {
+            indent(depth)
+        } else {
+            result_prefix(depth)
+        };
         let blank = indent(depth);
         for line in &rows {
             self.push_row(if line.is_empty() {

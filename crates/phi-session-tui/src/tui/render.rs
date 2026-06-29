@@ -141,6 +141,126 @@ pub(crate) fn strip_tool_echoes(
     out.join("\n")
 }
 
+/// Collapse long string literals assigned to `answer["content"]` (or
+/// `answer['content']`) in REPL code so the answer text — which is also
+/// rendered as a markdown prose card by `push_assistant_message` — does not
+/// appear twice in the UI: once as a raw string literal inside the code block
+/// and once as formatted markdown below it.
+///
+/// This is a **data-level** transform on the code string before
+/// syntax-highlighting, mirroring `strip_tool_echoes`. It replaces the RHS
+/// of any line that assigns to `answer["content"]` / `answer['content']`
+/// with a short `"<answer>"` placeholder, preserving the assignment itself so
+/// the user can see that the answer was submitted. Lines that do not assign
+/// to the answer dict are left untouched, so mixed blocks (real work + answer
+/// submission) still show their real code.
+pub(crate) fn collapse_answer_assignment(code: &str) -> String {
+    // Quick bail: if "answer" doesn't appear at all, return unchanged.
+    if !code.contains("answer") {
+        return code.to_owned();
+    }
+
+    let lines: Vec<&str> = code.lines().collect();
+    let mut out: Vec<String> = Vec::with_capacity(lines.len());
+    let mut i = 0;
+
+    while i < lines.len() {
+        let line = lines[i];
+        let trimmed = line.trim_start();
+
+        // Check if this line is an answer["content"] / answer['content'] assignment.
+        if let Some(eq_pos) = find_answer_content_eq(trimmed) {
+            let lhs = &trimmed[..eq_pos];
+            let after_eq = trimmed[eq_pos + 1..].trim_start();
+
+            // Triple-quoted string — may span multiple lines.
+            if after_eq.starts_with("\"\"\"") || after_eq.starts_with("'''") {
+                let quote = &after_eq[..3];
+                let rest_after_open = &after_eq[3..];
+                if let Some(end) = rest_after_open.find(quote) {
+                    // Closing quote is on the same line.
+                    let suffix = rest_after_open[end + 3..].trim();
+                    out.push(format!(
+                        "{} = \"<answer>\"{}",
+                        lhs,
+                        if suffix.is_empty() {
+                            String::new()
+                        } else {
+                            format!("  # {suffix}")
+                        }
+                    ));
+                    i += 1;
+                } else {
+                    // Multi-line: consume lines until the closing quote.
+                    out.push(format!("{} = \"<answer>\"", lhs));
+                    i += 1;
+                    while i < lines.len() {
+                        if lines[i].contains(quote) {
+                            i += 1;
+                            break;
+                        }
+                        i += 1;
+                    }
+                }
+                continue;
+            }
+
+            // Single-line single or double quoted string.
+            if after_eq.starts_with('"') || after_eq.starts_with('\'') {
+                let q = &after_eq[..1];
+                if let Some(end) = after_eq[1..].find(q) {
+                    let suffix = after_eq[1 + end + 1..].trim();
+                    out.push(format!(
+                        "{} = \"<answer>\"{}",
+                        lhs,
+                        if suffix.is_empty() {
+                            String::new()
+                        } else {
+                            format!("  # {suffix}")
+                        }
+                    ));
+                    i += 1;
+                    continue;
+                }
+            }
+
+            // Not a string literal — leave as-is.
+            out.push(line.to_owned());
+            i += 1;
+            continue;
+        }
+
+        // Not an answer assignment — keep verbatim.
+        out.push(line.to_owned());
+        i += 1;
+    }
+
+    let result = out.join("\n");
+    if code.ends_with('\n') {
+        format!("{result}\n")
+    } else {
+        result
+    }
+}
+
+/// If `line` is an `answer["content"] = ...` or `answer['content'] = ...`
+/// assignment, return the byte index of the `=`. Otherwise `None`.
+fn find_answer_content_eq(line: &str) -> Option<usize> {
+    let s = line.trim_start();
+    let s = s.strip_prefix("answer")?;
+    let s = s.trim_start();
+    let s = s.strip_prefix('[')?;
+    let s = s.trim_start();
+    let s = s
+        .strip_prefix("\"content\"")
+        .or_else(|| s.strip_prefix("'content'"))?;
+    let s = s.trim_start();
+    let s = s.strip_prefix(']')?;
+    let s = s.trim_start();
+    let s = s.strip_prefix('=')?;
+    Some(line.len() - s.len())
+}
+
 /// Per-level nesting indent: two spaces per `depth`. Used to inset a flat
 /// header line under its enclosing unit (a repl block or an RLM subcall).
 /// Nesting is shown by indentation alone — no glyph marker. Two cells per
