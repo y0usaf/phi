@@ -114,10 +114,10 @@ async fn write_file_overwrite_returns_diff() {
 }
 
 #[tokio::test]
-async fn shell_runs_commands() {
+async fn bash_runs_commands() {
     let (mut repl, _events) = started().await;
     let r = repl
-        .exec("print(shell('echo hi; exit 3'))", EXEC_TIMEOUT)
+        .exec("print(bash('echo hi; exit 3'))", EXEC_TIMEOUT)
         .await
         .unwrap();
     assert!(r.stdout.contains("hi"), "stdout: {}", r.stdout);
@@ -283,7 +283,7 @@ async fn cwd_setting_controls_working_directory() {
 #[tokio::test]
 async fn tools_emit_start_and_end_events() {
     let (mut repl, handler) = started().await;
-    repl.exec("print(shell('echo hi'))", EXEC_TIMEOUT)
+    repl.exec("print(bash('echo hi'))", EXEC_TIMEOUT)
         .await
         .unwrap();
     repl.exec("print(edit_file('/nonexistent', 'a', 'b'))", EXEC_TIMEOUT)
@@ -294,10 +294,10 @@ async fn tools_emit_start_and_end_events() {
         assert_eq!(events.len(), 4, "events: {events:?}");
         match &events[0] {
             ToolEvent::Start { name, args, .. } => {
-                assert_eq!(name, "shell");
+                assert_eq!(name, "bash");
                 assert_eq!(args["cmd"], "echo hi");
             }
-            other => panic!("expected shell start, got {other:?}"),
+            other => panic!("expected bash start, got {other:?}"),
         }
         match &events[1] {
             ToolEvent::End {
@@ -306,11 +306,11 @@ async fn tools_emit_start_and_end_events() {
                 error,
                 ..
             } => {
-                assert_eq!(name, "shell");
+                assert_eq!(name, "bash");
                 assert!(result.contains("hi"), "result: {result}");
                 assert!(error.is_none());
             }
-            other => panic!("expected shell end, got {other:?}"),
+            other => panic!("expected bash end, got {other:?}"),
         }
         match &events[3] {
             ToolEvent::End { name, error, .. } => {
@@ -333,7 +333,7 @@ async fn prelude_internals_hidden_from_vars() {
         "vars: {:?}",
         r.vars
     );
-    assert!(!r.vars.contains(&"shell".to_owned()), "vars: {:?}", r.vars);
+    assert!(!r.vars.contains(&"bash".to_owned()), "vars: {:?}", r.vars);
     repl.shutdown().await;
 }
 

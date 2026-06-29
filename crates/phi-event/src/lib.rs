@@ -331,17 +331,17 @@ mod tests {
     #[test]
     fn test_event_payload_tool_call() {
         let payload = EventPayload::ToolCall {
-            name: "shell".to_string(),
+            name: "bash".to_string(),
             args: json!({"cmd": "ls"}),
         };
         let json = serde_json::to_value(&payload).unwrap();
-        assert_eq!(json["ToolCall"]["name"], "shell");
+        assert_eq!(json["ToolCall"]["name"], "bash");
         assert_eq!(json["ToolCall"]["args"]["cmd"], "ls");
 
         let deserialized: EventPayload = serde_json::from_value(json).unwrap();
         match deserialized {
             EventPayload::ToolCall { name, args } => {
-                assert_eq!(name, "shell");
+                assert_eq!(name, "bash");
                 assert_eq!(args["cmd"], "ls");
             }
             _ => panic!("wrong variant"),
@@ -351,12 +351,12 @@ mod tests {
     #[test]
     fn test_event_payload_tool_result() {
         let payload = EventPayload::ToolResult {
-            name: "shell".to_string(),
+            name: "bash".to_string(),
             result: "output".to_string(),
             error: Some("oops".to_string()),
         };
         let json = serde_json::to_value(&payload).unwrap();
-        assert_eq!(json["ToolResult"]["name"], "shell");
+        assert_eq!(json["ToolResult"]["name"], "bash");
         assert_eq!(json["ToolResult"]["result"], "output");
         assert_eq!(json["ToolResult"]["error"], "oops");
 
@@ -367,7 +367,7 @@ mod tests {
                 result,
                 error,
             } => {
-                assert_eq!(name, "shell");
+                assert_eq!(name, "bash");
                 assert_eq!(result, "output");
                 assert_eq!(error, Some("oops".to_string()));
             }
@@ -378,7 +378,7 @@ mod tests {
     #[test]
     fn test_event_payload_tool_result_no_error() {
         let payload = EventPayload::ToolResult {
-            name: "shell".to_string(),
+            name: "bash".to_string(),
             result: "output".to_string(),
             error: None,
         };

@@ -11,7 +11,7 @@ pub enum SessionStatus {
     Thinking,
     /// The root model is streaming text.
     Outputting,
-    /// A prelude tool (shell, edit_file, ...) is executing.
+    /// A prelude tool (bash, edit_file, ...) is executing.
     Tool { name: String },
     /// The session task panicked; it can be restarted in place.
     Crashed,
@@ -64,11 +64,11 @@ mod tests {
             status_for_event(&RlmEvent::ToolStart {
                 depth: 0,
                 call_id: 1,
-                name: "shell".into(),
+                name: "bash".into(),
                 args: serde_json::Value::Null
             }),
             Some(SessionStatus::Tool {
-                name: "shell".into()
+                name: "bash".into()
             })
         );
         assert_eq!(
@@ -89,7 +89,7 @@ mod tests {
             status_for_event(&RlmEvent::ToolStart {
                 depth: 2,
                 call_id: 1,
-                name: "shell".into(),
+                name: "bash".into(),
                 args: serde_json::Value::Null
             }),
             None

@@ -132,7 +132,7 @@ mod tests {
                 duration_secs: 0.5,
                 kind: ReplKind::Agent,
                 tools: vec![ToolCall {
-                    name: "shell".to_owned(),
+                    name: "bash".to_owned(),
                     args: serde_json::json!({"cmd": "ls"}),
                     result: "ok".to_owned(),
                     error: None,
@@ -170,7 +170,7 @@ mod tests {
                 assert_eq!(repl.parent_id.as_deref(), Some(a1.as_str()));
                 assert_eq!(repl.kind, ReplKind::Agent);
                 assert_eq!(repl.tools.len(), 1);
-                assert_eq!(repl.tools[0].name, "shell");
+                assert_eq!(repl.tools[0].name, "bash");
                 assert_eq!(repl.tools[0].result, "ok");
                 assert_eq!(repl.tools[0].depth, 0);
                 assert_eq!(repl.subcalls.len(), 1);
@@ -191,7 +191,7 @@ mod tests {
     #[test]
     fn old_repl_activity_records_default_to_root_depth() {
         let tool: ToolCall = serde_json::from_value(serde_json::json!({
-            "name": "shell",
+            "name": "bash",
             "args": {"cmd": "echo hi"},
             "result": "hi\n",
             "error": null,
@@ -223,7 +223,7 @@ mod tests {
                 duration_secs: 0.5,
                 kind: ReplKind::Agent,
                 tools: vec![ToolCall {
-                    name: "shell".to_owned(),
+                    name: "bash".to_owned(),
                     args: serde_json::json!({"cmd": "echo nested"}),
                     result: "nested\n".to_owned(),
                     error: None,

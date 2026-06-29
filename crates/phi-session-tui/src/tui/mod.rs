@@ -999,24 +999,24 @@ mod tests {
         let ls = tool_identity("ls", &serde_json::json!({"path": "src"}), &p);
         assert!(phi_tui::strip_ansi(&ls.anchor) == "ls src");
         assert!(ls.body.is_empty());
-        // shell: single-line command lives in the anchor only (empty body); a
+        // bash: single-line command lives in the anchor only (empty body); a
         // multi-line command's truncated first line is the anchor and its full
         // text is the body — the canonical command is shown once either way.
-        let bash1 = tool_identity("shell", &serde_json::json!({"cmd": "cargo check"}), &p);
+        let bash1 = tool_identity("bash", &serde_json::json!({"cmd": "cargo check"}), &p);
         assert!(phi_tui::strip_ansi(&bash1.anchor).contains("$ cargo check"));
         assert!(
             bash1.body.is_empty(),
-            "single-line shell must not duplicate the command in the body"
+            "single-line bash must not duplicate the command in the body"
         );
         let bash2 = tool_identity(
-            "shell",
+            "bash",
             &serde_json::json!({"cmd": "cargo test\ncargo build"}),
             &p,
         );
         assert!(phi_tui::strip_ansi(&bash2.anchor).contains("$ cargo test…"));
         assert!(
             !bash2.body.is_empty(),
-            "multi-line shell must carry the full command in the body"
+            "multi-line bash must carry the full command in the body"
         );
         assert_eq!(bash2.body.len(), 2, "{:?}", bash2.body);
         // Unknown (e.g. MCP/extension) tools: small `key=value` args live in the
@@ -1089,15 +1089,15 @@ mod tests {
         assert_eq!(plain.matches("// file").count(), 1, "{plain}");
     }
 
-    // A multi-line shell command is preserved in full under the card header —
+    // A multi-line bash command is preserved in full under the card header —
     // one body line per command line, none truncated away — while the anchor
     // is the single-line truncation (`…`), so the header stays compact.
     #[test]
-    fn shell_body_preserved_multiline() {
+    fn bash_body_preserved_multiline() {
         let ui = test_ui(80, 24);
         let rows = ui.tool_result_rows(
             1,
-            "shell",
+            "bash",
             &serde_json::json!({"cmd": "cargo test\ncargo build --release"}),
             "running 12 tests\n",
             usize::MAX,
@@ -1119,13 +1119,13 @@ mod tests {
         // Output preview is folded under the same card, below the command body.
         assert!(plain.contains("running 12 tests"), "{plain}");
 
-        // Single-line shell: the anchor already carries the command, so the body
+        // Single-line bash: the anchor already carries the command, so the body
         // must NOT re-state it (anchor-once — the canonical command appears
         // once total, in the header rule only).
         let ui = test_ui(80, 24);
         let rows = ui.tool_result_rows(
             0,
-            "shell",
+            "bash",
             &serde_json::json!({"cmd": "cargo check"}),
             "Compiling\n",
             usize::MAX,
@@ -1584,7 +1584,7 @@ match1
         ui.handle_rlm_event(RlmEvent::CodeExecStart {
             depth: 0,
             iteration: 0,
-            code: "print(llm_query('hello'))\nprint(shell('echo nested'))".to_owned(),
+            code: "print(llm_query('hello'))\nprint(bash('echo nested'))".to_owned(),
         });
         ui.handle_rlm_event(RlmEvent::SubcallStart {
             depth: 1,
@@ -1601,13 +1601,13 @@ match1
         ui.handle_rlm_event(RlmEvent::ToolStart {
             depth: 1,
             call_id: 7,
-            name: "shell".to_owned(),
+            name: "bash".to_owned(),
             args: serde_json::json!({"cmd": "echo nested"}),
         });
         ui.handle_rlm_event(RlmEvent::ToolEnd {
             depth: 1,
             call_id: 7,
-            name: "shell".to_owned(),
+            name: "bash".to_owned(),
             result: "nested\n".to_owned(),
             error: None,
             duration: Duration::from_millis(100),
@@ -1689,7 +1689,7 @@ match1
         ui.store.append(session::Role::User, "q1").unwrap();
         ui.store
             .append_repl(session::ReplRecord {
-                code: "print(shell('echo hi'))".to_owned(),
+                code: "print(bash('echo hi'))".to_owned(),
                 stdout: "line1\nline2\nline3\nline4\nline5\nline6\n".to_owned(),
                 stderr: String::new(),
                 duration_secs: 0.1,

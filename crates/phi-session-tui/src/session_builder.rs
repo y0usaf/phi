@@ -377,7 +377,7 @@ mod prompt_drift_tests {
     use phi_builtins::prelude::coding_tools_section;
 
     /// Parse the helper function names out of `coding_tools_section()`, whose
-    /// roster lines look like `- shell(cmd: str, ...) -> str — ...`.
+    /// roster lines look like `- bash(cmd: str, ...) -> str — ...`.
     fn coding_roster(section: &str) -> HashSet<String> {
         let mut set = HashSet::new();
         for line in section.lines() {
@@ -398,7 +398,7 @@ mod prompt_drift_tests {
     fn coding_roster_lists_expected_file_helpers() {
         let roster = coding_roster(&coding_tools_section());
         for expected in [
-            "shell",
+            "bash",
             "read_file",
             "write_file",
             "edit_file",

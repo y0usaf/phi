@@ -98,14 +98,14 @@ fn call_anchor_shows_identity_once() {
         ),
         "Edit File — a.rs"
     );
-    // shell: first command line inlined; multi-line truncated.
+    // bash: first command line inlined; multi-line truncated.
     assert_eq!(
-        call_anchor("shell", &serde_json::json!({"cmd": "echo hi"})),
+        call_anchor("bash", &serde_json::json!({"cmd": "echo hi"})),
         "Shell: $ echo hi"
     );
     assert!(
-        call_anchor("shell", &serde_json::json!({"cmd": "echo one\necho two"})).ends_with('…'),
-        "multi-line shell anchor truncates"
+        call_anchor("bash", &serde_json::json!({"cmd": "echo one\necho two"})).ends_with('…'),
+        "multi-line bash anchor truncates"
     );
     // grep: pattern (and path) inlined.
     assert_eq!(
@@ -142,7 +142,7 @@ fn residual_args_strips_canonical_key_only() {
 #[test]
 fn input_output_tools_render_separators_inside_one_box() {
     let panel = render_tool_panel(
-        "shell",
+        "bash",
         &serde_json::json!({"cmd": "echo hi"}),
         "hi\n",
         false,
@@ -197,14 +197,14 @@ fn observational_tools_render_as_single_output_box() {
 }
 
 #[test]
-fn shell_body_preserved_multiline() {
-    // The Command section preserves every line of a multi-line shell cmd (one
+fn bash_body_preserved_multiline() {
+    // The Command section preserves every line of a multi-line bash cmd (one
     // `$ <line>` row each), not just the first line. The panel title carries no
-    // command text (the shell title suffix is empty); the full command is shown
+    // command text (the bash title suffix is empty); the full command is shown
     // only here, once, not truncated. `call_anchor` separately truncates the
     // start line — tested in `call_anchor_shows_identity_once`.
     let panel = render_tool_panel(
-        "shell",
+        "bash",
         &serde_json::json!({"cmd": "cargo test\ncargo build --release"}),
         "running 12 tests\n",
         false,

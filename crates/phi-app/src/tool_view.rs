@@ -20,7 +20,7 @@ fn first_line_trunc(text: &str, max: usize) -> String {
 pub(crate) fn call_anchor(name: &str, args: &serde_json::Value) -> String {
     let display = tool_display_name(name);
     match name {
-        "shell" => {
+        "bash" => {
             let cmd = tool_arg(args, "cmd");
             if cmd.trim().is_empty() {
                 display
@@ -165,6 +165,10 @@ pub(crate) fn parse_bash_result(text: &str) -> (Vec<String>, Option<i64>, Option
 }
 
 pub(crate) fn tool_display_name(name: &str) -> String {
+    // The tool is named "bash" but should display as "Shell" in transcripts.
+    if name == "bash" {
+        return "Shell".to_owned();
+    }
     name.split('_')
         .filter(|part| !part.is_empty())
         .map(|part| {
@@ -214,19 +218,19 @@ pub(crate) fn tool_shows_args_section(name: &str) -> bool {
 }
 
 pub(crate) fn tool_shows_input_section(name: &str) -> bool {
-    name == "shell" || name == "repl" || tool_shows_args_section(name)
+    name == "bash" || name == "repl" || tool_shows_args_section(name)
 }
 
 pub(crate) fn tool_input_label(name: &str) -> &'static str {
     match name {
-        "shell" => "Command",
+        "bash" => "Command",
         "repl" => "",
         _ => "Args",
     }
 }
 
 pub(crate) fn tool_input_lines(name: &str, args: &serde_json::Value) -> Vec<String> {
-    if name == "shell" {
+    if name == "bash" {
         let cmd = args
             .get("cmd")
             .and_then(serde_json::Value::as_str)
@@ -280,7 +284,7 @@ pub(crate) fn tool_output_lines(
     args: &serde_json::Value,
     text: &str,
 ) -> (Vec<String>, Vec<String>, bool) {
-    if name == "shell" {
+    if name == "bash" {
         let timeout = bash_timeout_arg(args);
         let (lines, exit_code, timed_out) = parse_bash_result(text);
         let ok = exit_code.unwrap_or(0) == 0 && timed_out.is_none();
