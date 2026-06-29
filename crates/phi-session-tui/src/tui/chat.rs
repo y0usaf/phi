@@ -205,6 +205,8 @@ impl Ui {
             return;
         }
         let spinner = self.spinner.frame().to_owned();
+        let elapsed = self.anim_start.elapsed().as_millis() as u64;
+        let shimmer = self.palette.shimmer_accent;
 
         let mut tool_ids: Vec<((usize, u64), usize)> = self
             .open_tool_rows
@@ -219,7 +221,10 @@ impl Ui {
             let new_len = self.replace_block_rows(
                 row.start,
                 row.len,
-                self.status_rows(row.depth, &running_status_text(&row.label, &spinner)),
+                self.status_rows(
+                    row.depth,
+                    &running_status_text_shimmer(&row.label, &spinner, shimmer, elapsed),
+                ),
             );
             if let Some(open) = self.open_tool_rows.get_mut(&id) {
                 open.len = new_len;
@@ -240,7 +245,10 @@ impl Ui {
             let new_len = self.replace_block_rows(
                 row.start,
                 row.len,
-                self.status_rows(row.depth, &running_status_text(&row.label, &spinner)),
+                self.status_rows(
+                    row.depth,
+                    &running_status_text_shimmer(&row.label, &spinner, shimmer, elapsed),
+                ),
             );
             if let Some(open) = self.open_subcall_rows.get_mut(idx) {
                 open.len = new_len;

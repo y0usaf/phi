@@ -690,9 +690,11 @@ impl Ui {
             self.open_tool_args.insert(key, args.clone());
         }
         let label = tool_title(&name, &args, &self.palette);
-        if let Some((start, len)) =
-            self.push_status(depth + 1, running_status_text(&label, self.spinner.frame()))
-        {
+        let elapsed = self.anim_start.elapsed().as_millis() as u64;
+        if let Some((start, len)) = self.push_status(
+            depth + 1,
+            running_status_text_shimmer(&label, self.spinner.frame(), self.palette.shimmer_accent, elapsed),
+        ) {
             self.open_tool_rows.insert(
                 key,
                 OpenToolRow {
@@ -780,16 +782,20 @@ impl Ui {
                 start: 0,
                 len: 0,
             });
-        } else if let Some((start, len)) =
-            self.push_status(depth, running_status_text(&label, self.spinner.frame()))
-        {
-            self.open_subcall_rows.push_back(OpenSubcallRow {
+        } else {
+            let elapsed = self.anim_start.elapsed().as_millis() as u64;
+            if let Some((start, len)) = self.push_status(
                 depth,
-                prompt_preview: prompt_preview.clone(),
-                label,
-                start,
-                len,
-            });
+                running_status_text_shimmer(&label, self.spinner.frame(), self.palette.shimmer_accent, elapsed),
+            ) {
+                self.open_subcall_rows.push_back(OpenSubcallRow {
+                    depth,
+                    prompt_preview: prompt_preview.clone(),
+                    label,
+                    start,
+                    len,
+                });
+            }
         }
         if depth == 0 {
             self.status = format!("waiting on {model}...");

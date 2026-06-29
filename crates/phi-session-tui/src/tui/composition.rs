@@ -264,22 +264,41 @@ impl Ui {
             .and_then(|name| name.to_str())
             .map(String::from)
             .unwrap_or_else(|| ".".to_string());
-        let mut header = self.render_chrome_agent();
-        header.push_str(&format!(
-            "  {}{} {current_dir}{RESET}",
-            &self.palette.chrome_dir_fg,
-            dir_symbol()
-        ));
+        let elapsed = self.anim_start.elapsed().as_millis() as u64;
+        let shim = self.palette.shimmer_accent;
+
+        // Build each statusbar section independently and apply shimmer_ansi
+        // to each one. The shimmer is percentage-based (position = fraction of
+        // section width), so all sections sync naturally — the highlight sits
+        // at the same relative position across all sections simultaneously,
+        // making the shimmer appear to travel across the whole bar in sync.
+        let agent = shimmer_ansi(&self.render_chrome_agent(), shim, elapsed);
+        let dir = shimmer_ansi(
+            &format!(
+                "{}{} {current_dir}{RESET}",
+                &self.palette.chrome_dir_fg,
+                dir_symbol()
+            ),
+            shim,
+            elapsed,
+        );
+        let mut header = format!("{agent}  {dir}");
         if let Some(branch) = &self.branch
             && branch != &current_dir
         {
-            header.push_str(&format!(
-                "  {}{} {branch}{RESET}",
-                &self.palette.chrome_dir_fg,
-                branch_symbol()
-            ));
+            let branch_part = shimmer_ansi(
+                &format!(
+                    "{}{} {branch}{RESET}",
+                    &self.palette.chrome_dir_fg,
+                    branch_symbol()
+                ),
+                shim,
+                elapsed,
+            );
+            header.push_str(&format!("  {branch_part}"));
         }
-        header.push_str(&format!("  {}", self.render_chrome_model()));
+        let model = shimmer_ansi(&self.render_chrome_model(), shim, elapsed);
+        header.push_str(&format!("  {model}"));
         lines.push(header);
 
         // Render the selector (if open) or the editor underneath the

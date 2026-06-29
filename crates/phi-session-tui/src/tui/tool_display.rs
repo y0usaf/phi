@@ -17,8 +17,17 @@ pub(crate) fn subcall_title(model: &str, prompt_preview: &str, p: &InlinePalette
     )
 }
 
-pub(crate) fn running_status_text(label: &str, spinner: &str) -> String {
-    format!("{spinner} {label}")
+/// Format a running tool/subcall status line with an ANSI-aware shimmer sweep
+/// applied to the label, mirroring claude-code's glimmer shimmer for in-flight
+/// tool headers. The spinner glyph is not shimmered.
+pub(crate) fn running_status_text_shimmer(
+    label: &str,
+    spinner: &str,
+    shimmer: phi_tui::Rgb,
+    elapsed_ms: u64,
+) -> String {
+    let shimmed = shimmer_ansi(label, shimmer, elapsed_ms);
+    format!("{spinner} {shimmed}")
 }
 
 pub(crate) fn failed_status_text(

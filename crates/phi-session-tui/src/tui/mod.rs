@@ -23,7 +23,7 @@ use phi_tui::{
     Editor, EditorAction, LiveCursor, RawModeGuard, Selector, SelectorItem, SelectorOutcome,
     Spinner, Terminal, detect_terminal_colors, equalizer_glyphs, fill_bg, fuzzy_filter,
     gradient_text_animated, highlight_code, highlight_diff_line, highlight_output, render_markdown,
-    thinking_expression, wrap_ansi, wrap_ansi_locate,
+    shimmer_ansi, thinking_expression, wrap_ansi, wrap_ansi_locate,
 };
 
 use phi_session::files::FileSearcher;
@@ -339,12 +339,16 @@ pub async fn run(setup: TuiSetup, mut io: SessionIo) -> Result<()> {
                 ui.handle_login_msg(msg);
                 false
             }
-            _ = ticker.tick(), if ui.running.is_some() => {
-                ui.spinner.tick();
-                ui.refresh_open_activity_rows();
-                for msg in ui.runtime.drain_notifications() {
-                    ui.pending.push(msg);
+            _ = ticker.tick() => {
+                if ui.running.is_some() {
+                    ui.spinner.tick();
+                    ui.refresh_open_activity_rows();
+                    for msg in ui.runtime.drain_notifications() {
+                        ui.pending.push(msg);
+                    }
                 }
+                // Always redraw on tick so the statusbar shimmer stays
+                // animated even when idle (no tool running).
                 false
             }
             _ = tokio::time::sleep_until(last_draw + FRAME), if dirty => false,
