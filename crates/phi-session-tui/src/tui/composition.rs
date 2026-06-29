@@ -96,7 +96,11 @@ impl Ui {
 
             if self.block_active {
                 let mut lines = vec![String::new()];
-                lines.extend(render_repl_block(&self.block, Some(self.turn)));
+                lines.extend(render_repl_block(
+                    &self.block,
+                    &self.palette.tool_pending_bg,
+                    self.panel_width(),
+                ));
                 blocks.push(TranscriptBlock {
                     key: "live:repl-block".to_owned(),
                     lines,
@@ -382,7 +386,7 @@ impl Ui {
     }
 
     pub(super) fn repl_body_width(&self) -> usize {
-        self.panel_width().saturating_sub(4).max(4)
+        self.panel_width().saturating_sub(2).max(2)
     }
 
     pub(super) fn card_body_width(&self, depth: usize) -> usize {
@@ -391,10 +395,11 @@ impl Ui {
             .max(1)
     }
 
-    /// Width for a boxed block (pi `Box(1,1,bgFn)`) that will sit inside a
-    /// REPL block. `render_repl_block` prepends `indent(1)` to every line,
-    /// so the box must be `panel_width - indent_width(1)` to avoid overflow.
+    /// Width for a boxed block (pi `Box(1,1,bgFn)`) that sits inside the
+    /// REPL block. `render_repl_block` wraps body lines in a `Box(1,1,bgFn)`
+    /// with a 1-space left pad, so child cards must be `panel_width - 1`
+    /// to fill the remaining width after the outer box's pad.
     pub(super) fn box_width(&self) -> usize {
-        self.panel_width().saturating_sub(indent_width(1)).max(1)
+        self.panel_width().saturating_sub(1).max(1)
     }
 }

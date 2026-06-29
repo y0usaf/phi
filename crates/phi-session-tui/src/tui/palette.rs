@@ -33,6 +33,11 @@ pub struct InlinePalette {
     pub tool_success_bg: String,
     /// Tool block background on error (pi: `toolErrorBg`).
     pub tool_error_bg: String,
+    /// REPL block background — a neutral tint for the code-execution container
+    /// that wraps tool/subcall cards (pi: no direct equivalent; pi has no
+    /// REPL block concept, but the visual model is a Box(1,1,bgFn) like the
+    /// tool cards, just with a neutral bg).
+    pub repl_bg: String,
     /// Chrome (status/footer) border.
     pub chrome_border: String,
     /// Chrome header: agent label + usage (phi, tokens).
@@ -92,6 +97,7 @@ impl InlinePalette {
             tool_pending_bg: s("\x1b[48;2;40;40;50m"),
             tool_success_bg: s("\x1b[48;2;40;50;40m"),
             tool_error_bg: s("\x1b[48;2;60;40;40m"),
+            repl_bg: s("\x1b[48;2;36;36;44m"),
             chrome_border: s("\x1b[38;2;82;88;110m"),
             chrome_agent_fg: s("\x1b[1m\x1b[37m"),
             chrome_cost_fg: s("\x1b[1m\x1b[32m"),
@@ -139,6 +145,7 @@ impl InlinePalette {
             tool_pending_bg: bg_from_terminal(colors, 8, &fallback.tool_pending_bg),
             tool_success_bg: bg_from_terminal(colors, 2, &fallback.tool_success_bg),
             tool_error_bg: bg_from_terminal(colors, 1, &fallback.tool_error_bg),
+            repl_bg: bg_from_terminal(colors, 8, &fallback.repl_bg),
             chrome_border: col(8).unwrap_or_else(|| fallback.chrome_border.clone()),
             chrome_agent_fg: col_bold(7).unwrap_or_else(|| fallback.chrome_agent_fg.clone()),
             chrome_cost_fg: col_bold(2).unwrap_or_else(|| fallback.chrome_cost_fg.clone()),

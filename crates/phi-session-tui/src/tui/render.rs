@@ -196,7 +196,7 @@ pub(crate) fn render_flat(title: &str, depth: usize, body: &[String]) -> Vec<Str
 /// that opens the row so the prefixed cells carry the background and the fill
 /// spans the full terminal width. Rows without a leading bg escape get a
 /// plain-space prefix (non-boxed text lines like code, exec bars, and output).
-fn prepend_indent(row: &str, prefix: &str) -> String {
+pub(crate) fn prepend_indent(row: &str, prefix: &str) -> String {
     // A background SGR always starts with `[48` (48;2;R;G;B for 24-bit,
     // 48;5;N for 256-colour). `fill_bg` guarantees the bg escape is the very
     // first thing on a boxed row.
@@ -212,23 +212,45 @@ fn prepend_indent(row: &str, prefix: &str) -> String {
     format!("{prefix}{row}")
 }
 
-/// REPL block: its activity rows inset by one nesting level. No block header —
-/// the code and its output speak for themselves. Body rows are child headers
-/// (tool/subcall lines and their own results), so they get a 2-space indent
-/// on top of their own nesting. For boxed rows (tool/subcall cards, status
-/// spinners) the indent is injected *inside* the background SGR so the
-/// coloured fill covers the full terminal width instead of starting two
-/// cells in — matching pi's `Box(1,1,bgFn)` full-width background.
-pub(crate) fn render_repl_block(body: &[String], _turn: Option<usize>) -> Vec<String> {
-    let prefix = indent(1);
-    let mut out = Vec::with_capacity(body.len());
+/// REPL block: a pi-style `Box(1,1,bgFn)` that wraps the code-execution
+/// container. The body is a mix of flat text lines (code, exec bar, output —
+/// no bg escape) and boxed child card rows (tool/subcall cards, status
+/// spinners — already carrying their own bg from `render_boxed`).
+///
+/// To preserve each child card's own background while applying the REPL bg
+/// to flat lines, the function distinguishes the two:
+/// - **Boxed child rows** (starting with a bg SGR): the 1-space left pad is
+///   injected *inside* the child's own bg via `prepend_indent`, so the child
+///   keeps its colour and the pad cell carries the child bg — not the REPL bg.
+///   `fill_bg` is NOT called (it would clobber the child's opening bg).
+/// - **Flat text rows** (no bg escape): `fill_bg` paints the whole row with
+///   the REPL bg, left-padded by 1 space. Blank rows become bg-only fill.
+///
+/// Top and bottom padding rows are bg-only fills, matching pi's Box padding.
+pub(crate) fn render_repl_block(body: &[String], bg: &str, width: usize) -> Vec<String> {
+    if body.is_empty() {
+        return Vec::new();
+    }
+    let pad = " ";
+    let mut out = Vec::with_capacity(body.len() + 2);
+    // Top padding
+    out.push(fill_bg(pad, bg, width));
     for line in body {
         if line.is_empty() {
-            out.push(prefix.clone());
+            // Blank line: bg-only fill.
+            out.push(fill_bg(pad, bg, width));
+        } else if line.starts_with("\x1b[48") {
+            // Boxed child card row: inject 1-space pad inside the child's
+            // own bg so the child keeps its colour. Do NOT call fill_bg.
+            out.push(prepend_indent(line, pad));
         } else {
-            out.push(prepend_indent(line, &prefix));
+            // Flat text line: paint with REPL bg.
+            let padded = format!("{pad}{line}");
+            out.push(fill_bg(&padded, bg, width));
         }
     }
+    // Bottom padding
+    out.push(fill_bg(pad, bg, width));
     out
 }
 

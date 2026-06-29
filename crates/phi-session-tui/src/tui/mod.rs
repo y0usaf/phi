@@ -508,6 +508,7 @@ struct Ui {
     /// it), shown live and then committed to scrollback verbatim.
     pub(super) block: Vec<String>,
     pub(super) block_active: bool,
+    pub(super) block_errored: bool,
     /// Code of the in-flight depth-0 agent ```repl``` block, stashed at
     /// `CodeExecStart` and persisted to the session store at `CodeExecEnd`.
     pub(super) live_code: Option<String>,
@@ -627,6 +628,7 @@ impl Ui {
             next_transcript_block_id: 0,
             block: Vec::new(),
             block_active: false,
+            block_errored: false,
             live_code: None,
             live_tools: Vec::new(),
             open_tool_args: std::collections::HashMap::new(),
@@ -939,9 +941,9 @@ mod tests {
         assert!(!plain.lines().any(|l| l.contains('⎿')), "{plain}");
     }
 
-    // Flat form for a repl block: no header — code folds under a bare indented
-    // body, the exec bar is its own flat line, and stdout folds under it
-    // (no `output` label, no `├` separator).
+    // Boxed form for a repl block: no header — code, exec bar, and stdout
+    // are wrapped in a pi-style Box(1,1,bgFn). The box provides the visual
+    // structure; no `output` label, no `├` separator, no ASCII border chrome.
     #[test]
     fn repl_panel_splits_input_and_output_sections() {
         let mut ui = test_ui(80, 24);
@@ -950,27 +952,30 @@ mod tests {
         ui.push_bar(0, "exec 0.1s".to_owned());
         ui.push_preview(0, "1\n", usize::MAX);
 
-        let lines = render_repl_block(&ui.block, Some(1));
+        let lines = render_repl_block(&ui.block, &ui.palette.tool_success_bg, ui.panel_width());
         let plain = lines
             .iter()
             .map(|line| phi_tui::strip_ansi(line))
             .collect::<Vec<_>>()
             .join("\n");
 
-        // No repl block header — the code speaks for itself.
-        assert!(!plain.contains("repl"), "{plain}");
-        // Code and exec bar are present as bare indented rows.
+        // The repl block now has a bold "repl" anchor header.
+        assert!(plain.contains("repl"), "{plain}");
+        // Code and exec bar are present as rows inside the box.
         assert!(plain.contains("print(1)"), "{plain}");
         assert!(plain.contains("exec 0.1s"), "{plain}");
-        // The stdout value ("1") is present as a bare row, with no "output"
-        // label above it.
+        // The stdout value ("1") is present as a row, with no "output" label.
         assert!(plain.lines().any(|l| l.trim() == "1"), "{plain}");
         assert!(!plain.contains("output"), "{plain}");
         assert!(!plain.contains("Output"), "{plain}");
-        // No box chrome or section separator.
+        // No ASCII box-drawing chrome — the box is a full-width bg fill, not
+        // a bordered frame.
         assert!(!plain.contains('┌'), "{plain}");
         assert!(!plain.contains('├'), "{plain}");
         assert!(!plain.contains('└'), "{plain}");
+        // The block has top and bottom bg padding rows (blank lines from the
+        // Box(1,1) padding) — at least 2 more rows than the 3 content rows.
+        assert!(lines.len() >= 7, "{lines:?}");
     }
 
     // The canonical argument for each tool is shown exactly once across the
@@ -1146,7 +1151,7 @@ mod tests {
     // The repl block has no header, so neither a *live* action block (built
     // during an iteration) nor a persisted assistant message re-rendered as
     // prose after the run completes carries a `repl` or `turn` label — the
-    // code and output stand on their own.
+    // code and output stand on their own inside the boxed REPL block.
     #[test]
     fn repl_panel_label_carries_turn_only_for_live_blocks() {
         use tokio_util::sync::CancellationToken;
@@ -1179,7 +1184,7 @@ mod tests {
             duration: Duration::from_millis(5),
         });
         let live_plain = pending_plain(&ui);
-        assert!(!live_plain.contains("repl"), "{live_plain}");
+        assert!(live_plain.contains("repl"), "{live_plain}");
         assert!(!live_plain.contains("turn"), "{live_plain}");
         assert!(live_plain.contains("print(1)"), "{live_plain}");
 
@@ -1194,6 +1199,7 @@ mod tests {
         let replay_plain = pending_plain(&ui);
         assert!(!replay_plain.contains("turn"), "{replay_plain}");
         assert!(replay_plain.contains("print(1)"), "{replay_plain}");
+        assert!(replay_plain.contains("repl"), "{replay_plain}");
     }
 
     #[test]

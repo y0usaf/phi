@@ -79,9 +79,14 @@ impl Ui {
         let trimmed = body.trim_end();
         let mut rows = Vec::new();
         if !trimmed.is_empty() {
+            let wrap_width = if self.block_active {
+                self.box_width().saturating_sub(2).saturating_sub(indent_width(depth)).max(1)
+            } else {
+                self.card_body_width(depth)
+            };
             rows = highlight_code(trimmed, Some("repl"), &self.palette.markdown)
                 .into_iter()
-                .flat_map(|line| wrap_ansi(&line, self.card_body_width(depth)))
+                .flat_map(|line| wrap_ansi(&line, wrap_width))
                 .collect();
             if rows.len() > max {
                 let hidden = rows.len() - max;
@@ -89,7 +94,7 @@ impl Ui {
                 rows.push(format!("{DIM}… ({hidden} more lines){RESET}"));
             }
         }
-        let prefix = result_prefix(depth);
+        let prefix = if self.block_active { indent(depth) } else { result_prefix(depth) };
         let blank = indent(depth);
         rows.into_iter()
             .map(|line| {
@@ -244,6 +249,7 @@ impl Ui {
     }
 
     pub(super) fn fail_open_activity_rows(&mut self) {
+        self.block_errored = true;
         let mut tool_ids: Vec<((usize, u64), usize)> = self
             .open_tool_rows
             .iter()
@@ -292,7 +298,10 @@ impl Ui {
         self.block.clear();
         self.open_tool_rows.clear();
         self.open_subcall_rows.clear();
+        self.block_errored = false;
         self.block_active = true;
+        self.push_row(format!("{}repl{}", &self.palette.tool_title_fg, RESET));
+        self.push_row(String::new());
     }
 
     pub(super) fn commit_block(&mut self) {
@@ -301,13 +310,12 @@ impl Ui {
         }
         self.block_active = false;
         let body = std::mem::take(&mut self.block);
-        // The `repl · turn N` label belongs to the *live* action block built
-        // during an iteration (running is Some). Persisted assistant messages
-        // re-rendered as prose containers (`push_assistant_message`, during
-        // restore or after a run completes) are a different artifact with no
-        // meaningful per-block turn, so they stay at a plain `repl` label.
-        let turn = self.running.is_some().then_some(self.turn);
-        let rows = render_repl_block(&body, turn);
+        let bg = if self.block_errored {
+            &self.palette.tool_error_bg
+        } else {
+            &self.palette.tool_success_bg
+        };
+        let rows = render_repl_block(&body, bg, self.panel_width());
         self.pending.push(String::new()); // spacer
         self.pending.extend(rows);
         self.open_tool_rows.clear();
@@ -357,9 +365,28 @@ impl Ui {
                 })
                 .collect(),
         };
+        // For non-code output (stdout/stderr), apply tool_output_fg to match
+        // the styling used by tool_result_rows for tool output (fix #4).
+        // Inside an active REPL block, use the box inner content width so flat
+        // output aligns with child card widths (fix #5).
+        let wrap_width = if self.block_active {
+            self.box_width()
+                .saturating_sub(2)
+                .saturating_sub(indent_width(depth))
+                .max(1)
+        } else {
+            self.card_body_width(depth)
+        };
         let mut rows: Vec<String> = base_rows
             .into_iter()
-            .flat_map(|line| wrap_ansi(&line, self.card_body_width(depth)))
+            .map(|line| {
+                if lang.is_none() {
+                    format!("{}{line}{RESET}", &self.palette.tool_output_fg)
+                } else {
+                    line
+                }
+            })
+            .flat_map(|line| wrap_ansi(&line, wrap_width))
             .collect();
         if rows.len() > max {
             let hidden = rows.len() - max;
@@ -380,7 +407,7 @@ impl Ui {
         if rows.is_empty() {
             return;
         }
-        let prefix = result_prefix(depth);
+        let prefix = if self.block_active { indent(depth) } else { result_prefix(depth) };
         let blank = indent(depth);
         for line in &rows {
             self.push_row(if line.is_empty() {
@@ -634,6 +661,9 @@ impl Ui {
             }
         }
         self.last_activity = true;
+        self.block_errored = tools.iter().any(|t| t.error.is_some())
+            || subcalls.iter().any(|s| s.error.is_some())
+            || !stderr.is_empty();
         let filtered = strip_tool_echoes(stdout, tools, 0);
         self.push_preview(0, &filtered, self.output_limit());
         self.push_preview(0, stderr, self.output_limit());

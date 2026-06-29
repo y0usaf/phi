@@ -665,6 +665,7 @@ impl Ui {
                 self.after_block.clear();
                 self.push_repl_replay(&code, &stdout, &stderr, duration_secs, &tools, &subcalls);
             } else {
+                self.block_errored = !stderr.is_empty();
                 self.live_tools.clear();
                 self.live_subcalls.clear();
                 self.commit_block();
@@ -738,6 +739,9 @@ impl Ui {
             });
         }
         let output = error.as_deref().unwrap_or(&result);
+        if error.is_some() {
+            self.block_errored = true;
+        }
         let lang = if error.is_some() {
             None
         } else {
