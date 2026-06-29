@@ -10,7 +10,16 @@ def bash(cmd, timeout=120):
         out += ("\n" if out else "") + proc.stderr
     if proc.returncode != 0:
         out += ("\n" if out else "") + "[exit code %d]" % proc.returncode
-    return _prelude_truncate(out) if out else "(no output)"
+    if not out:
+        return "(no output)"
+    # Pi-style spillover: if the output exceeds the byte limit, spill the
+    # full output to a tmp file and return a truncated tail plus a path
+    # annotation. This keeps REPL memory bounded while preserving a route
+    # back to the complete data. The tmp file is ephemeral — the OS cleans
+    # it up on process exit or reboot.
+    if len(out) > _PRELUDE_MAX_BYTES:
+        return _spill_to_tmp(out)
+    return _prelude_truncate(out)
 
 
 @_tool

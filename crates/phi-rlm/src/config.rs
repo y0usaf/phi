@@ -189,6 +189,9 @@ pub enum RlmEvent {
         depth: usize,
         model: String,
         result_preview: Option<String>,
+        /// Full subagent response text, carried alongside the preview so
+        /// the event handler can persist it durably in `SubcallRecord`.
+        result: Option<String>,
         #[serde(serialize_with = "duration_secs")]
         duration: Duration,
         error: Option<String>,

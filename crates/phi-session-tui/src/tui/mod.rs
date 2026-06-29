@@ -60,7 +60,7 @@ use events::LoginState;
 use events::python_quote;
 
 pub use palette::InlinePalette;
-pub(crate) use render::{OpenSubcallRow, OpenToolRow, TranscriptBlock};
+pub(crate) use render::{OpenSubcallRow, OpenToolRow, TOOL_RESULT_LOG_BUDGET, TranscriptBlock};
 pub(crate) use tool_display::{format_model_pricing, format_tokens, tool_identity, tool_title};
 
 use popup::*;
@@ -1204,6 +1204,7 @@ mod tests {
             result: "crates/foo.rs:1: hello
 "
             .to_owned(),
+            full_output_path: None,
             error: None,
             duration_secs: 0.1,
             depth: 0,
@@ -1259,6 +1260,7 @@ mod tests {
                 result: "match1
 "
                 .to_owned(),
+                full_output_path: None,
                 error: None,
                 duration_secs: 0.1,
                 depth: 0,
@@ -1269,6 +1271,7 @@ mod tests {
                 result: "file1
 "
                 .to_owned(),
+                full_output_path: None,
                 error: None,
                 duration_secs: 0.1,
                 depth: 0,
@@ -1303,6 +1306,7 @@ file1
             result: "match1
 "
             .to_owned(),
+            full_output_path: None,
             error: None,
             duration_secs: 0.1,
             depth: 0,
@@ -1595,6 +1599,7 @@ match1
             depth: 1,
             model: "sub-model".to_owned(),
             result_preview: Some("world".to_owned()),
+            result: Some("world".to_owned()),
             duration: Duration::from_millis(200),
             error: None,
         });

@@ -11,6 +11,7 @@ ignore.workspace = true
 jiff.workspace = true
 mlua.workspace = true
 phi-rlm.workspace = true
+tempfile.workspace = true
 unicode-width.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -96,6 +96,17 @@ impl SessionStore {
                 code: repl.code.clone(),
                 stdout: repl.stdout.clone(),
                 stderr: repl.stderr.clone(),
+                subcalls: repl
+                    .subcalls
+                    .iter()
+                    .map(|sc| phi_rlm::RestoredSubcall {
+                        model: sc.model.clone(),
+                        prompt_preview: sc.prompt_preview.clone(),
+                        result: sc.result.clone(),
+                        error: sc.error.clone(),
+                        depth: sc.depth,
+                    })
+                    .collect(),
             }
         }
         let (branch, trailing_shell) = self.branch_exchanges();

@@ -75,6 +75,13 @@ pub struct ToolCall {
     pub name: String,
     pub args: serde_json::Value,
     pub result: String,
+    /// Path to a tmp file holding the full output when `result` was
+    /// truncated (pi-style spillover: bounded memory, unbounded tmp).
+    /// `None` means `result` is complete. The path is ephemeral — a
+    /// reload after restart may find it gone, in which case the
+    /// truncated `result` tail is the usable fallback.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub full_output_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
     #[serde(default)]
@@ -89,12 +96,29 @@ pub struct SubcallRecord {
     pub prompt_preview: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result_preview: Option<String>,
+    /// Full subagent response text, persisted for durable recovery on
+    /// session restore. Not auto-injected into the model's context — the
+    /// model must explicitly read the restored `subcalls_N` variable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
     #[serde(default)]
     pub duration_secs: f64,
     #[serde(default)]
     pub depth: usize,
+}
+
+/// Result of spilling large output to a tmp file (pi-style spillover).
+/// The `tail` is what goes in the durable JSONL log; `full_output_path`
+/// is the route back to the complete data.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SpillResult {
+    /// Truncated tail kept in the durable log.
+    pub tail: String,
+    /// Path to the tmp file holding the full output, or `None` if no
+    /// spill was needed.
+    pub full_output_path: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Eq, PartialEq, Debug)]

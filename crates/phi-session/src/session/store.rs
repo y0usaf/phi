@@ -9,7 +9,7 @@ use anyhow::{Context as _, Result};
 
 use super::types::{
     ExchangeEnd, ExchangeStart, ExchangeStatus, Header, LeafRecord, Line, ReplEntry, ReplRecord,
-    Role, SessionStore, new_id,
+    Role, SessionStore, SpillResult, new_id,
 };
 
 /// Per-cwd session directory, mirroring pi: `sessions/--{cwd with
@@ -239,6 +239,41 @@ impl SessionStore {
         }
         self.repls.push(entry);
         Ok(id)
+    }
+
+    /// Spill large tool output to a tmp file (pi-style spillover).
+    ///
+    /// When a tool result exceeds `max_bytes`, write the full output to a
+    /// temp file and return a truncated tail plus the path. The caller
+    /// stores the tail in the durable JSONL entry and the path in
+    /// `ToolCall::full_output_path`, keeping the log lean while preserving
+    /// a route back to the full data. The temp file is ephemeral: if it's
+    /// gone after a restart, the truncated tail is the usable fallback.
+    ///
+    /// If the output fits within `max_bytes`, no spill occurs and the
+    /// full output is returned as-is with no path.
+    pub fn spill_output(output: &str, max_bytes: usize) -> Result<SpillResult> {
+        if output.len() <= max_bytes {
+            return Ok(SpillResult {
+                tail: output.to_owned(),
+                full_output_path: None,
+            });
+        }
+        let mut tmp = tempfile::Builder::new()
+            .prefix("phi-bash-")
+            .suffix(".log")
+            .tempfile()?;
+        std::io::Write::write_all(&mut tmp, output.as_bytes())?;
+        std::io::Write::flush(&mut tmp)?;
+        let path = tmp.into_temp_path();
+        let path_str = path.display().to_string();
+        path.keep()?;
+        let start = output.len().saturating_sub(max_bytes);
+        let tail = output[start..].to_owned();
+        Ok(SpillResult {
+            tail,
+            full_output_path: Some(path_str),
+        })
     }
 
     /// Durably mark the start of an exchange (user turn). An

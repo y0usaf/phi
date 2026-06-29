@@ -19,7 +19,7 @@ use crate::config::{RlmCompletion, RlmConfig, RlmEvent, StopCause};
 use crate::engine::Rlm;
 use crate::engine::helpers::{
     RestoredExchange, RestoredRepl, context_snippet, dispatch_event, history_snippet,
-    push_repl_turns,
+    push_repl_turns, subcalls_snippet,
 };
 use crate::engine::state::RunState;
 use crate::engine::subcalls::Outcome;
@@ -320,6 +320,14 @@ impl RlmSession {
             env.exec(&snippet, self.rlm.config.exec_timeout)
                 .await
                 .map_err(|e| format!("failed to restore history_{}: {e}", self.exchanges))?;
+            // Inject subcalls_N so the model can recover full subagent
+            // output without re-calling. Only created when the exchange had
+            // subcalls; empty exchanges get no variable (no bloat). The
+            // variable is NOT injected into the LM transcript — the model
+            // must explicitly index it to see the content (gatekeeper).
+            if let Some(sub_snippet) = subcalls_snippet(self.exchanges, &exchange.repls) {
+                let _ = env.exec(&sub_snippet, self.rlm.config.exec_timeout).await;
+            }
             self.exchanges += 1;
             self.transcript.push(ChatMessage {
                 role: Role::User,

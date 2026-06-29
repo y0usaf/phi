@@ -101,5 +101,5 @@ pub(crate) mod state;
 pub(crate) mod subcalls;
 
 pub use harness::PhiHarness;
-pub use helpers::{RestoredExchange, RestoredRepl};
+pub use helpers::{RestoredExchange, RestoredRepl, RestoredSubcall};
 pub use rlm::Rlm;

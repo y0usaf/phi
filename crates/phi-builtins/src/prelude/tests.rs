@@ -126,6 +126,44 @@ async fn bash_runs_commands() {
 }
 
 #[tokio::test]
+async fn bash_spills_large_output_to_tmp_file() {
+    let (mut repl, _events) = started().await;
+    // Generate output that exceeds _PRELUDE_MAX_BYTES (50_000).
+    // Assign to a variable and print only the tail end: printing the
+    // full spill result (50K tail + annotation) would get truncated by
+    // the REPL's own stdout limit.
+    let cmd = "python3 -c \"print('x' * 60000)\"";
+    let r = repl
+        .exec(
+            &format!("result = bash({cmd:?})\nprint(result[-200:])"),
+            EXEC_TIMEOUT,
+        )
+        .await
+        .unwrap();
+    // The last 200 chars of the spill result contain the annotation.
+    assert!(
+        r.stdout.contains("[full output: "),
+        "should spill to tmp file: {}",
+        r.stdout
+    );
+    // Extract the tmp file path and verify it exists with the full content.
+    let path_start = r.stdout.find("[full output: ").unwrap() + "[full output: ".len();
+    let path_end = r.stdout[path_start..]
+        .find('\n')
+        .map(|p| p + path_start)
+        .unwrap_or(r.stdout.len());
+    let tmp_path = r.stdout[path_start..path_end].trim().trim_end_matches(']');
+    assert!(
+        std::fs::exists(tmp_path).unwrap_or(false),
+        "spilled tmp file should exist: {tmp_path}"
+    );
+    let content = std::fs::read_to_string(tmp_path).unwrap();
+    assert_eq!(content.len(), 60001); // 60000 x's + newline
+    let _ = std::fs::remove_file(tmp_path);
+    repl.shutdown().await;
+}
+
+#[tokio::test]
 async fn search_helpers_work() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("a.txt"), "needle here\n").unwrap();

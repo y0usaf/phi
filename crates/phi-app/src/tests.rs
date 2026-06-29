@@ -224,3 +224,102 @@ fn bash_body_preserved_multiline() {
     assert_eq!(panel.matches('┌').count(), 1);
     assert_eq!(panel.matches('└').count(), 1);
 }
+
+#[test]
+fn strip_tool_echoes_removes_printed_tool_result() {
+    let tools = vec![ToolEcho {
+        result: "crates/foo.rs:1: hello\n".to_owned(),
+        depth: 0,
+        errored: false,
+    }];
+    // stdout == tool result -> fully stripped (empty residual)
+    assert_eq!(strip_tool_echoes("crates/foo.rs:1: hello\n", &tools, 0), "");
+    // stdout != tool result -> unchanged
+    assert_eq!(
+        strip_tool_echoes("different output\n", &tools, 0),
+        "different output"
+    );
+    // no tools -> unchanged
+    assert_eq!(
+        strip_tool_echoes("crates/foo.rs:1: hello\n", &[], 0),
+        "crates/foo.rs:1: hello"
+    );
+    // wrong depth -> unchanged
+    assert_eq!(
+        strip_tool_echoes("crates/foo.rs:1: hello\n", &tools, 1),
+        "crates/foo.rs:1: hello"
+    );
+}
+
+#[test]
+fn strip_tool_echoes_removes_multiple_tool_results() {
+    let tools = vec![
+        ToolEcho {
+            result: "match1\n".to_owned(),
+            depth: 0,
+            errored: false,
+        },
+        ToolEcho {
+            result: "file1\n".to_owned(),
+            depth: 0,
+            errored: false,
+        },
+    ];
+    assert_eq!(strip_tool_echoes("match1\nfile1\n", &tools, 0), "");
+    assert_eq!(strip_tool_echoes("match1\n", &tools, 0), "");
+}
+
+#[test]
+fn strip_tool_echoes_preserves_non_tool_lines() {
+    let tools = vec![ToolEcho {
+        result: "match1\n".to_owned(),
+        depth: 0,
+        errored: false,
+    }];
+    assert_eq!(strip_tool_echoes("match1\ndone\n", &tools, 0), "done");
+    assert_eq!(
+        strip_tool_echoes("starting\nmatch1\n", &tools, 0),
+        "starting"
+    );
+}
+
+#[test]
+fn strip_tool_echoes_skips_errored_tools() {
+    let tools = vec![ToolEcho {
+        result: "match1\n".to_owned(),
+        depth: 0,
+        errored: true,
+    }];
+    assert_eq!(
+        strip_tool_echoes("match1\ndone\n", &tools, 0),
+        "match1\ndone"
+    );
+}
+
+#[test]
+fn strip_tool_echoes_collapses_blank_lines_from_tool_output() {
+    // Tool output with blank lines (common in source files). Blank lines are
+    // not in echo_lines (only non-empty lines are collected), so they would
+    // survive filtering as gaps. After the fix, they are collapsed/trimmed.
+    let tools = vec![ToolEcho {
+        result: "[path#TAG]\n1:fn a()\n\n3:fn b()\n".to_owned(),
+        depth: 0,
+        errored: false,
+    }];
+    let stdout = "[path#TAG]\n1:fn a()\n\n3:fn b()\nREPL vars: [...]\n";
+    let result = strip_tool_echoes(stdout, &tools, 0);
+    assert_eq!(result, "REPL vars: [...]");
+}
+
+#[test]
+fn strip_tool_echoes_preserves_single_blank_between_survivors() {
+    // A single blank line between surviving non-tool lines is preserved.
+    let tools = vec![ToolEcho {
+        result: "tool_line\n".to_owned(),
+        depth: 0,
+        errored: false,
+    }];
+    let stdout = "before\n\nafter\ntool_line\n";
+    let result = strip_tool_echoes(stdout, &tools, 0);
+    assert_eq!(result, "before\n\nafter");
+}

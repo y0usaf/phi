@@ -4,7 +4,9 @@ use std::io::IsTerminal;
 use phi_rlm::RlmEvent;
 
 use crate::render::render_tool_panel;
-use crate::tool_view::{call_anchor, check, cross, depth_tag, indent, preview, spin};
+use crate::tool_view::{
+    ToolEcho, call_anchor, check, cross, depth_tag, indent, preview, spin, strip_tool_echoes,
+};
 
 pub(crate) async fn print_events(
     mut rx: tokio::sync::mpsc::UnboundedReceiver<RlmEvent>,
@@ -13,6 +15,7 @@ pub(crate) async fn print_events(
 ) {
     let color = std::io::stderr().is_terminal();
     let mut open_tool_args: HashMap<u64, serde_json::Value> = HashMap::new();
+    let mut tool_echoes: Vec<ToolEcho> = Vec::new();
     while let Some(event) = rx.recv().await {
         match event {
             RlmEvent::IterationStart { depth, iteration } => {
@@ -27,10 +30,12 @@ pub(crate) async fn print_events(
                 }
             }
             RlmEvent::CodeExecStart { code, .. } => {
+                tool_echoes.clear();
                 eprintln!("{} exec", spin(color));
                 eprintln!("{}", indent(&preview(&code, 16, verbose)));
             }
             RlmEvent::CodeExecEnd {
+                depth,
                 stdout,
                 stderr,
                 duration,
@@ -46,6 +51,7 @@ pub(crate) async fn print_events(
                 } else {
                     eprintln!("  {glyph} exec • {:.1}s", duration.as_secs_f64());
                 }
+                let stdout = strip_tool_echoes(&stdout, &tool_echoes, depth);
                 if !stdout.trim().is_empty() {
                     eprintln!("{}", indent(&preview(&stdout, 12, verbose)));
                 }
@@ -98,12 +104,18 @@ pub(crate) async fn print_events(
                 name,
                 result,
                 error,
+                depth,
                 duration: _duration,
                 ..
             } => {
                 let args = open_tool_args
                     .remove(&call_id)
                     .unwrap_or(serde_json::Value::Null);
+                tool_echoes.push(ToolEcho {
+                    result: result.clone(),
+                    depth,
+                    errored: error.is_some(),
+                });
                 eprintln!(
                     "{}",
                     render_tool_panel(

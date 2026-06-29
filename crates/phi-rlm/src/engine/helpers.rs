@@ -66,12 +66,25 @@ pub fn history_snippet(index: usize, history: &[ChatMessage], response: &str) ->
     )
 }
 
+/// A subcall restored from the canonical session stream, carrying the
+/// full result text so it can be injected into the REPL on restore without
+/// re-calling the subagent.
+#[derive(Clone, Debug, Default)]
+pub struct RestoredSubcall {
+    pub model: String,
+    pub prompt_preview: String,
+    pub result: Option<String>,
+    pub error: Option<String>,
+    pub depth: usize,
+}
+
 /// A REPL execution restored from the canonical session stream.
 #[derive(Clone, Debug)]
 pub struct RestoredRepl {
     pub code: String,
     pub stdout: String,
     pub stderr: String,
+    pub subcalls: Vec<RestoredSubcall>,
 }
 
 /// One chat exchange restored from the canonical session stream, with the
@@ -114,6 +127,37 @@ pub fn push_repl_turns(
     if let Some(outputs) = format_iteration(std::slice::from_ref(&block), max_output_chars) {
         history.push(ChatMessage::tool_result(String::new(), outputs));
     }
+}
+
+/// Build a Python snippet that injects a `subcalls_N` variable into the
+/// REPL, mirroring `history_snippet`. The variable is a list of dicts with
+/// `model`, `prompt_preview`, `result`, `error`, and `depth` — one entry per
+/// subcall across all repl blocks in the exchange. The model can index it to
+/// recover a subagent's full output without re-calling it, but it is NOT
+/// auto-injected into the LM transcript (gatekeeper: model must print to see).
+pub fn subcalls_snippet(index: usize, repls: &[RestoredRepl]) -> Option<String> {
+    let subcalls: Vec<Value> = repls
+        .iter()
+        .flat_map(|repl| {
+            repl.subcalls.iter().map(|sc| {
+                serde_json::json!({
+                    "model": sc.model,
+                    "prompt_preview": sc.prompt_preview,
+                    "result": sc.result,
+                    "error": sc.error,
+                    "depth": sc.depth,
+                })
+            })
+        })
+        .collect();
+    if subcalls.is_empty() {
+        return None;
+    }
+    let encoded = base64::engine::general_purpose::STANDARD
+        .encode(Value::Array(subcalls).to_string());
+    Some(format!(
+        "import base64 as _b64, json as _json\nsubcalls_{index} = _json.loads(_b64.b64decode(\"{encoded}\").decode(\"utf-8\"))\ndel _b64, _json"
+    ))
 }
 
 pub fn context_snippet(index: usize, text: &str) -> String {

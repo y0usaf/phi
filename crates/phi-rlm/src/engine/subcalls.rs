@@ -40,21 +40,24 @@ impl EngineSubcalls {
             .handler
             .complete_sub(&prompt, model.as_deref(), &cancel)
             .await;
-        let (outcome, error, result_preview) = match result {
+        let (outcome, error, result_preview, full_result) = match result {
             Ok(completion) => {
                 let preview = truncate_preview(&completion.text, 240);
+                let full = Some(completion.text.clone());
                 (
                     Ok(SubcallResponse::Text(completion.text)),
                     None,
                     Some(preview),
+                    full,
                 )
             }
-            Err(e) => (Err(format!("{kind} query failed - {e}")), Some(e), None),
+            Err(e) => (Err(format!("{kind} query failed - {e}")), Some(e), None, None),
         };
         self.rlm.events.emit(RlmEvent::SubcallEnd {
             depth: self.rlm.depth + 1,
             model: model_name,
             result_preview,
+            result: full_result,
             duration: start.elapsed(),
             error,
         });
@@ -142,10 +145,16 @@ impl EngineSubcalls {
         } else {
             Some(truncate_preview(&completion.response, 240))
         };
+        let full_result = if completion.response.trim().is_empty() {
+            None
+        } else {
+            Some(completion.response.clone())
+        };
         self.rlm.events.emit(RlmEvent::SubcallEnd {
             depth: next_depth,
             model: model_name,
             result_preview,
+            result: full_result,
             duration: start.elapsed(),
             error: completion.error.clone(),
         });

@@ -120,6 +120,57 @@ pub(crate) fn preview(text: &str, max_lines: usize, verbose: bool) -> String {
     out
 }
 
+/// Remove lines from `stdout` that exactly match (after trimming) lines from
+/// tool results at `exec_depth`, so that tool output printed via `print(...)`
+/// is not duplicated in the REPL stdout preview. Mirrors the TUI's
+/// `strip_tool_echoes` logic. Tool results that errored are not stripped (their
+/// output may not match stdout). Returns the residual stdout.
+pub(crate) fn strip_tool_echoes(stdout: &str, tools: &[ToolEcho], exec_depth: usize) -> String {
+    let mut echo_lines: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for tool in tools {
+        if tool.depth == exec_depth && !tool.errored {
+            for line in tool.result.lines() {
+                let trimmed = line.trim();
+                if !trimmed.is_empty() {
+                    echo_lines.insert(trimmed);
+                }
+            }
+        }
+    }
+    let filtered: Vec<&str> = stdout
+        .lines()
+        .filter(|line| !echo_lines.contains(line.trim()))
+        .collect();
+    // Collapse consecutive blank lines into one and trim leading/trailing
+    // blanks, so that blank lines from stripped tool output don't leave gaps.
+    let mut out: Vec<&str> = Vec::new();
+    let mut prev_blank = false;
+    for line in &filtered {
+        let is_blank = line.trim().is_empty();
+        if is_blank {
+            if prev_blank || out.is_empty() {
+                continue;
+            }
+            prev_blank = true;
+        } else {
+            prev_blank = false;
+        }
+        out.push(line);
+    }
+    // Trim trailing blanks.
+    while out.last().is_some_and(|l| l.trim().is_empty()) {
+        out.pop();
+    }
+    out.join("\n")
+}
+
+/// A tool's result echoed into REPL stdout, accumulated for echo stripping.
+pub(crate) struct ToolEcho {
+    pub result: String,
+    pub depth: usize,
+    pub errored: bool,
+}
+
 pub(crate) fn indent(text: &str) -> String {
     text.lines()
         .map(|line| format!("  | {line}"))

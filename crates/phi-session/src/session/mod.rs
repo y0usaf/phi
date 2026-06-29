@@ -13,7 +13,8 @@ pub use discovery::age;
 pub use store::{flatten_cwd, sessions_dir, sessions_root};
 pub use types::{
     BranchExchange, BranchItem, Entry, ExchangeEnd, ExchangeStart, ExchangeStatus, ReplEntry,
-    ReplKind, ReplRecord, Role, SessionMeta, SessionStore, SessionUsage, SubcallRecord, ToolCall,
+    ReplKind, ReplRecord, Role, SessionMeta, SessionStore, SessionUsage, SpillResult,
+    SubcallRecord, ToolCall,
 };
 
 #[cfg(test)]
@@ -135,6 +136,7 @@ mod tests {
                     name: "bash".to_owned(),
                     args: serde_json::json!({"cmd": "ls"}),
                     result: "ok".to_owned(),
+                    full_output_path: None,
                     error: None,
                     duration_secs: 0.1,
                     depth: 0,
@@ -143,6 +145,7 @@ mod tests {
                     model: "haiku".to_owned(),
                     prompt_preview: "summarize".to_owned(),
                     result_preview: Some("done".to_owned()),
+                    result: Some("done".to_owned()),
                     error: None,
                     duration_secs: 0.2,
                     depth: 0,
@@ -176,6 +179,7 @@ mod tests {
                 assert_eq!(repl.subcalls.len(), 1);
                 assert_eq!(repl.subcalls[0].model, "haiku");
                 assert_eq!(repl.subcalls[0].depth, 0);
+                assert_eq!(repl.subcalls[0].result.as_deref(), Some("done"));
             }
             _ => panic!("expected repl after parent assistant"),
         }
@@ -186,6 +190,52 @@ mod tests {
         assert_eq!(turns[0].response.unwrap().id, a1);
         assert_eq!(turns[0].repls.len(), 1);
         assert_eq!(turns[0].repls[0].parent_id.as_deref(), Some(a1.as_str()));
+    }
+
+    #[test]
+    fn branch_restore_carries_subcall_results() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut store = store_in(tmp.path());
+        store.append(Role::User, "q1").unwrap();
+        let a1 = store.append(Role::Assistant, "a1").unwrap();
+        store
+            .append_repl(ReplRecord {
+                code: "print(llm_query('hi'))".to_owned(),
+                stdout: "world
+".to_owned(),
+                stderr: String::new(),
+                duration_secs: 0.5,
+                kind: ReplKind::Agent,
+                tools: Vec::new(),
+                subcalls: vec![SubcallRecord {
+                    model: "sub-model".to_owned(),
+                    prompt_preview: "hi".to_owned(),
+                    result_preview: Some("wor…".to_owned()),
+                    result: Some("world".to_owned()),
+                    error: None,
+                    duration_secs: 0.3,
+                    depth: 1,
+                }],
+            })
+            .unwrap();
+        store.append(Role::User, "q2").unwrap();
+        store.append(Role::Assistant, "a2").unwrap();
+
+        let loaded = SessionStore::load(store.path()).unwrap();
+        let (exchanges, pending) = loaded.branch_restore();
+        assert!(pending.is_empty());
+        assert_eq!(exchanges.len(), 2);
+
+        // The first exchange's repl should carry the full subcall result.
+        let repl = &exchanges[0].repls[0];
+        assert_eq!(repl.code, "print(llm_query('hi'))");
+        assert_eq!(repl.subcalls.len(), 1);
+        assert_eq!(repl.subcalls[0].model, "sub-model");
+        assert_eq!(repl.subcalls[0].result.as_deref(), Some("world"));
+        assert_eq!(repl.subcalls[0].prompt_preview, "hi");
+
+        // The second exchange has no repls, so no subcalls.
+        assert!(exchanges[1].repls.is_empty());
     }
 
     #[test]
@@ -226,6 +276,7 @@ mod tests {
                     name: "bash".to_owned(),
                     args: serde_json::json!({"cmd": "echo nested"}),
                     result: "nested\n".to_owned(),
+                    full_output_path: None,
                     error: None,
                     duration_secs: 0.1,
                     depth: 1,
@@ -234,6 +285,7 @@ mod tests {
                     model: "sub".to_owned(),
                     prompt_preview: "x".to_owned(),
                     result_preview: Some("y".to_owned()),
+                    result: Some("y".to_owned()),
                     error: None,
                     duration_secs: 0.2,
                     depth: 1,
@@ -470,5 +522,70 @@ mod tests {
             vec![("q1", "a1"), ("q2-alt", "a2-alt")],
             "reload must preserve the most recent branch, not the stale leaf"
         );
+    }
+
+    #[test]
+    fn spill_output_no_spill_when_under_threshold() {
+        let result = SessionStore::spill_output("small output", 4096).unwrap();
+        assert_eq!(result.tail, "small output");
+        assert!(result.full_output_path.is_none());
+    }
+
+    #[test]
+    fn spill_output_spills_to_tmp_file_when_over_threshold() {
+        let large = "x".repeat(10_000);
+        let result = SessionStore::spill_output(&large, 4096).unwrap();
+        assert_eq!(result.tail.len(), 4096);
+        assert_eq!(&result.tail[..], &large[large.len() - 4096..]);
+        let path = result.full_output_path.expect("should have a spill path");
+        let on_disk = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(on_disk, large);
+        assert!(
+            path.contains("phi-bash-"),
+            "expected phi-bash- prefix in path: {path:?}"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn full_output_path_roundtrips_in_jsonl() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut store = store_in(tmp.path());
+        store.append(Role::User, "q1").unwrap();
+        let large = "y".repeat(10_000);
+        let spill = SessionStore::spill_output(&large, 4096).unwrap();
+        store
+            .append_repl(ReplRecord {
+                code: "print(bash('big'))".to_owned(),
+                stdout: spill.tail.clone(),
+                stderr: String::new(),
+                duration_secs: 0.1,
+                kind: ReplKind::Agent,
+                tools: vec![ToolCall {
+                    name: "bash".to_owned(),
+                    args: serde_json::json!({"cmd": "big"}),
+                    result: spill.tail,
+                    full_output_path: spill.full_output_path.clone(),
+                    error: None,
+                    duration_secs: 0.1,
+                    depth: 0,
+                }],
+                subcalls: Vec::new(),
+            })
+            .unwrap();
+
+        let loaded = SessionStore::load(store.path()).unwrap();
+        let repl = loaded
+            .branch_items()
+            .into_iter()
+            .find_map(|item| match item {
+                BranchItem::Repl(repl) => Some(repl),
+                BranchItem::Message(_) => None,
+            })
+            .expect("repl item");
+        assert_eq!(repl.tools[0].full_output_path, spill.full_output_path);
+        let path = spill.full_output_path.unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), large);
+        let _ = std::fs::remove_file(&path);
     }
 }

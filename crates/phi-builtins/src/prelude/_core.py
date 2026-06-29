@@ -67,6 +67,31 @@ def _prelude_truncate(text):
     return text
 
 
+import tempfile as _tempfile
+
+_spill_keepers = []
+
+
+def _spill_to_tmp(text, max_bytes=_PRELUDE_MAX_BYTES):
+    """Spill large output to a tmp file (pi-style spillover).
+
+    When text exceeds max_bytes, write the full output to a temp file
+    and return a truncated tail plus a [full output: path] annotation.
+    The temp file persists for the process lifetime (kept alive in
+    _spill_keepers so the OS does not delete it prematurely).
+
+    If text fits within max_bytes, return it unchanged.
+    """
+    if len(text) <= max_bytes:
+        return text
+    fd, path = _tempfile.mkstemp(prefix="phi-bash-", suffix=".log")
+    with _os.fdopen(fd, "w") as f:
+        f.write(text)
+    _spill_keepers.append(path)
+    tail = text[-max_bytes:]
+    return "%s\n[full output: %s]" % (tail, path)
+
+
 def _format_unified_diff(path, before, after):
     before_lines = before.splitlines(True)
     after_lines = after.splitlines(True)

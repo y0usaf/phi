@@ -20,7 +20,7 @@ pub const CODING_PRELUDE: &str = concat!(
 
 pub fn coding_tools_section() -> String {
     "Pre-defined helper functions (already available in the REPL — call them directly, do not redefine):
-- bash(cmd: str, timeout: int = 120) -> str — run a shell command; returns combined stdout/stderr plus a note on non-zero exit
+- bash(cmd: str, timeout: int = 120) -> str — run a shell command; returns combined stdout/stderr plus a note on non-zero exit; large output (>50KB) spills to a tmp file with a [full output: path] annotation
 - read_file(path: str, offset: int = 0, limit: int = 2000, raw: bool = False) -> str — read a file as `[path#TAG]` + `LINE:TEXT` rows (hashline format, default); pass raw=True for plain text without line numbers or tags
 - write_file(path: str, content: str) -> str — write a file, creating parent directories
 - edit_file(path: str | None = None, old: str | None = None, new: str | None = None, replace_all: bool = False, patch: str | None = None) -> str — exact string replacement (old/new) OR hashline patch application (patch); pass patch=\"...\" to apply `[path#TAG]` + `SWAP`/`DEL`/`INS.*` ops with snapshot-tag checks and stale-tag recovery

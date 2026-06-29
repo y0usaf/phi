@@ -547,9 +547,10 @@ impl Ui {
                 depth,
                 model,
                 result_preview,
+                result,
                 duration,
                 error,
-            } => self.handle_subcall_end(depth, model, result_preview, duration, error),
+            } => self.handle_subcall_end(depth, model, result_preview, result, duration, error),
             RlmEvent::RunEnd {
                 depth,
                 stop,
@@ -718,10 +719,19 @@ impl Ui {
         let key = (depth, call_id);
         let args = self.open_tool_args.remove(&key).unwrap_or_default();
         if self.live_code.is_some() {
+            // Pi-style spillover: when a tool result exceeds the log
+            // budget, spill the full output to a tmp file and store only
+            // the truncated tail + path in the durable session entry.
+            let (result_tail, result_path) =
+                match SessionStore::spill_output(&result, TOOL_RESULT_LOG_BUDGET) {
+                    Ok(spill) => (spill.tail, spill.full_output_path),
+                    Err(_) => (truncate_for_log(&result), None),
+                };
             self.live_tools.push(session::ToolCall {
                 name: name.clone(),
                 args: args.clone(),
-                result: truncate_for_log(&result),
+                result: result_tail,
+                full_output_path: result_path,
                 error: error.as_deref().map(truncate_for_log),
                 duration_secs: duration.as_secs_f64(),
                 depth,
@@ -787,6 +797,7 @@ impl Ui {
         depth: usize,
         model: String,
         result_preview: Option<String>,
+        result: Option<String>,
         duration: Duration,
         error: Option<String>,
     ) {
@@ -804,6 +815,7 @@ impl Ui {
                 model: model.clone(),
                 prompt_preview,
                 result_preview: result_preview.clone(),
+                result: result.clone(),
                 error: error.clone(),
                 duration_secs: duration.as_secs_f64(),
                 depth,

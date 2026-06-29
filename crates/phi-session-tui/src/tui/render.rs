@@ -115,11 +115,30 @@ pub(crate) fn strip_tool_echoes(
             }
         }
     }
-    stdout
+    let filtered: Vec<&str> = stdout
         .lines()
         .filter(|line| !result_lines.contains(line.trim()))
-        .collect::<Vec<&str>>()
-        .join("\n")
+        .collect();
+    // Collapse consecutive blank lines into one and trim leading/trailing
+    // blanks, so that blank lines from stripped tool output don't leave gaps.
+    let mut out: Vec<&str> = Vec::new();
+    let mut prev_blank = false;
+    for line in &filtered {
+        let is_blank = line.trim().is_empty();
+        if is_blank {
+            if prev_blank || out.is_empty() {
+                continue;
+            }
+            prev_blank = true;
+        } else {
+            prev_blank = false;
+        }
+        out.push(line);
+    }
+    while out.last().is_some_and(|l| l.trim().is_empty()) {
+        out.pop();
+    }
+    out.join("\n")
 }
 
 /// Per-level nesting indent: two spaces per `depth`. Used to inset a flat

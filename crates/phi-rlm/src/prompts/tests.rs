@@ -54,8 +54,7 @@ fn system_prompt_includes_custom_tools() {
     };
     let prompt = build_system_prompt(&opts);
     assert!(
-        prompt
-            .contains("Custom tools and data available in the REPL:\n- bash(cmd): run a command")
+        prompt.contains("Custom tools and data available in the REPL:\n- bash(cmd): run a command")
     );
 }
 
@@ -71,8 +70,7 @@ fn system_prompt_custom_identity_does_not_drop_tools() {
     let prompt = build_system_prompt(&opts);
     assert!(prompt.contains("You are a coding agent in /home/user/project."));
     assert!(
-        prompt
-            .contains("Custom tools and data available in the REPL:\n- bash(cmd): run a command")
+        prompt.contains("Custom tools and data available in the REPL:\n- bash(cmd): run a command")
     );
     // Core REPL tools should still be present even with custom identity.
     assert!(prompt.contains("Available in the REPL:"));
