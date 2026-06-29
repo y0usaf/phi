@@ -625,7 +625,7 @@ fn wrap_ansi_core(line: &str, width: usize) -> WrappedAnsi {
 }
 
 /// Byte length of an escape sequence body (after the ESC byte).
-fn escape_len(s: &str) -> usize {
+pub fn escape_len(s: &str) -> usize {
     let mut chars = s.char_indices();
     match chars.next() {
         Some((_, '[')) => {
