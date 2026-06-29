@@ -202,7 +202,8 @@ mod tests {
             .append_repl(ReplRecord {
                 code: "print(llm_query('hi'))".to_owned(),
                 stdout: "world
-".to_owned(),
+"
+                .to_owned(),
                 stderr: String::new(),
                 duration_secs: 0.5,
                 kind: ReplKind::Agent,
