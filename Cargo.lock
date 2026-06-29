@@ -1712,6 +1712,7 @@ dependencies = [
  "phi-rlm",
  "phi-session",
  "phi-session-tui",
+ "phi-tui",
  "serde_json",
  "tikv-jemalloc-ctl",
  "tikv-jemalloc-sys",

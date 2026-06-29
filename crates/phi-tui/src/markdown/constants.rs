@@ -1,11 +1,13 @@
 use std::str::FromStr as _;
 use std::sync::LazyLock;
 use syntect::highlighting::{
-    Color, FontStyle, ScopeSelectors, StyleModifier, Theme, ThemeItem, ThemeSet, ThemeSettings,
+    Color, FontStyle, ScopeSelectors, StyleModifier, Theme as SyntaxTheme, ThemeItem, ThemeSet,
+    ThemeSettings,
 };
 use syntect::parsing::SyntaxSet;
 
 use crate::palette::{Rgb, TerminalColors};
+use crate::theme::Theme;
 
 // Basic ANSI controls — these reference the terminal's own palette (indices
 // 0/1/3/4/6 etc.), so they already follow the user's terminal theme.
@@ -20,16 +22,16 @@ pub(super) static SYNTAXES: LazyLock<SyntaxSet> = LazyLock::new(SyntaxSet::load_
 
 /// Fallback syntect theme (base16-ocean.dark), used when the terminal doesn't
 /// report its colors.
-pub(super) static FALLBACK_THEME: LazyLock<Theme> = LazyLock::new(|| {
+pub(super) static FALLBACK_THEME: LazyLock<SyntaxTheme> = LazyLock::new(|| {
     ThemeSet::load_defaults()
         .themes
         .remove("base16-ocean.dark")
         .expect("bundled theme")
 });
+
 /// Truecolor ANSI escapes for markdown/output highlighting, derived from the
-/// host terminal's reported colors when available. Mirrors opencode's
-/// `generateSystem` mapping: ANSI accents → palette roles. `default()` returns
-/// the previous hardcoded values (base16-ocean family) as the fallback.
+/// unified `Theme`.  `default()` returns the previous hardcoded values
+/// (base16-ocean family) as the fallback.
 #[derive(Clone)]
 pub struct MarkdownPalette {
     pub repl_fence: String,
@@ -49,7 +51,7 @@ pub struct MarkdownPalette {
     pub diff_del: String,
     /// Syntect theme for code syntax highlighting, derived from the terminal
     /// palette when available. Falls back to base16-ocean.dark.
-    pub syntax_theme: Theme,
+    pub syntax_theme: SyntaxTheme,
 }
 
 impl MarkdownPalette {
@@ -75,30 +77,38 @@ impl MarkdownPalette {
         }
     }
 
-    /// Derive palette from terminal-reported colors (OSC 10/11/4), mirroring
-    /// opencode's `generateSystem`: ANSI palette → markdown roles.
-    pub fn from_terminal_colors(colors: &TerminalColors) -> Self {
-        let col =
-            |i: usize| colors.palette[i].map(|c| format!("\x1b[38;2;{};{};{}m", c.0, c.1, c.2));
-        let fallback = Self::default_const();
+    /// Derive palette from the unified `Theme` (which was itself generated from
+    /// the terminal's reported colors).  This replaces the previous
+    /// `from_terminal_colors` which independently mapped ANSI indices — now
+    /// there is one mapping in `generate_theme` and this just formats the
+    /// `Theme`'s `Rgb` fields as truecolor escapes.
+    pub fn from_theme(t: &Theme) -> Self {
         Self {
-            repl_fence: col(5).unwrap_or_else(|| fallback.repl_fence.clone()),
-            marker_accent: col(4).unwrap_or_else(|| fallback.marker_accent.clone()),
-            task_done: col(2).unwrap_or_else(|| fallback.task_done.clone()),
-            quote_bar: col(5).unwrap_or_else(|| fallback.quote_bar.clone()),
-            subhead: col(13).unwrap_or_else(|| fallback.subhead.clone()),
-            out_base: col(7).unwrap_or_else(|| fallback.out_base.clone()),
-            out_err: col(1).unwrap_or_else(|| fallback.out_err.clone()),
-            out_warn: col(3).unwrap_or_else(|| fallback.out_warn.clone()),
-            out_ok: col(2).unwrap_or_else(|| fallback.out_ok.clone()),
-            out_path: col(4).unwrap_or_else(|| fallback.out_path.clone()),
-            out_num: col(3).unwrap_or_else(|| fallback.out_num.clone()),
-            out_str: col(2).unwrap_or_else(|| fallback.out_str.clone()),
-            out_url: col(6).unwrap_or_else(|| fallback.out_url.clone()),
-            diff_add: col(2).unwrap_or_else(|| fallback.diff_add.clone()),
-            diff_del: col(1).unwrap_or_else(|| fallback.diff_del.clone()),
-            syntax_theme: generate_syntax_theme(colors),
+            repl_fence: fg_escape(t.md_repl_fence),
+            marker_accent: fg_escape(t.md_marker_accent),
+            task_done: fg_escape(t.md_task_done),
+            quote_bar: fg_escape(t.md_quote_bar),
+            subhead: fg_escape(t.md_subhead),
+            out_base: fg_escape(t.md_out_base),
+            out_err: fg_escape(t.md_out_err),
+            out_warn: fg_escape(t.md_out_warn),
+            out_ok: fg_escape(t.md_out_ok),
+            out_path: fg_escape(t.md_out_path),
+            out_num: fg_escape(t.md_out_num),
+            out_str: fg_escape(t.md_out_str),
+            out_url: fg_escape(t.md_out_url),
+            diff_add: fg_escape(t.md_diff_add),
+            diff_del: fg_escape(t.md_diff_del),
+            syntax_theme: generate_syntax_theme(t),
         }
+    }
+
+    /// Derive palette from terminal-reported colors (OSC 10/11/4).
+    ///
+    /// This is kept for backward compatibility — it now delegates to
+    /// `generate_theme` + `from_theme` so there is a single ANSI→role mapping.
+    pub fn from_terminal_colors(colors: &TerminalColors) -> Self {
+        Self::from_theme(&crate::theme::generate_theme(colors))
     }
 }
 
@@ -112,29 +122,30 @@ fn s(v: &str) -> String {
     v.to_owned()
 }
 
-/// Build a syntect `Theme` from the terminal's reported colors, mapping ANSI
-/// palette entries to syntax scopes — mirroring opencode's `getSyntaxRules`.
-/// When palette entries are missing, falls back to the terminal's default
-/// foreground/background so code is always readable.
-pub(super) fn generate_syntax_theme(colors: &TerminalColors) -> Theme {
-    let fg = to_color(colors.foreground);
-    let bg = to_color(colors.background);
-    let ansi = |i: usize| colors.palette[i].map(to_color).unwrap_or(fg);
+fn fg_escape(c: Rgb) -> String {
+    format!("\x1b[38;2;{};{};{}m", c.0, c.1, c.2)
+}
+
+/// Build a syntect `Theme` from the unified `Theme`'s syntax colors, mapping
+/// each role to syntax scopes — mirroring opencode's `getSyntaxRules`.
+pub(super) fn generate_syntax_theme(t: &Theme) -> SyntaxTheme {
+    let fg = to_color(t.foreground);
+    let bg = to_color(t.background);
 
     let items = syntax_items(SyntaxColors {
-        comment: ansi(8),
-        keyword: ansi(5),
-        string: ansi(2),
-        number: ansi(3),
-        function: ansi(4),
-        type_: ansi(6),
-        operator: ansi(6),
+        comment: to_color(t.syntax_comment),
+        keyword: to_color(t.syntax_keyword),
+        string: to_color(t.syntax_string),
+        number: to_color(t.syntax_number),
+        function: to_color(t.syntax_function),
+        type_: to_color(t.syntax_type),
+        operator: to_color(t.syntax_operator),
         punctuation: fg,
-        variable: fg,
-        builtin: ansi(1),
+        variable: to_color(t.syntax_variable),
+        builtin: to_color(t.syntax_builtin),
     });
 
-    Theme {
+    SyntaxTheme {
         name: Some("phi-terminal".to_owned()),
         author: None,
         settings: ThemeSettings {
@@ -268,13 +279,14 @@ mod tests {
     }
 
     #[test]
-    fn from_terminal_colors_maps_ansi_roles() {
+    fn from_theme_maps_ansi_roles() {
         let colors = TerminalColors {
             background: Rgb(20, 20, 26),
             foreground: Rgb(220, 220, 220),
             palette: std::array::from_fn(|i| Some(Rgb(i as u8 * 15, i as u8 * 10, i as u8 * 5))),
         };
-        let p = MarkdownPalette::from_terminal_colors(&colors);
+        let theme = crate::theme::generate_theme(&colors);
+        let p = MarkdownPalette::from_theme(&theme);
         // repl_fence follows ANSI 5 (magenta)
         assert_eq!(p.repl_fence, "\x1b[38;2;75;50;25m");
         // diff_del follows ANSI 1 (red)
@@ -282,16 +294,15 @@ mod tests {
     }
 
     #[test]
-    fn from_terminal_colors_falls_back_when_palette_missing() {
+    fn from_terminal_colors_still_works() {
         let colors = TerminalColors {
-            background: Rgb(0, 0, 0),
-            foreground: Rgb(255, 255, 255),
-            palette: [None; 16],
+            background: Rgb(20, 20, 26),
+            foreground: Rgb(220, 220, 220),
+            palette: std::array::from_fn(|i| Some(Rgb(i as u8 * 15, i as u8 * 10, i as u8 * 5))),
         };
         let p = MarkdownPalette::from_terminal_colors(&colors);
-        let default = MarkdownPalette::default_const();
-        assert_eq!(p.repl_fence, default.repl_fence);
-        assert_eq!(p.out_err, default.out_err);
+        assert_eq!(p.repl_fence, "\x1b[38;2;75;50;25m");
+        assert_eq!(p.diff_del, "\x1b[38;2;15;10;5m");
     }
 
     #[test]
@@ -301,9 +312,10 @@ mod tests {
             foreground: Rgb(220, 220, 220),
             palette: std::array::from_fn(|i| Some(Rgb(i as u8 * 15, i as u8 * 10, i as u8 * 5))),
         };
-        let theme = generate_syntax_theme(&colors);
+        let theme = crate::theme::generate_theme(&colors);
+        let syntect_theme = generate_syntax_theme(&theme);
         assert_eq!(
-            theme.settings.foreground,
+            syntect_theme.settings.foreground,
             Some(Color {
                 r: 220,
                 g: 220,
@@ -312,7 +324,7 @@ mod tests {
             })
         );
         assert_eq!(
-            theme.settings.background,
+            syntect_theme.settings.background,
             Some(Color {
                 r: 20,
                 g: 20,
@@ -321,7 +333,7 @@ mod tests {
             })
         );
         // Comment scope should exist and use bright-black (ANSI 8)
-        let comment = theme
+        let comment = syntect_theme
             .scopes
             .iter()
             .find(|s| s.scope == ScopeSelectors::from_str("comment").unwrap());

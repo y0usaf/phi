@@ -12,6 +12,7 @@ pub mod selector;
 pub mod spinner;
 pub mod style;
 pub mod terminal;
+pub mod theme;
 
 pub use cells::{
     display_cell_width, truncate_line_in_place_to_width, truncate_line_preserving_suffix_to_width,
@@ -28,12 +29,15 @@ pub use palette::{Rgb, TerminalColors, detect_terminal_colors};
 pub use selector::{Selector, SelectorItem, SelectorOutcome};
 pub use spinner::{
     DEFAULT_TOOL_EXPRESSION, EQUALIZER_BAR_COUNT, EQUALIZER_BARS, SHIMMER_CYCLE_MS,
-    SPINNER_FRAME_MS, SPINNER_FRAMES, Spinner, THINKING_ANIMATION_FRAME_MS,
-    THINKING_EXPRESSION_MS, THINKING_EXPRESSIONS, equalizer_glyphs, gradient_text,
-    gradient_text_animated, shimmer_ansi, spinner_frame_at, spinner_frame_index,
-    thinking_expression,
+    SPINNER_FRAME_MS, SPINNER_FRAMES, Spinner, THINKING_ANIMATION_FRAME_MS, THINKING_EXPRESSION_MS,
+    THINKING_EXPRESSIONS, equalizer_glyphs, gradient_text, gradient_text_animated, shimmer_ansi,
+    spinner_frame_at, spinner_frame_index, thinking_expression,
 };
 pub use terminal::{
-    LiveCursor, RawModeGuard, Terminal, escape_len, fill_bg, strip_ansi, visible_width,
-    wrap_ansi, wrap_ansi_locate,
+    LiveCursor, RawModeGuard, Terminal, escape_len, fill_bg, strip_ansi, visible_width, wrap_ansi,
+    wrap_ansi_locate,
+};
+pub use theme::{
+    Mode, Theme, ansi_index_to_rgb, bg_escape, bold_fg_escape, brighten, default_terminal_colors,
+    fade_toward, fg_escape, generate_theme, luminance_rgb, terminal_mode,
 };

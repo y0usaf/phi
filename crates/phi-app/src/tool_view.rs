@@ -66,15 +66,32 @@ pub(crate) fn residual_args(name: &str, args: &serde_json::Value) -> serde_json:
 }
 
 /// ANSI styling for scrollback event glyphs (gated on a tty in `print_events`).
+/// Derived from the unified `phi_tui::Theme` via `default_terminal_colors()` +
+/// `generate_theme()` — the same single ANSI→role mapping used by the TUI and
+/// the mux compositor.  The CLI can't probe OSC, so it uses the standard ANSI
+/// fallback colors.
+pub(crate) fn glyph_colors() -> (&'static str, &'static str, &'static str) {
+    use std::sync::LazyLock;
+    static GLYPHS: LazyLock<(&'static str, &'static str, &'static str)> = LazyLock::new(|| {
+        let theme = phi_tui::generate_theme(&phi_tui::default_terminal_colors());
+        let active = phi_tui::fg_escape(theme.glyph_active);
+        let ok = phi_tui::fg_escape(theme.glyph_ok);
+        let err = phi_tui::fg_escape(theme.glyph_err);
+        (
+            Box::leak(active.into_boxed_str()),
+            Box::leak(ok.into_boxed_str()),
+            Box::leak(err.into_boxed_str()),
+        )
+    });
+    *GLYPHS
+}
 pub(crate) const GLYPH_RESET: &str = "\x1b[0m";
-pub(crate) const GLYPH_ACTIVE: &str = "\x1b[38;2;130;160;230m";
-pub(crate) const GLYPH_OK: &str = "\x1b[38;2;130;200;140m";
-pub(crate) const GLYPH_ERR: &str = "\x1b[38;2;240;120;120m";
 
 /// Leading braille marker for the start of an in-flight top-level action.
 pub(crate) fn spin(color: bool) -> String {
     if color {
-        format!("{GLYPH_ACTIVE}\u{283f}{GLYPH_RESET}")
+        let (active, _, _) = glyph_colors();
+        format!("{active}\u{283f}{GLYPH_RESET}")
     } else {
         "\u{283f}".to_owned()
     }
@@ -83,7 +100,8 @@ pub(crate) fn spin(color: bool) -> String {
 /// Check mark settling a successfully completed action.
 pub(crate) fn check(color: bool) -> String {
     if color {
-        format!("{GLYPH_OK}\u{2713}{GLYPH_RESET}")
+        let (_, ok, _) = glyph_colors();
+        format!("{ok}\u{2713}{GLYPH_RESET}")
     } else {
         "\u{2713}".to_owned()
     }
@@ -92,7 +110,8 @@ pub(crate) fn check(color: bool) -> String {
 /// Cross mark settling a failed action.
 pub(crate) fn cross(color: bool) -> String {
     if color {
-        format!("{GLYPH_ERR}\u{2717}{GLYPH_RESET}")
+        let (_, _, err) = glyph_colors();
+        format!("{err}\u{2717}{GLYPH_RESET}")
     } else {
         "\u{2717}".to_owned()
     }

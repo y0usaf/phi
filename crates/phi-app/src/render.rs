@@ -84,10 +84,11 @@ pub(crate) fn render_tool_panel(
     let ok = !failed && parsed_ok;
     let title_plain = format!("{} {display}", if ok { "✔" } else { "✘" });
     let title = if color {
+        let (_, ok_color, err_color) = glyph_colors();
         if ok {
-            format!("{GLYPH_OK}{title_plain}{GLYPH_RESET}")
+            format!("{ok_color}{title_plain}{GLYPH_RESET}")
         } else {
-            format!("{GLYPH_ERR}{title_plain}{GLYPH_RESET}")
+            format!("{err_color}{title_plain}{GLYPH_RESET}")
         }
     } else {
         title_plain.clone()

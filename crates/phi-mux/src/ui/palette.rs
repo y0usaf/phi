@@ -1,8 +1,14 @@
 //! Palette types for the compositor scene.
+//!
+//! `ScenePalette` is now a thin adapter over the unified `phi_tui::Theme` —
+//! it converts `Rgb` values to `phi_grid::Color` so the mux compositor stays in
+//! `Color` space.  All derivation logic lives in `phi_tui::generate_theme`.
 
 use crate::grid::color::Color;
 use crate::grid::theme;
 use phi_tui::palette::TerminalColors;
+use phi_tui::theme::Theme;
+use phi_tui::{Rgb, default_terminal_colors, generate_theme};
 
 #[derive(Clone, Copy)]
 pub struct ScenePalette {
@@ -28,41 +34,58 @@ pub struct ScenePalette {
     pub error: Color,
 }
 
+fn to_color(c: Rgb) -> Color {
+    Color::rgb(c.0, c.1, c.2)
+}
+
+fn to_color_array(arr: [Rgb; 16]) -> [Color; 16] {
+    let mut out = [Color::rgb(0, 0, 0); 16];
+    for i in 0..16 {
+        out[i] = to_color(arr[i]);
+    }
+    out
+}
+
 impl Default for ScenePalette {
     fn default() -> Self {
-        // Unify every path through `generate_system` so there is no separate
+        // Unify every path through `generate_theme` so there is no separate
         // hardcoded fallback — the statusbar, surfaces, borders, and accents
         // always come from the same gray ramp / ANSI mapping. This is what
         // tests get; production goes through `from_terminal_colors` in app.rs.
-        Self::from_terminal_colors(&theme::default_terminal_colors())
+        Self::from_terminal_colors(&default_terminal_colors())
     }
 }
 
 impl ScenePalette {
     /// Derive a palette from the host terminal's reported colors (OSC 10/11/4),
     /// matching opencode's auto-theming. Missing palette entries fall back to
-    /// the standard 256-color cube inside `theme::generate_system`.
+    /// the standard 256-color cube inside `phi_tui::generate_theme`.
     pub fn from_terminal_colors(colors: &TerminalColors) -> Self {
-        let g = theme::generate_system(colors);
+        let t = generate_theme(colors);
+        Self::from_theme(&t)
+    }
+
+    /// Build a `ScenePalette` from a unified `Theme`, converting `Rgb` → `Color`.
+    pub fn from_theme(t: &Theme) -> Self {
         Self {
-            fg: g.fg,
+            fg: to_color(t.foreground),
             bg: theme::TRANSPARENT,
-            surface_raised: g.surface_raised,
-            statusbar_bg: g.statusbar_bg,
-            statusbar_fg: g.statusbar_fg,
+            surface_raised: to_color(t.surface_raised),
+            statusbar_bg: to_color(t.statusbar_bg),
+            statusbar_fg: to_color(t.foreground),
             sidebar_bg: theme::TRANSPARENT,
-            border: g.border,
-            muted: g.muted,
-            term_fg: g.term_fg,
+            border: to_color(t.border),
+            muted: to_color(t.muted),
+            term_fg: to_color(t.foreground),
             term_bg: theme::TRANSPARENT,
-            accent: g.accent,
-            accent_2: g.accent_2,
-            ansi: g.ansi,
-            running: g.running,
-            success: g.success,
-            success_subtle: g.success_subtle,
-            warning: g.warning,
-            error: g.error,
+            accent: to_color(t.accent),
+            accent_2: to_color(t.accent_2),
+            ansi: to_color_array(t.ansi),
+            running: to_color(t.running),
+            success: to_color(t.success),
+            success_subtle: to_color(t.success_subtle),
+            warning: to_color(t.warning),
+            error: to_color(t.error),
         }
     }
 }

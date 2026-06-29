@@ -158,7 +158,6 @@ pub fn gradient_text_animated(
     out
 }
 
-
 /// Full sweep cycle duration (ms). The shimmer highlight sweeps across
 /// the text and back in this time, regardless of text width. This is the
 /// key to **percentage-based sync**: because the position is a fraction of
@@ -190,8 +189,7 @@ const SHIMMER_BLEND_PEAK: u8 = 200;
 /// preserve text styling when applying the shimmer color.
 fn is_attribute_sgr(esc: &str) -> bool {
     // Parse the SGR parameter string between `[` and `m`.
-    let Some(body) = esc.strip_prefix("[").and_then(|b| b.strip_suffix('m'))
-    else {
+    let Some(body) = esc.strip_prefix("[").and_then(|b| b.strip_suffix('m')) else {
         return false;
     };
     if body == "0" || body.is_empty() {
@@ -201,7 +199,7 @@ fn is_attribute_sgr(esc: &str) -> bool {
     body.split(';').all(|p| {
         matches!(
             p.trim(),
-            "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9"   // bold, faint, italic, underline, blink, rapid, reverse, conceal, crossed-out
+            "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" // bold, faint, italic, underline, blink, rapid, reverse, conceal, crossed-out
         )
     })
 }
@@ -228,14 +226,14 @@ fn parse_sgr_fg(sgr_state: &[&str]) -> Option<crate::palette::Rgb> {
             if (30..=37).contains(&n) {
                 let idx = (n - 30) as usize;
                 const ANSI8: [(u8, u8, u8); 8] = [
-                    (0, 0, 0),         // black
-                    (170, 0, 0),       // red
-                    (0, 170, 0),       // green
-                    (170, 85, 0),      // yellow/brown
-                    (0, 0, 170),       // blue
-                    (170, 0, 170),     // magenta
-                    (0, 170, 170),     // cyan
-                    (170, 170, 170),   // white/gray
+                    (0, 0, 0),       // black
+                    (170, 0, 0),     // red
+                    (0, 170, 0),     // green
+                    (170, 85, 0),    // yellow/brown
+                    (0, 0, 170),     // blue
+                    (170, 0, 170),   // magenta
+                    (0, 170, 170),   // cyan
+                    (170, 170, 170), // white/gray
                 ];
                 let (r, g, b) = ANSI8[idx];
                 return Some(crate::palette::Rgb(r, g, b));
@@ -243,14 +241,14 @@ fn parse_sgr_fg(sgr_state: &[&str]) -> Option<crate::palette::Rgb> {
             if (90..=97).contains(&n) {
                 let idx = (n - 90) as usize;
                 const ANSI16: [(u8, u8, u8); 8] = [
-                    (85, 85, 85),      // bright black (dark gray)
-                    (255, 85, 85),     // bright red
-                    (85, 255, 85),     // bright green
-                    (255, 255, 85),    // bright yellow
-                    (85, 85, 255),     // bright blue
-                    (255, 85, 255),    // bright magenta
-                    (85, 255, 255),    // bright cyan
-                    (255, 255, 255),   // bright white
+                    (85, 85, 85),    // bright black (dark gray)
+                    (255, 85, 85),   // bright red
+                    (85, 255, 85),   // bright green
+                    (255, 255, 85),  // bright yellow
+                    (85, 85, 255),   // bright blue
+                    (255, 85, 255),  // bright magenta
+                    (85, 255, 255),  // bright cyan
+                    (255, 255, 255), // bright white
                 ];
                 let (r, g, b) = ANSI16[idx];
                 return Some(crate::palette::Rgb(r, g, b));
@@ -309,8 +307,8 @@ pub fn shimmer_ansi(text: &str, shimmer: crate::palette::Rgb, elapsed_ms: u64) -
     let glimmer_center = (1.0 - cycle_pos) * message_width as f64;
 
     // Window width proportional to text, with a minimum.
-    let window = ((message_width as f64) * SHIMMER_WINDOW_FRAC)
-        .max(SHIMMER_MIN_WINDOW as f64) as usize;
+    let window =
+        ((message_width as f64) * SHIMMER_WINDOW_FRAC).max(SHIMMER_MIN_WINDOW as f64) as usize;
     let window_half = (window / 2) as isize;
     let shimmer_start = (glimmer_center as isize) - window_half;
     let shimmer_end = (glimmer_center as isize) + window_half;
@@ -359,15 +357,13 @@ pub fn shimmer_ansi(text: &str, shimmer: crate::palette::Rgb, elapsed_ms: u64) -
             // linearly to 0 at the window edges.
             let dist_from_center = (col_pos as f64 - glimmer_center).abs();
             let intensity_frac = 1.0 - (dist_from_center / (window_half.max(1) as f64)).min(1.0);
-            let blend = ((intensity_frac * SHIMMER_BLEND_PEAK as f64) as u8).min(SHIMMER_BLEND_PEAK);
+            let blend =
+                ((intensity_frac * SHIMMER_BLEND_PEAK as f64) as u8).min(SHIMMER_BLEND_PEAK);
 
             // Parse the current fg color from the SGR state so we can blend it.
             let base_fg = parse_sgr_fg(&sgr_state).unwrap_or(crate::palette::Rgb(170, 170, 170));
             let blended = fade_rgb(base_fg, shimmer, blend);
-            let blended_rgb = format!(
-                "[38;2;{};{};{}m",
-                blended.0, blended.1, blended.2
-            );
+            let blended_rgb = format!("[38;2;{};{};{}m", blended.0, blended.1, blended.2);
 
             // Emit blended color plus preserved text attributes.
             out.push_str(&blended_rgb);
@@ -571,10 +567,7 @@ mod tests {
         for ms in (0..SHIMMER_CYCLE_MS).step_by(100) {
             let result = shimmer_ansi(text, shimmer, ms);
             // The bold code must be present (attributes preserved).
-            assert!(
-                result.contains("[1m"),
-                "bold code lost at ms={ms}"
-            );
+            assert!(result.contains("[1m"), "bold code lost at ms={ms}");
         }
     }
 
@@ -668,4 +661,3 @@ mod tests {
         );
     }
 }
-

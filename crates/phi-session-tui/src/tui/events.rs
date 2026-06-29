@@ -693,7 +693,12 @@ impl Ui {
         let elapsed = self.anim_start.elapsed().as_millis() as u64;
         if let Some((start, len)) = self.push_status(
             depth + 1,
-            running_status_text_shimmer(&label, self.spinner.frame(), self.palette.shimmer_accent, elapsed),
+            running_status_text_shimmer(
+                &label,
+                self.spinner.frame(),
+                self.palette.shimmer_accent,
+                elapsed,
+            ),
         ) {
             self.open_tool_rows.insert(
                 key,
@@ -786,7 +791,12 @@ impl Ui {
             let elapsed = self.anim_start.elapsed().as_millis() as u64;
             if let Some((start, len)) = self.push_status(
                 depth,
-                running_status_text_shimmer(&label, self.spinner.frame(), self.palette.shimmer_accent, elapsed),
+                running_status_text_shimmer(
+                    &label,
+                    self.spinner.frame(),
+                    self.palette.shimmer_accent,
+                    elapsed,
+                ),
             ) {
                 self.open_subcall_rows.push_back(OpenSubcallRow {
                     depth,

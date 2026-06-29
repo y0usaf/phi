@@ -3,7 +3,9 @@
 use super::palette::ScenePalette;
 use super::scene::{Chrome, MuxMode, StatusNoteKind};
 use super::sidebar::SIDEBAR_ANIMATION_FRAME_MS;
-use crate::grid::cell_surface::{CellSurface, char_cell_width, display_cell_width, truncate_to_cells};
+use crate::grid::cell_surface::{
+    CellSurface, char_cell_width, display_cell_width, truncate_to_cells,
+};
 use crate::grid::color::Color;
 use crate::grid::layout::CellRect;
 use crate::grid::theme;
@@ -112,8 +114,15 @@ pub(super) fn render_statusbar(
     surface.fill_rect(statusline, fg, bg);
 
     let row = statusline.row;
-    let main_col =
-        render_statusbar_sidebar_segment(surface, statusline, sidebar_panel, palette, state, bg, now_ms);
+    let main_col = render_statusbar_sidebar_segment(
+        surface,
+        statusline,
+        sidebar_panel,
+        palette,
+        state,
+        bg,
+        now_ms,
+    );
     let main_cols = (panel.col + panel.cols - main_col).max(0);
     if main_cols <= 0 {
         return;
@@ -136,7 +145,19 @@ pub(super) fn render_statusbar(
     let center_cols = display_cell_width(&center) as i32;
 
     if left_cols > 0 {
-        render_shimmer_text(surface, main_col, row, left_cols, fg, bg, &left, now_ms, 8, false, palette.running);
+        render_shimmer_text(
+            surface,
+            main_col,
+            row,
+            left_cols,
+            fg,
+            bg,
+            &left,
+            now_ms,
+            8,
+            false,
+            palette.running,
+        );
     }
 
     if right_cols > 0 {
@@ -162,7 +183,19 @@ pub(super) fn render_statusbar(
         let left_limit_col = main_col + left_cols + i32::from(left_cols > 0);
         let right_limit_col = main_col + main_cols - right_cols - i32::from(right_cols > 0);
         if centered_col >= left_limit_col && centered_col + center_cols <= right_limit_col {
-            render_shimmer_text(surface, centered_col, row, center_cols, fg, bg, &center, now_ms, 12, false, palette.accent_2);
+            render_shimmer_text(
+                surface,
+                centered_col,
+                row,
+                center_cols,
+                fg,
+                bg,
+                &center,
+                now_ms,
+                12,
+                false,
+                palette.accent_2,
+            );
         }
     }
 }
