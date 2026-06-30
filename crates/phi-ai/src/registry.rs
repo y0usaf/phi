@@ -142,12 +142,123 @@ mod tests {
     }
 
     #[test]
+    fn thinking_value_fallback_no_levels() {
+        // A reasoning model with no thinking_levels should still return a
+        // thinking value via the default fallback (the fix for the GLM bug
+        // where thinking was silently dropped).
+        let budget_model = Model {
+            id: "test/glm".to_owned(),
+            name: "Test GLM".to_owned(),
+            api: Api::AnthropicMessages,
+            provider: "test".to_owned(),
+            base_url: "https://example.com".to_owned(),
+            reasoning: true,
+            input: vec![],
+            cost: Default::default(),
+            context_window: 128_000,
+            max_tokens: 16_384,
+            headers: Default::default(),
+            thinking_levels: None,
+            adaptive_thinking: false,
+        };
+        // Budget-based fallback: returns a token budget string.
+        assert_eq!(
+            budget_model.thinking_value(crate::types::ThinkingLevel::High),
+            Some("16384".to_owned())
+        );
+        assert_eq!(
+            budget_model.thinking_value(crate::types::ThinkingLevel::XHigh),
+            Some("32768".to_owned())
+        );
+        assert_eq!(
+            budget_model.thinking_value(crate::types::ThinkingLevel::Off),
+            None
+        );
+
+        let adaptive_model = Model {
+            id: "test/adaptive".to_owned(),
+            name: "Test Adaptive".to_owned(),
+            api: Api::AnthropicMessages,
+            provider: "test".to_owned(),
+            base_url: "https://example.com".to_owned(),
+            reasoning: true,
+            input: vec![],
+            cost: Default::default(),
+            context_window: 128_000,
+            max_tokens: 16_384,
+            headers: Default::default(),
+            thinking_levels: None,
+            adaptive_thinking: true,
+        };
+        // Adaptive fallback: returns the level name as effort string.
+        assert_eq!(
+            adaptive_model.thinking_value(crate::types::ThinkingLevel::High),
+            Some("high".to_owned())
+        );
+
+        let openai_model = Model {
+            id: "test/oai".to_owned(),
+            name: "Test OAI".to_owned(),
+            api: Api::OpenAiResponses,
+            provider: "test".to_owned(),
+            base_url: "https://example.com".to_owned(),
+            reasoning: true,
+            input: vec![],
+            cost: Default::default(),
+            context_window: 128_000,
+            max_tokens: 16_384,
+            headers: Default::default(),
+            thinking_levels: None,
+            adaptive_thinking: false,
+        };
+        // OpenAI Responses fallback: returns the level name as effort string.
+        assert_eq!(
+            openai_model.thinking_value(crate::types::ThinkingLevel::XHigh),
+            Some("xhigh".to_owned())
+        );
+
+        // Non-reasoning model: always None, even with a thinking level set.
+        let non_reasoning = Model {
+            id: "test/no-reasoning".to_owned(),
+            name: "Test No Reasoning".to_owned(),
+            api: Api::AnthropicMessages,
+            provider: "test".to_owned(),
+            base_url: "https://example.com".to_owned(),
+            reasoning: false,
+            input: vec![],
+            cost: Default::default(),
+            context_window: 128_000,
+            max_tokens: 16_384,
+            headers: Default::default(),
+            thinking_levels: None,
+            adaptive_thinking: false,
+        };
+        assert_eq!(
+            non_reasoning.thinking_value(crate::types::ThinkingLevel::High),
+            None
+        );
+    }
+
+    #[test]
     fn thinking_value_clamps() {
         let registry = Registry::builtin();
+        // opus-4-7 is an adaptive thinking model — thinking_value returns
+        // effort strings (low/medium/high/xhigh), not token budgets.
         let opus = registry.find("anthropic/claude-opus-4-7").unwrap();
+        assert!(opus.adaptive_thinking, "opus-4-7 should be adaptive");
         assert_eq!(
             opus.thinking_value(crate::types::ThinkingLevel::Medium),
-            Some("8192".to_owned())
+            Some("medium".to_owned())
+        );
+        assert_eq!(
+            opus.thinking_value(crate::types::ThinkingLevel::XHigh),
+            Some("xhigh".to_owned())
+        );
+        // opus-4-6 is adaptive with xhigh -> "max"
+        let opus46 = registry.find("anthropic/claude-opus-4-6").unwrap();
+        assert_eq!(
+            opus46.thinking_value(crate::types::ThinkingLevel::XHigh),
+            Some("max".to_owned())
         );
         let gpt = registry.find("openai/gpt-5.1").unwrap();
         // xhigh unsupported on gpt-5.1 -> clamps down to high
