@@ -4,6 +4,7 @@
 //! color, packed cells, damage, layout, selection, ANSI, theme) are in the
 //! `grid` module.
 
+pub mod draw_context_impl;
 pub mod overlays;
 pub mod palette;
 pub mod scene;
@@ -12,3 +13,4 @@ pub mod sidebar;
 pub mod statusbar;
 pub mod terminal_scene;
 pub mod terminal_view;
+pub mod visual_context;

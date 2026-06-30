@@ -69,6 +69,19 @@ impl MuxApp {
             }
             return;
         }
+        if let Some(active) = &mut self.active_extension_overlay {
+            let overlay_key = crate::ui::draw_context_impl::key_event_to_overlay_key(&key);
+            let outcome = (active.spec.handle_key)(&mut active.state, &overlay_key, cols, rows);
+            match outcome {
+                phi_ext::OverlayOutcome::None => {} // consumed, no change
+                phi_ext::OverlayOutcome::Close => self.active_extension_overlay = None,
+                phi_ext::OverlayOutcome::Submit(value) => {
+                    self.set_note(format!("Overlay: {value}"), super::StatusNoteKind::Ok);
+                    self.active_extension_overlay = None;
+                }
+            }
+            return;
+        }
 
         if self.command_line.is_some() {
             // `::` immediately after opening sends a literal ':' through.
@@ -106,6 +119,20 @@ impl MuxApp {
         {
             self.command_line = Some(CommandLineState::with_input(""));
             return;
+        }
+
+        // Check extension overlay toggle keys.
+        if let Some(ch) = key_char(&key) {
+            for spec in &self.extension_overlays {
+                if spec.toggle_key == ch.to_string() && self.active_extension_overlay.is_none() {
+                    let name = spec.name.clone();
+                    let state = (spec.init_state)();
+                    let spec = spec.clone();
+                    self.active_extension_overlay =
+                        Some(super::ActiveExtensionOverlay { name, spec, state });
+                    return;
+                }
+            }
         }
 
         match KeyStroke::from_key_event(&key) {
@@ -251,5 +278,18 @@ fn terminal_point(layout: &CellLayout, column: u16, row: u16) -> SelectionPoint 
     SelectionPoint {
         col: col.clamp(0, (rect.cols - 1).max(0)) as u16,
         row: row.clamp(0, (rect.rows - 1).max(0)) as u16,
+    }
+}
+
+/// Extract the character from a key event if it's a simple Char key
+/// with no control modifier.
+fn key_char(key: &KeyEvent) -> Option<char> {
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        return None;
+    }
+    if let KeyCode::Char(c) = key.code {
+        Some(c)
+    } else {
+        None
     }
 }

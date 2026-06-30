@@ -1,4 +1,5 @@
 use super::*;
+use crate::ui::draw_context_impl::MuxDrawContext;
 
 impl MuxApp {
     pub(crate) fn draw(&mut self) {
@@ -90,6 +91,9 @@ impl MuxApp {
             self.renderer.invalidate();
         }
 
+        let visual =
+            crate::ui::visual_context::VisualContext::from_runtime(self.visual_runtime.as_deref());
+
         let mut hardware_cursor = render_scene(
             &mut surface,
             &layout,
@@ -102,6 +106,7 @@ impl MuxApp {
             mode,
             now_ms,
             scrollback_total,
+            &visual,
         )
         .map(|pos| HardwareCursor {
             col: pos.col,
@@ -138,6 +143,10 @@ impl MuxApp {
         } else if let Some(help) = &mut self.help_overlay {
             let keymap = self.keymap.clone();
             render_help_overlay(&mut surface, help, &keymap, &palette);
+            hardware_cursor = None;
+        } else if let Some(active) = &mut self.active_extension_overlay {
+            let mut ctx = MuxDrawContext::new(&mut surface);
+            (active.spec.render)(&mut ctx, &mut active.state);
             hardware_cursor = None;
         }
 

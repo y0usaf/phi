@@ -3,6 +3,7 @@
 //! session, and composites every frame from the session's vt100 screen.
 use std::io::Write as _;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result};
@@ -38,6 +39,7 @@ use crate::persisted::{self as persisted, PersistedState};
 use crate::status::SessionStatus;
 use crate::watcher::SessionWatcher;
 use crate::workspace::{self as workspace, Workspace};
+use phi_ext::{AppRuntime, OverlaySpec};
 use phi_session::config::MuxConfig;
 use phi_session_tui::session_builder::SharedResources;
 use phi_session_tui::tui::{self, HostModalKind, HostModalRequest};
@@ -63,7 +65,7 @@ pub async fn run(shared: SharedResources, mux_config: MuxConfig, cwd: PathBuf) -
             dirs.push(dir);
         }
     };
-    push_project(&mut project_dirs, cwd);
+    push_project(&mut project_dirs, cwd.clone());
     for dir in &shared.projects {
         push_project(&mut project_dirs, PathBuf::from(dir));
     }
@@ -95,17 +97,35 @@ pub async fn run(shared: SharedResources, mux_config: MuxConfig, cwd: PathBuf) -
     // The mux owns the whole screen (unlike the inline single-session TUI).
     let _ = write!(stdout, "\x1b[2J\x1b[H");
 
-    // Probe the host terminal's colors (OSC 10/11/4) once, inside raw mode,
-    // and derive the mux palette from them. When the terminal doesn't answer
-    // (SSH, CI, etc.) we synthesize standard ANSI defaults and run the same
-    // `generate_system` path — there is no separate hardcoded fallback palette,
-    // so every surface, border, statusbar, and accent always comes from the
-    // same gray ramp / ANSI mapping. Mirrors opencode's single-path approach.
-    let palette = ScenePalette::from_terminal_colors(
-        phi_tui::detect_terminal_colors(Duration::from_millis(150))
-            .as_ref()
-            .unwrap_or(&theme::default_terminal_colors()),
-    );
+    // Probe the host terminal's colors (OSC 10/11/4) once, inside raw mode.
+    let terminal_colors = phi_tui::detect_terminal_colors(Duration::from_millis(150))
+        .unwrap_or_else(theme::default_terminal_colors);
+
+    // ── Visual extension discovery ──────────────────────────────────────
+    // Build a lightweight runtime that discovers and registers extensions
+    // from the project's `.phi/` directory and global config. This lets
+    // extensions register themes, spinners, thinking expressions, and text
+    // effects that the mux TUI consumes for its look-and-feel.
+    //
+    // The runtime is built separately from the per-session runtime (which
+    // is created later inside `build_session`), but visual specs are static
+    // data registered at `register()` time, so the same extensions will
+    // register the same visual specs in both runtimes.
+    let visual_runtime = build_visual_runtime(&cwd);
+
+    // Derive the mux palette: if an extension registered a theme, use it
+    // (overlaid on the built-in derivation so missing roles fall back).
+    // Otherwise, use the built-in `generate_theme` path — the same gray
+    // ramp / ANSI mapping as before.
+    let palette = if let Some(rt) = &visual_runtime {
+        if let Some(theme_spec) = rt.first_theme() {
+            ScenePalette::from_extension_theme(theme_spec, &terminal_colors)
+        } else {
+            ScenePalette::from_terminal_colors(&terminal_colors)
+        }
+    } else {
+        ScenePalette::from_terminal_colors(&terminal_colors)
+    };
 
     let (status_tx, status_rx) = mpsc::unbounded_channel();
     let (redraw_tx, redraw_rx) = mpsc::unbounded_channel();
@@ -122,12 +142,18 @@ pub async fn run(shared: SharedResources, mux_config: MuxConfig, cwd: PathBuf) -
         usage_overlay: None,
         model_overlay: None,
         archive_viewer: None,
+        extension_overlays: visual_runtime
+            .as_ref()
+            .map(|rt| rt.all_overlays().cloned().collect())
+            .unwrap_or_default(),
+        active_extension_overlay: None,
         selection: TerminalSelection::default(),
         clipboard: MuxClipboard::default(),
         renderer: AnsiRenderer::default(),
         size: phi_tui::crossterm::terminal::size().unwrap_or((80, 24)),
         surface: CellSurface::default(),
         palette,
+        visual_runtime,
         alt_screen_active: false,
         cached_scrollback_total: 0,
         sidebar_scroll: 0,
@@ -175,6 +201,10 @@ struct MuxApp {
     usage_overlay: Option<UsageOverlayState>,
     model_overlay: Option<ModelOverlayState>,
     archive_viewer: Option<ArchiveViewerState>,
+    /// Extension-registered overlay specs, cloned from the visual runtime.
+    extension_overlays: Vec<OverlaySpec>,
+    /// The currently open extension overlay (if any).
+    active_extension_overlay: Option<ActiveExtensionOverlay>,
     selection: TerminalSelection,
     clipboard: MuxClipboard,
     renderer: AnsiRenderer,
@@ -186,6 +216,10 @@ struct MuxApp {
     /// Resolved mux palette. Derived from the host terminal's OSC colors at
     /// startup; falls back to the built-in Charmtone palette.
     palette: ScenePalette,
+    /// Visual extension runtime: holds extension-registered visual specs
+    /// (themes, spinners, thinking expressions, text effects) so the TUI
+    /// rendering code can query them during the draw loop.
+    visual_runtime: Option<Arc<AppRuntime>>,
     /// Whether the focused session's screen was in the alternate screen last
     /// frame; a transition drops scroll history and forces a full repaint.
     alt_screen_active: bool,
@@ -199,6 +233,17 @@ struct MuxApp {
     channels: MuxChannels,
     session_watcher: SessionWatcher,
     quit: bool,
+}
+
+/// An extension-registered overlay that is currently open (active).
+///
+/// Holds a reference to the overlay spec (for render + handle_key closures)
+/// and the type-erased state created by the spec's `init_state` factory.
+#[allow(dead_code)]
+pub(crate) struct ActiveExtensionOverlay {
+    pub(crate) name: String,
+    pub(crate) spec: OverlaySpec,
+    pub(crate) state: std::boxed::Box<dyn std::any::Any + Send + Sync>,
 }
 
 fn install_panic_log_hook() {
@@ -216,4 +261,44 @@ fn install_panic_log_hook() {
             let _ = writeln!(file, "{}", std::backtrace::Backtrace::force_capture());
         }
     }));
+}
+
+/// Build a lightweight extension runtime for visual discovery.
+///
+/// Discovers and loads Lua extensions from the project's `.phi/` directory
+/// and global config, then registers them. The resulting runtime holds
+/// any extension-registered visual specs (themes, spinners, thinking
+/// expressions, text effects) that the mux TUI can query.
+///
+/// This is a best-effort function: if extension discovery or registration
+/// fails, it returns `None` and the mux falls back to its built-in visual
+/// defaults.
+fn build_visual_runtime(cwd: &std::path::Path) -> Option<Arc<AppRuntime>> {
+    let ext_paths = phi_lua::discover_extensions(cwd);
+    let lua_exts = phi_lua::load_extensions(&ext_paths);
+
+    let config_ext_paths = phi_lua::config_extension_paths(cwd);
+    let config_exts = phi_lua::load_extensions(&config_ext_paths);
+
+    let mut rt_builder = phi_ext::RuntimeBuilder::new().with_cwd(cwd);
+    // Register the built-in default visual extension first so the
+    // default spinner, thinking expressions, and theme are always
+    // available. Lua extensions loaded afterward can register
+    // additional themes/spinners with different names.
+    rt_builder = rt_builder.register_extension(phi_builtins::DefaultVisualExtension);
+    rt_builder = rt_builder.register_extension(phi_builtins::DefaultOverlayExtension);
+    for ext in config_exts {
+        rt_builder = rt_builder.register_boxed_extension(ext);
+    }
+    for ext in lua_exts {
+        rt_builder = rt_builder.register_boxed_extension(ext);
+    }
+
+    match rt_builder.build() {
+        Ok(rt) => Some(Arc::new(rt)),
+        Err(e) => {
+            eprintln!("Warning: visual extension discovery failed: {e}");
+            None
+        }
+    }
 }
