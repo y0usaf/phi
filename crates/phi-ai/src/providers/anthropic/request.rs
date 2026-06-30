@@ -118,6 +118,22 @@ fn convert_messages(messages: &[Message], cache_control: bool) -> Vec<Value> {
                                 "signature": signature,
                             }));
                         }
+                        // Unsigned thinking blocks (e.g. from the Vercel AI
+                        // Gateway for non-Anthropic reasoning models like GLM)
+                        // cannot be replayed as `type: "thinking"` because real
+                        // Anthropic rejects empty signatures. Convert to plain
+                        // text so the reasoning context is preserved across
+                        // turns. This matches pi's default behavior (without
+                        // `allowEmptySignature`).
+                        AssistantContent::Thinking {
+                            thinking,
+                            signature: None,
+                        } if !thinking.is_empty() => {
+                            content.push(json!({
+                                "type": "text",
+                                "text": thinking,
+                            }));
+                        }
                         AssistantContent::ToolCall(call) => {
                             content.push(json!({
                                 "type": "tool_use",
@@ -739,5 +755,56 @@ mod tests {
             last_user_content[0]["cache_control"]["type"].as_str(),
             Some("ephemeral")
         );
+    }
+
+    /// Unsigned thinking blocks (signature: None, e.g. from the Vercel AI
+    /// Gateway for non-Anthropic reasoning models like GLM) should be
+    /// converted to plain text on replay — not dropped silently. This
+    /// matches pi's default behavior (without `allowEmptySignature`).
+    #[test]
+    fn convert_messages_unsigned_thinking_converted_to_text() {
+        let mut assistant = AssistantMessage::empty(&model());
+        assistant.content.push(AssistantContent::Thinking {
+            thinking: "Let me analyze this...".to_owned(),
+            signature: None,
+        });
+        assistant.content.push(AssistantContent::Text {
+            text: "Here is the answer.".to_owned(),
+        });
+        let messages = vec![
+            Message::User(UserMessage::new("hi")),
+            Message::Assistant(assistant),
+            Message::User(UserMessage::new("thanks")),
+        ];
+        let out = convert_messages(&messages, false);
+        let asst_content = out[1]["content"].as_array().unwrap();
+        // Unsigned thinking becomes a text block (not a thinking block).
+        assert_eq!(asst_content[0]["type"], "text");
+        assert_eq!(asst_content[0]["text"], "Let me analyze this...");
+        // The actual response text is preserved as a separate block.
+        assert_eq!(asst_content[1]["type"], "text");
+        assert_eq!(asst_content[1]["text"], "Here is the answer.");
+    }
+
+    /// Signed thinking blocks should be replayed as `type: "thinking"` with
+    /// the signature intact (this is the existing behavior, verified here to
+    /// ensure the unsigned fix didn't break it).
+    #[test]
+    fn convert_messages_signed_thinking_preserved() {
+        let mut assistant = AssistantMessage::empty(&model());
+        assistant.content.push(AssistantContent::Thinking {
+            thinking: "Reasoning here...".to_owned(),
+            signature: Some("sig_abc123".to_owned()),
+        });
+        let messages = vec![
+            Message::User(UserMessage::new("hi")),
+            Message::Assistant(assistant),
+            Message::User(UserMessage::new("thanks")),
+        ];
+        let out = convert_messages(&messages, false);
+        let asst_content = out[1]["content"].as_array().unwrap();
+        assert_eq!(asst_content[0]["type"], "thinking");
+        assert_eq!(asst_content[0]["thinking"], "Reasoning here...");
+        assert_eq!(asst_content[0]["signature"], "sig_abc123");
     }
 }
