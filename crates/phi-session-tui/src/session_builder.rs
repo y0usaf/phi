@@ -235,6 +235,7 @@ pub async fn build_session(
         runtime,
         ui: UiSetup {
             max_iterations: settings.max_iterations,
+            tools: settings.tools.clone(),
             storage: storage.clone(),
             registry: registry.clone(),
             root_lm: root,

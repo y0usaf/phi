@@ -40,9 +40,6 @@ pub(crate) fn thinking_level_color(level: ThinkingLevel, palette: &super::Inline
 // Transcript boxes keep their color in the chrome (borders/titles) only; the
 // body stays on the terminal/default background so content styling remains UI-only.
 
-pub(crate) const CODE_PREVIEW_LINES: usize = 8;
-pub(crate) const OUTPUT_PREVIEW_LINES: usize = 5;
-
 pub(crate) const ASSISTANT_THINKING_DISPLAY_OPEN: &str = "<phi-thinking>\n";
 pub(crate) const ASSISTANT_THINKING_DISPLAY_CLOSE: &str = "\n</phi-thinking>\n";
 
@@ -347,14 +344,21 @@ pub(crate) fn prepend_indent(row: &str, prefix: &str) -> String {
 ///   the REPL bg, left-padded by 1 space. Blank rows become bg-only fill.
 ///
 /// Top and bottom padding rows are bg-only fills, matching pi's Box padding.
-pub(crate) fn render_repl_block(body: &[String], bg: &str, width: usize) -> Vec<String> {
+pub(crate) fn render_repl_block(
+    body: &[String],
+    bg: &str,
+    width: usize,
+    padding: usize,
+) -> Vec<String> {
     if body.is_empty() {
         return Vec::new();
     }
     let pad = " ";
-    let mut out = Vec::with_capacity(body.len() + 2);
+    let mut out = Vec::with_capacity(body.len() + padding * 2);
     // Top padding
-    out.push(fill_bg(pad, bg, width));
+    for _ in 0..padding {
+        out.push(fill_bg(pad, bg, width));
+    }
     for line in body {
         if line.is_empty() {
             // Blank line: bg-only fill.
@@ -370,7 +374,9 @@ pub(crate) fn render_repl_block(body: &[String], bg: &str, width: usize) -> Vec<
         }
     }
     // Bottom padding
-    out.push(fill_bg(pad, bg, width));
+    for _ in 0..padding {
+        out.push(fill_bg(pad, bg, width));
+    }
     out
 }
 
@@ -415,21 +421,25 @@ pub(crate) enum TranscriptEntry {
     RawLines(Vec<String>),
 }
 
-/// Render a boxed block mirroring pi's `Box(1, 1, bgFn)` component: 1-cell
-/// padding all around, with the given background applied via `fill_bg`.
-///
-/// The `lines` are the content (already styled) that goes inside the box.
-/// The function prepends a blank bg line, left-pads each content line by one
-/// space, applies the bg fill to the full `width`, and appends a trailing
-/// blank bg line.
-pub(crate) fn render_boxed(lines: &[String], bg: &str, width: usize) -> Vec<String> {
+/// Render a boxed block mirroring pi's `Box(1, 1, bgFn)` component with
+/// configurable top/bottom padding. `padding = 0`
+/// omits the blank bg lines above and below the content (the 1-space left pad
+/// is still applied so content aligns with sibling cards).
+pub(crate) fn render_boxed_padded(
+    lines: &[String],
+    bg: &str,
+    width: usize,
+    padding: usize,
+) -> Vec<String> {
     if lines.is_empty() {
         return Vec::new();
     }
     let pad = " ";
-    let mut out = Vec::with_capacity(lines.len() + 2);
+    let mut out = Vec::with_capacity(lines.len() + padding * 2);
     // Top padding
-    out.push(fill_bg(pad, bg, width));
+    for _ in 0..padding {
+        out.push(fill_bg(pad, bg, width));
+    }
     // Content with 1-space left pad
     for line in lines {
         let padded = if line.is_empty() {
@@ -440,6 +450,8 @@ pub(crate) fn render_boxed(lines: &[String], bg: &str, width: usize) -> Vec<Stri
         out.push(fill_bg(&padded, bg, width));
     }
     // Bottom padding
-    out.push(fill_bg(pad, bg, width));
+    for _ in 0..padding {
+        out.push(fill_bg(pad, bg, width));
+    }
     out
 }

@@ -23,7 +23,7 @@ use phi_tui::{
     Editor, EditorAction, LiveCursor, RawModeGuard, Selector, SelectorItem, SelectorOutcome,
     Terminal, detect_terminal_colors, equalizer_glyphs, fill_bg, fuzzy_filter,
     gradient_text_animated, highlight_code, highlight_diff_line, highlight_output, render_markdown,
-    shimmer_ansi, wrap_ansi, wrap_ansi_locate,
+    shimmer_ansi, strip_ansi, visible_width, wrap_ansi, wrap_ansi_locate,
 };
 
 use phi_session::files::FileSearcher;
@@ -61,7 +61,10 @@ use events::LoginState;
 use events::python_quote;
 
 pub use palette::InlinePalette;
-pub(crate) use render::{OpenSubcallRow, OpenToolRow, ReplBlockData, TOOL_RESULT_LOG_BUDGET, TranscriptBlock, TranscriptEntry};
+pub(crate) use render::{
+    OpenSubcallRow, OpenToolRow, ReplBlockData, TOOL_RESULT_LOG_BUDGET, TranscriptBlock,
+    TranscriptEntry,
+};
 pub(crate) use tool_display::{format_model_pricing, format_tokens, tool_identity, tool_title};
 pub(super) use visual_context::VisualContext;
 
@@ -120,6 +123,7 @@ pub struct TuiSetup {
 
 pub struct UiSetup {
     pub max_iterations: usize,
+    pub tools: phi_session::config::ToolsSettings,
     pub storage: Arc<AuthStorage>,
     pub registry: Arc<Registry>,
     /// Root model handle; /model swaps it in place.
@@ -498,6 +502,10 @@ struct Ui {
     /// ctrl+t: show provider thinking across the transcript by rebuilding
     /// retained history, pi-style.
     pub(super) expand_thinking: bool,
+    /// How to render tool cards and REPL blocks: tool_max_lines (0 = header only),
+    /// repl_max_lines (0 = header only), tool_padding, repl_padding, user_padding, gap.
+    /// Set from config.lua `tools = { tool_max_lines = 0, repl_max_lines = 0, tool_padding = 0, repl_padding = 0, user_padding = 0, gap = 0 }`.
+    pub(super) tools: phi_session::config::ToolsSettings,
     /// Follow-up prompts queued while a turn is in flight; sent FIFO as
     /// turns complete.
     pub(super) queued: Vec<String>,
@@ -610,6 +618,7 @@ impl Ui {
         runtime: Arc<AppRuntime>,
     ) -> Self {
         let UiSetup {
+            tools,
             storage,
             registry,
             root_lm,
@@ -638,6 +647,7 @@ impl Ui {
             external_edit: false,
             expand_tools: false,
             expand_thinking: false,
+            tools,
             queued: Vec::new(),
             last_ctrl_c: None,
             pending: Vec::new(),
@@ -763,6 +773,14 @@ mod tests {
             ),
             UiSetup {
                 max_iterations: 8,
+                tools: phi_session::config::ToolsSettings {
+                    tool_max_lines: 5,
+                    repl_max_lines: 8,
+                    tool_padding: 1,
+                    repl_padding: 1,
+                    user_padding: 1,
+                    gap: 1,
+                },
                 storage,
                 registry,
                 root_lm,
@@ -778,7 +796,10 @@ mod tests {
 
     fn pending_lines(ui: &mut Ui) -> Vec<String> {
         let entries = ui.pending.clone();
-        entries.into_iter().flat_map(|e| ui.render_entry(&e)).collect()
+        entries
+            .into_iter()
+            .flat_map(|e| ui.render_entry(&e))
+            .collect()
     }
 
     #[test]
@@ -977,7 +998,12 @@ mod tests {
         ui.push_bar(0, "exec 0.1s".to_owned());
         ui.push_preview(0, "1\n", usize::MAX);
 
-        let lines = render_repl_block(&ui.block, &ui.palette.tool_success_bg, ui.panel_width());
+        let lines = render_repl_block(
+            &ui.block,
+            &ui.palette.tool_success_bg,
+            ui.panel_width(),
+            ui.tools.repl_padding,
+        );
         let plain = lines
             .iter()
             .map(|line| phi_tui::strip_ansi(line))
@@ -1171,6 +1197,99 @@ mod tests {
         assert_eq!(plain.matches("cargo check").count(), 1, "{plain}");
         // The output preview still folds under the card.
         assert!(plain.contains("Compiling"), "{plain}");
+    }
+
+    // tool_max_lines = 0: one-line `✓ tool ╱ detail` summary, mirroring
+    // pi-compact's compact tools. The full output preview is suppressed —
+    // only the first non-empty line appears after `╱`.
+    #[test]
+    fn tools_tool_max_lines_zero_renders_one_line_summary() {
+        let mut ui = test_ui(80, 24);
+        ui.tools.tool_max_lines = 0;
+        let rows = ui.tool_result_rows(
+            0,
+            "bash",
+            &serde_json::json!({"cmd": "git status"}),
+            "On branch main
+nothing to commit
+",
+            usize::MAX,
+            None,
+            false,
+        );
+        let plain: String = rows
+            .iter()
+            .map(|l| phi_tui::strip_ansi(l))
+            .collect::<Vec<_>>()
+            .join(
+                "
+",
+            );
+        // Single-line summary with ✓ glyph and ╱ separator.
+        assert!(plain.contains("✓"), "{plain}");
+        assert!(plain.contains("╱"), "{plain}");
+        assert!(plain.contains("git status"), "{plain}");
+        // Only the first output line appears; the second is suppressed.
+        assert!(plain.contains("On branch main"), "{plain}");
+        assert!(!plain.contains("nothing to commit"), "{plain}");
+    }
+
+    // tool_padding = 0: no top/bottom padding lines around the tool card box.
+    #[test]
+    fn tools_tool_padding_zero_removes_box_padding() {
+        let mut ui = test_ui(80, 24);
+        ui.tools.tool_padding = 0;
+        let rows = ui.tool_result_rows(
+            0,
+            "bash",
+            &serde_json::json!({"cmd": "echo hi"}),
+            "hi
+",
+            usize::MAX,
+            None,
+            false,
+        );
+        let plain: String = rows
+            .iter()
+            .map(|l| phi_tui::strip_ansi(l))
+            .collect::<Vec<_>>()
+            .join(
+                "
+",
+            );
+        // With padding = 0, the first and last lines should be content, not
+        // blank bg-only lines. The anchor should be on line 0 (with its 1-space
+        // left pad, but no blank top-padding line above it).
+        let lines: Vec<&str> = plain.lines().collect();
+        assert!(!lines.is_empty(), "should have content lines");
+        assert!(
+            lines[0].contains("echo"),
+            "first line should be content: {plain}"
+        );
+    }
+
+    // repl_max_lines = 0: REPL block shows only the "repl" header line with
+    // no code body. Tool lines still appear underneath if tools are used.
+    #[test]
+    fn tools_repl_max_lines_zero_suppresses_code_body() {
+        let mut ui = test_ui(80, 24);
+        ui.tools.repl_max_lines = 0;
+        ui.tools.tool_max_lines = 0;
+        let rows = ui.repl_code_lines(0, "print(bash('ls -la'))", ui.code_limit());
+        let plain: String = rows
+            .iter()
+            .map(|l| phi_tui::strip_ansi(l))
+            .collect::<Vec<_>>()
+            .join("\n");
+        // No code lines at all when repl_max_lines = 0.
+        assert!(
+            rows.is_empty(),
+            "repl_code_lines should return empty when max=0: {plain}"
+        );
+        assert!(
+            !plain.contains("print"),
+            "code should be suppressed: {plain}"
+        );
     }
 
     // The repl block has no header, so neither a *live* action block (built
@@ -1653,7 +1772,10 @@ match1
         // pi-style: assistant messages have no header label — the prose
         // is bare text separated by spacers.
         let lines = pending_lines(&mut ui);
-        let assistant_cards = lines.iter().filter(|line| line.contains("Assistant")).count();
+        let assistant_cards = lines
+            .iter()
+            .filter(|line| line.contains("Assistant"))
+            .count();
         assert_eq!(assistant_cards, 0, "{:?}", lines);
     }
 
@@ -1701,9 +1823,15 @@ match1
         });
 
         let lines = pending_lines(&mut ui);
-        let intro_cards = lines.iter().filter(|line| line.contains("intro line")).count();
+        let intro_cards = lines
+            .iter()
+            .filter(|line| line.contains("intro line"))
+            .count();
         assert_eq!(intro_cards, 1, "intro prose duplicated: {:?}", lines);
-        let trailing_cards = lines.iter().filter(|line| line.contains("trailing line")).count();
+        let trailing_cards = lines
+            .iter()
+            .filter(|line| line.contains("trailing line"))
+            .count();
         assert_eq!(trailing_cards, 1, "{:?}", lines);
     }
 
@@ -2034,7 +2162,10 @@ match1
             &[],
         );
 
-        let plain: Vec<String> = pending_lines(&mut ui).iter().map(|l| phi_tui::strip_ansi(l)).collect();
+        let plain: Vec<String> = pending_lines(&mut ui)
+            .iter()
+            .map(|l| phi_tui::strip_ansi(l))
+            .collect();
 
         let user_idx = plain
             .iter()
@@ -2059,7 +2190,8 @@ match1
     #[test]
     fn ensure_pending_gap_does_not_double_up() {
         let mut ui = test_ui(80, 24);
-        ui.pending.push(TranscriptEntry::RawLines(vec!["first line".to_owned()]));
+        ui.pending
+            .push(TranscriptEntry::RawLines(vec!["first line".to_owned()]));
         ui.ensure_pending_gap();
         assert_eq!(ui.pending.len(), 2);
         assert!(matches!(
