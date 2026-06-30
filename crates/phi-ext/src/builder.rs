@@ -70,6 +70,11 @@ impl RuntimeBuilder {
             host.event_handlers,
             host.message_renderers,
             host.providers,
+            host.themes,
+            host.spinners,
+            host.thinking_expressions,
+            host.text_effects,
+            host.overlays,
         ))
     }
 }

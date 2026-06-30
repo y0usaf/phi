@@ -8,13 +8,15 @@ use tokio::sync::Mutex as TokioMutex;
 use crate::{
     CommandInvocation, CommandOutput, CommandSpec, EventHandlerRegistration, EventKind,
     EventPayload, EventReturn, ExtensionContextRef, ExtensionManifest, ExtensionMode, FlagSpec,
-    LifecycleEvent, MessageRendererSpec, ProviderConfig, ShortcutSpec, ToolSpec,
+    LifecycleEvent, MessageRendererSpec, OverlaySpec, ProviderConfig, ShortcutSpec, SpinnerSpec,
+    TextEffectSpec, ThemeSpec, ThinkingExpressionSpec, ToolSpec,
 };
 use anyhow::{Result, anyhow};
 
 use crate::snapshot::{
-    EventHandlerSummary, RuntimeSnapshot, command_summary, flag_summary, shortcut_summary,
-    tool_summary,
+    EventHandlerSummary, RuntimeSnapshot, ThemeSummary, command_summary, flag_summary,
+    overlay_summary, shortcut_summary, spinner_summary, text_effect_summary,
+    thinking_expression_summary, tool_summary,
 };
 
 pub struct AppRuntime {
@@ -28,6 +30,12 @@ pub struct AppRuntime {
     pub(crate) event_handlers: Vec<EventHandlerRegistration>,
     pub(crate) message_renderers: BTreeMap<String, MessageRendererSpec>,
     pub(crate) providers: BTreeMap<String, ProviderConfig>,
+    // ── Visual ──────────────────────────────────────────────────────────
+    pub(crate) themes: BTreeMap<String, ThemeSpec>,
+    pub(crate) spinners: BTreeMap<String, SpinnerSpec>,
+    pub(crate) thinking_expressions: BTreeMap<String, ThinkingExpressionSpec>,
+    pub(crate) text_effects: BTreeMap<String, TextEffectSpec>,
+    pub(crate) overlays: BTreeMap<String, OverlaySpec>,
     notifications: Mutex<Vec<String>>,
     status: TokioMutex<BTreeMap<String, String>>,
     session_name: TokioMutex<Option<String>>,
@@ -94,6 +102,11 @@ impl AppRuntime {
         event_handlers: Vec<EventHandlerRegistration>,
         message_renderers: BTreeMap<String, MessageRendererSpec>,
         providers: BTreeMap<String, ProviderConfig>,
+        themes: BTreeMap<String, ThemeSpec>,
+        spinners: BTreeMap<String, SpinnerSpec>,
+        thinking_expressions: BTreeMap<String, ThinkingExpressionSpec>,
+        text_effects: BTreeMap<String, TextEffectSpec>,
+        overlays: BTreeMap<String, OverlaySpec>,
     ) -> Self {
         Self {
             cwd,
@@ -106,6 +119,11 @@ impl AppRuntime {
             event_handlers,
             message_renderers,
             providers,
+            themes,
+            spinners,
+            thinking_expressions,
+            text_effects,
+            overlays,
             notifications: Mutex::new(Vec::new()),
             status: TokioMutex::new(BTreeMap::new()),
             session_name: TokioMutex::new(None),
@@ -189,7 +207,18 @@ impl AppRuntime {
 
         let mut result = system_prompt;
         for r in returns {
-            if let EventReturn::SystemPromptMod { prepend, append } = r {
+            if let EventReturn::SystemPromptMod {
+                prepend,
+                append,
+                replace,
+            } = r
+            {
+                if let Some(rep) = replace {
+                    result = rep;
+                    // After a full replacement, still allow subsequent
+                    // prepend/append from other handlers to compose on top.
+                    continue;
+                }
                 if let Some(pre) = prepend {
                     let mut new_result = String::with_capacity(pre.len() + 2 + result.len());
                     new_result.push_str(&pre);
@@ -322,15 +351,80 @@ impl AppRuntime {
         .await
     }
 
-    pub async fn before_session_fork(&self, entry_id: &str, position: &str) -> Result<bool> {
-        self.dispatch_cancelable(LifecycleEvent {
-            kind: EventKind::SessionBeforeFork,
-            payload: EventPayload::SessionBeforeFork {
-                entry_id: entry_id.to_owned(),
-                position: position.to_owned(),
-            },
-        })
-        .await
+    /// Check if session fork should proceed. Returns `ForkDecision::Cancel`
+    /// if any handler cancelled (via `Cancel` or `SessionBeforeForkCancel`),
+    /// otherwise `ForkDecision::Proceed`.
+    pub async fn before_session_fork(
+        &self,
+        entry_id: &str,
+        position: &str,
+    ) -> Result<ForkDecision> {
+        let returns = self
+            .dispatch(LifecycleEvent {
+                kind: EventKind::SessionBeforeFork,
+                payload: EventPayload::SessionBeforeFork {
+                    entry_id: entry_id.to_owned(),
+                    position: position.to_owned(),
+                },
+            })
+            .await?;
+
+        for r in returns {
+            match r {
+                EventReturn::Cancel { reason } => {
+                    return Ok(ForkDecision::Cancel {
+                        reason,
+                        skip_conversation_restore: false,
+                    });
+                }
+                EventReturn::SessionBeforeForkCancel {
+                    reason,
+                    skip_conversation_restore,
+                } => {
+                    return Ok(ForkDecision::Cancel {
+                        reason,
+                        skip_conversation_restore,
+                    });
+                }
+                _ => {}
+            }
+        }
+        Ok(ForkDecision::Proceed)
+    }
+
+    /// Check if session tree navigation should proceed. Returns
+    /// `TreeDecision::Cancel` if any handler cancelled (via `Cancel` or
+    /// `SessionBeforeTreeCancel`), otherwise `TreeDecision::Proceed`.
+    pub async fn before_session_tree(
+        &self,
+        target_id: &str,
+        old_leaf_id: Option<&str>,
+    ) -> Result<TreeDecision> {
+        let returns = self
+            .dispatch(LifecycleEvent {
+                kind: EventKind::SessionBeforeTree,
+                payload: EventPayload::SessionBeforeTree {
+                    target_id: target_id.to_owned(),
+                    old_leaf_id: old_leaf_id.map(str::to_owned),
+                },
+            })
+            .await?;
+
+        for r in returns {
+            match r {
+                EventReturn::Cancel { reason } => {
+                    return Ok(TreeDecision::Cancel {
+                        reason,
+                        summary: None,
+                    });
+                }
+                EventReturn::SessionBeforeTreeCancel { reason, summary } => {
+                    return Ok(TreeDecision::Cancel { reason, summary });
+                }
+                _ => {}
+            }
+        }
+        Ok(TreeDecision::Proceed)
     }
 
     pub async fn before_compact(
@@ -346,14 +440,21 @@ impl AppRuntime {
             })
             .await?;
 
-        if returns
-            .iter()
-            .any(|r| matches!(r, EventReturn::Cancel { .. }))
-        {
-            return Ok(None);
+        for r in &returns {
+            if let EventReturn::Cancel { .. } = r {
+                return Ok(None);
+            }
         }
         for r in returns {
-            if let EventReturn::CompactCustom { instructions } = r {
+            if let EventReturn::CompactCustom {
+                instructions,
+                cancel,
+                compaction: _,
+            } = r
+            {
+                if cancel {
+                    return Ok(None);
+                }
                 return Ok(Some(instructions));
             }
         }
@@ -588,6 +689,43 @@ impl AppRuntime {
         Ok(())
     }
 
+    /// Dispatch a `ToolCall` event and collect any interception returns.
+    ///
+    /// Returns `Some(ToolInterception)` if a handler blocked or overrode the
+    /// tool arguments; `None` if the tool should proceed unmodified.
+    pub async fn intercept_tool_call(
+        &self,
+        name: &str,
+        args: serde_json::Value,
+    ) -> Result<ToolInterception> {
+        let returns = self
+            .dispatch(LifecycleEvent {
+                kind: EventKind::ToolCall,
+                payload: EventPayload::ToolCall {
+                    name: name.to_owned(),
+                    args: args.clone(),
+                },
+            })
+            .await?;
+
+        for r in returns {
+            match r {
+                EventReturn::ToolBlock { reason } => {
+                    return Ok(ToolInterception::Blocked { reason });
+                }
+                EventReturn::ToolArgsOverride {
+                    args: override_args,
+                } => {
+                    return Ok(ToolInterception::ArgsOverridden {
+                        args: override_args,
+                    });
+                }
+                _ => {}
+            }
+        }
+        Ok(ToolInterception::Proceed)
+    }
+
     pub async fn on_tool_result(
         &self,
         name: &str,
@@ -762,6 +900,91 @@ impl AppRuntime {
         self.message_renderers.keys().cloned().collect()
     }
 
+    // ── Visual: theme accessors ──────────────────────────────────────────
+
+    /// Get a registered theme by name.
+    pub fn get_theme(&self, name: &str) -> Option<&ThemeSpec> {
+        self.themes.get(name)
+    }
+
+    /// List all registered theme names.
+    pub fn list_themes(&self) -> Vec<String> {
+        self.themes.keys().cloned().collect()
+    }
+
+    /// Get the first registered theme (convenience for single-theme setups).
+    pub fn first_theme(&self) -> Option<&ThemeSpec> {
+        self.themes.values().next()
+    }
+
+    // ── Visual: spinner accessors ──────────────────────────────────────
+
+    /// Get a registered spinner by name.
+    pub fn get_spinner(&self, name: &str) -> Option<&SpinnerSpec> {
+        self.spinners.get(name)
+    }
+
+    /// List all registered spinner names.
+    pub fn list_spinners(&self) -> Vec<String> {
+        self.spinners.keys().cloned().collect()
+    }
+
+    /// Get the first registered spinner.
+    pub fn first_spinner(&self) -> Option<&SpinnerSpec> {
+        self.spinners.values().next()
+    }
+
+    // ── Visual: thinking expression accessors ──────────────────────────
+
+    /// Get registered thinking expressions by name.
+    pub fn get_thinking_expression(&self, name: &str) -> Option<&ThinkingExpressionSpec> {
+        self.thinking_expressions.get(name)
+    }
+
+    /// List all registered thinking expression names.
+    pub fn list_thinking_expressions(&self) -> Vec<String> {
+        self.thinking_expressions.keys().cloned().collect()
+    }
+
+    /// Get the first registered thinking expressions.
+    pub fn first_thinking_expression(&self) -> Option<&ThinkingExpressionSpec> {
+        self.thinking_expressions.values().next()
+    }
+
+    // ── Visual: text effect accessors ──────────────────────────────────
+
+    /// Get a registered text effect by name.
+    pub fn get_text_effect(&self, name: &str) -> Option<&TextEffectSpec> {
+        self.text_effects.get(name)
+    }
+
+    /// List all registered text effect names.
+    pub fn list_text_effects(&self) -> Vec<String> {
+        self.text_effects.keys().cloned().collect()
+    }
+
+    /// Get the first registered text effect.
+    pub fn first_text_effect(&self) -> Option<&TextEffectSpec> {
+        self.text_effects.values().next()
+    }
+
+    // ── UI: overlay accessors ────────────────────────────────────────────
+
+    /// Get a registered overlay by name.
+    pub fn get_overlay(&self, name: &str) -> Option<&OverlaySpec> {
+        self.overlays.get(name)
+    }
+
+    /// List all registered overlay names.
+    pub fn list_overlays(&self) -> Vec<String> {
+        self.overlays.keys().cloned().collect()
+    }
+
+    /// Get all registered overlays.
+    pub fn all_overlays(&self) -> impl Iterator<Item = &OverlaySpec> {
+        self.overlays.values()
+    }
+
     // ── Commands ──────────────────────────────────────────────────────────────
 
     pub fn list_extension_commands(&self) -> Vec<(String, String)> {
@@ -866,6 +1089,27 @@ impl AppRuntime {
                     label: handler.label.clone(),
                 })
                 .collect(),
+            themes: self
+                .themes
+                .values()
+                .map(|t| ThemeSummary {
+                    name: t.name.clone(),
+                    role_count: t.palette.len(),
+                    has_resolver: t.resolver.is_some(),
+                })
+                .collect(),
+            spinners: self.spinners.values().map(spinner_summary).collect(),
+            thinking_expressions: self
+                .thinking_expressions
+                .values()
+                .map(thinking_expression_summary)
+                .collect(),
+            text_effects: self
+                .text_effects
+                .values()
+                .map(text_effect_summary)
+                .collect(),
+            overlays: self.overlays.values().map(overlay_summary).collect(),
         }
     }
 }
@@ -876,6 +1120,41 @@ impl AppRuntime {
 pub struct ProjectTrustDecision {
     pub trusted: bool,
     pub remember: bool,
+}
+
+/// The outcome of intercepting a tool call via extensions.
+#[derive(Clone, Debug)]
+pub enum ToolInterception {
+    /// No handler intercepted — proceed with the original call.
+    Proceed,
+    /// A handler blocked the tool; `reason` is surfaced to the model.
+    Blocked { reason: String },
+    /// A handler rewrote the tool arguments; use these instead.
+    ArgsOverridden { args: serde_json::Value },
+}
+
+/// The outcome of intercepting a session fork via extensions.
+#[derive(Clone, Debug)]
+pub enum ForkDecision {
+    /// No handler cancelled — proceed with the fork.
+    Proceed,
+    /// A handler cancelled the fork.
+    Cancel {
+        reason: String,
+        skip_conversation_restore: bool,
+    },
+}
+
+/// The outcome of intercepting a session tree navigation via extensions.
+#[derive(Clone, Debug)]
+pub enum TreeDecision {
+    /// No handler cancelled — proceed with the tree navigation.
+    Proceed,
+    /// A handler cancelled the tree navigation.
+    Cancel {
+        reason: String,
+        summary: Option<String>,
+    },
 }
 
 /// Discovered resources from extension handlers.
@@ -923,6 +1202,7 @@ mod tests {
                     Ok(Some(EventReturn::SystemPromptMod {
                         prepend: None,
                         append: Some("\n\nINJECTED-BY-HOOK".to_owned()),
+                        replace: None,
                     }))
                 }),
             })?;
@@ -1127,6 +1407,8 @@ mod tests {
                     handler: Arc::new(|_ev| {
                         Ok(Some(EventReturn::CompactCustom {
                             instructions: "custom instructions".to_owned(),
+                            cancel: false,
+                            compaction: None,
                         }))
                     }),
                 })?;
@@ -1267,6 +1549,7 @@ mod tests {
                         Ok(Some(EventReturn::SystemPromptMod {
                             prepend: None,
                             append: Some("ok".to_owned()),
+                            replace: None,
                         }))
                     }),
                 })?;
@@ -1294,5 +1577,234 @@ mod tests {
             notes.contains("errored"),
             "missing error notification: {notes}"
         );
+    }
+
+    // ── Extended return surface tests ───────────────────────────────────────
+
+    /// `SystemPromptMod::replace` substitutes the entire system prompt.
+    #[tokio::test]
+    async fn system_prompt_replace_substitutes_entire_prompt() {
+        struct ReplaceExt;
+        impl Extension for ReplaceExt {
+            fn manifest(&self) -> ExtensionManifest {
+                ExtensionManifest {
+                    id: "test.replace".to_owned(),
+                    name: "Replace".to_owned(),
+                    version: "0".to_owned(),
+                    description: "test replace".to_owned(),
+                }
+            }
+            fn register(&self, host: &mut dyn ExtensionHost) -> anyhow::Result<()> {
+                host.subscribe(EventHandlerRegistration {
+                    event: EventKind::BeforeAgentStart,
+                    label: "test.replace".to_owned(),
+                    handler: Arc::new(|_ev| {
+                        Ok(Some(EventReturn::SystemPromptMod {
+                            prepend: None,
+                            append: None,
+                            replace: Some("REPLACED PROMPT".to_owned()),
+                        }))
+                    }),
+                })?;
+                Ok(())
+            }
+        }
+
+        let rt = RuntimeBuilder::new()
+            .with_cwd(std::path::Path::new("."))
+            .register_extension(ReplaceExt)
+            .build()
+            .expect("build runtime");
+
+        let result = rt
+            .filter_system_prompt("user", "ORIGINAL SYSTEM PROMPT".to_owned())
+            .await
+            .expect("filter");
+        assert_eq!(result, "REPLACED PROMPT");
+    }
+
+    /// `ToolArgsOverride` is returned by `intercept_tool_call`.
+    #[tokio::test]
+    async fn intercept_tool_call_returns_args_override() {
+        struct ArgsOverrideExt;
+        impl Extension for ArgsOverrideExt {
+            fn manifest(&self) -> ExtensionManifest {
+                ExtensionManifest {
+                    id: "test.args_override".to_owned(),
+                    name: "ArgsOverride".to_owned(),
+                    version: "0".to_owned(),
+                    description: "test args override".to_owned(),
+                }
+            }
+            fn register(&self, host: &mut dyn ExtensionHost) -> anyhow::Result<()> {
+                host.subscribe(EventHandlerRegistration {
+                    event: EventKind::ToolCall,
+                    label: "test.args_override".to_owned(),
+                    handler: Arc::new(|_ev| {
+                        Ok(Some(EventReturn::ToolArgsOverride {
+                            args: serde_json::json!({"code": "print('overridden')"}),
+                        }))
+                    }),
+                })?;
+                Ok(())
+            }
+        }
+
+        let rt = RuntimeBuilder::new()
+            .with_cwd(std::path::Path::new("."))
+            .register_extension(ArgsOverrideExt)
+            .build()
+            .expect("build runtime");
+
+        let interception = rt
+            .intercept_tool_call("repl", serde_json::json!({"code": "print('original')"}))
+            .await
+            .expect("intercept");
+
+        match interception {
+            crate::ToolInterception::ArgsOverridden { args } => {
+                assert_eq!(args["code"], "print('overridden')");
+            }
+            other => panic!("expected ArgsOverridden, got {other:?}"),
+        }
+    }
+
+    /// `CompactCustom` with `cancel: true` aborts compaction.
+    #[tokio::test]
+    async fn compact_cancel_returns_none() {
+        struct CancelCompactExt;
+        impl Extension for CancelCompactExt {
+            fn manifest(&self) -> ExtensionManifest {
+                ExtensionManifest {
+                    id: "test.cancel_compact".to_owned(),
+                    name: "CancelCompact".to_owned(),
+                    version: "0".to_owned(),
+                    description: "test cancel compact".to_owned(),
+                }
+            }
+            fn register(&self, host: &mut dyn ExtensionHost) -> anyhow::Result<()> {
+                host.subscribe(EventHandlerRegistration {
+                    event: EventKind::SessionBeforeCompact,
+                    label: "test.cancel_compact".to_owned(),
+                    handler: Arc::new(|_ev| {
+                        Ok(Some(EventReturn::CompactCustom {
+                            instructions: String::new(),
+                            cancel: true,
+                            compaction: None,
+                        }))
+                    }),
+                })?;
+                Ok(())
+            }
+        }
+
+        let rt = RuntimeBuilder::new()
+            .with_cwd(std::path::Path::new("."))
+            .register_extension(CancelCompactExt)
+            .build()
+            .expect("build runtime");
+
+        let result = rt.before_compact(Some("default")).await.expect("compact");
+        assert!(result.is_none(), "compaction should be cancelled");
+    }
+
+    /// `before_session_fork` returns `ForkDecision::Cancel` with
+    /// `skip_conversation_restore`.
+    #[tokio::test]
+    async fn fork_cancel_with_skip_conversation_restore() {
+        struct ForkCancelExt;
+        impl Extension for ForkCancelExt {
+            fn manifest(&self) -> ExtensionManifest {
+                ExtensionManifest {
+                    id: "test.fork_cancel".to_owned(),
+                    name: "ForkCancel".to_owned(),
+                    version: "0".to_owned(),
+                    description: "test fork cancel".to_owned(),
+                }
+            }
+            fn register(&self, host: &mut dyn ExtensionHost) -> anyhow::Result<()> {
+                host.subscribe(EventHandlerRegistration {
+                    event: EventKind::SessionBeforeFork,
+                    label: "test.fork_cancel".to_owned(),
+                    handler: Arc::new(|_ev| {
+                        Ok(Some(EventReturn::SessionBeforeForkCancel {
+                            reason: "no fork".to_owned(),
+                            skip_conversation_restore: true,
+                        }))
+                    }),
+                })?;
+                Ok(())
+            }
+        }
+
+        let rt = RuntimeBuilder::new()
+            .with_cwd(std::path::Path::new("."))
+            .register_extension(ForkCancelExt)
+            .build()
+            .expect("build runtime");
+
+        let decision = rt
+            .before_session_fork("entry-1", "after")
+            .await
+            .expect("fork");
+
+        match decision {
+            crate::ForkDecision::Cancel {
+                reason,
+                skip_conversation_restore,
+            } => {
+                assert_eq!(reason, "no fork");
+                assert!(skip_conversation_restore);
+            }
+            other => panic!("expected Cancel, got {other:?}"),
+        }
+    }
+
+    /// `before_session_tree` returns `TreeDecision::Cancel` with summary.
+    #[tokio::test]
+    async fn tree_cancel_with_summary() {
+        struct TreeCancelExt;
+        impl Extension for TreeCancelExt {
+            fn manifest(&self) -> ExtensionManifest {
+                ExtensionManifest {
+                    id: "test.tree_cancel".to_owned(),
+                    name: "TreeCancel".to_owned(),
+                    version: "0".to_owned(),
+                    description: "test tree cancel".to_owned(),
+                }
+            }
+            fn register(&self, host: &mut dyn ExtensionHost) -> anyhow::Result<()> {
+                host.subscribe(EventHandlerRegistration {
+                    event: EventKind::SessionBeforeTree,
+                    label: "test.tree_cancel".to_owned(),
+                    handler: Arc::new(|_ev| {
+                        Ok(Some(EventReturn::SessionBeforeTreeCancel {
+                            reason: "no tree".to_owned(),
+                            summary: Some("custom summary".to_owned()),
+                        }))
+                    }),
+                })?;
+                Ok(())
+            }
+        }
+
+        let rt = RuntimeBuilder::new()
+            .with_cwd(std::path::Path::new("."))
+            .register_extension(TreeCancelExt)
+            .build()
+            .expect("build runtime");
+
+        let decision = rt
+            .before_session_tree("target-1", None)
+            .await
+            .expect("tree");
+
+        match decision {
+            crate::TreeDecision::Cancel { reason, summary } => {
+                assert_eq!(reason, "no tree");
+                assert_eq!(summary.as_deref(), Some("custom summary"));
+            }
+            other => panic!("expected Cancel, got {other:?}"),
+        }
     }
 }

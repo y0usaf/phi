@@ -1,4 +1,6 @@
-use crate::{CommandSpec, EventKind, ExtensionManifest, FlagSpec, ShortcutSpec, ToolSpec};
+use crate::{
+    CommandSpec, EventKind, ExtensionManifest, FlagSpec, OverlaySpec, ShortcutSpec, ToolSpec,
+};
 use serde::Serialize;
 
 #[derive(Clone, Debug, Serialize)]
@@ -11,6 +13,11 @@ pub struct RuntimeSnapshot {
     pub shortcuts: Vec<ShortcutSummary>,
     pub flags: Vec<FlagSummary>,
     pub event_handlers: Vec<EventHandlerSummary>,
+    pub themes: Vec<ThemeSummary>,
+    pub spinners: Vec<SpinnerSummary>,
+    pub thinking_expressions: Vec<ThinkingExpressionSummary>,
+    pub text_effects: Vec<TextEffectSummary>,
+    pub overlays: Vec<OverlaySummary>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -45,6 +52,40 @@ pub struct EventHandlerSummary {
     pub label: String,
 }
 
+#[derive(Clone, Debug, Serialize)]
+pub struct ThemeSummary {
+    pub name: String,
+    pub role_count: usize,
+    pub has_resolver: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct SpinnerSummary {
+    pub name: String,
+    pub frame_count: usize,
+    pub frame_interval_ms: u64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ThinkingExpressionSummary {
+    pub name: String,
+    pub expression_count: usize,
+    pub expression_interval_ms: u64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct TextEffectSummary {
+    pub name: String,
+    pub kind: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct OverlaySummary {
+    pub name: String,
+    pub description: String,
+    pub toggle_key: String,
+}
+
 pub(crate) fn tool_summary(tool: &ToolSpec) -> ToolSummary {
     ToolSummary {
         name: tool.name.clone(),
@@ -75,5 +116,38 @@ pub(crate) fn flag_summary(flag: &FlagSpec) -> FlagSummary {
             crate::FlagType::String => "string".to_owned(),
         },
         default: flag.default.clone(),
+    }
+}
+
+pub(crate) fn spinner_summary(spinner: &crate::SpinnerSpec) -> SpinnerSummary {
+    SpinnerSummary {
+        name: spinner.name.clone(),
+        frame_count: spinner.frames.len(),
+        frame_interval_ms: spinner.frame_interval_ms,
+    }
+}
+
+pub(crate) fn thinking_expression_summary(
+    expr: &crate::ThinkingExpressionSpec,
+) -> ThinkingExpressionSummary {
+    ThinkingExpressionSummary {
+        name: expr.name.clone(),
+        expression_count: expr.expressions.len(),
+        expression_interval_ms: expr.expression_interval_ms,
+    }
+}
+
+pub(crate) fn text_effect_summary(effect: &crate::TextEffectSpec) -> TextEffectSummary {
+    TextEffectSummary {
+        name: effect.name.clone(),
+        kind: effect.kind.clone(),
+    }
+}
+
+pub(crate) fn overlay_summary(overlay: &OverlaySpec) -> OverlaySummary {
+    OverlaySummary {
+        name: overlay.name.clone(),
+        description: overlay.description.clone(),
+        toggle_key: overlay.toggle_key.clone(),
     }
 }

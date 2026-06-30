@@ -1,19 +1,27 @@
+pub mod animation_spec;
 pub mod builder;
 pub mod command;
+pub mod draw_context;
 pub mod event;
 pub mod flag;
 pub mod host;
 pub mod manifest;
 pub mod message_renderer;
+pub mod overlay_spec;
 pub mod provider;
 pub mod runtime;
 pub mod shortcut;
 pub mod snapshot;
+pub mod theme_spec;
 pub mod tool;
 pub mod traits;
+pub mod visual;
 
 pub use builder::RuntimeBuilder;
 pub use command::{CommandHandler, CommandInvocation, CommandOutput, CommandSpec};
+pub use draw_context::{
+    DrawContext, DrawRect, DrawSize, OverlayKey, OverlayKeyCode, OverlayKeyModifiers,
+};
 pub use event::{
     EventHandler, EventHandlerRegistration, EventKind, EventPayload, EventReturn, InputActionKind,
     LifecycleEvent,
@@ -21,14 +29,25 @@ pub use event::{
 pub use flag::{FlagSpec, FlagType};
 pub use manifest::ExtensionManifest;
 pub use message_renderer::MessageRendererSpec;
+pub use overlay_spec::{OverlayOutcome, OverlaySpec};
 pub use provider::{ProviderConfig, ProviderModelConfig};
-pub use runtime::{AppRuntime, DiscoveredResources, ProjectTrustDecision, missing_named_item};
+pub use runtime::{
+    AppRuntime, DiscoveredResources, ForkDecision, ProjectTrustDecision, ToolInterception,
+    TreeDecision, missing_named_item,
+};
 pub use shortcut::ShortcutSpec;
 pub use snapshot::{
-    CommandSummary, EventHandlerSummary, FlagSummary, RuntimeSnapshot, ShortcutSummary, ToolSummary,
+    CommandSummary, EventHandlerSummary, FlagSummary, OverlaySummary, RuntimeSnapshot,
+    ShortcutSummary, SpinnerSummary, TextEffectSummary, ThemeSummary, ThinkingExpressionSummary,
+    ToolSummary,
 };
+pub use theme_spec::{TerminalColorsProbe, ThemeSpec};
 pub use tool::{ToolHandler, ToolInvocation, ToolOutput, ToolParam, ToolSpec};
-pub use traits::{Extension, ExtensionHost};
+pub use traits::{AnimationSpec, Extension, ExtensionHost};
+pub use visual::{Rgb, StyledSpan, StyledText};
+
+// Re-export animation spec types
+pub use animation_spec::{SpinnerSpec, TextEffectSpec, ThinkingExpressionSpec};
 
 // Re-export extension context types from phi-event
 pub use phi_event::{ExtensionContextRef, ExtensionMode};
@@ -175,5 +194,126 @@ mod tests {
         assert_eq!(json["name"], "my-proxy");
         assert_eq!(json["base_url"], "https://proxy.example.com");
         assert_eq!(json["models"][0]["id"], "model-1");
+    }
+
+    // --- Visual spec tests ---
+
+    #[test]
+    fn test_rgb_serialization() {
+        let rgb = Rgb(255, 128, 0);
+        let json = serde_json::to_value(&rgb).unwrap();
+        assert_eq!(json, json!([255, 128, 0]));
+    }
+
+    #[test]
+    fn test_styled_text_to_ansi() {
+        let mut st = StyledText::new();
+        st.push_span(StyledSpan::new("hello").with_fg(Rgb(255, 0, 0)).bold());
+        st.push_span(StyledSpan::new(" world"));
+        let ansi = st.to_ansi();
+        assert!(ansi.contains("\x1b["));
+        assert!(ansi.contains("hello"));
+        assert!(ansi.contains(" world"));
+    }
+
+    #[test]
+    fn test_spinner_spec_frame_index() {
+        let spinner = SpinnerSpec::new("test", vec!["a".into(), "b".into(), "c".into()], 100);
+        assert_eq!(spinner.frame_at(0), "a");
+        assert_eq!(spinner.frame_at(100), "b");
+        assert_eq!(spinner.frame_at(200), "c");
+        assert_eq!(spinner.frame_at(300), "a"); // wraps
+    }
+
+    #[test]
+    fn test_thinking_expression_spec() {
+        let expr = ThinkingExpressionSpec::new(
+            "test",
+            vec!["thinking...".into(), "pondering...".into()],
+            "working...",
+            2000,
+        );
+        assert_eq!(expr.expression(0, false), "thinking...");
+        assert_eq!(expr.expression(2000, false), "pondering...");
+        assert_eq!(expr.expression(0, true), "working...");
+    }
+
+    #[test]
+    fn test_theme_spec_declarative() {
+        let mut palette = std::collections::BTreeMap::new();
+        palette.insert("foreground".into(), Rgb(255, 255, 255));
+        palette.insert("background".into(), Rgb(0, 0, 0));
+        let theme = ThemeSpec::new("dark", palette);
+        let resolved = theme.resolve(None);
+        assert_eq!(resolved.get("foreground"), Some(&Rgb(255, 255, 255)));
+        assert_eq!(resolved.get("background"), Some(&Rgb(0, 0, 0)));
+    }
+
+    // --- Overlay spec tests ---
+
+    #[test]
+    fn test_overlay_spec_creation() {
+        use std::any::Any;
+        use std::sync::Arc;
+
+        let overlay = OverlaySpec::new(
+            "test-overlay",
+            "Test overlay",
+            "t",
+            Arc::new(|| Box::new(0i32) as Box<dyn Any + Send + Sync>),
+            Arc::new(
+                |_ctx: &mut dyn crate::DrawContext, _state: &mut Box<dyn Any + Send + Sync>| {},
+            ),
+            Arc::new(
+                |_state: &mut Box<dyn Any + Send + Sync>,
+                 _key: &crate::OverlayKey,
+                 _c: u16,
+                 _r: u16| { crate::OverlayOutcome::None },
+            ),
+        );
+
+        assert_eq!(overlay.name, "test-overlay");
+        assert_eq!(overlay.description, "Test overlay");
+        assert_eq!(overlay.toggle_key, "t");
+    }
+
+    #[test]
+    fn test_overlay_in_snapshot() {
+        use std::any::Any;
+        use std::sync::Arc;
+
+        let builder = RuntimeBuilder::new().with_cwd(std::path::Path::new("."));
+
+        struct OverlayExt;
+        impl Extension for OverlayExt {
+            fn manifest(&self) -> ExtensionManifest {
+                ExtensionManifest {
+                    id: "test.overlay".to_string(),
+                    name: "Overlay".to_string(),
+                    version: "0".to_string(),
+                    description: "test".to_string(),
+                }
+            }
+            fn register(&self, host: &mut dyn ExtensionHost) -> anyhow::Result<()> {
+                host.register_overlay(OverlaySpec::new(
+                    "my-overlay",
+                    "desc",
+                    "o",
+                    Arc::new(|| Box::new(()) as Box<dyn Any + Send + Sync>),
+                    Arc::new(|_, _| {}),
+                    Arc::new(|_, _, _, _| crate::OverlayOutcome::None),
+                ))?;
+                Ok(())
+            }
+        }
+
+        let rt = builder.register_extension(OverlayExt).build().unwrap();
+        assert_eq!(rt.list_overlays(), vec!["my-overlay"]);
+        assert_eq!(rt.get_overlay("my-overlay").unwrap().description, "desc");
+
+        let snap = rt.snapshot();
+        assert_eq!(snap.overlays.len(), 1);
+        assert_eq!(snap.overlays[0].name, "my-overlay");
+        assert_eq!(snap.overlays[0].toggle_key, "o");
     }
 }
