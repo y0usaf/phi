@@ -11,7 +11,10 @@ pub(super) fn decode_event_return(json_opt: Option<String>) -> Result<Option<Eve
         .ok_or_else(|| anyhow::anyhow!("event return: not an object"))?;
 
     // System prompt modification
-    if obj.contains_key("system_prompt_append") || obj.contains_key("system_prompt_prepend") {
+    if obj.contains_key("system_prompt_append")
+        || obj.contains_key("system_prompt_prepend")
+        || obj.contains_key("system_prompt_replace")
+    {
         return Ok(Some(EventReturn::SystemPromptMod {
             append: obj
                 .get("system_prompt_append")
@@ -19,6 +22,10 @@ pub(super) fn decode_event_return(json_opt: Option<String>) -> Result<Option<Eve
                 .map(str::to_owned),
             prepend: obj
                 .get("system_prompt_prepend")
+                .and_then(|v| v.as_str())
+                .map(str::to_owned),
+            replace: obj
+                .get("system_prompt_replace")
                 .and_then(|v| v.as_str())
                 .map(str::to_owned),
         }));
@@ -34,6 +41,15 @@ pub(super) fn decode_event_return(json_opt: Option<String>) -> Result<Option<Eve
         return Ok(Some(EventReturn::ToolBlock { reason }));
     }
 
+    // Tool args override
+    if obj.contains_key("tool_args") {
+        let args = obj
+            .get("tool_args")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        return Ok(Some(EventReturn::ToolArgsOverride { args }));
+    }
+
     // Tool result override
     if obj.contains_key("result") {
         let content = obj
@@ -41,7 +57,13 @@ pub(super) fn decode_event_return(json_opt: Option<String>) -> Result<Option<Eve
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_owned();
-        return Ok(Some(EventReturn::ToolResultOverride { content }));
+        let is_error = obj.get("is_error").and_then(|v| v.as_bool());
+        let details = obj.get("details").cloned();
+        return Ok(Some(EventReturn::ToolResultOverride {
+            content,
+            is_error,
+            details,
+        }));
     }
 
     // Input action
@@ -52,7 +74,12 @@ pub(super) fn decode_event_return(json_opt: Option<String>) -> Result<Option<Eve
             _ => InputActionKind::Continue,
         };
         let text = obj.get("text").and_then(|v| v.as_str()).map(str::to_owned);
-        return Ok(Some(EventReturn::InputAction { action, text }));
+        let images = obj.get("images").and_then(|v| v.as_array()).cloned();
+        return Ok(Some(EventReturn::InputAction {
+            action,
+            text,
+            images,
+        }));
     }
 
     // Message injection (prepend messages)
@@ -75,6 +102,29 @@ pub(super) fn decode_event_return(json_opt: Option<String>) -> Result<Option<Eve
             .and_then(|v| v.as_str())
             .unwrap_or("cancelled")
             .to_owned();
+
+        // Specialized cancel variants for fork/tree events.
+        let skip_conversation_restore = obj
+            .get("skip_conversation_restore")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let summary = obj
+            .get("summary")
+            .and_then(|v| v.as_str())
+            .map(str::to_owned);
+
+        if skip_conversation_restore {
+            return Ok(Some(EventReturn::SessionBeforeForkCancel {
+                reason,
+                skip_conversation_restore,
+            }));
+        }
+        if summary.is_some() {
+            return Ok(Some(EventReturn::SessionBeforeTreeCancel {
+                reason,
+                summary,
+            }));
+        }
         return Ok(Some(EventReturn::Cancel { reason }));
     }
 
@@ -137,13 +187,25 @@ pub(super) fn decode_event_return(json_opt: Option<String>) -> Result<Option<Eve
     }
 
     // Compact custom instructions
-    if obj.contains_key("compact_instructions") {
+    if obj.contains_key("compact_instructions")
+        || obj.contains_key("compact_cancel")
+        || obj.contains_key("compaction")
+    {
         let instructions = obj
             .get("compact_instructions")
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_owned();
-        return Ok(Some(EventReturn::CompactCustom { instructions }));
+        let cancel = obj
+            .get("compact_cancel")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let compaction = obj.get("compaction").cloned();
+        return Ok(Some(EventReturn::CompactCustom {
+            instructions,
+            cancel,
+            compaction,
+        }));
     }
 
     // Message replace

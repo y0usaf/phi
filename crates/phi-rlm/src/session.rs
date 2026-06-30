@@ -122,7 +122,11 @@ impl RlmSession {
             };
             for r in returns {
                 match r {
-                    EventReturn::InputAction { action, text } => {
+                    EventReturn::InputAction {
+                        action,
+                        text,
+                        images: _,
+                    } => {
                         match action {
                             InputActionKind::Transform => {
                                 if let Some(t) = text {

@@ -235,9 +235,15 @@ impl LifecycleEvent {
 #[derive(Clone, Debug)]
 pub enum EventReturn {
     // ── System prompt modification ────────────────────────────────────────────
+    /// Returned for [`EventKind::BeforeAgentStart`].
+    ///
+    /// `prepend` / `append` inject text around the existing system prompt;
+    /// `replace` substitutes it entirely. `message` injects an additional
+    /// system-level message alongside the prompt.
     SystemPromptMod {
         append: Option<String>,
         prepend: Option<String>,
+        replace: Option<String>,
     },
 
     // ── Context injection ──────────────────────────────────────────────────────
@@ -246,22 +252,49 @@ pub enum EventReturn {
     },
 
     // ── Tool interception ──────────────────────────────────────────────────────
+    /// Returned for [`EventKind::ToolCall`] — block the tool from executing.
     ToolBlock {
         reason: String,
     },
+    /// Returned for [`EventKind::ToolCall`] — rewrite the tool arguments
+    /// before execution. The runtime replaces the call's `args` with the
+    /// provided value and proceeds normally.
+    ToolArgsOverride {
+        args: Value,
+    },
+    /// Returned for [`EventKind::ToolResult`] — replace the tool's output.
+    /// `is_error` marks the override as an error result; `details` carries
+    /// optional structured data.
     ToolResultOverride {
         content: String,
+        is_error: Option<bool>,
+        details: Option<Value>,
     },
 
     // ── Input action ──────────────────────────────────────────────────────────
+    /// Returned for [`EventKind::Input`]. `text` replaces the user prompt;
+    /// `images` attaches image inputs alongside the text.
     InputAction {
         action: InputActionKind,
         text: Option<String>,
+        images: Option<Vec<Value>>,
     },
 
     // ── Session interception (cancel or allow) ────────────────────────────────
     Cancel {
         reason: String,
+    },
+    /// Returned for [`EventKind::SessionBeforeFork`] — cancel the fork and
+    /// optionally skip conversation history restore in the new branch.
+    SessionBeforeForkCancel {
+        reason: String,
+        skip_conversation_restore: bool,
+    },
+    /// Returned for [`EventKind::SessionBeforeTree`] — cancel the tree
+    /// navigation and optionally override the summary shown.
+    SessionBeforeTreeCancel {
+        reason: String,
+        summary: Option<String>,
     },
 
     // ── Provider request modification ──────────────────────────────────────────
@@ -283,8 +316,14 @@ pub enum EventReturn {
     },
 
     // ── Compaction customization ───────────────────────────────────────────────
+    /// Returned for [`EventKind::SessionBeforeCompact`]. `cancel` aborts
+    /// compaction; `compaction` provides a pre-computed result so the
+    /// runtime skips its own compaction logic; otherwise `instructions`
+    /// customize the compaction prompt.
     CompactCustom {
         instructions: String,
+        cancel: bool,
+        compaction: Option<Value>,
     },
 
     // ── Message modification ──────────────────────────────────────────────────
