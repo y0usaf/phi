@@ -49,13 +49,24 @@ pub(super) fn build_body(model: &Model, ctx: &Context, opts: &StreamOptions) -> 
 
     // Tool definitions: sent as the native Anthropic `tools` array so the
     // model emits `tool_use` content blocks instead of text-based fences.
-    if !ctx.tools.is_empty() {
+    // We force `tool_choice: {"type": "any"}` so the model must call a tool
+    // every turn — without it, reasoning models default to `auto` and loop
+    // in prose. Anthropic rejects forced `tool_choice` when thinking is
+    // enabled, so when tools are present we drop `thinking` to make the
+    // forced call succeed (mirroring pi's `disableThinkingIfToolChoiceForced`).
+    let has_tools = !ctx.tools.is_empty();
+    if has_tools {
         body["tools"] = Value::Array(ctx.tools.iter().map(anthropic_tool_schema).collect());
+        body["tool_choice"] = json!({ "type": "any" });
     }
 
-    let thinking_budget = model
-        .thinking_value(opts.thinking)
-        .and_then(|v| v.parse::<u64>().ok());
+    let thinking_budget = if has_tools {
+        None // Forced tool_choice is incompatible with thinking — skip it.
+    } else {
+        model
+            .thinking_value(opts.thinking)
+            .and_then(|v| v.parse::<u64>().ok())
+    };
     if let Some(budget) = thinking_budget {
         body["thinking"] = json!({ "type": "enabled", "budget_tokens": budget });
     } else if let Some(temperature) = opts.temperature {
@@ -144,8 +155,8 @@ mod tests {
     use std::collections::BTreeMap;
 
     use crate::types::{
-        Api, Auth, Context, CostRates, Message, Model, StreamOptions, ToolDefinition,
-        ToolResultMessage, UserMessage,
+        Api, Auth, Context, CostRates, Message, Model, StreamOptions, ThinkingLevel,
+        ToolDefinition, ToolResultMessage, UserMessage,
     };
 
     use super::{build_body, convert_messages};
@@ -463,6 +474,88 @@ mod tests {
         let opts = StreamOptions::new(Auth::ApiKey("k".to_owned()));
         let body = build_body(&model(), &ctx, &opts);
         assert!(body.get("tools").is_none(), "no tools => no tools key");
+    }
+
+    #[test]
+    fn build_body_forces_tool_choice_any_when_tools_present() {
+        let ctx = Context {
+            system_prompt: Some("sys".to_owned()),
+            messages: vec![Message::User(UserMessage::new("hi"))],
+            tools: vec![ToolDefinition {
+                name: "repl".to_owned(),
+                description: "Run code".to_owned(),
+                input_schema: json!({"type": "object"}),
+            }],
+        };
+        let opts = StreamOptions::new(Auth::ApiKey("k".to_owned()));
+        let body = build_body(&model(), &ctx, &opts);
+        assert_eq!(body["tool_choice"]["type"], "any");
+    }
+
+    #[test]
+    fn build_body_omits_tool_choice_when_no_tools() {
+        let ctx = Context {
+            system_prompt: Some("sys".to_owned()),
+            messages: vec![Message::User(UserMessage::new("hi"))],
+            ..Default::default()
+        };
+        let opts = StreamOptions::new(Auth::ApiKey("k".to_owned()));
+        let body = build_body(&model(), &ctx, &opts);
+        assert!(body.get("tool_choice").is_none());
+    }
+
+    /// When tools are present, thinking must be dropped because Anthropic
+    /// rejects forced `tool_choice` alongside `thinking: enabled`.
+    #[test]
+    fn build_body_drops_thinking_when_tools_present() {
+        // A reasoning-capable model with thinking levels.
+        let mut m = model();
+        m.reasoning = true;
+        let mut levels = BTreeMap::new();
+        levels.insert(ThinkingLevel::Low, Some("8000".to_owned()));
+        m.thinking_levels = Some(levels);
+
+        let ctx = Context {
+            system_prompt: Some("sys".to_owned()),
+            messages: vec![Message::User(UserMessage::new("hi"))],
+            tools: vec![ToolDefinition {
+                name: "repl".to_owned(),
+                description: "Run code".to_owned(),
+                input_schema: json!({"type": "object"}),
+            }],
+        };
+        let mut opts = StreamOptions::new(Auth::ApiKey("k".to_owned()));
+        opts.thinking = ThinkingLevel::Low;
+        let body = build_body(&m, &ctx, &opts);
+        // tool_choice is forced
+        assert_eq!(body["tool_choice"]["type"], "any");
+        // thinking is NOT present (would 400 alongside forced tool_choice)
+        assert!(
+            body.get("thinking").is_none(),
+            "thinking must be dropped when tool_choice is forced"
+        );
+    }
+
+    /// Without tools, thinking is preserved normally.
+    #[test]
+    fn build_body_preserves_thinking_when_no_tools() {
+        let mut m = model();
+        m.reasoning = true;
+        let mut levels = BTreeMap::new();
+        levels.insert(ThinkingLevel::Low, Some("8000".to_owned()));
+        m.thinking_levels = Some(levels);
+
+        let ctx = Context {
+            system_prompt: Some("sys".to_owned()),
+            messages: vec![Message::User(UserMessage::new("hi"))],
+            ..Default::default()
+        };
+        let mut opts = StreamOptions::new(Auth::ApiKey("k".to_owned()));
+        opts.thinking = ThinkingLevel::Low;
+        let body = build_body(&m, &ctx, &opts);
+        assert!(body.get("tool_choice").is_none());
+        assert_eq!(body["thinking"]["type"], "enabled");
+        assert_eq!(body["thinking"]["budget_tokens"], 8000);
     }
 
     // --- convert_messages with ToolCall and ToolResult ---

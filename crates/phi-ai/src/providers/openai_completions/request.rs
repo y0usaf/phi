@@ -35,6 +35,11 @@ pub(super) fn build_body(
     // emits `tool_calls` instead of text-based fences.
     if !ctx.tools.is_empty() {
         body["tools"] = Value::Array(ctx.tools.iter().map(openai_tool_schema).collect());
+        // Force the model to call a tool every turn. Without this, reasoning
+        // models default to `auto` and loop in prose instead of emitting
+        // `tool_calls`. OpenAI's Chat Completions API supports
+        // `tool_choice: "required"` alongside reasoning with no conflict.
+        body["tool_choice"] = json!("required");
     }
 
     body
@@ -332,6 +337,34 @@ line2"
         let opts = StreamOptions::new(Auth::ApiKey("k".to_owned()));
         let body = build_body(&model(), &ctx, &opts);
         assert!(body.get("tools").is_none(), "no tools => no tools key");
+    }
+
+    #[test]
+    fn build_body_forces_tool_choice_required_when_tools_present() {
+        let ctx = Context {
+            system_prompt: Some("sys".to_owned()),
+            messages: vec![Message::User(UserMessage::new("hi"))],
+            tools: vec![ToolDefinition {
+                name: "repl".to_owned(),
+                description: "Run code".to_owned(),
+                input_schema: json!({"type": "object"}),
+            }],
+        };
+        let opts = StreamOptions::new(Auth::ApiKey("k".to_owned()));
+        let body = build_body(&model(), &ctx, &opts);
+        assert_eq!(body["tool_choice"], "required");
+    }
+
+    #[test]
+    fn build_body_omits_tool_choice_when_no_tools() {
+        let ctx = Context {
+            system_prompt: Some("sys".to_owned()),
+            messages: vec![Message::User(UserMessage::new("hi"))],
+            ..Default::default()
+        };
+        let opts = StreamOptions::new(Auth::ApiKey("k".to_owned()));
+        let body = build_body(&model(), &ctx, &opts);
+        assert!(body.get("tool_choice").is_none());
     }
 
     // --- convert_messages with ToolResult ---
