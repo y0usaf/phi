@@ -23,6 +23,7 @@ fn test_model() -> Model {
         max_tokens: 8_192,
         headers: BTreeMap::new(),
         thinking_levels: None,
+        adaptive_thinking: false,
     }
 }
 

@@ -270,6 +270,7 @@ mod tests {
             max_tokens: 100,
             headers: Default::default(),
             thinking_levels: None,
+            adaptive_thinking: false,
         }
     }
 

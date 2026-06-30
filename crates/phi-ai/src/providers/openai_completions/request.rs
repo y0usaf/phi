@@ -149,6 +149,7 @@ mod tests {
             max_tokens: 1024,
             headers: BTreeMap::new(),
             thinking_levels: None,
+            adaptive_thinking: false,
         }
     }
 
