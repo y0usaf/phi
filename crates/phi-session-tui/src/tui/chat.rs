@@ -143,7 +143,12 @@ impl Ui {
     }
 
     pub(super) fn status_rows(&self, depth: usize, text: &str) -> Vec<String> {
-        self.status_rows_bg(depth, text, &self.palette.tool_pending_bg)
+        let bg = if self.block_active {
+            &self.palette.tool_pending_bg_nested
+        } else {
+            &self.palette.tool_pending_bg
+        };
+        self.status_rows_bg(depth, text, bg)
     }
 
     /// Status rows with an explicit background color (pending vs. failed),
@@ -158,8 +163,10 @@ impl Ui {
     }
 
     pub(super) fn push_status(&mut self, depth: usize, text: String) -> Option<(usize, usize)> {
-        if depth == 0 && !self.last_activity && !self.block_active {
-            self.pending.push(String::new());
+        if self.block_active {
+            self.ensure_block_gap();
+        } else if depth == 0 {
+            self.ensure_pending_gap();
         }
         let rows = self.status_rows(depth, &text);
         let start = if self.block_active {
@@ -212,8 +219,9 @@ impl Ui {
         if !self.block_active {
             return;
         }
-        let spinner = self.spinner.frame().to_owned();
-        let elapsed = self.anim_start.elapsed().as_millis() as u64;
+        let now_ms = self.anim_start.elapsed().as_millis() as u64;
+        let spinner = self.visual.spinner_frame(now_ms);
+        let elapsed = now_ms;
         let shimmer = self.palette.shimmer_accent;
 
         let mut tool_ids: Vec<((usize, u64), usize)> = self
@@ -282,7 +290,7 @@ impl Ui {
                 self.status_rows_bg(
                     row.depth,
                     &failed_status_text(&row.label, None, None, &self.palette),
-                    &self.palette.tool_error_bg,
+                    &self.palette.tool_error_bg_nested,
                 ),
             );
         }
@@ -293,7 +301,7 @@ impl Ui {
                 self.status_rows_bg(
                     row.depth,
                     &failed_status_text(&row.label, None, None, &self.palette),
-                    &self.palette.tool_error_bg,
+                    &self.palette.tool_error_bg_nested,
                 ),
             );
         }
@@ -307,10 +315,32 @@ impl Ui {
         }
     }
 
-    pub(super) fn begin_block(&mut self) {
-        if !self.last_activity {
+    /// Ensure a one-line gap before the next block pushed into the active
+    /// REPL block's child rows. If the last row in `self.block` is non-empty
+    /// (i.e. a prior child card or flat line is still touching), a blank line
+    /// is inserted so consecutive child blocks never visually touch.
+    pub(super) fn ensure_block_gap(&mut self) {
+        if !self.block_active {
+            return;
+        }
+        if self.block.last().is_some_and(|row| !row.is_empty()) {
+            self.block.push(String::new());
+        }
+    }
+
+    /// Ensure a one-line gap before the next block pushed into the top-level
+    /// pending transcript. If the last row in `self.pending` is non-empty,
+    /// a blank line is inserted so consecutive top-level blocks (user
+    /// messages, REPL blocks, tool cards, assistant prose) never visually
+    /// touch.
+    pub(super) fn ensure_pending_gap(&mut self) {
+        if self.pending.last().is_some_and(|row| !row.is_empty()) {
             self.pending.push(String::new());
         }
+    }
+
+    pub(super) fn begin_block(&mut self) {
+        self.ensure_pending_gap();
         self.block.clear();
         self.open_tool_rows.clear();
         self.open_subcall_rows.clear();
@@ -332,7 +362,7 @@ impl Ui {
             &self.palette.tool_success_bg
         };
         let rows = render_repl_block(&body, bg, self.panel_width());
-        self.pending.push(String::new()); // spacer
+        self.ensure_pending_gap();
         self.pending.extend(rows);
         self.open_tool_rows.clear();
         self.open_subcall_rows.clear();
@@ -341,14 +371,21 @@ impl Ui {
     }
 
     pub(super) fn push_dot(&mut self, depth: usize, text: String) {
-        if depth == 0 && !self.last_activity && !self.block_active {
-            self.pending.push(String::new());
+        if self.block_active {
+            self.ensure_block_gap();
+        } else if depth == 0 {
+            self.ensure_pending_gap();
         }
         self.push_row(forge_title(depth, &text));
         self.last_activity = true;
     }
 
     pub(super) fn push_bar(&mut self, depth: usize, text: String) {
+        if self.block_active {
+            self.ensure_block_gap();
+        } else if depth == 0 {
+            self.ensure_pending_gap();
+        }
         let rows = render_flat(&format!("{DIM}{text}{RESET}"), depth, &[]);
         for row in rows {
             self.push_row(row);
@@ -422,6 +459,11 @@ impl Ui {
         let rows = self.preview_rows_with_lang(depth, text, max, lang);
         if rows.is_empty() {
             return;
+        }
+        if self.block_active {
+            self.ensure_block_gap();
+        } else if depth == 0 {
+            self.ensure_pending_gap();
         }
         let prefix = if self.block_active {
             indent(depth)
@@ -501,9 +543,18 @@ impl Ui {
                 ));
             }
         }
-        // State-based background (pending → success/error)
+        // State-based background (pending → success/error). When the
+        // tool card is rendered inside an active REPL block, use the
+        // slightly-brighter "nested" variant so the inner card stands out
+        // from the enclosing container (which uses the same base bg).
         let bg = if failed {
-            &self.palette.tool_error_bg
+            if self.block_active {
+                &self.palette.tool_error_bg_nested
+            } else {
+                &self.palette.tool_error_bg
+            }
+        } else if self.block_active {
+            &self.palette.tool_success_bg_nested
         } else {
             &self.palette.tool_success_bg
         };
@@ -547,8 +598,17 @@ impl Ui {
                 }
             }
         }
+        // Use the slightly-brighter nested variant when rendered inside an
+        // active REPL block so the subcall card stands out from the
+        // enclosing container.
         let bg = if failed {
-            &self.palette.tool_error_bg
+            if self.block_active {
+                &self.palette.tool_error_bg_nested
+            } else {
+                &self.palette.tool_error_bg
+            }
+        } else if self.block_active {
+            &self.palette.tool_success_bg_nested
         } else {
             &self.palette.tool_success_bg
         };
@@ -566,8 +626,10 @@ impl Ui {
         lang: Option<&str>,
         failed: bool,
     ) {
-        if depth == 0 && !self.last_activity && !self.block_active {
-            self.pending.push(String::new());
+        if self.block_active {
+            self.ensure_block_gap();
+        } else if depth == 0 {
+            self.ensure_pending_gap();
         }
         let rows = self.tool_result_rows(depth, name, args, output, max, lang, failed);
         for row in rows {
@@ -577,6 +639,11 @@ impl Ui {
     }
 
     pub(super) fn push_repl_block(&mut self, depth: usize, text: &str, max: usize) {
+        if self.block_active {
+            self.ensure_block_gap();
+        } else if depth == 0 {
+            self.ensure_pending_gap();
+        }
         for row in self.repl_code_lines(depth, text, max) {
             self.push_row(row);
         }
@@ -584,7 +651,7 @@ impl Ui {
     }
 
     pub(super) fn push_user_message(&mut self, text: &str) {
-        self.pending.push(String::new());
+        self.ensure_pending_gap();
         self.pending.extend(self.user_card_lines(text));
         self.last_activity = false;
     }
@@ -595,13 +662,18 @@ impl Ui {
             return;
         }
         let card = self.assistant_card_lines(text);
-        let sink = if self.block_active {
-            &mut self.after_block
+        if self.block_active {
+            // Prose flushed while a block is active goes to after_block,
+            // committed after the block closes. Ensure a gap from any prior
+            // after_block content.
+            if self.after_block.last().is_some_and(|row| !row.is_empty()) {
+                self.after_block.push(String::new());
+            }
+            self.after_block.extend(card);
         } else {
-            &mut self.pending
-        };
-        sink.push(String::new());
-        sink.extend(card);
+            self.ensure_pending_gap();
+            self.pending.extend(card);
+        }
         self.last_activity = false;
     }
 

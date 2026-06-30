@@ -85,6 +85,9 @@ async fn build_runtime(cwd: &Path) -> Result<Arc<phi_ext::AppRuntime>> {
     let config_exts = phi_lua::load_extensions(&config_ext_paths);
 
     let mut rt_builder = RuntimeBuilder::new().with_cwd(cwd);
+    // Register the built-in default visual extension so the default
+    // spinner, thinking expressions, and theme are always available.
+    rt_builder = rt_builder.register_extension(phi_builtins::DefaultVisualExtension);
     for ext in config_exts {
         rt_builder = rt_builder.register_boxed_extension(ext);
     }

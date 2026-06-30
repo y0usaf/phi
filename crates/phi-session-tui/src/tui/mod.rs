@@ -21,9 +21,9 @@ use phi_rlm::{
 use phi_tui::crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers};
 use phi_tui::{
     Editor, EditorAction, LiveCursor, RawModeGuard, Selector, SelectorItem, SelectorOutcome,
-    Spinner, Terminal, detect_terminal_colors, equalizer_glyphs, fill_bg, fuzzy_filter,
+    Terminal, detect_terminal_colors, equalizer_glyphs, fill_bg, fuzzy_filter,
     gradient_text_animated, highlight_code, highlight_diff_line, highlight_output, render_markdown,
-    shimmer_ansi, thinking_expression, wrap_ansi, wrap_ansi_locate,
+    shimmer_ansi, wrap_ansi, wrap_ansi_locate,
 };
 
 use phi_session::files::FileSearcher;
@@ -54,6 +54,7 @@ mod render;
 mod symbols;
 mod tool_display;
 mod toolbar;
+mod visual_context;
 
 use events::LoginState;
 #[cfg(test)]
@@ -62,6 +63,7 @@ use events::python_quote;
 pub use palette::InlinePalette;
 pub(crate) use render::{OpenSubcallRow, OpenToolRow, TOOL_RESULT_LOG_BUDGET, TranscriptBlock};
 pub(crate) use tool_display::{format_model_pricing, format_tokens, tool_identity, tool_title};
+pub(super) use visual_context::VisualContext;
 
 use popup::*;
 use render::*;
@@ -271,7 +273,7 @@ pub async fn run(setup: TuiSetup, mut io: SessionIo) -> Result<()> {
         && let Some(colors) = detect_terminal_colors(Duration::from_millis(150))
     {
         ui.palette = InlinePalette::from_terminal_colors(&colors);
-        ui.spinner = Spinner::new(ui.palette.spinner_accent, ui.palette.terminal_bg);
+        ui.visual = VisualContext::from_runtime(Some(&ui.runtime));
     }
     // Resume when the session has any message entries, regardless of the
     // leaf pointer. A session navigated to root (leaf None) still has
@@ -350,7 +352,6 @@ pub async fn run(setup: TuiSetup, mut io: SessionIo) -> Result<()> {
             }
             _ = ticker.tick() => {
                 if ui.running.is_some() {
-                    ui.spinner.tick();
                     ui.refresh_open_activity_rows();
                     for msg in ui.runtime.drain_notifications() {
                         ui.pending.push(msg);
@@ -470,7 +471,7 @@ pub fn external_editor(text: &str) -> Result<Option<String>, String> {
 struct Ui {
     pub(super) term: Terminal<Box<dyn std::io::Write + Send>>,
     pub(super) editor: Editor,
-    pub(super) spinner: Spinner,
+    pub(super) visual: VisualContext,
     /// When the current run's equalizer animation started (wall-clock).
     /// Reset each time `running` transitions to `Some`.
     pub(super) anim_start: std::time::Instant,
@@ -619,7 +620,7 @@ impl Ui {
         Self {
             term,
             editor: Editor::new(),
-            spinner: Spinner::default(),
+            visual: VisualContext::default(),
             anim_start: std::time::Instant::now(),
             palette: InlinePalette::default_const(),
             running: None,
@@ -1889,5 +1890,193 @@ match1
     fn no_argument_completion_for_other_commands() {
         assert!(complete("/new ", &models(), &[]).is_none());
         assert!(complete("/model two words", &models(), &[]).is_none());
+    }
+
+    // When a tool card is rendered inside a REPL block, its background
+    // should be the slightly-brighter "nested" variant so the inner card
+    // is distinguishable from the enclosing container (which uses the
+    // base bg). A tool card rendered standalone (no block) uses the base.
+    #[test]
+    fn nested_tool_block_uses_lighter_background() {
+        let ui = test_ui(80, 24);
+
+        // Standalone tool card (no active block) → base success bg.
+        let standalone = ui.tool_result_rows(
+            0,
+            "read_file",
+            &serde_json::json!({"path": "x.rs"}),
+            "ok",
+            usize::MAX,
+            Some("rust"),
+            false,
+        );
+        assert!(
+            standalone
+                .iter()
+                .any(|l| l.contains(&ui.palette.tool_success_bg)),
+            "standalone tool card should use the base success bg"
+        );
+        assert!(
+            !standalone
+                .iter()
+                .any(|l| l.contains(&ui.palette.tool_success_bg_nested)),
+            "standalone tool card should NOT use the nested success bg"
+        );
+
+        // Nested tool card (block active) → nested (lighter) success bg.
+        let mut ui = test_ui(80, 24);
+        ui.begin_block();
+        assert!(ui.block_active);
+        let nested = ui.tool_result_rows(
+            1,
+            "read_file",
+            &serde_json::json!({"path": "x.rs"}),
+            "ok",
+            usize::MAX,
+            Some("rust"),
+            false,
+        );
+        assert!(
+            nested
+                .iter()
+                .any(|l| l.contains(&ui.palette.tool_success_bg_nested)),
+            "nested tool card should use the lighter nested success bg"
+        );
+        assert!(
+            !nested
+                .iter()
+                .any(|l| l.contains(&ui.palette.tool_success_bg)),
+            "nested tool card should NOT use the base success bg"
+        );
+    }
+
+    // Visual break rule: any two blocks must always have a one-line gap
+    // between them — both inside a REPL block (between child tool cards) and
+    // at the top level (between committed blocks).
+    #[test]
+    fn block_gap_between_child_tool_cards_inside_repl_block() {
+        let mut ui = test_ui(80, 24);
+        ui.begin_block();
+        ui.push_repl_block(0, "print(1)", usize::MAX);
+        // Push a tool card — should have a gap before it in the block.
+        ui.push_tool_result(
+            1,
+            "read_file",
+            &serde_json::json!({"path": "a.rs"}),
+            "content a",
+            usize::MAX,
+            Some("rust"),
+            false,
+        );
+        // Push a second tool card — should have a gap before it too.
+        ui.push_tool_result(
+            1,
+            "read_file",
+            &serde_json::json!({"path": "b.rs"}),
+            "content b",
+            usize::MAX,
+            Some("rust"),
+            false,
+        );
+
+        let plain: Vec<String> = ui.block.iter().map(|l| phi_tui::strip_ansi(l)).collect();
+
+        // The code block (print(1)) is followed by a gap, then the first
+        // tool card, then a gap, then the second tool card.
+        let print_idx = plain
+            .iter()
+            .position(|l| l.contains("print(1)"))
+            .expect("code in block");
+        let card_a_idx = plain
+            .iter()
+            .position(|l| l.contains("a.rs"))
+            .expect("first tool card");
+        let card_b_idx = plain
+            .iter()
+            .rposition(|l| l.contains("b.rs"))
+            .expect("second tool card");
+
+        // There must be at least one blank line between the code and the
+        // first card, and between the two cards.
+        let gap_after_code = plain[print_idx + 1..card_a_idx]
+            .iter()
+            .any(|l| l.is_empty());
+        assert!(
+            gap_after_code,
+            "no gap between code and first card: {plain:?}"
+        );
+
+        let gap_between_cards = plain[card_a_idx + 1..card_b_idx]
+            .iter()
+            .any(|l| l.is_empty());
+        assert!(
+            gap_between_cards,
+            "no gap between two tool cards: {plain:?}"
+        );
+    }
+
+    #[test]
+    fn block_gap_between_top_level_blocks() {
+        let mut ui = test_ui(80, 24);
+
+        // User message → assistant prose → REPL block: all should be
+        // separated by one-line gaps in pending.
+        ui.push_user_message("hello");
+        ui.push_prose("here is some code:");
+        ui.push_repl_replay(
+            "print(1)",
+            "1
+",
+            "",
+            0.005,
+            &[],
+            &[],
+        );
+
+        let plain: Vec<String> = ui.pending.iter().map(|l| phi_tui::strip_ansi(l)).collect();
+
+        let user_idx = plain
+            .iter()
+            .position(|l| l.contains("hello"))
+            .expect("user msg");
+        let prose_idx = plain
+            .iter()
+            .position(|l| l.contains("here is some code"))
+            .expect("prose");
+        let repl_idx = plain
+            .iter()
+            .position(|l| l.contains("repl"))
+            .expect("repl block");
+
+        let gap_user_prose = plain[user_idx + 1..prose_idx].iter().any(|l| l.is_empty());
+        assert!(gap_user_prose, "no gap between user and prose: {plain:?}");
+
+        let gap_prose_repl = plain[prose_idx + 1..repl_idx].iter().any(|l| l.is_empty());
+        assert!(gap_prose_repl, "no gap between prose and repl: {plain:?}");
+    }
+
+    #[test]
+    fn ensure_pending_gap_does_not_double_up() {
+        let mut ui = test_ui(80, 24);
+        ui.pending.push("first line".to_owned());
+        ui.ensure_pending_gap();
+        assert_eq!(ui.pending.len(), 2);
+        assert!(ui.pending[1].is_empty());
+        // Second call should NOT add another blank line.
+        ui.ensure_pending_gap();
+        assert_eq!(ui.pending.len(), 2);
+    }
+
+    #[test]
+    fn ensure_block_gap_does_not_double_up() {
+        let mut ui = test_ui(80, 24);
+        ui.block_active = true;
+        ui.block.push("first row".to_owned());
+        ui.ensure_block_gap();
+        assert_eq!(ui.block.len(), 2);
+        assert!(ui.block[1].is_empty());
+        // Second call should NOT add another blank line.
+        ui.ensure_block_gap();
+        assert_eq!(ui.block.len(), 2);
     }
 }

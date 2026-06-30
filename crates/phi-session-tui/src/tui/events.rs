@@ -242,6 +242,12 @@ impl Ui {
                     self.pending
                         .push(format!("{DIM}{:<20}{}{RESET}", usage.trim_end(), spec.desc));
                 }
+                // Also list extension-registered commands.
+                for (name, desc) in self.runtime.list_extension_commands() {
+                    let usage = format!("/{}", name);
+                    self.pending
+                        .push(format!("{DIM}{:<20}{}{RESET}", usage, desc));
+                }
                 self.pending.push(format!(
                     "{DIM}!cmd                run bash(cmd) in the REPL; the model sees it next turn{RESET}"
                 ));
@@ -335,13 +341,12 @@ impl Ui {
                     Some((name, rest)) => (name, rest),
                     None => (trimmed, ""),
                 };
-                // Normalize a leading run of slashes (e.g. `//memories`) down
-                // to a single slash so the command is looked up by the name
-                // it was registered with.
-                let cmd_name = {
-                    let bare = cmd_name.trim_start_matches('/');
-                    format!("/{bare}")
-                };
+                // Strip leading slashes so the command is looked up by the
+                // bare name it was registered with (e.g. `//pomodoro` ->
+                // `pomodoro`).  Extension commands are registered without a
+                // leading slash; re-adding one here caused every extension
+                // command to be reported as "unknown command".
+                let cmd_name = cmd_name.trim_start_matches('/');
                 let args = args.to_owned();
                 let runtime = Arc::clone(&self.runtime);
                 // Bound the command handler so a blocked extension command can
@@ -352,7 +357,7 @@ impl Ui {
                 // dispatch timeout, so this is belt-and-suspenders.
                 let result = tokio::task::block_in_place(|| {
                     let rt = runtime;
-                    let cn = cmd_name.clone();
+                    let cn = cmd_name.to_owned();
                     let ar = args.clone();
                     tokio::runtime::Handle::current().block_on(async move {
                         tokio::time::timeout(Duration::from_secs(10), rt.invoke_command(&cn, &ar))
@@ -362,7 +367,7 @@ impl Ui {
                 match result {
                     Ok(Ok(Some(output))) => {
                         if let Some(msg) = output.message {
-                            self.pending.push(String::new());
+                            self.ensure_pending_gap();
                             self.pending.push(msg);
                         }
                     }
@@ -416,7 +421,7 @@ impl Ui {
             self.begin_block();
             self.push_repl_block(0, &code, self.code_limit());
         } else {
-            self.pending.push(String::new());
+            self.ensure_pending_gap();
             self.pending.push(format!(
                 "{tool}${RESET} {DIM}{cmd}{RESET}",
                 tool = &self.palette.tool_title_fg
@@ -720,7 +725,7 @@ impl Ui {
             depth + 1,
             running_status_text_shimmer(
                 &label,
-                self.spinner.frame(),
+                &self.visual.spinner_frame(elapsed),
                 self.palette.shimmer_accent,
                 elapsed,
             ),
@@ -818,7 +823,7 @@ impl Ui {
                 depth,
                 running_status_text_shimmer(
                     &label,
-                    self.spinner.frame(),
+                    &self.visual.spinner_frame(elapsed),
                     self.palette.shimmer_accent,
                     elapsed,
                 ),
@@ -882,8 +887,10 @@ impl Ui {
             self.replace_block_rows(row.start, row.len, rows);
             self.last_activity = true;
         } else {
-            if depth == 0 && !self.last_activity && !self.block_active {
-                self.pending.push(String::new());
+            if self.block_active {
+                self.ensure_block_gap();
+            } else if depth == 0 {
+                self.ensure_pending_gap();
             }
             for row in rows {
                 self.push_row(row);
@@ -922,6 +929,7 @@ impl Ui {
             } => self.handle_shell_done(code, record, result),
             Done::Restored(result) => {
                 if let Err(e) = result {
+                    self.ensure_pending_gap();
                     self.pending.push(format!(
                         "{}restore failed:{RESET} {e}",
                         &self.palette.error_fg
@@ -968,6 +976,7 @@ impl Ui {
             }
             Ok(res) => {
                 let output = format!("{}{}", res.stdout, res.stderr);
+                self.ensure_pending_gap();
                 if output.trim().is_empty() {
                     self.pending.push(format!("{DIM}(no output){RESET}"));
                 } else {
@@ -981,6 +990,7 @@ impl Ui {
                     self.push_bar(0, format!("failed: {e}"));
                     self.commit_block();
                 } else {
+                    self.ensure_pending_gap();
                     self.pending.push(self.err(&e));
                     self.last_activity = false;
                 }
@@ -1030,7 +1040,7 @@ impl Ui {
                 usage_by_model,
             );
         }
-        self.pending.push(String::new());
+        self.ensure_pending_gap();
         if completion.stop == StopCause::Failed {
             let error = completion.error.unwrap_or_else(|| "run failed".to_owned());
             self.pending.push(self.err(&error));

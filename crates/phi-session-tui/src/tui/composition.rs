@@ -164,7 +164,7 @@ impl Ui {
             let elapsed = self.anim_start.elapsed().as_millis() as u64;
             let tool_active = !self.open_tool_rows.is_empty() || !self.open_subcall_rows.is_empty();
             let glyphs = equalizer_glyphs(elapsed);
-            let expression = thinking_expression(elapsed, tool_active);
+            let expression = self.visual.thinking_expression(elapsed, tool_active);
             let p = &self.palette;
             // Gradient the entire line — bars + phrase — from accent (cyan) →
             // accent_2 (magenta), matching phi-mux's sidebar gradient text.

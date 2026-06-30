@@ -43,6 +43,16 @@ pub struct InlinePalette {
     /// REPL block concept, but the visual model is a Box(1,1,bgFn) like the
     /// tool cards, just with a neutral bg).
     pub repl_bg: String,
+    /// Nested tool block background while pending — slightly brighter than
+    /// `tool_pending_bg` so a tool card inside a REPL block stands out from
+    /// the enclosing container.
+    pub tool_pending_bg_nested: String,
+    /// Nested tool block background on success — slightly brighter than
+    /// `tool_success_bg`.
+    pub tool_success_bg_nested: String,
+    /// Nested tool block background on error — slightly brighter than
+    /// `tool_error_bg`.
+    pub tool_error_bg_nested: String,
     /// Chrome (status/footer) border.
     pub chrome_border: String,
     /// Chrome header: agent label + usage (phi, tokens).
@@ -103,6 +113,9 @@ impl InlinePalette {
             tool_success_bg: s("\x1b[48;2;40;50;40m"),
             tool_error_bg: s("\x1b[48;2;60;40;40m"),
             repl_bg: s("\x1b[48;2;36;36;44m"),
+            tool_pending_bg_nested: s("\x1b[48;2;48;48;58m"),
+            tool_success_bg_nested: s("\x1b[48;2;48;58;48m"),
+            tool_error_bg_nested: s("\x1b[48;2;68;48;48m"),
             chrome_border: s("\x1b[38;2;82;88;110m"),
             chrome_agent_fg: s("\x1b[1m\x1b[37m"),
             chrome_cost_fg: s("\x1b[1m\x1b[32m"),
@@ -146,6 +159,9 @@ impl InlinePalette {
             tool_success_bg: bg_escape(t.tool_success_bg),
             tool_error_bg: bg_escape(t.tool_error_bg),
             repl_bg: bg_escape(t.repl_bg),
+            tool_pending_bg_nested: bg_escape(t.tool_pending_bg_nested),
+            tool_success_bg_nested: bg_escape(t.tool_success_bg_nested),
+            tool_error_bg_nested: bg_escape(t.tool_error_bg_nested),
             chrome_border: fg_escape(t.muted),
             chrome_agent_fg: bold_fg_escape(t.chrome_agent),
             chrome_cost_fg: bold_fg_escape(t.chrome_cost),
