@@ -144,6 +144,44 @@ const ANTHROPIC_BUDGETS: &[(ThinkingLevel, u64)] = &[
     (ThinkingLevel::XHigh, 32768),
 ];
 
+/// Effort levels for Anthropic adaptive thinking models (Opus 4.6+, Sonnet
+/// 4.6). These map thinking levels to effort strings that Anthropic's API
+/// accepts via `output_config.effort` alongside `thinking.type: "adaptive"`.
+const ANTHROPIC_ADAPTIVE_EFFORTS: &[(ThinkingLevel, &str)] = &[
+    (ThinkingLevel::Minimal, "low"),
+    (ThinkingLevel::Low, "low"),
+    (ThinkingLevel::Medium, "medium"),
+    (ThinkingLevel::High, "high"),
+];
+
+/// Detect Anthropic adaptive thinking models (Opus 4.6+, Sonnet 4.6).
+/// These models use `thinking.type: "adaptive"` + `output_config.effort`
+/// instead of the older `thinking.type: "enabled"` + `budget_tokens`.
+/// Matches Pi's `isAnthropicAdaptiveThinkingModel`.
+pub(super) fn is_anthropic_adaptive(model_id: &str) -> bool {
+    let id = model_id.to_ascii_lowercase();
+    id.contains("opus-4-6")
+        || id.contains("opus-4.6")
+        || id.contains("opus-4-7")
+        || id.contains("opus-4.7")
+        || id.contains("opus-4-8")
+        || id.contains("opus-4.8")
+        || id.contains("sonnet-4-6")
+        || id.contains("sonnet-4.6")
+}
+
+/// Determine the `xhigh` effort value for an adaptive model.
+/// Opus 4.6 supports `max`; Opus 4.7/4.8 and Sonnet 4.6 support `xhigh`.
+/// Matches Pi's thinkingLevelMap xhigh overrides.
+pub(super) fn adaptive_xhigh_effort(model_id: &str) -> &'static str {
+    let id = model_id.to_ascii_lowercase();
+    if id.contains("opus-4-6") || id.contains("opus-4.6") {
+        "max"
+    } else {
+        "xhigh"
+    }
+}
+
 const EFFORT_LEVELS: &[(ThinkingLevel, &str)] = &[
     (ThinkingLevel::Off, "none"),
     (ThinkingLevel::Minimal, "minimal"),
@@ -156,13 +194,28 @@ const EFFORT_LEVELS: &[(ThinkingLevel, &str)] = &[
 fn thinking_levels(
     api: Api,
     model: &DevModel,
+    model_id: &str,
     max_tokens: u64,
 ) -> Option<BTreeMap<ThinkingLevel, Option<String>>> {
     if !model.reasoning {
         return None;
     }
-    // Our Anthropic provider drives thinking via `budget_tokens`.
+    // Our Anthropic provider drives thinking via `budget_tokens` for older
+    // models, or `output_config.effort` for adaptive thinking models.
     if api == Api::AnthropicMessages {
+        if is_anthropic_adaptive(model_id) {
+            // Adaptive thinking: effort-based, not budget-based.
+            let mut map: BTreeMap<_, _> = ANTHROPIC_ADAPTIVE_EFFORTS
+                .iter()
+                .map(|(level, effort)| (*level, Some((*effort).to_owned())))
+                .collect();
+            map.insert(
+                ThinkingLevel::XHigh,
+                Some(adaptive_xhigh_effort(model_id).to_owned()),
+            );
+            return Some(map);
+        }
+        // Budget-based thinking for older Anthropic models.
         let map: BTreeMap<_, _> = ANTHROPIC_BUDGETS
             .iter()
             .filter(|(_, budget)| *budget < max_tokens)
@@ -219,7 +272,8 @@ pub(super) fn convert(provider: &DevProvider, api: Api, base_url: &str) -> Vec<M
             context_window,
             max_tokens,
             headers: BTreeMap::new(),
-            thinking_levels: thinking_levels(api, m, max_tokens),
+            thinking_levels: thinking_levels(api, m, id, max_tokens),
+            adaptive_thinking: api == Api::AnthropicMessages && is_anthropic_adaptive(id),
         });
     }
     models
