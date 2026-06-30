@@ -61,7 +61,7 @@ use events::LoginState;
 use events::python_quote;
 
 pub use palette::InlinePalette;
-pub(crate) use render::{OpenSubcallRow, OpenToolRow, TOOL_RESULT_LOG_BUDGET, TranscriptBlock};
+pub(crate) use render::{OpenSubcallRow, OpenToolRow, ReplBlockData, TOOL_RESULT_LOG_BUDGET, TranscriptBlock, TranscriptEntry};
 pub(crate) use tool_display::{format_model_pricing, format_tokens, tool_identity, tool_title};
 pub(super) use visual_context::VisualContext;
 
@@ -288,11 +288,11 @@ pub async fn run(setup: TuiSetup, mut io: SessionIo) -> Result<()> {
         Some(rx) => InputSource::Forwarded(rx),
         None => InputSource::Tty(EventStream::new()),
     };
-    let mut ticker = tokio::time::interval(Duration::from_millis(16));
-    // Coalesce redraws to a 16ms cadence (matching the mux's ANIMATION_TICK
-    // and pi's MIN_RENDER_INTERVAL_MS): bursts of stream deltas collapse into
-    // one frame instead of repainting per SSE chunk.
-    const FRAME: Duration = Duration::from_millis(16);
+    let mut ticker = tokio::time::interval(Duration::from_millis(40));
+    // Coalesce redraws to the same 40ms cadence as the spinner tick: bursts
+    // of stream deltas collapse into one frame instead of repainting per
+    // SSE chunk. Terminals bottleneck at ~25fps anyway.
+    const FRAME: Duration = Duration::from_millis(40);
     let mut last_draw = tokio::time::Instant::now();
     let mut dirty = false;
 
@@ -350,15 +350,11 @@ pub async fn run(setup: TuiSetup, mut io: SessionIo) -> Result<()> {
                 ui.handle_login_msg(msg);
                 false
             }
-            _ = ticker.tick() => {
-                if ui.running.is_some() {
-                    ui.refresh_open_activity_rows();
-                    for msg in ui.runtime.drain_notifications() {
-                        ui.pending.push(msg);
-                    }
+            _ = ticker.tick(), if ui.running.is_some() => {
+                ui.refresh_open_activity_rows();
+                for msg in ui.runtime.drain_notifications() {
+                    ui.pending.push(TranscriptEntry::RawLines(vec![msg]));
                 }
-                // Always redraw on tick so the statusbar shimmer stays
-                // animated even when idle (no tool running).
                 false
             }
             _ = tokio::time::sleep_until(last_draw + FRAME), if dirty => false,
@@ -398,7 +394,7 @@ pub async fn run(setup: TuiSetup, mut io: SessionIo) -> Result<()> {
                     ui.refresh_popup();
                 }
                 Ok(None) => {}
-                Err(e) => ui.pending.push(ui.err(&e)),
+                Err(e) => ui.pending.push(TranscriptEntry::RawLines(vec![ui.err(&e)])),
             }
         }
         if let Some(pending_modal) = ui.pending_host_modal.take() {
@@ -414,7 +410,7 @@ pub async fn run(setup: TuiSetup, mut io: SessionIo) -> Result<()> {
                     }
                 }
                 Ok(None) => {}
-                Err(e) => ui.pending.push(ui.err(&e)),
+                Err(e) => ui.pending.push(TranscriptEntry::RawLines(vec![ui.err(&e)])),
             }
         }
         dirty = true;
@@ -510,14 +506,22 @@ struct Ui {
     pub(super) last_ctrl_c: Option<std::time::Instant>,
     /// Lines staged by event handlers since the last draw; each draw folds
     /// them into a retained transcript block before rendering.
-    pub(super) pending: Vec<String>,
+    pub(super) pending: Vec<TranscriptEntry>,
     /// Retained transcript renderer/commit seam, restored from the archived
     /// Phi transcript-block model.
     pub(super) transcript: Transcript,
     /// Finalized transcript blocks retained across frames.
-    pub(super) transcript_blocks: Vec<TranscriptBlock>,
-    /// Monotonic key source for finalized transcript blocks.
-    pub(super) next_transcript_block_id: u64,
+    pub(super) transcript_entries: Vec<TranscriptEntry>,
+    /// Cached rendered transcript lines keyed by "tx:{i}". Rebuilt only when
+    /// entries change or the terminal width / expand toggles change — not
+    /// on every frame. This is the key performance fix: without it, draw()
+    /// re-renders every entry (markdown parsing, syntax highlighting, REPL
+    /// block construction) on every keystroke.
+    pub(super) transcript_cache: Vec<(String, Vec<String>)>,
+    /// Terminal width when the cache was built; mismatch invalidates it.
+    pub(super) transcript_cache_width: usize,
+    /// (expand_tools, expand_thinking) when the cache was built.
+    pub(super) transcript_cache_expanded: (bool, bool),
     /// Rows of the in-flight depth-0 ```repl``` block (with everything nested in
     /// it), shown live and then committed to scrollback verbatim.
     pub(super) block: Vec<String>,
@@ -638,8 +642,10 @@ impl Ui {
             last_ctrl_c: None,
             pending: Vec::new(),
             transcript: Transcript::new(),
-            transcript_blocks: Vec::new(),
-            next_transcript_block_id: 0,
+            transcript_entries: Vec::new(),
+            transcript_cache: Vec::new(),
+            transcript_cache_width: 0,
+            transcript_cache_expanded: (false, false),
             block: Vec::new(),
             block_active: false,
             block_errored: false,
@@ -682,15 +688,15 @@ impl Ui {
     }
 
     fn greet(&mut self, missing_credentials: &[String]) {
-        self.pending.push(format!(
+        self.pending.push(TranscriptEntry::RawLines(vec![format!(
             "{BOLD}phi{RESET} {DIM}· {} · /help for commands{RESET}",
             self.model_label
-        ));
+        )]));
         for provider in missing_credentials {
-            self.pending.push(format!(
+            self.pending.push(TranscriptEntry::RawLines(vec![format!(
                 "{}no credentials for '{provider}'{RESET} {DIM}— type /login to authenticate{RESET}",
                 &self.palette.warning_fg
-            ));
+            )]));
         }
     }
 
@@ -768,6 +774,11 @@ mod tests {
             None,
             runtime,
         )
+    }
+
+    fn pending_lines(ui: &mut Ui) -> Vec<String> {
+        let entries = ui.pending.clone();
+        entries.into_iter().flat_map(|e| ui.render_entry(&e)).collect()
     }
 
     #[test]
@@ -1169,8 +1180,8 @@ mod tests {
     #[test]
     fn repl_panel_label_carries_turn_only_for_live_blocks() {
         use tokio_util::sync::CancellationToken;
-        let pending_plain = |ui: &Ui| -> String {
-            ui.pending
+        let pending_plain = |ui: &mut Ui| -> String {
+            pending_lines(ui)
                 .iter()
                 .map(|l| phi_tui::strip_ansi(l))
                 .collect::<Vec<_>>()
@@ -1197,7 +1208,7 @@ mod tests {
             stderr: String::new(),
             duration: Duration::from_millis(5),
         });
-        let live_plain = pending_plain(&ui);
+        let live_plain = pending_plain(&mut ui);
         assert!(live_plain.contains("repl"), "{live_plain}");
         assert!(!live_plain.contains("turn"), "{live_plain}");
         assert!(live_plain.contains("print(1)"), "{live_plain}");
@@ -1210,7 +1221,7 @@ mod tests {
         ui.pending.clear();
         ui.push_assistant_message("Here is code that ran:");
         ui.push_repl_replay("print(1)", "1\n", "", 0.005, &[], &[]);
-        let replay_plain = pending_plain(&ui);
+        let replay_plain = pending_plain(&mut ui);
         assert!(!replay_plain.contains("turn"), "{replay_plain}");
         assert!(replay_plain.contains("print(1)"), "{replay_plain}");
         assert!(replay_plain.contains("repl"), "{replay_plain}");
@@ -1621,10 +1632,11 @@ match1
         // Completed streamed paragraphs are live-only; they must not be
         // finalized into retained Assistant cards before the JSONL assistant
         // message exists.
+        let lines = pending_lines(&mut ui);
         assert!(
-            ui.pending.iter().all(|line| !line.contains("Assistant")),
+            lines.iter().all(|line| !line.contains("Assistant")),
             "{:?}",
-            ui.pending
+            lines
         );
 
         ui.handle_rlm_event(RlmEvent::RootDelta {
@@ -1640,12 +1652,9 @@ match1
 
         // pi-style: assistant messages have no header label — the prose
         // is bare text separated by spacers.
-        let assistant_cards = ui
-            .pending
-            .iter()
-            .filter(|line| line.contains("Assistant"))
-            .count();
-        assert_eq!(assistant_cards, 0, "{:?}", ui.pending);
+        let lines = pending_lines(&mut ui);
+        let assistant_cards = lines.iter().filter(|line| line.contains("Assistant")).count();
+        assert_eq!(assistant_cards, 0, "{:?}", lines);
     }
 
     #[test]
@@ -1691,18 +1700,11 @@ match1
             text: "intro line\n\ntrailing line".to_owned(),
         });
 
-        let intro_cards = ui
-            .pending
-            .iter()
-            .filter(|line| line.contains("intro line"))
-            .count();
-        assert_eq!(intro_cards, 1, "intro prose duplicated: {:?}", ui.pending);
-        let trailing_cards = ui
-            .pending
-            .iter()
-            .filter(|line| line.contains("trailing line"))
-            .count();
-        assert_eq!(trailing_cards, 1, "{:?}", ui.pending);
+        let lines = pending_lines(&mut ui);
+        let intro_cards = lines.iter().filter(|line| line.contains("intro line")).count();
+        assert_eq!(intro_cards, 1, "intro prose duplicated: {:?}", lines);
+        let trailing_cards = lines.iter().filter(|line| line.contains("trailing line")).count();
+        assert_eq!(trailing_cards, 1, "{:?}", lines);
     }
 
     #[test]
@@ -1766,8 +1768,7 @@ match1
         assert_eq!(checkpoint.tools[0].args["cmd"], "echo nested");
 
         ui.replay_branch();
-        let plain = ui
-            .pending
+        let plain = pending_lines(&mut ui)
             .iter()
             .map(|line| phi_tui::strip_ansi(line))
             .collect::<Vec<_>>()
@@ -1794,11 +1795,11 @@ match1
             .unwrap();
 
         ui.replay_branch();
-        let collapsed = ui.pending.join("\n");
+        let collapsed = pending_lines(&mut ui).join("\n");
         assert!(!collapsed.contains("secret thought"), "{collapsed}");
 
         ui.toggle_thinking();
-        let expanded = ui.pending.join("\n");
+        let expanded = pending_lines(&mut ui).join("\n");
         assert!(expanded.contains("secret thought"), "{expanded}");
         assert!(
             !expanded.contains("thinking expanded throughout transcript"),
@@ -1806,7 +1807,7 @@ match1
         );
 
         ui.toggle_thinking();
-        let recollapsed = ui.pending.join("\n");
+        let recollapsed = pending_lines(&mut ui).join("\n");
         assert!(
             !recollapsed.contains("thinking collapsed throughout transcript"),
             "{recollapsed}"
@@ -1830,11 +1831,11 @@ match1
             .unwrap();
 
         ui.replay_branch();
-        let collapsed = ui.pending.join("\n");
+        let collapsed = pending_lines(&mut ui).join("\n");
         assert!(collapsed.contains("… (1 more lines)"), "{collapsed}");
 
         ui.toggle_tools();
-        let expanded = ui.pending.join("\n");
+        let expanded = pending_lines(&mut ui).join("\n");
         assert!(expanded.contains("line6"), "{expanded}");
         assert!(!expanded.contains("… (1 more lines)"), "{expanded}");
     }
@@ -2033,7 +2034,7 @@ match1
             &[],
         );
 
-        let plain: Vec<String> = ui.pending.iter().map(|l| phi_tui::strip_ansi(l)).collect();
+        let plain: Vec<String> = pending_lines(&mut ui).iter().map(|l| phi_tui::strip_ansi(l)).collect();
 
         let user_idx = plain
             .iter()
@@ -2058,10 +2059,13 @@ match1
     #[test]
     fn ensure_pending_gap_does_not_double_up() {
         let mut ui = test_ui(80, 24);
-        ui.pending.push("first line".to_owned());
+        ui.pending.push(TranscriptEntry::RawLines(vec!["first line".to_owned()]));
         ui.ensure_pending_gap();
         assert_eq!(ui.pending.len(), 2);
-        assert!(ui.pending[1].is_empty());
+        assert!(matches!(
+            &ui.pending[1],
+            TranscriptEntry::RawLines(lines) if lines.first().is_some_and(|l| l.is_empty())
+        ));
         // Second call should NOT add another blank line.
         ui.ensure_pending_gap();
         assert_eq!(ui.pending.len(), 2);
@@ -2078,5 +2082,73 @@ match1
         // Second call should NOT add another blank line.
         ui.ensure_block_gap();
         assert_eq!(ui.block.len(), 2);
+    }
+
+    #[test]
+    fn resize_renders_transcript_entries_at_new_width() {
+        let mut ui = test_ui(80, 24);
+        // Store a user message and an assistant message with a long paragraph
+        // that will wrap differently at width 80 vs width 120.
+        let long_para = "the quick brown fox jumps over the lazy dog and then keeps running through the forest because it is very energetic and wants to find the other foxes who are waiting near the old oak tree by the riverside where they have been gathering all afternoon to discuss important matters of state and plan their next big adventure together with great enthusiasm.";
+        ui.store.append(session::Role::User, "hello").unwrap();
+        ui.store
+            .append_entry(
+                session::Role::Assistant,
+                long_para,
+                Some(long_para.to_owned()),
+                None,
+                Vec::new(),
+            )
+            .unwrap();
+
+        // Populate transcript_entries from the store.
+        ui.replay_branch();
+        // Move pending to transcript_entries (as draw() would).
+        ui.flush_pending_to_transcript();
+        let entries = ui.transcript_entries.clone();
+
+        // Render entries at width 80 (narrow).
+        ui.term.resize(80, 24);
+        let narrow: Vec<String> = entries
+            .iter()
+            .flat_map(|e| {
+                let rendered = ui.render_entry(e);
+                rendered
+                    .into_iter()
+                    .map(|l| phi_tui::strip_ansi(&l))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        let narrow_nonblank: Vec<&String> = narrow.iter().filter(|l| !l.is_empty()).collect();
+        let narrow_max = narrow_nonblank.iter().map(|l| l.len()).max().unwrap_or(0);
+        let narrow_lines = narrow_nonblank.len();
+
+        // Render entries at width 120 (wide) — same entries, new width.
+        ui.term.resize(120, 24);
+        let wide: Vec<String> = entries
+            .iter()
+            .flat_map(|e| {
+                let rendered = ui.render_entry(e);
+                rendered
+                    .into_iter()
+                    .map(|l| phi_tui::strip_ansi(&l))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        let wide_nonblank: Vec<&String> = wide.iter().filter(|l| !l.is_empty()).collect();
+        let wide_max = wide_nonblank.iter().map(|l| l.len()).max().unwrap_or(0);
+        let wide_lines = wide_nonblank.len();
+
+        // The re-rendered content should use more columns (wider max line)
+        // and fewer lines than the narrow version — proving the transcript
+        // flexes to the terminal width on every render, like Pi.
+        assert!(
+            wide_max > narrow_max,
+            "wide max width {wide_max} should exceed narrow max width {narrow_max}"
+        );
+        assert!(
+            wide_lines < narrow_lines,
+            "wide line count {wide_lines} should be less than narrow line count {narrow_lines}"
+        );
     }
 }

@@ -163,7 +163,7 @@ impl Ui {
                     if !code.trim().is_empty() {
                         let _ = login.code_tx.send(code.trim().to_owned());
                         self.editor.clear();
-                        self.pending.push(format!("{DIM}[code submitted]{RESET}"));
+                        self.pending.push(TranscriptEntry::RawLines(vec![format!("{DIM}[code submitted]{RESET}")]));
                     }
                     return false;
                 }
@@ -190,10 +190,12 @@ impl Ui {
                 // cursor_row = 0 that resize() just set. Without this, the
                 // next render's move_to_origin would emit zero cursor-up
                 // commands, leaving stale chrome in scrollback.
-                // transcript.reset() sets committed_rows = 0 so all finalized
-                // blocks are re-emitted as scrollback on the next draw().
                 self.term.resize(width, height);
                 let _ = self.term.clear_all();
+                // transcript_entries store raw data that re-renders at the
+                // current width on every draw(), so resize naturally flexes
+                // — no replay needed. Just reset committed_rows so all
+                // finalized entries are re-emitted as scrollback.
                 self.transcript.reset();
             }
             _ => {}
@@ -239,35 +241,32 @@ impl Ui {
             "/help" => {
                 for spec in COMMANDS {
                     let usage = format!("/{} {}", spec.name, spec.args);
-                    self.pending
-                        .push(format!("{DIM}{:<20}{}{RESET}", usage.trim_end(), spec.desc));
+                    self.pending.push(TranscriptEntry::RawLines(vec![format!("{DIM}{:<20}{}{RESET}", usage.trim_end(), spec.desc)]));
                 }
                 // Also list extension-registered commands.
                 for (name, desc) in self.runtime.list_extension_commands() {
                     let usage = format!("/{}", name);
-                    self.pending
-                        .push(format!("{DIM}{:<20}{}{RESET}", usage, desc));
+                    self.pending.push(TranscriptEntry::RawLines(vec![format!("{DIM}{:<20}{}{RESET}", usage, desc)]));
                 }
-                self.pending.push(format!(
+                self.pending.push(TranscriptEntry::RawLines(vec![format!(
                     "{DIM}!cmd                run bash(cmd) in the REPL; the model sees it next turn{RESET}"
-                ));
-                self.pending.push(format!(
+                )]));
+                self.pending.push(TranscriptEntry::RawLines(vec![format!(
                     "{DIM}!!cmd               run bash(cmd) without showing the model{RESET}"
-                ));
-                self.pending.push(format!(
+                )]));
+                self.pending.push(TranscriptEntry::RawLines(vec![format!(
                     "{DIM}keys: enter send (mode-dependent mid-run) · shift+enter newline · tab complete/cycle send mode · up/down history{RESET}"
-                ));
-                self.pending.push(format!(
+                )]));
+                self.pending.push(TranscriptEntry::RawLines(vec![format!(
                     "{DIM}      ctrl-z undo · ctrl-y redo · ctrl-r yank · ctrl-p cycle model · ctrl-l models · shift+tab thinking level{RESET}"
-                ));
-                self.pending.push(format!(
+                )]));
+                self.pending.push(TranscriptEntry::RawLines(vec![format!(
                     "{DIM}      ctrl-t show/hide thinking · ctrl-o expand tool output · ctrl-g $EDITOR · ctrl-q suspend · ctrl-x cycle send mode{RESET}"
-                ));
-                self.pending
-                    .push(format!("{DIM}      esc cancel · ctrl-c ctrl-c quit{RESET}"));
-                self.pending.push(format!(
+                )]));
+                self.pending.push(TranscriptEntry::RawLines(vec![format!("{DIM}      esc cancel · ctrl-c ctrl-c quit{RESET}")]));
+                self.pending.push(TranscriptEntry::RawLines(vec![format!(
                     "{DIM}      esc esc session tree (empty editor){RESET}"
-                ));
+                )]));
             }
             "/new" => {
                 let _ = cmd_tx.send(Cmd::Reset);
@@ -275,9 +274,9 @@ impl Ui {
                 let _ = self.term.clear_all();
                 match SessionStore::new(&self.cwd) {
                     Ok(store) => self.store = store,
-                    Err(e) => self.pending.push(self.err(&e)),
+                    Err(e) => self.pending.push(TranscriptEntry::RawLines(vec![self.err(&e)])),
                 }
-                self.pending.push(format!("{DIM}[session reset]{RESET}"));
+                self.pending.push(TranscriptEntry::RawLines(vec![format!("{DIM}[session reset]{RESET}")]));
             }
             "/resume" => self.open_resume_selector(),
             "/tree" => self.open_tree_selector(),
@@ -319,10 +318,8 @@ impl Ui {
                     provider.to_owned()
                 };
                 match self.storage.logout(&provider) {
-                    Ok(()) => self
-                        .pending
-                        .push(format!("{DIM}[logged out of {provider}]{RESET}")),
-                    Err(e) => self.pending.push(self.err(&e)),
+                    Ok(()) => self.pending.push(TranscriptEntry::RawLines(vec![format!("{DIM}[logged out of {provider}]{RESET}")])),
+                    Err(e) => self.pending.push(TranscriptEntry::RawLines(vec![self.err(&e)])),
                 }
             }
             _ if trimmed.starts_with('!') && trimmed.len() > 1 => {
@@ -368,19 +365,17 @@ impl Ui {
                     Ok(Ok(Some(output))) => {
                         if let Some(msg) = output.message {
                             self.ensure_pending_gap();
-                            self.pending.push(msg);
+                            self.pending.push(TranscriptEntry::RawLines(vec![msg]));
                         }
                     }
                     Ok(Ok(None)) => {
-                        self.pending
-                            .push(self.warn(&format!("unknown command: {cmd_name}")));
+                        self.pending.push(TranscriptEntry::RawLines(vec![self.warn(&format!("unknown command: {cmd_name}"))]));
                     }
                     Ok(Err(e)) => {
-                        self.pending.push(self.err(&e));
+                        self.pending.push(TranscriptEntry::RawLines(vec![self.err(&e)]));
                     }
                     Err(_elapsed) => {
-                        self.pending
-                            .push(self.err(&format!("command '{cmd_name}' timed out")));
+                        self.pending.push(TranscriptEntry::RawLines(vec![self.err(&format!("command '{cmd_name}' timed out"))]));
                     }
                 }
             }
@@ -422,10 +417,10 @@ impl Ui {
             self.push_repl_block(0, &code, self.code_limit());
         } else {
             self.ensure_pending_gap();
-            self.pending.push(format!(
+            self.pending.push(TranscriptEntry::RawLines(vec![format!(
                 "{tool}${RESET} {DIM}{cmd}{RESET}",
                 tool = &self.palette.tool_title_fg
-            ));
+            )]));
             self.last_activity = false;
         }
         let _ = cmd_tx.send(Cmd::Shell { code, record });
@@ -434,10 +429,10 @@ impl Ui {
     pub(super) fn send_prompt(&mut self, prompt: &str, cmd_tx: &mpsc::UnboundedSender<Cmd>) {
         self.push_user_message(prompt);
         if let Err(e) = self.store.append(session::Role::User, prompt) {
-            self.pending.push(format!(
+            self.pending.push(TranscriptEntry::RawLines(vec![format!(
                 "{}session not saved:{RESET} {e}",
                 &self.palette.warning_fg
-            ));
+            )]));
         }
         // Durable turn boundary: an exchange_start without its exchange_end
         // is how a crash mid-turn stays detectable after restart.
@@ -470,8 +465,7 @@ impl Ui {
 
     pub(super) fn start_login(&mut self, provider: &str) {
         if self.login.is_some() {
-            self.pending
-                .push(format!("{DIM}[a login is already in progress]{RESET}"));
+            self.pending.push(TranscriptEntry::RawLines(vec![format!("{DIM}[a login is already in progress]{RESET}")]));
             return;
         }
         let name = if provider.is_empty() {
@@ -480,9 +474,9 @@ impl Ui {
             provider.to_owned()
         };
         let Some(provider) = OAuthProviderId::parse(&name) else {
-            self.pending.push(self.err(&format!(
+            self.pending.push(TranscriptEntry::RawLines(vec![self.err(&format!(
                 "unknown provider '{name}' (expected: anthropic, openai)"
-            )));
+            ))]));
             return;
         };
         let (code_tx, code_rx) = mpsc::unbounded_channel();
@@ -512,22 +506,20 @@ impl Ui {
         match msg {
             LoginMsg::Info(text) => {
                 for line in text.lines() {
-                    self.pending.push(format!("{DIM}{line}{RESET}"));
+                    self.pending.push(TranscriptEntry::RawLines(vec![format!("{DIM}{line}{RESET}")]));
                 }
             }
             LoginMsg::Done { provider, result } => {
                 self.login = None;
                 match result {
-                    Ok(()) => self
-                        .pending
-                        .push(format!("{BOLD}logged in to {provider}{RESET}")),
+                    Ok(()) => self.pending.push(TranscriptEntry::RawLines(vec![format!("{BOLD}logged in to {provider}{RESET}")])),
                     Err(e) if e.to_lowercase().contains("cancel") => {
-                        self.pending.push(format!("{DIM}[login cancelled]{RESET}"))
+                        self.pending.push(TranscriptEntry::RawLines(vec![format!("{DIM}[login cancelled]{RESET}")]))
                     }
-                    Err(e) => self.pending.push(format!(
+                    Err(e) => self.pending.push(TranscriptEntry::RawLines(vec![format!(
                         "{}login failed:{RESET} {e}",
                         &self.palette.error_fg
-                    )),
+                    )])),
                 }
             }
         }
@@ -930,10 +922,10 @@ impl Ui {
             Done::Restored(result) => {
                 if let Err(e) = result {
                     self.ensure_pending_gap();
-                    self.pending.push(format!(
+                    self.pending.push(TranscriptEntry::RawLines(vec![format!(
                         "{}restore failed:{RESET} {e}",
                         &self.palette.error_fg
-                    ));
+                    )]));
                 }
             }
         }
@@ -978,10 +970,11 @@ impl Ui {
                 let output = format!("{}{}", res.stdout, res.stderr);
                 self.ensure_pending_gap();
                 if output.trim().is_empty() {
-                    self.pending.push(format!("{DIM}(no output){RESET}"));
+                    self.pending.push(TranscriptEntry::RawLines(vec![format!("{DIM}(no output){RESET}")]));
                 } else {
-                    self.pending
-                        .extend(output.trim_end().lines().map(str::to_owned));
+                    self.pending.push(TranscriptEntry::RawLines(
+                        output.trim_end().lines().map(str::to_owned).collect(),
+                    ));
                 }
                 self.last_activity = false;
             }
@@ -991,7 +984,7 @@ impl Ui {
                     self.commit_block();
                 } else {
                     self.ensure_pending_gap();
-                    self.pending.push(self.err(&e));
+                    self.pending.push(TranscriptEntry::RawLines(vec![self.err(&e)]));
                     self.last_activity = false;
                 }
             }
@@ -1043,7 +1036,7 @@ impl Ui {
         self.ensure_pending_gap();
         if completion.stop == StopCause::Failed {
             let error = completion.error.unwrap_or_else(|| "run failed".to_owned());
-            self.pending.push(self.err(&error));
+            self.pending.push(TranscriptEntry::RawLines(vec![self.err(&error)]));
         } else if !completion.response.is_empty() {
             self.push_assistant_message(&completion.response);
         }
@@ -1056,7 +1049,7 @@ impl Ui {
         };
         let _ = self.store.end_exchange(status);
         self.usage = completion.usage;
-        self.pending.push(String::new());
+        self.pending.push(TranscriptEntry::RawLines(vec![String::new()]));
         self.last_activity = false;
     }
 }

@@ -398,6 +398,23 @@ pub(crate) struct TranscriptBlock {
     pub(crate) finalized: bool,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct ReplBlockData {
+    pub(crate) code: String,
+    pub(crate) stdout: String,
+    pub(crate) stderr: String,
+    pub(crate) tools: Vec<phi_session::session::ToolCall>,
+    pub(crate) subcalls: Vec<phi_session::session::SubcallRecord>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum TranscriptEntry {
+    UserMessage(String),
+    AssistantProse(String),
+    ReplBlock(ReplBlockData),
+    RawLines(Vec<String>),
+}
+
 /// Render a boxed block mirroring pi's `Box(1, 1, bgFn)` component: 1-cell
 /// padding all around, with the given background applied via `fill_bg`.
 ///

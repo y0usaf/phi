@@ -311,7 +311,7 @@ impl Ui {
         if self.block_active {
             self.block.push(row);
         } else {
-            self.pending.push(row);
+            self.pending.push(TranscriptEntry::RawLines(vec![row]));
         }
     }
 
@@ -334,8 +334,13 @@ impl Ui {
     /// messages, REPL blocks, tool cards, assistant prose) never visually
     /// touch.
     pub(super) fn ensure_pending_gap(&mut self) {
-        if self.pending.last().is_some_and(|row| !row.is_empty()) {
-            self.pending.push(String::new());
+        let needs_gap = match self.pending.last() {
+            Some(TranscriptEntry::RawLines(lines)) => lines.last().is_some_and(|l| !l.is_empty()),
+            Some(_) => true,
+            None => false,
+        };
+        if needs_gap {
+            self.pending.push(TranscriptEntry::RawLines(vec![String::new()]));
         }
     }
 
@@ -363,11 +368,13 @@ impl Ui {
         };
         let rows = render_repl_block(&body, bg, self.panel_width());
         self.ensure_pending_gap();
-        self.pending.extend(rows);
+        self.pending.push(TranscriptEntry::RawLines(rows));
         self.open_tool_rows.clear();
         self.open_subcall_rows.clear();
         let after = std::mem::take(&mut self.after_block);
-        self.pending.extend(after);
+        if !after.is_empty() {
+            self.pending.push(TranscriptEntry::RawLines(after));
+        }
     }
 
     pub(super) fn push_dot(&mut self, depth: usize, text: String) {
@@ -615,7 +622,7 @@ impl Ui {
         render_boxed(&rows, bg, self.box_width())
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, dead_code)]
     pub(super) fn push_tool_result(
         &mut self,
         depth: usize,
@@ -652,7 +659,7 @@ impl Ui {
 
     pub(super) fn push_user_message(&mut self, text: &str) {
         self.ensure_pending_gap();
-        self.pending.extend(self.user_card_lines(text));
+        self.pending.push(TranscriptEntry::UserMessage(text.to_owned()));
         self.last_activity = false;
     }
 
@@ -661,7 +668,6 @@ impl Ui {
         if text.is_empty() {
             return;
         }
-        let card = self.assistant_card_lines(text);
         if self.block_active {
             // Prose flushed while a block is active goes to after_block,
             // committed after the block closes. Ensure a gap from any prior
@@ -669,10 +675,11 @@ impl Ui {
             if self.after_block.last().is_some_and(|row| !row.is_empty()) {
                 self.after_block.push(String::new());
             }
+            let card = self.assistant_card_lines(text);
             self.after_block.extend(card);
         } else {
             self.ensure_pending_gap();
-            self.pending.extend(card);
+            self.pending.push(TranscriptEntry::AssistantProse(text.to_owned()));
         }
         self.last_activity = false;
     }
@@ -702,64 +709,14 @@ impl Ui {
         tools: &[session::ToolCall],
         subcalls: &[session::SubcallRecord],
     ) {
-        self.begin_block();
-        self.push_repl_block(0, code, self.code_limit());
-        // Replay the persisted tool calls and sub-LLM calls nested in the
-        // block, mirroring the live ToolStart/ToolEnd rendering so a
-        // resumed session looks like the one the user actually saw.
-        for tool in tools {
-            let depth = tool.depth + 1;
-            match &tool.error {
-                Some(error) => {
-                    self.push_tool_result(
-                        depth,
-                        &tool.name,
-                        &tool.args,
-                        error,
-                        self.output_limit(),
-                        None,
-                        true,
-                    );
-                }
-                None => {
-                    self.push_tool_result(
-                        depth,
-                        &tool.name,
-                        &tool.args,
-                        &tool.result,
-                        self.output_limit(),
-                        tool_preview_lang(&tool.name, &tool.args),
-                        false,
-                    );
-                }
-            }
-        }
-        for subcall in subcalls {
-            let depth = subcall.depth;
-            let label = subcall_title(&subcall.model, &subcall.prompt_preview, &self.palette);
-            let content = subcall
-                .error
-                .as_deref()
-                .or(subcall.result_preview.as_deref());
-            let rows = self.subcall_result_rows(
-                depth,
-                &label,
-                content,
-                self.output_limit(),
-                subcall.error.is_some(),
-            );
-            for row in rows {
-                self.push_row(row);
-            }
-        }
-        self.last_activity = true;
-        self.block_errored = tools.iter().any(|t| t.error.is_some())
-            || subcalls.iter().any(|s| s.error.is_some())
-            || !stderr.is_empty();
-        let filtered = strip_tool_echoes(stdout, tools, 0);
-        self.push_preview(0, &filtered, self.output_limit());
-        self.push_preview(0, stderr, self.output_limit());
-        self.commit_block();
+        self.ensure_pending_gap();
+        self.pending.push(TranscriptEntry::ReplBlock(ReplBlockData {
+            code: code.to_owned(),
+            stdout: stdout.to_owned(),
+            stderr: stderr.to_owned(),
+            tools: tools.to_owned(),
+            subcalls: subcalls.to_owned(),
+        }));
     }
 
     pub(super) fn cycle_thinking(&mut self) {
