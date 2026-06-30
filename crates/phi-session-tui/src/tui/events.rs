@@ -163,7 +163,9 @@ impl Ui {
                     if !code.trim().is_empty() {
                         let _ = login.code_tx.send(code.trim().to_owned());
                         self.editor.clear();
-                        self.pending.push(TranscriptEntry::RawLines(vec![format!("{DIM}[code submitted]{RESET}")]));
+                        self.pending.push(TranscriptEntry::RawLines(vec![format!(
+                            "{DIM}[code submitted]{RESET}"
+                        )]));
                     }
                     return false;
                 }
@@ -241,12 +243,19 @@ impl Ui {
             "/help" => {
                 for spec in COMMANDS {
                     let usage = format!("/{} {}", spec.name, spec.args);
-                    self.pending.push(TranscriptEntry::RawLines(vec![format!("{DIM}{:<20}{}{RESET}", usage.trim_end(), spec.desc)]));
+                    self.pending.push(TranscriptEntry::RawLines(vec![format!(
+                        "{DIM}{:<20}{}{RESET}",
+                        usage.trim_end(),
+                        spec.desc
+                    )]));
                 }
                 // Also list extension-registered commands.
                 for (name, desc) in self.runtime.list_extension_commands() {
                     let usage = format!("/{}", name);
-                    self.pending.push(TranscriptEntry::RawLines(vec![format!("{DIM}{:<20}{}{RESET}", usage, desc)]));
+                    self.pending.push(TranscriptEntry::RawLines(vec![format!(
+                        "{DIM}{:<20}{}{RESET}",
+                        usage, desc
+                    )]));
                 }
                 self.pending.push(TranscriptEntry::RawLines(vec![format!(
                     "{DIM}!cmd                run bash(cmd) in the REPL; the model sees it next turn{RESET}"
@@ -263,7 +272,9 @@ impl Ui {
                 self.pending.push(TranscriptEntry::RawLines(vec![format!(
                     "{DIM}      ctrl-t show/hide thinking · ctrl-o expand tool output · ctrl-g $EDITOR · ctrl-q suspend · ctrl-x cycle send mode{RESET}"
                 )]));
-                self.pending.push(TranscriptEntry::RawLines(vec![format!("{DIM}      esc cancel · ctrl-c ctrl-c quit{RESET}")]));
+                self.pending.push(TranscriptEntry::RawLines(vec![format!(
+                    "{DIM}      esc cancel · ctrl-c ctrl-c quit{RESET}"
+                )]));
                 self.pending.push(TranscriptEntry::RawLines(vec![format!(
                     "{DIM}      esc esc session tree (empty editor){RESET}"
                 )]));
@@ -274,9 +285,13 @@ impl Ui {
                 let _ = self.term.clear_all();
                 match SessionStore::new(&self.cwd) {
                     Ok(store) => self.store = store,
-                    Err(e) => self.pending.push(TranscriptEntry::RawLines(vec![self.err(&e)])),
+                    Err(e) => self
+                        .pending
+                        .push(TranscriptEntry::RawLines(vec![self.err(&e)])),
                 }
-                self.pending.push(TranscriptEntry::RawLines(vec![format!("{DIM}[session reset]{RESET}")]));
+                self.pending.push(TranscriptEntry::RawLines(vec![format!(
+                    "{DIM}[session reset]{RESET}"
+                )]));
             }
             "/resume" => self.open_resume_selector(),
             "/tree" => self.open_tree_selector(),
@@ -318,8 +333,12 @@ impl Ui {
                     provider.to_owned()
                 };
                 match self.storage.logout(&provider) {
-                    Ok(()) => self.pending.push(TranscriptEntry::RawLines(vec![format!("{DIM}[logged out of {provider}]{RESET}")])),
-                    Err(e) => self.pending.push(TranscriptEntry::RawLines(vec![self.err(&e)])),
+                    Ok(()) => self.pending.push(TranscriptEntry::RawLines(vec![format!(
+                        "{DIM}[logged out of {provider}]{RESET}"
+                    )])),
+                    Err(e) => self
+                        .pending
+                        .push(TranscriptEntry::RawLines(vec![self.err(&e)])),
                 }
             }
             _ if trimmed.starts_with('!') && trimmed.len() > 1 => {
@@ -369,13 +388,18 @@ impl Ui {
                         }
                     }
                     Ok(Ok(None)) => {
-                        self.pending.push(TranscriptEntry::RawLines(vec![self.warn(&format!("unknown command: {cmd_name}"))]));
+                        self.pending.push(TranscriptEntry::RawLines(vec![
+                            self.warn(&format!("unknown command: {cmd_name}")),
+                        ]));
                     }
                     Ok(Err(e)) => {
-                        self.pending.push(TranscriptEntry::RawLines(vec![self.err(&e)]));
+                        self.pending
+                            .push(TranscriptEntry::RawLines(vec![self.err(&e)]));
                     }
                     Err(_elapsed) => {
-                        self.pending.push(TranscriptEntry::RawLines(vec![self.err(&format!("command '{cmd_name}' timed out"))]));
+                        self.pending.push(TranscriptEntry::RawLines(vec![
+                            self.err(&format!("command '{cmd_name}' timed out")),
+                        ]));
                     }
                 }
             }
@@ -465,7 +489,9 @@ impl Ui {
 
     pub(super) fn start_login(&mut self, provider: &str) {
         if self.login.is_some() {
-            self.pending.push(TranscriptEntry::RawLines(vec![format!("{DIM}[a login is already in progress]{RESET}")]));
+            self.pending.push(TranscriptEntry::RawLines(vec![format!(
+                "{DIM}[a login is already in progress]{RESET}"
+            )]));
             return;
         }
         let name = if provider.is_empty() {
@@ -474,9 +500,10 @@ impl Ui {
             provider.to_owned()
         };
         let Some(provider) = OAuthProviderId::parse(&name) else {
-            self.pending.push(TranscriptEntry::RawLines(vec![self.err(&format!(
-                "unknown provider '{name}' (expected: anthropic, openai)"
-            ))]));
+            self.pending
+                .push(TranscriptEntry::RawLines(vec![self.err(&format!(
+                    "unknown provider '{name}' (expected: anthropic, openai)"
+                ))]));
             return;
         };
         let (code_tx, code_rx) = mpsc::unbounded_channel();
@@ -506,16 +533,20 @@ impl Ui {
         match msg {
             LoginMsg::Info(text) => {
                 for line in text.lines() {
-                    self.pending.push(TranscriptEntry::RawLines(vec![format!("{DIM}{line}{RESET}")]));
+                    self.pending.push(TranscriptEntry::RawLines(vec![format!(
+                        "{DIM}{line}{RESET}"
+                    )]));
                 }
             }
             LoginMsg::Done { provider, result } => {
                 self.login = None;
                 match result {
-                    Ok(()) => self.pending.push(TranscriptEntry::RawLines(vec![format!("{BOLD}logged in to {provider}{RESET}")])),
-                    Err(e) if e.to_lowercase().contains("cancel") => {
-                        self.pending.push(TranscriptEntry::RawLines(vec![format!("{DIM}[login cancelled]{RESET}")]))
-                    }
+                    Ok(()) => self.pending.push(TranscriptEntry::RawLines(vec![format!(
+                        "{BOLD}logged in to {provider}{RESET}"
+                    )])),
+                    Err(e) if e.to_lowercase().contains("cancel") => self.pending.push(
+                        TranscriptEntry::RawLines(vec![format!("{DIM}[login cancelled]{RESET}")]),
+                    ),
                     Err(e) => self.pending.push(TranscriptEntry::RawLines(vec![format!(
                         "{}login failed:{RESET} {e}",
                         &self.palette.error_fg
@@ -970,7 +1001,9 @@ impl Ui {
                 let output = format!("{}{}", res.stdout, res.stderr);
                 self.ensure_pending_gap();
                 if output.trim().is_empty() {
-                    self.pending.push(TranscriptEntry::RawLines(vec![format!("{DIM}(no output){RESET}")]));
+                    self.pending.push(TranscriptEntry::RawLines(vec![format!(
+                        "{DIM}(no output){RESET}"
+                    )]));
                 } else {
                     self.pending.push(TranscriptEntry::RawLines(
                         output.trim_end().lines().map(str::to_owned).collect(),
@@ -984,7 +1017,8 @@ impl Ui {
                     self.commit_block();
                 } else {
                     self.ensure_pending_gap();
-                    self.pending.push(TranscriptEntry::RawLines(vec![self.err(&e)]));
+                    self.pending
+                        .push(TranscriptEntry::RawLines(vec![self.err(&e)]));
                     self.last_activity = false;
                 }
             }
@@ -1036,7 +1070,8 @@ impl Ui {
         self.ensure_pending_gap();
         if completion.stop == StopCause::Failed {
             let error = completion.error.unwrap_or_else(|| "run failed".to_owned());
-            self.pending.push(TranscriptEntry::RawLines(vec![self.err(&error)]));
+            self.pending
+                .push(TranscriptEntry::RawLines(vec![self.err(&error)]));
         } else if !completion.response.is_empty() {
             self.push_assistant_message(&completion.response);
         }
@@ -1049,7 +1084,8 @@ impl Ui {
         };
         let _ = self.store.end_exchange(status);
         self.usage = completion.usage;
-        self.pending.push(TranscriptEntry::RawLines(vec![String::new()]));
+        self.pending
+            .push(TranscriptEntry::RawLines(vec![String::new()]));
         self.last_activity = false;
     }
 }

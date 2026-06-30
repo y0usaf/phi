@@ -126,16 +126,18 @@ impl Ui {
 
     pub(super) fn switch_model(&mut self, query: &str, root: bool) {
         let Some(model) = self.registry.find(query).cloned() else {
-            self.pending.push(TranscriptEntry::RawLines(vec![self.err(&format!(
-                "unknown model '{query}' (tab after /model lists models)"
-            ))]));
+            self.pending
+                .push(TranscriptEntry::RawLines(vec![self.err(&format!(
+                    "unknown model '{query}' (tab after /model lists models)"
+                ))]));
             return;
         };
         if !self.registry.is_supported(&model) {
-            self.pending.push(TranscriptEntry::RawLines(vec![self.err(&format!(
-                "model '{}/{}' is not supported",
-                model.provider, model.id
-            ))]));
+            self.pending
+                .push(TranscriptEntry::RawLines(vec![self.err(&format!(
+                    "model '{}/{}' is not supported",
+                    model.provider, model.id
+                ))]));
             return;
         }
         let (target, which) = if root {
@@ -148,7 +150,10 @@ impl Ui {
         let new_id = model.id.clone();
         target.set_model(model.clone());
         self.model_label = model_label(&self.root_lm.model(), &self.sub_lm.model());
-        self.pending.push(TranscriptEntry::RawLines(vec![format!("{DIM}[{which} → {}/{new_id}]{RESET}", new_provider)]));
+        self.pending.push(TranscriptEntry::RawLines(vec![format!(
+            "{DIM}[{which} → {}/{new_id}]{RESET}",
+            new_provider
+        )]));
         self.warn_if_missing_credentials(new_provider.clone());
 
         // ── Extension: ModelSelect ──────────────────────────────────────
