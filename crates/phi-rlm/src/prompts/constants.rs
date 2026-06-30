@@ -28,6 +28,11 @@ pub(crate) const TURN_SCARCITY_NUDGE: &str = "If you are running out of turns wi
 pub const DEFAULT_ANSWER_NUDGE: &str =
     "Please provide a final answer to the user's question based on the information provided.";
 
+/// Injected as a `Role::User` message after `PROSE_NUDGE_THRESHOLD` consecutive
+/// block-free turns, nudging the model to either use the REPL or submit a final
+/// answer rather than continuing to emit pure prose.
+pub(crate) const PROSE_NUDGE: &str = "Your previous turn(s) contained no tool calls or answer submission. Please either use the `repl` tool to make progress toward an answer, or set `answer['ready'] = True` to submit your final answer.";
+
 /// Dual-use security boundary, ported from claude-code's
 /// `CYBER_RISK_INSTRUCTION` plus the URL-guessing restriction. Identity-neutral;
 /// default-on. The cyber-risk text is owned upstream by a Safeguards team —

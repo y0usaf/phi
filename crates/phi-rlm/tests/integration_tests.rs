@@ -472,8 +472,8 @@ async fn prose_silently_banked_then_repl_answer() {
         !second
             .iter()
             .any(|m| m.role == Role::User
-                && m.content.contains("Your previous message contained no")),
-        "silent banking must not inject a prose nudge"
+                && m.content.contains("no tool calls or answer submission")),
+        "no nudge after first prose (below PROSE_NUDGE_THRESHOLD)"
     );
 }
 
@@ -504,15 +504,17 @@ async fn explicit_task_complete_token_ends_session() {
 
 #[tokio::test]
 async fn max_consecutive_prose_safety_valve_fires() {
-    // After MAX_CONSECUTIVE_PROSE (4) consecutive block-free turns
+    // After MAX_CONSECUTIVE_PROSE (5) consecutive block-free turns
     // without a <task_complete> token, the safety valve fires and the
-    // prose is accepted as the final answer.
+    // prose is accepted as the final answer. A nudge is injected after
+    // PROSE_NUDGE_THRESHOLD (2) consecutive prose turns.
     let root = Arc::new(ScriptedLm::new(
         "root-model",
         &[
             "Thinking about it.",
             "Still thinking.",
             "Almost there.",
+            "Getting closer.",
             "The answer is 42.",
         ],
     ));
@@ -526,25 +528,112 @@ async fn max_consecutive_prose_safety_valve_fires() {
         .await;
     assert_eq!(result.stop, StopCause::Prose, "{:?}", result.error);
     assert_eq!(result.response, "The answer is 42.");
-    assert_eq!(result.iterations, 4);
+    assert_eq!(result.iterations, 5);
 
     let prompts = root.recorded_prompts();
-    // No prose nudge should be injected on any turn, pure silent banking
-    // until the threshold fires.
-    for prompt in &prompts {
+    // A prose nudge should be injected after the 2nd consecutive prose turn,
+    // appearing in the prompt for turn 3 (index 2) and persisting in history
+    // for all subsequent turns.
+    let third = &prompts[2];
+    assert!(
+        third
+            .iter()
+            .any(|m| m.role == Role::User
+                && m.content.contains("no tool calls or answer submission")),
+        "prose nudge should be injected after PROSE_NUDGE_THRESHOLD consecutive prose turns"
+    );
+    // The nudge should NOT appear in the first two turns (before the threshold).
+    for prompt in &prompts[..2] {
         assert!(
             !prompt.iter().any(|m| m.role == Role::User
-                && m.content.contains("Your previous message contained no")),
-            "no prose nudge should be injected during silent banking"
+                && m.content.contains("no tool calls or answer submission")),
+            "prose nudge should not be injected before PROSE_NUDGE_THRESHOLD"
         );
     }
+    // Exactly one nudge User message should exist in the last prompt's history.
+    let nudge_msgs = prompts
+        .last()
+        .unwrap()
+        .iter()
+        .filter(|m| {
+            m.role == Role::User && m.content.contains("no tool calls or answer submission")
+        })
+        .count();
+    assert_eq!(nudge_msgs, 1, "prose nudge should be injected exactly once");
 }
 
 // (second_consecutive_prose_turn_accepted_as_answer removed: the
 //  2-strike prose-bounce is replaced by silent banking + task_complete
-//  token + MAX_CONSECUTIVE_PROSE safety valve. See
-//  explicit_task_complete_token_ends_session and
-//  max_consecutive_prose_safety_valve_fires above.)
+//  token + MAX_CONSECUTIVE_PROSE safety valve with a nudge at
+//  PROSE_NUDGE_THRESHOLD. See explicit_task_complete_token_ends_session,
+//  max_consecutive_prose_safety_valve_fires, and
+//  prose_nudge_course_corrects below.)
+
+#[tokio::test]
+async fn prose_nudge_course_corrects() {
+    // prose → prose → (nudge injected at PROSE_NUDGE_THRESHOLD=2) → code →
+    // repl-answer. The model course-corrects after receiving the nudge,
+    // proving the nudge gives a drifting model a chance to recover before
+    // the safety valve fires.
+    let root = Arc::new(ScriptedLm::new(
+        "root-model",
+        &[
+            "I can figure this out by reasoning.",
+            "Let me think through the logic step by step.",
+            "Actually, let me just check.
+```repl
+print(context[:4])
+```",
+            "```repl
+answer['content'] = 'done'
+answer['ready'] = True
+```",
+        ],
+    ));
+    let engine = rlm(RlmConfig::default(), root.clone(), quiet_sub());
+    let result = engine
+        .completion(
+            ContextPayload::Str("ctx".into()),
+            Some("What is the answer?"),
+            &CancellationToken::new(),
+        )
+        .await;
+    assert_eq!(result.stop, StopCause::Answer, "{:?}", result.error);
+    assert_eq!(result.response, "done");
+    assert_eq!(result.iterations, 4);
+
+    let prompts = root.recorded_prompts();
+    // Turn 1 (consecutive_prose=1): banked silently, no nudge in turn 2's prompt.
+    let second = &prompts[1];
+    assert!(
+        !second
+            .iter()
+            .any(|m| m.role == Role::User
+                && m.content.contains("no tool calls or answer submission")),
+        "no nudge before PROSE_NUDGE_THRESHOLD"
+    );
+    // Turn 2 (consecutive_prose=2): nudge injected, appears in turn 3's prompt.
+    let third = &prompts[2];
+    assert!(
+        third
+            .iter()
+            .any(|m| m.role == Role::User
+                && m.content.contains("no tool calls or answer submission")),
+        "nudge should appear in turn 3's prompt after 2 consecutive prose turns"
+    );
+    // Turn 3: code (counter resets to 0). The nudge from turn 2 persists
+    // in history, but no NEW nudge should be injected. Verify exactly one
+    // nudge message exists in the final prompt's history.
+    let nudge_msgs = prompts
+        .last()
+        .unwrap()
+        .iter()
+        .filter(|m| {
+            m.role == Role::User && m.content.contains("no tool calls or answer submission")
+        })
+        .count();
+    assert_eq!(nudge_msgs, 1, "no additional nudge after counter reset");
+}
 
 #[tokio::test]
 async fn prose_counter_resets_after_code_turn() {
@@ -574,24 +663,26 @@ async fn prose_counter_resets_after_code_turn() {
     assert_eq!(result.iterations, 4);
 
     let prompts = root.recorded_prompts();
-    // Turn 1 (prose) is banked silently, no prose nudge.
+    // Turn 1 (prose, consecutive=1) is banked silently — no nudge fires
+    // because consecutive_prose (1) < PROSE_NUDGE_THRESHOLD (2).
     let second = &prompts[1];
     assert!(
         !second
             .iter()
             .any(|m| m.role == Role::User
-                && m.content.contains("Your previous message contained no")),
-        "silent banking: no prose nudge after first prose"
+                && m.content.contains("no tool calls or answer submission")),
+        "no nudge after first prose (below PROSE_NUDGE_THRESHOLD)"
     );
-    // Turn 3 (the second prose, after the code turn reset) is also banked
-    // silently, proving the counter reset, no nudge carried over.
+    // Turn 3 (the second prose, after the code turn reset, consecutive=1)
+    // is also banked silently — the counter reset to 0 after the code turn,
+    // so this prose turn is consecutive=1 again, below the threshold.
     let fourth = &prompts[3];
     assert!(
         !fourth
             .iter()
             .any(|m| m.role == Role::User
-                && m.content.contains("Your previous message contained no")),
-        "prose after a code turn must be silently banked (counter reset, no nudge)"
+                && m.content.contains("no tool calls or answer submission")),
+        "no nudge after counter reset (below PROSE_NUDGE_THRESHOLD)"
     );
 }
 

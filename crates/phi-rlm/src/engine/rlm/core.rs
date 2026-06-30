@@ -21,7 +21,7 @@ use crate::config::{
 use crate::llm_parse::{ExecutedBlock, format_execution_result};
 use crate::lm_core::{ChatMessage, ContextPayload, LanguageModel, LmHandler, Role};
 use crate::prompts::{
-    DEFAULT_ANSWER_NUDGE, QueryMetadata, SystemPromptOptions, build_system_prompt,
+    DEFAULT_ANSWER_NUDGE, PROSE_NUDGE, QueryMetadata, SystemPromptOptions, build_system_prompt,
     build_user_prompt, metadata_user_prompt,
 };
 
@@ -37,11 +37,19 @@ static TASK_COMPLETE_RE: LazyLock<Regex> = LazyLock::new(|| {
         .expect("task_complete regex")
 });
 
+/// Number of consecutive block-free turns after which a `Role::User` nudge
+/// is injected, reminding the model to use the REPL or submit a final answer.
+/// Low enough to course-correct a model that is drifting in prose, high enough
+/// that a single turn of verbal planning is not interrupted.
+const PROSE_NUDGE_THRESHOLD: usize = 2;
+
 /// Maximum consecutive block-free turns (no ```repl``` block, no
-/// `<task_complete>` token) before the prose-safety-valve fires. High enough
-/// that a verbally-planning model won't trip it, low enough to catch a
-/// genuinely stuck model before exhausting `max_iterations`.
-const MAX_CONSECUTIVE_PROSE: usize = 4;
+/// `<task_complete>` token) before the prose-safety-valve fires and the prose
+/// is accepted as the final answer. High enough that a verbally-planning model
+/// won't trip it (with the nudge at `PROSE_NUDGE_THRESHOLD` giving it a chance
+/// to course-correct first), low enough to catch a genuinely stuck model
+/// before exhausting `max_iterations`.
+const MAX_CONSECUTIVE_PROSE: usize = 5;
 
 /// A tool call result arriving from the streaming sink, carrying the code
 /// extracted from the tool call's arguments for eager execution.
@@ -542,9 +550,19 @@ impl Rlm {
 
                         let mut final_result = repl_result;
                         for r in &returns {
-                            if let EventReturn::ToolResultOverride { content } = r {
+                            if let EventReturn::ToolResultOverride {
+                                content,
+                                is_error,
+                                details: _,
+                            } = r
+                            {
                                 final_result.stdout = content.clone();
-                                final_result.stderr = String::new();
+                                if is_error.unwrap_or(false) {
+                                    final_result.stderr = content.clone();
+                                    final_result.stdout = String::new();
+                                } else {
+                                    final_result.stderr = String::new();
+                                }
                             }
                         }
 
@@ -811,7 +829,7 @@ impl Rlm {
                 };
             }
 
-            // Bank the prose silently and continue.
+            // Bank the prose into history and continue.
             dispatch_event(
                 &self.runtime,
                 LifecycleEvent {
@@ -832,6 +850,18 @@ impl Rlm {
                 content: response,
                 ..Default::default()
             });
+
+            // After PROSE_NUDGE_THRESHOLD consecutive block-free turns,
+            // inject a nudge reminding the model to use the REPL or submit
+            // a final answer. This gives a drifting model a chance to
+            // course-correct before the safety valve fires.
+            if consecutive_prose == PROSE_NUDGE_THRESHOLD {
+                history.push(ChatMessage {
+                    role: Role::User,
+                    content: PROSE_NUDGE.to_owned(),
+                    ..Default::default()
+                });
+            }
             i += 1;
         }
 
