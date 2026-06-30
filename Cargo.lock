@@ -1725,8 +1725,11 @@ dependencies = [
 name = "phi-builtins"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "async-trait",
+ "phi-ext",
  "phi-repl",
+ "phi-tui",
  "tempfile",
  "tokio",
 ]
@@ -1783,7 +1786,10 @@ dependencies = [
  "futures",
  "jiff",
  "notify",
+ "phi-builtins",
+ "phi-ext",
  "phi-grid",
+ "phi-lua",
  "phi-rlm",
  "phi-session",
  "phi-session-tui",
