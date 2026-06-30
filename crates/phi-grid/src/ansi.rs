@@ -406,11 +406,17 @@ impl AnsiRenderer {
         // scroll detection is bypassed in that case, so the cached hashes would
         // never be consulted — the computation is pure dead work.
         let pane_full_width = term_pane.col == 0 && term_pane.col + term_pane.cols == surface.cols;
-        if pane_full_width {
-            self.prev_row_hashes = Some(pane_row_hashes(surface, term_pane));
-        }
+        let new_hashes = if pane_full_width {
+            Some(pane_row_hashes(surface, term_pane))
+        } else {
+            None
+        };
 
-        out.flush()
+        out.flush()?;
+        if let Some(hashes) = new_hashes {
+            self.prev_row_hashes = Some(hashes);
+        }
+        Ok(())
     }
 }
 

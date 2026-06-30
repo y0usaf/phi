@@ -135,7 +135,8 @@ pub(super) fn fetch_ai_gateway_models(runtime: &tokio::runtime::Runtime) -> Resu
             }
             let reasoning = m.tags.iter().any(|tag| tag == "reasoning");
             let max_tokens = m.max_tokens.unwrap_or(4096);
-            let (thinking_levels, adaptive_thinking) = gateway_thinking(&m.id, reasoning, max_tokens);
+            let (thinking_levels, adaptive_thinking) =
+                gateway_thinking(&m.id, reasoning, max_tokens);
             models.push(Model {
                 id: m.id.clone(),
                 name: m.name.unwrap_or(m.id),

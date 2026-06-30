@@ -166,6 +166,8 @@ pub async fn run(shared: SharedResources, mux_config: MuxConfig, cwd: PathBuf) -
         },
         session_watcher,
         quit: false,
+        render_failures: 0,
+        renderer_invalidated: false,
     };
 
     let result = app
@@ -233,6 +235,8 @@ struct MuxApp {
     channels: MuxChannels,
     session_watcher: SessionWatcher,
     quit: bool,
+    render_failures: u32,
+    renderer_invalidated: bool,
 }
 
 /// An extension-registered overlay that is currently open (active).

@@ -152,9 +152,28 @@ impl MuxApp {
 
         let term_pane = layout.terminal;
         let mut stdout = std::io::stdout();
-        let _ = self
+        match self
             .renderer
-            .render(&mut stdout, &mut surface, term_pane, hardware_cursor);
+            .render(&mut stdout, &mut surface, term_pane, hardware_cursor)
+        {
+            Ok(()) => {
+                self.render_failures = 0;
+                self.renderer_invalidated = false;
+            }
+            Err(e) => {
+                self.render_failures += 1;
+                if self.render_failures <= 3 {
+                    self.set_note(format!("render error: {e}"), StatusNoteKind::Error);
+                }
+                if self.render_failures >= 10 && !self.renderer_invalidated {
+                    // Persistent render failure — stdout is dead. Invalidate
+                    // the renderer so the next attempt is a full repaint
+                    // rather than a diff against stale state.
+                    self.renderer.invalidate();
+                    self.renderer_invalidated = true;
+                }
+            }
+        }
         self.surface = surface;
     }
 

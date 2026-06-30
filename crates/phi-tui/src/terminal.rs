@@ -19,6 +19,18 @@ const SHOW_CURSOR: &str = "\x1b[?25h";
 const CLEAR_DOWN: &str = "\x1b[0J";
 const CLEAR_LINE: &str = "\x1b[2K";
 
+/// True when PHI_DEBUG_REDRAW=1 is set in the environment. Checked once
+/// (not per-frame) for speed.
+fn debug_redraw_enabled() -> bool {
+    static FLAG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *FLAG.get_or_init(|| std::env::var("PHI_DEBUG_REDRAW").is_ok_and(|v| v == "1"))
+}
+
+/// Log a debug message to stderr (so it doesn't corrupt the terminal).
+fn debug_log(msg: &str) {
+    eprintln!("phi:debug: {msg}");
+}
+
 /// Enables raw mode, bracketed paste, and (where supported) the kitty
 /// keyboard protocol so chords like shift+enter are distinguishable.
 /// Restores the terminal on drop.
@@ -66,6 +78,10 @@ impl RawModeGuard {
         self.teardown();
         unsafe { libc::raise(libc::SIGTSTP) };
         self.setup();
+        // After SIGCONT, send SIGWINCH to ourselves so the event loop
+        // re-reads the terminal size. SIGWINCH may have been lost while
+        // suspended (the process wasn't receiving signals).
+        unsafe { libc::raise(libc::SIGWINCH) };
     }
 
     /// Run `f` with the terminal restored to cooked mode (e.g. to hand the
@@ -197,6 +213,18 @@ impl<W: Write> Terminal<W> {
             cursor_target = cursor_target.map(|(row, col)| (row.saturating_sub(dropped), col));
         }
 
+        if debug_redraw_enabled() {
+            for (i, row) in rows.iter().enumerate() {
+                let w = visible_width(row);
+                if w > self.width {
+                    debug_log(&format!(
+                        "width overflow: row {i} is {w} cols (term {})",
+                        self.width
+                    ));
+                }
+            }
+        }
+
         // Park the cursor: either at the requested position or at the end of
         // the last row.
         let last_row = rows.len().saturating_sub(1);
@@ -218,6 +246,15 @@ impl<W: Write> Terminal<W> {
             && cursor.is_some() == self.cursor_shown
         {
             return Ok(());
+        }
+
+        if debug_redraw_enabled() && full {
+            debug_log(&format!(
+                "full repaint: scrollback={} prev_empty={} embedded={}",
+                scrollback.len(),
+                self.prev.is_empty(),
+                self.embedded
+            ));
         }
 
         let mut buf = String::new();
@@ -254,6 +291,9 @@ impl<W: Write> Terminal<W> {
                 (None, false) => None,
             };
             if let Some((start, end)) = write {
+                if debug_redraw_enabled() {
+                    debug_log(&format!("diff repaint: rows {start}..{end}"));
+                }
                 // Position on the last row that already exists on screen so
                 // the cursor can reach it; rows appended past the previous
                 // frame are created by the \r\n writes (scrolling at the
@@ -297,12 +337,13 @@ impl<W: Write> Terminal<W> {
             buf.push_str(SYNC_END);
         }
 
+        self.out.write_all(buf.as_bytes())?;
+        self.out.flush()?;
         self.prev = rows;
         self.cursor_row = target_row;
         self.cursor_col = target_col;
         self.cursor_shown = cursor.is_some();
-        self.out.write_all(buf.as_bytes())?;
-        self.out.flush()
+        Ok(())
     }
 
     /// Clear the live region and leave the cursor at its origin (call before
@@ -312,12 +353,13 @@ impl<W: Write> Terminal<W> {
         self.move_to_origin(&mut buf);
         buf.push_str(CLEAR_DOWN);
         buf.push_str(SHOW_CURSOR);
+        self.out.write_all(buf.as_bytes())?;
+        self.out.flush()?;
         self.prev.clear();
         self.cursor_row = 0;
         self.cursor_col = 0;
         self.cursor_shown = true;
-        self.out.write_all(buf.as_bytes())?;
-        self.out.flush()
+        Ok(())
     }
 
     /// Wipe the whole screen (viewport + scrollback) and home the cursor,
@@ -359,6 +401,40 @@ fn move_rows(buf: &mut String, from: usize, to: usize) {
 pub fn visible_width(s: &str) -> usize {
     strip_ansi(s).width()
 }
+
+/// Drain lingering input from stdin. Call AFTER terminal restoration
+/// (teardown) to absorb straggler key events that are still in flight over
+/// slow SSH, preventing them from leaking into the parent shell as garbage
+/// characters or unintended commands.
+#[cfg(unix)]
+pub fn drain_input() {
+    use std::os::fd::AsRawFd;
+    let fd = std::io::stdin().as_raw_fd();
+    let mut buf = [0u8; 4096];
+    let mut total = 0u32;
+    loop {
+        let mut pfd = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let ret = unsafe { libc::poll(&mut pfd, 1, 50) }; // 50ms timeout
+        if ret <= 0 || pfd.revents & libc::POLLIN == 0 {
+            break;
+        }
+        let n = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
+        if n <= 0 {
+            break;
+        }
+        total += n as u32;
+        if total > 65536 {
+            break; // Safety cap: don't drain forever
+        }
+    }
+}
+
+#[cfg(not(unix))]
+pub fn drain_input() {}
 
 /// Paint `row` over the SGR background sequence `bg`, padding with spaces to
 /// `width` visible columns. Full resets inside the row re-open the

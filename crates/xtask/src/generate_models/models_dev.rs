@@ -154,7 +154,7 @@ const ANTHROPIC_ADAPTIVE_EFFORTS: &[(ThinkingLevel, &str)] = &[
     (ThinkingLevel::High, "high"),
 ];
 
-/// Detect Anthropic adaptive thinking models (Opus 4.6+, Sonnet 4.6).
+/// Detect Anthropic adaptive thinking models (Opus 4.6+, Sonnet 4.6+).
 /// These models use `thinking.type: "adaptive"` + `output_config.effort`
 /// instead of the older `thinking.type: "enabled"` + `budget_tokens`.
 /// Matches Pi's `isAnthropicAdaptiveThinkingModel`.
@@ -168,10 +168,12 @@ pub(super) fn is_anthropic_adaptive(model_id: &str) -> bool {
         || id.contains("opus-4.8")
         || id.contains("sonnet-4-6")
         || id.contains("sonnet-4.6")
+        || id.contains("sonnet-5")
+        || id.contains("sonnet.5")
 }
 
 /// Determine the `xhigh` effort value for an adaptive model.
-/// Opus 4.6 supports `max`; Opus 4.7/4.8 and Sonnet 4.6 support `xhigh`.
+/// Opus 4.6 supports `max`; Opus 4.7/4.8, Sonnet 4.6, and Sonnet 5 support `xhigh`.
 /// Matches Pi's thinkingLevelMap xhigh overrides.
 pub(super) fn adaptive_xhigh_effort(model_id: &str) -> &'static str {
     let id = model_id.to_ascii_lowercase();

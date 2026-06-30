@@ -198,7 +198,28 @@ impl InputSource {
     }
 }
 
+/// Install a panic hook that logs the panic info to a file before the
+/// default hook prints to stderr. This ensures a diagnostic trail even
+/// when the terminal is in raw mode (where stderr output may be garbled).
+fn install_panic_log_hook() {
+    std::panic::set_hook(Box::new(|info| {
+        let Some(dirs) = directories::ProjectDirs::from("", "", "phi") else {
+            return;
+        };
+        let path = dirs.data_dir().join("tui-panic.log");
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+        {
+            use std::io::Write;
+            let _ = writeln!(file, "[{:?}] panic: {info}", std::time::SystemTime::now());
+        }
+    }));
+}
+
 pub async fn run(setup: TuiSetup, mut io: SessionIo) -> Result<()> {
+    install_panic_log_hook();
     let TuiSetup {
         rlm,
         payload,
@@ -311,7 +332,9 @@ pub async fn run(setup: TuiSetup, mut io: SessionIo) -> Result<()> {
     if !restoring {
         ui.greet(&missing_credentials);
     }
-    ui.draw()?;
+    if let Err(e) = ui.draw() {
+        eprintln!("phi: render error: {e}");
+    }
     // Fire-and-forget TuiReady so a slow/blocked startup handler can't freeze
     // the UI before the event loop starts. The dispatch primitive bounds the
     // handler; the event loop begins immediately.
@@ -419,7 +442,9 @@ pub async fn run(setup: TuiSetup, mut io: SessionIo) -> Result<()> {
         }
         dirty = true;
         if last_draw.elapsed() >= FRAME {
-            ui.draw()?;
+            if let Err(e) = ui.draw() {
+                eprintln!("phi: render error: {e}");
+            }
             last_draw = tokio::time::Instant::now();
             dirty = false;
         }
@@ -433,8 +458,11 @@ pub async fn run(setup: TuiSetup, mut io: SessionIo) -> Result<()> {
     }
     let _ = cmd_tx.send(Cmd::Shutdown);
     let _ = ui.runtime.shutdown_session().await;
-    ui.term.finish()?;
+    if let Err(e) = ui.term.finish() {
+        eprintln!("phi: terminal finish error: {e}");
+    }
     drop(guard);
+    phi_tui::drain_input();
     let _ = tokio::time::timeout(Duration::from_secs(5), session_task).await;
     if !io.embedded {
         println!("bye");

@@ -34,8 +34,8 @@ pub use spinner::{
     spinner_frame_at, spinner_frame_index, thinking_expression,
 };
 pub use terminal::{
-    LiveCursor, RawModeGuard, Terminal, escape_len, fill_bg, strip_ansi, visible_width, wrap_ansi,
-    wrap_ansi_locate,
+    LiveCursor, RawModeGuard, Terminal, drain_input, escape_len, fill_bg, strip_ansi,
+    visible_width, wrap_ansi, wrap_ansi_locate,
 };
 pub use theme::{
     Mode, Theme, ansi_index_to_rgb, bg_escape, bold_fg_escape, brighten, default_terminal_colors,
