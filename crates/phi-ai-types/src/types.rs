@@ -5,6 +5,12 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
+/// Serde helper: skip serializing `false` bools (keeps JSON compact for the
+/// default-valued `adaptive_thinking` field on `Model`).
+fn is_false(b: &bool) -> bool {
+    !b
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub enum Api {
     #[serde(rename = "anthropic-messages")]
@@ -110,6 +116,13 @@ pub struct Model {
     /// string or token budget). `None` value = level unsupported.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking_levels: Option<BTreeMap<ThinkingLevel, Option<String>>>,
+    /// Whether this model uses Anthropic adaptive thinking (`thinking.type:
+    /// "adaptive"` + `output_config.effort`) instead of budget-based thinking
+    /// (`thinking.type: "enabled"` + `budget_tokens`). When true,
+    /// `thinking_levels` stores effort strings (e.g. "low", "medium",
+    /// "high", "xhigh", "max") rather than token budgets.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub adaptive_thinking: bool,
 }
 
 impl Model {
@@ -119,15 +132,55 @@ impl Model {
         if level == ThinkingLevel::Off || !self.reasoning {
             return None;
         }
-        let map = self.thinking_levels.as_ref()?;
-        let mut candidates: Vec<&ThinkingLevel> = map
-            .iter()
-            .filter(|(l, v)| **l != ThinkingLevel::Off && v.is_some() && **l <= level)
-            .map(|(l, _)| l)
-            .collect();
-        candidates.sort();
-        let chosen = candidates.last()?;
-        map.get(chosen).cloned().flatten()
+        // If the model has explicit thinking levels, clamp to the nearest
+        // supported level at or below the requested one.
+        if let Some(map) = self.thinking_levels.as_ref() {
+            let mut candidates: Vec<&ThinkingLevel> = map
+                .iter()
+                .filter(|(l, v)| **l != ThinkingLevel::Off && v.is_some() && **l <= level)
+                .map(|(l, _)| l)
+                .collect();
+            candidates.sort();
+            let chosen = candidates.last()?;
+            return map.get(chosen).cloned().flatten();
+        }
+        // Fallback: the model supports reasoning but has no explicit thinking
+        // levels (e.g. Vercel AI Gateway models where the gateway API doesn't
+        // expose reasoning_options metadata). Without this, thinking would be
+        // silently dropped for all such models regardless of the configured
+        // thinking level. Use sensible defaults so thinking is actually sent.
+        Some(default_thinking_value(self, level))
+    }
+}
+
+/// Default thinking value when a model has `reasoning: true` but no explicit
+/// `thinking_levels` map. Returns a provider-appropriate value:
+///
+/// - **Adaptive thinking** / **OpenAI Responses**: the level name as an effort
+///   string (e.g. `"high"`), matching how Pi's runtime falls back to the effort
+///   level when no `thinkingLevelMap` is baked.
+/// - **Budget-based thinking** (non-adaptive Anthropic Messages): a default
+///   token budget string (e.g. `"16384"`), matching `ANTHROPIC_BUDGETS` in
+///   `models_dev.rs` and Pi's `ANTHROPIC_THINKING` defaults.
+fn default_thinking_value(model: &Model, level: ThinkingLevel) -> String {
+    if model.adaptive_thinking || model.api == Api::OpenAiResponses {
+        level.as_str().to_owned()
+    } else {
+        default_thinking_budget(level).to_string()
+    }
+}
+
+/// Default token budgets for budget-based thinking (non-adaptive Anthropic
+/// Messages models). Matches the `ANTHROPIC_BUDGETS` table in
+/// `xtask/generate_models/models_dev.rs` and Pi's `ANTHROPIC_THINKING`.
+fn default_thinking_budget(level: ThinkingLevel) -> u64 {
+    match level {
+        ThinkingLevel::Off => 0,
+        ThinkingLevel::Minimal => 1024,
+        ThinkingLevel::Low => 4096,
+        ThinkingLevel::Medium => 8192,
+        ThinkingLevel::High => 16384,
+        ThinkingLevel::XHigh => 32768,
     }
 }
 
