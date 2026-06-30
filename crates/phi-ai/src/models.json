@@ -9574,12 +9574,13 @@
     "max_tokens": 128000,
     "headers": {},
     "thinking_levels": {
-      "minimal": "1024",
-      "low": "4096",
-      "medium": "8192",
-      "high": "16384",
-      "xhigh": "32768"
-    }
+      "minimal": "low",
+      "low": "low",
+      "medium": "medium",
+      "high": "high",
+      "xhigh": "max"
+    },
+    "adaptive_thinking": true
   },
   {
     "id": "claude-opus-4-7",
@@ -9602,12 +9603,13 @@
     "max_tokens": 128000,
     "headers": {},
     "thinking_levels": {
-      "minimal": "1024",
-      "low": "4096",
-      "medium": "8192",
-      "high": "16384",
-      "xhigh": "32768"
-    }
+      "minimal": "low",
+      "low": "low",
+      "medium": "medium",
+      "high": "high",
+      "xhigh": "xhigh"
+    },
+    "adaptive_thinking": true
   },
   {
     "id": "claude-opus-4-8",
@@ -9630,12 +9632,13 @@
     "max_tokens": 128000,
     "headers": {},
     "thinking_levels": {
-      "minimal": "1024",
-      "low": "4096",
-      "medium": "8192",
-      "high": "16384",
-      "xhigh": "32768"
-    }
+      "minimal": "low",
+      "low": "low",
+      "medium": "medium",
+      "high": "high",
+      "xhigh": "xhigh"
+    },
+    "adaptive_thinking": true
   },
   {
     "id": "claude-sonnet-4-0",
@@ -9770,12 +9773,13 @@
     "max_tokens": 64000,
     "headers": {},
     "thinking_levels": {
-      "minimal": "1024",
-      "low": "4096",
-      "medium": "8192",
-      "high": "16384",
-      "xhigh": "32768"
-    }
+      "minimal": "low",
+      "low": "low",
+      "medium": "medium",
+      "high": "high",
+      "xhigh": "xhigh"
+    },
+    "adaptive_thinking": true
   },
   {
     "id": "anthropic/claude-haiku-4-5",
@@ -17835,12 +17839,13 @@
     "max_tokens": 128000,
     "headers": {},
     "thinking_levels": {
-      "minimal": "1024",
-      "low": "4096",
-      "medium": "8192",
-      "high": "16384",
-      "xhigh": "32768"
-    }
+      "minimal": "low",
+      "low": "low",
+      "medium": "medium",
+      "high": "high",
+      "xhigh": "max"
+    },
+    "adaptive_thinking": true
   },
   {
     "id": "claude-opus-4-7",
@@ -17863,12 +17868,13 @@
     "max_tokens": 128000,
     "headers": {},
     "thinking_levels": {
-      "minimal": "1024",
-      "low": "4096",
-      "medium": "8192",
-      "high": "16384",
-      "xhigh": "32768"
-    }
+      "minimal": "low",
+      "low": "low",
+      "medium": "medium",
+      "high": "high",
+      "xhigh": "xhigh"
+    },
+    "adaptive_thinking": true
   },
   {
     "id": "claude-opus-4-8",
@@ -17891,12 +17897,13 @@
     "max_tokens": 128000,
     "headers": {},
     "thinking_levels": {
-      "minimal": "1024",
-      "low": "4096",
-      "medium": "8192",
-      "high": "16384",
-      "xhigh": "32768"
-    }
+      "minimal": "low",
+      "low": "low",
+      "medium": "medium",
+      "high": "high",
+      "xhigh": "xhigh"
+    },
+    "adaptive_thinking": true
   },
   {
     "id": "claude-sonnet-4-6",
@@ -17919,12 +17926,13 @@
     "max_tokens": 64000,
     "headers": {},
     "thinking_levels": {
-      "minimal": "1024",
-      "low": "4096",
-      "medium": "8192",
-      "high": "16384",
-      "xhigh": "32768"
-    }
+      "minimal": "low",
+      "low": "low",
+      "medium": "medium",
+      "high": "high",
+      "xhigh": "xhigh"
+    },
+    "adaptive_thinking": true
   },
   {
     "id": "gpt-5.3-codex",
@@ -69147,7 +69155,15 @@
     },
     "context_window": 1000000,
     "max_tokens": 128000,
-    "headers": {}
+    "headers": {},
+    "adaptive_thinking": true,
+    "thinking_levels": {
+      "minimal": "low",
+      "low": "low",
+      "medium": "medium",
+      "high": "high",
+      "xhigh": "max"
+    }
   },
   {
     "id": "anthropic/claude-opus-4.7",
@@ -69168,7 +69184,15 @@
     },
     "context_window": 1000000,
     "max_tokens": 128000,
-    "headers": {}
+    "headers": {},
+    "adaptive_thinking": true,
+    "thinking_levels": {
+      "minimal": "low",
+      "low": "low",
+      "medium": "medium",
+      "high": "high",
+      "xhigh": "xhigh"
+    }
   },
   {
     "id": "anthropic/claude-opus-4.8",
@@ -69189,7 +69213,15 @@
     },
     "context_window": 1000000,
     "max_tokens": 128000,
-    "headers": {}
+    "headers": {},
+    "adaptive_thinking": true,
+    "thinking_levels": {
+      "minimal": "low",
+      "low": "low",
+      "medium": "medium",
+      "high": "high",
+      "xhigh": "xhigh"
+    }
   },
   {
     "id": "anthropic/claude-sonnet-4",
@@ -69252,7 +69284,15 @@
     },
     "context_window": 1000000,
     "max_tokens": 128000,
-    "headers": {}
+    "headers": {},
+    "adaptive_thinking": true,
+    "thinking_levels": {
+      "minimal": "low",
+      "low": "low",
+      "medium": "medium",
+      "high": "high",
+      "xhigh": "xhigh"
+    }
   },
   {
     "id": "arcee-ai/trinity-large-preview",
