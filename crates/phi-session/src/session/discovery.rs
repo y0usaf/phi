@@ -6,7 +6,17 @@ use super::store::sessions_dir;
 use super::types::{Role, SessionMeta, SessionStore};
 
 impl SessionStore {
-    /// Sessions in `cwd`'s session dir, most recently modified first.
+    /// Sessions in `cwd`'s session dir, newest creation first.
+    ///
+    /// Sorted by session ID (a UUID v7 whose first 48 bits encode the
+    /// creation timestamp), NOT by file modification time. This keeps the
+    /// sidebar order stable across turns: every `SessionStore::append`
+    /// writes to the JSONL file and trips the filesystem watcher, which
+    /// calls `refresh_project` → `list`. If we sorted by `modified`, the
+    /// session being written would jump to the top on every single
+    /// turn/message. Sorting by creation order means sessions only move
+    /// up when a new session is created (user sends a first message or an
+    /// answer is submitted in a new session).
     pub fn list(cwd: &Path) -> Vec<SessionMeta> {
         let Ok(dir) = sessions_dir(cwd) else {
             return Vec::new();
@@ -32,12 +42,15 @@ impl SessionStore {
                 Some(SessionMeta {
                     path,
                     modified: e.metadata().ok()?.modified().ok()?,
+                    id: store.id().to_owned(),
                     message_count: store.entries.len(),
                     first_message,
                 })
             })
             .collect();
-        sessions.sort_by_key(|s| std::cmp::Reverse(s.modified));
+        // UUID v7 is time-ordered: lexicographic descending sort puts
+        // newest-created sessions first, without reshuffling on writes.
+        sessions.sort_by(|a, b| b.id.cmp(&a.id));
         sessions
     }
 }

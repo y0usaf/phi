@@ -205,6 +205,9 @@ pub struct SessionStore {
 pub struct SessionMeta {
     pub path: PathBuf,
     pub modified: std::time::SystemTime,
+    /// Session ID (a UUID v7); used for stable creation-order sorting so
+    /// the sidebar doesn't reshuffle on every file write (turn/message).
+    pub id: String,
     pub message_count: usize,
     pub first_message: String,
 }
