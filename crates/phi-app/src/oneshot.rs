@@ -115,6 +115,7 @@ pub async fn run(
                 rx,
                 args.verbose,
                 settings.max_iterations,
+                settings.tools.clone(),
             )));
         }
     }

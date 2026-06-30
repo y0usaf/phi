@@ -97,6 +97,30 @@ pub struct Args {
     #[arg(long, value_name = "DIR")]
     pub project: Vec<String>,
 
+    /// Max output lines to show per tool card. 0 = header only.
+    #[arg(long, value_name = "N")]
+    pub tools_tool_max_lines: Option<usize>,
+
+    /// Max code lines to show per REPL block. 0 = header only.
+    #[arg(long, value_name = "N")]
+    pub tools_repl_max_lines: Option<usize>,
+
+    /// Box padding around tool/subcall/status cards (0 or 1).
+    #[arg(long, value_name = "N")]
+    pub tools_tool_padding: Option<usize>,
+
+    /// Box padding around REPL blocks (0 or 1).
+    #[arg(long, value_name = "N")]
+    pub tools_repl_padding: Option<usize>,
+
+    /// Box padding around user message cards (0 or 1).
+    #[arg(long, value_name = "N")]
+    pub tools_user_padding: Option<usize>,
+
+    /// Gap between tool blocks (0 or 1).
+    #[arg(long, value_name = "N")]
+    pub tools_gap: Option<usize>,
+
     /// Print full REPL code and output instead of trimmed previews.
     #[arg(short, long)]
     pub verbose: bool,
@@ -137,6 +161,12 @@ impl Args {
             timeout: self.timeout,
             max_errors: self.max_errors,
             max_concurrent_subcalls: self.max_concurrent_subcalls,
+            tools_tool_max_lines: self.tools_tool_max_lines,
+            tools_repl_max_lines: self.tools_repl_max_lines,
+            tools_tool_padding: self.tools_tool_padding,
+            tools_repl_padding: self.tools_repl_padding,
+            tools_user_padding: self.tools_user_padding,
+            tools_gap: self.tools_gap,
         }
     }
 }

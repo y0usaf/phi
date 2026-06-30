@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::io::IsTerminal;
 
 use phi_rlm::RlmEvent;
+use phi_session::config::ToolsSettings;
 
 use crate::render::render_tool_panel;
 use crate::tool_view::{
@@ -12,6 +13,7 @@ pub(crate) async fn print_events(
     mut rx: tokio::sync::mpsc::UnboundedReceiver<RlmEvent>,
     verbose: bool,
     max_iterations: usize,
+    tools: ToolsSettings,
 ) {
     let color = std::io::stderr().is_terminal();
     let mut open_tool_args: HashMap<u64, serde_json::Value> = HashMap::new();
@@ -32,7 +34,9 @@ pub(crate) async fn print_events(
             RlmEvent::CodeExecStart { code, .. } => {
                 tool_echoes.clear();
                 eprintln!("{} exec", spin(color));
-                eprintln!("{}", indent(&preview(&code, 16, verbose)));
+                if tools.repl_max_lines > 0 {
+                    eprintln!("{}", indent(&preview(&code, tools.repl_max_lines, verbose)));
+                }
             }
             RlmEvent::CodeExecEnd {
                 depth,
@@ -52,11 +56,17 @@ pub(crate) async fn print_events(
                     eprintln!("  {glyph} exec • {:.1}s", duration.as_secs_f64());
                 }
                 let stdout = strip_tool_echoes(&stdout, &tool_echoes, depth);
-                if !stdout.trim().is_empty() {
-                    eprintln!("{}", indent(&preview(&stdout, 12, verbose)));
+                if tools.tool_max_lines > 0 && !stdout.trim().is_empty() {
+                    eprintln!(
+                        "{}",
+                        indent(&preview(&stdout, tools.tool_max_lines, verbose))
+                    );
                 }
-                if !stderr.trim().is_empty() {
-                    eprintln!("{}", indent(&preview(&stderr, 12, verbose)));
+                if tools.tool_max_lines > 0 && !stderr.trim().is_empty() {
+                    eprintln!(
+                        "{}",
+                        indent(&preview(&stderr, tools.tool_max_lines, verbose))
+                    );
                 }
             }
             RlmEvent::SubcallStart {
@@ -92,6 +102,9 @@ pub(crate) async fn print_events(
                 args,
             } => {
                 open_tool_args.insert(call_id, args.clone());
+                if tools.gap > 0 {
+                    eprintln!();
+                }
                 eprintln!(
                     "{} {}{}",
                     spin(color),
@@ -116,17 +129,42 @@ pub(crate) async fn print_events(
                     depth,
                     errored: error.is_some(),
                 });
-                eprintln!(
-                    "{}",
-                    render_tool_panel(
-                        &name,
-                        &args,
-                        error.as_deref().unwrap_or(&result),
-                        error.is_some(),
-                        verbose,
-                        color
-                    )
-                );
+                let output = error.as_deref().unwrap_or(&result);
+                let failed = error.is_some();
+                if tools.tool_max_lines == 0 {
+                    // One-line summary: `glyph tool ╱ detail`
+                    let glyph = if failed { cross(color) } else { check(color) };
+                    let detail = output
+                        .trim()
+                        .lines()
+                        .find(|l| !l.trim().is_empty())
+                        .unwrap_or("");
+                    let detail = if detail.chars().count() > 72 {
+                        let keep: String = detail.chars().take(71).collect();
+                        format!("{keep}\u{2026}")
+                    } else {
+                        detail.to_owned()
+                    };
+                    if detail.is_empty() {
+                        eprintln!(
+                            "  {glyph} {}{}",
+                            call_anchor(&name, &args),
+                            depth_tag(depth)
+                        );
+                    } else {
+                        eprintln!(
+                            "  {glyph} {} \u{2571} {}{}",
+                            call_anchor(&name, &args),
+                            detail,
+                            depth_tag(depth)
+                        );
+                    }
+                } else {
+                    eprintln!(
+                        "{}",
+                        render_tool_panel(&name, &args, output, failed, verbose, color)
+                    );
+                }
             }
             RlmEvent::AnswerSubmitted { .. } => {
                 eprintln!("{} answer submitted", check(color))
