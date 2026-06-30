@@ -16,6 +16,14 @@ pub(super) fn setup_phi_global(lua: &mlua::Lua) -> mlua::Result<()> {
     let phi_registered_providers = lua.create_table()?;
     let phi_renderers = lua.create_table()?;
     let phi_registered_renderers = lua.create_table()?;
+    let phi_themes = lua.create_table()?;
+    let phi_registered_themes = lua.create_table()?;
+    let phi_spinners = lua.create_table()?;
+    let phi_registered_spinners = lua.create_table()?;
+    let phi_thinking_expressions = lua.create_table()?;
+    let phi_registered_thinking_expressions = lua.create_table()?;
+    let phi_overlays = lua.create_table()?;
+    let phi_registered_overlays = lua.create_table()?;
     globals.set("_phi_handlers", phi_handlers)?;
     globals.set("_phi_registered_events", phi_registered_events)?;
     globals.set("_phi_commands", phi_commands)?;
@@ -30,6 +38,17 @@ pub(super) fn setup_phi_global(lua: &mlua::Lua) -> mlua::Result<()> {
     globals.set("_phi_registered_providers", phi_registered_providers)?;
     globals.set("_phi_renderers", phi_renderers)?;
     globals.set("_phi_registered_renderers", phi_registered_renderers)?;
+    globals.set("_phi_themes", phi_themes)?;
+    globals.set("_phi_registered_themes", phi_registered_themes)?;
+    globals.set("_phi_spinners", phi_spinners)?;
+    globals.set("_phi_registered_spinners", phi_registered_spinners)?;
+    globals.set("_phi_thinking_expressions", phi_thinking_expressions)?;
+    globals.set(
+        "_phi_registered_thinking_expressions",
+        phi_registered_thinking_expressions,
+    )?;
+    globals.set("_phi_overlays", phi_overlays)?;
+    globals.set("_phi_registered_overlays", phi_registered_overlays)?;
 
     // Build the phi table
     let phi = lua.create_table()?;
@@ -128,6 +147,63 @@ pub(super) fn setup_phi_global(lua: &mlua::Lua) -> mlua::Result<()> {
             Ok(())
         })?;
     phi.set("register_message_renderer", register_renderer_fn)?;
+
+    // phi.register_theme(name, palette)
+    // palette: { foreground = {r,g,b}, background = {r,g,b}, accent = {r,g,b}, ... }
+    let register_theme_fn =
+        lua.create_function(|lua, (name, palette): (String, mlua::Table)| {
+            let globals = lua.globals();
+            let themes: mlua::Table = globals.get("_phi_themes")?;
+            themes.set(name.as_str(), palette)?;
+            let reg: mlua::Table = globals.get("_phi_registered_themes")?;
+            let len = reg.raw_len();
+            reg.raw_set(len + 1, name)?;
+            Ok(())
+        })?;
+    phi.set("register_theme", register_theme_fn)?;
+
+    // phi.register_spinner(name, opts)
+    // opts: { frames = {"a", "b", ...}, frame_interval_ms = 80 }
+    let register_spinner_fn = lua.create_function(|lua, (name, opts): (String, mlua::Table)| {
+        let globals = lua.globals();
+        let spinners: mlua::Table = globals.get("_phi_spinners")?;
+        spinners.set(name.as_str(), opts)?;
+        let reg: mlua::Table = globals.get("_phi_registered_spinners")?;
+        let len = reg.raw_len();
+        reg.raw_set(len + 1, name)?;
+        Ok(())
+    })?;
+    phi.set("register_spinner", register_spinner_fn)?;
+
+    // phi.register_thinking_expression(name, opts)
+    // opts: { expressions = {"thinking...", ...}, tool_expression = "working...",
+    //         expression_interval_ms = 2000 }
+    let register_thinking_expr_fn =
+        lua.create_function(|lua, (name, opts): (String, mlua::Table)| {
+            let globals = lua.globals();
+            let exprs: mlua::Table = globals.get("_phi_thinking_expressions")?;
+            exprs.set(name.as_str(), opts)?;
+            let reg: mlua::Table = globals.get("_phi_registered_thinking_expressions")?;
+            let len = reg.raw_len();
+            reg.raw_set(len + 1, name)?;
+            Ok(())
+        })?;
+    phi.set("register_thinking_expression", register_thinking_expr_fn)?;
+
+    // phi.register_overlay(name, opts)
+    // opts: { description = "...", toggle_key = "A", render = function() ... end }
+    // The render function returns a table of text lines (array of strings).
+    // The TUI draws these lines in a bordered box.
+    let register_overlay_fn = lua.create_function(|lua, (name, opts): (String, mlua::Table)| {
+        let globals = lua.globals();
+        let overlays: mlua::Table = globals.get("_phi_overlays")?;
+        overlays.set(name.as_str(), opts)?;
+        let reg: mlua::Table = globals.get("_phi_registered_overlays")?;
+        let len = reg.raw_len();
+        reg.raw_set(len + 1, name)?;
+        Ok(())
+    })?;
+    phi.set("register_overlay", register_overlay_fn)?;
 
     globals.set("phi", phi)?;
     Ok(())

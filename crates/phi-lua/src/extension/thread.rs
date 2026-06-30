@@ -32,6 +32,10 @@ pub enum LuaMsg {
         input: String,
         reply: std::sync::mpsc::SyncSender<Result<Option<String>>>,
     },
+    RenderOverlay {
+        name: String,
+        reply: std::sync::mpsc::SyncSender<Result<Option<String>>>,
+    },
 }
 
 /// Spawn a dedicated OS thread that owns the Lua VM.
@@ -74,6 +78,12 @@ fn lua_thread_loop(lua: &mlua::Lua, rx: std::sync::mpsc::Receiver<LuaMsg>) {
             Ok(LuaMsg::InvokeTool { name, input, reply }) => {
                 let res = run_with_timeout(lua, &deadline, DEFAULT_TIMEOUT_MS, || {
                     call_lua_tool(lua, &name, &input)
+                });
+                let _ = reply.send(res);
+            }
+            Ok(LuaMsg::RenderOverlay { name, reply }) => {
+                let res = run_with_timeout(lua, &deadline, DEFAULT_TIMEOUT_MS, || {
+                    super::bridge::call_lua_overlay_render(lua, &name)
                 });
                 let _ = reply.send(res);
             }

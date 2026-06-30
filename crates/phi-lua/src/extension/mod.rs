@@ -5,9 +5,11 @@ use std::time::Duration;
 use anyhow::Result;
 use phi_ext::{
     CommandInvocation, CommandOutput, CommandSpec, EventHandlerRegistration, ExtensionHost,
-    ExtensionManifest, FlagSpec, FlagType, LifecycleEvent, MessageRendererSpec, ProviderConfig,
-    ProviderModelConfig, ShortcutSpec, ToolInvocation, ToolOutput, ToolParam, ToolSpec,
+    ExtensionManifest, FlagSpec, FlagType, LifecycleEvent, MessageRendererSpec, OverlayOutcome,
+    OverlaySpec, ProviderConfig, ProviderModelConfig, ShortcutSpec, SpinnerSpec, ThemeSpec,
+    ThinkingExpressionSpec, ToolInvocation, ToolOutput, ToolParam, ToolSpec,
 };
+use std::collections::BTreeMap;
 
 mod bridge;
 mod convert;
@@ -221,6 +223,111 @@ impl phi_ext::Extension for LuaExtension {
             .map_while(|i| reg_renderers.get::<Option<String>>(i).ok().flatten())
             .collect();
 
+        // ── Read registered themes ───────────────────────────────────────────
+        let reg_themes: mlua::Table = globals.get("_phi_registered_themes")?;
+        let theme_names: Vec<String> = (1..)
+            .map_while(|i| reg_themes.get::<Option<String>>(i).ok().flatten())
+            .collect();
+
+        let phi_themes_table: mlua::Table = globals.get("_phi_themes")?;
+        let mut themes: Vec<ThemeSpec> = Vec::new();
+        for name in &theme_names {
+            let theme_table: mlua::Table = phi_themes_table.get(name.as_str())?;
+            let mut palette = BTreeMap::new();
+            for pair in theme_table.pairs::<String, mlua::Table>() {
+                let (role, rgb_table) = pair?;
+                let r: u8 = rgb_table.get(1).unwrap_or(0);
+                let g: u8 = rgb_table.get(2).unwrap_or(0);
+                let b: u8 = rgb_table.get(3).unwrap_or(0);
+                palette.insert(role, phi_ext::Rgb(r, g, b));
+            }
+            themes.push(ThemeSpec::new(name.clone(), palette));
+        }
+
+        // ── Read registered spinners ───────────────────────────────────────
+        let reg_spinners: mlua::Table = globals.get("_phi_registered_spinners")?;
+        let spinner_names: Vec<String> = (1..)
+            .map_while(|i| reg_spinners.get::<Option<String>>(i).ok().flatten())
+            .collect();
+
+        let phi_spinners_table: mlua::Table = globals.get("_phi_spinners")?;
+        let mut spinners: Vec<SpinnerSpec> = Vec::new();
+        for name in &spinner_names {
+            let sp_table: mlua::Table = phi_spinners_table.get(name.as_str())?;
+            let frame_interval_ms: u64 = sp_table.get("frame_interval_ms").unwrap_or(80);
+            let frames_table: mlua::Table = sp_table
+                .get("frames")
+                .unwrap_or_else(|_| lua.create_table().unwrap());
+            let mut frames: Vec<String> = Vec::new();
+            for pair in frames_table.pairs::<mlua::Value, String>() {
+                let (_, f) = pair?;
+                frames.push(f);
+            }
+            // Also handle array-style (1-indexed)
+            if frames.is_empty() {
+                for i in 1..=frames_table.raw_len() {
+                    if let Ok(f) = frames_table.get::<String>(i) {
+                        frames.push(f);
+                    }
+                }
+            }
+            spinners.push(SpinnerSpec::new(name.clone(), frames, frame_interval_ms));
+        }
+
+        // ── Read registered thinking expressions ───────────────────────────
+        let reg_thinking: mlua::Table = globals.get("_phi_registered_thinking_expressions")?;
+        let thinking_names: Vec<String> = (1..)
+            .map_while(|i| reg_thinking.get::<Option<String>>(i).ok().flatten())
+            .collect();
+
+        let phi_thinking_table: mlua::Table = globals.get("_phi_thinking_expressions")?;
+        let mut thinking_exprs: Vec<ThinkingExpressionSpec> = Vec::new();
+        for name in &thinking_names {
+            let te_table: mlua::Table = phi_thinking_table.get(name.as_str())?;
+            let tool_expression: String = te_table
+                .get("tool_expression")
+                .unwrap_or_else(|_| "working...".to_owned());
+            let expression_interval_ms: u64 =
+                te_table.get("expression_interval_ms").unwrap_or(2000);
+            let exprs_table: mlua::Table = te_table
+                .get("expressions")
+                .unwrap_or_else(|_| lua.create_table().unwrap());
+            let mut expressions: Vec<String> = Vec::new();
+            for pair in exprs_table.pairs::<mlua::Value, String>() {
+                let (_, e) = pair?;
+                expressions.push(e);
+            }
+            // Also handle array-style
+            if expressions.is_empty() {
+                for i in 1..=exprs_table.raw_len() {
+                    if let Ok(e) = exprs_table.get::<String>(i) {
+                        expressions.push(e);
+                    }
+                }
+            }
+            thinking_exprs.push(ThinkingExpressionSpec::new(
+                name.clone(),
+                expressions,
+                tool_expression,
+                expression_interval_ms,
+            ));
+        }
+
+        // ── Read registered overlays ──────────────────────────────────────────
+        let reg_overlays: mlua::Table = globals.get("_phi_registered_overlays")?;
+        let overlay_names: Vec<String> = (1..)
+            .map_while(|i| reg_overlays.get::<Option<String>>(i).ok().flatten())
+            .collect();
+
+        let phi_overlays_table: mlua::Table = globals.get("_phi_overlays")?;
+        let mut lua_overlays: Vec<(String, String, String)> = Vec::new();
+        for name in &overlay_names {
+            let ov_table: mlua::Table = phi_overlays_table.get(name.as_str())?;
+            let description: String = ov_table.get("description").unwrap_or_default();
+            let toggle_key: String = ov_table.get("toggle_key").unwrap_or_else(|_| "".to_owned());
+            lua_overlays.push((name.clone(), description, toggle_key));
+        }
+
         // ── Create the channel and spawn the Lua thread ─────────────────────
         let (tx, rx) = std::sync::mpsc::sync_channel::<LuaMsg>(32);
         spawn_lua_thread(lua, rx);
@@ -347,6 +454,137 @@ impl phi_ext::Extension for LuaExtension {
                     Ok(result.unwrap_or_default())
                 }),
             })?;
+        }
+
+        // ── Register themes ──────────────────────────────────────────────────
+        for theme in themes {
+            host.register_theme(theme)?;
+        }
+
+        // ── Register spinners ───────────────────────────────────────────────
+        for spinner in spinners {
+            host.register_spinner(spinner)?;
+        }
+
+        // ── Register thinking expressions ───────────────────────────────────
+        for expr in thinking_exprs {
+            host.register_thinking_expression(expr)?;
+        }
+
+        // ── Register overlays ──────────────────────────────────────────────
+        for (name, description, toggle_key) in lua_overlays {
+            let tx_overlay = Arc::clone(&tx);
+            let overlay_name = name.clone();
+
+            let init_state: Arc<dyn Fn() -> Box<dyn std::any::Any + Send + Sync> + Send + Sync> =
+                Arc::new(|| Box::new(Vec::<String>::new()) as Box<dyn std::any::Any + Send + Sync>);
+
+            let render: Arc<
+                dyn Fn(&mut dyn phi_ext::DrawContext, &mut Box<dyn std::any::Any + Send + Sync>)
+                    + Send
+                    + Sync,
+            > = Arc::new(
+                move |ctx: &mut dyn phi_ext::DrawContext,
+                      _state: &mut Box<dyn std::any::Any + Send + Sync>| {
+                    // Call the Lua render function via the thread channel
+                    let (rtx, rrx) = std::sync::mpsc::sync_channel(1);
+                    if tx_overlay
+                        .send(crate::extension::LuaMsg::RenderOverlay {
+                            name: overlay_name.clone(),
+                            reply: rtx,
+                        })
+                        .is_err()
+                    {
+                        return;
+                    }
+                    let lines: Vec<String> = match rrx.recv_timeout(Duration::from_secs(5)) {
+                        Ok(Ok(Some(json))) => serde_json::from_str(&json).unwrap_or_default(),
+                        _ => vec!["(render failed)".to_owned()],
+                    };
+
+                    // Draw the lines in a bordered box
+                    let size = ctx.size();
+                    let line_count = lines.len() as i32 + 4; // border + title + padding
+                    let width = size.cols.min(80).max(20);
+                    let height = size.rows.min(line_count).max(6);
+                    let col = (size.cols - width) / 2;
+                    let row = (size.rows - height) / 2;
+                    let rect = phi_ext::DrawRect::new(col, row, width, height);
+
+                    let border = phi_ext::Rgb(100, 100, 100);
+                    let fg = phi_ext::Rgb(220, 220, 220);
+                    let bg = phi_ext::Rgb(30, 30, 30);
+                    let accent = phi_ext::Rgb(100, 200, 255);
+
+                    ctx.draw_box(rect, fg, bg, border);
+                    let inner = rect.inset(2, 1);
+
+                    // Title
+                    ctx.put_text_bold(
+                        inner.col,
+                        inner.row,
+                        inner.cols,
+                        &format!(" {} ", "Overlay"),
+                        accent,
+                        bg,
+                    );
+
+                    // Lines
+                    for (i, line) in lines.iter().enumerate() {
+                        let y = inner.row + 2 + i as i32;
+                        if y < rect.row + rect.rows - 2 {
+                            ctx.put_text(inner.col, y, inner.cols, line, fg, bg);
+                        }
+                    }
+
+                    // Footer hint
+                    let footer = rect.row + rect.rows - 2;
+                    ctx.put_text(
+                        inner.col,
+                        footer,
+                        inner.cols,
+                        "Esc/Enter/q to close",
+                        phi_ext::Rgb(120, 120, 120),
+                        bg,
+                    );
+                },
+            );
+
+            let handle_key: Arc<
+                dyn Fn(
+                        &mut Box<dyn std::any::Any + Send + Sync>,
+                        &phi_ext::OverlayKey,
+                        u16,
+                        u16,
+                    ) -> OverlayOutcome
+                    + Send
+                    + Sync,
+            > = Arc::new(
+                |_state: &mut Box<dyn std::any::Any + Send + Sync>,
+                 key: &phi_ext::OverlayKey,
+                 _cols: u16,
+                 _rows: u16| {
+                    use phi_ext::OverlayKeyCode;
+                    match key.code {
+                        OverlayKeyCode::Esc | OverlayKeyCode::Enter => OverlayOutcome::Close,
+                        OverlayKeyCode::Char('q') | OverlayKeyCode::Char('Q')
+                            if !key.modifiers.control =>
+                        {
+                            OverlayOutcome::Close
+                        }
+                        _ => OverlayOutcome::None,
+                    }
+                },
+            );
+
+            host.register_overlay(OverlaySpec::new(
+                name,
+                description,
+                toggle_key,
+                init_state,
+                render,
+                handle_key,
+            ))?;
         }
 
         Ok(())

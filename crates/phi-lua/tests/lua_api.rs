@@ -272,3 +272,133 @@ end)
         "missing timeout notification: {notes}"
     );
 }
+
+#[tokio::test]
+async fn lua_register_theme_works() {
+    let source = r#"
+phi.register_theme("my-theme", {
+    foreground = {220, 220, 220},
+    background = {20, 20, 26},
+    accent = {100, 200, 220},
+    border = {50, 50, 60},
+    ansi_0 = {0, 0, 0},
+    ansi_1 = {200, 80, 80}
+})
+"#;
+    let rt = load_lua(source);
+
+    let theme = rt.first_theme().unwrap();
+    assert_eq!(theme.name, "my-theme");
+    let resolved = theme.resolve(None);
+    assert_eq!(
+        resolved.get("foreground"),
+        Some(&phi_ext::Rgb(220, 220, 220))
+    );
+    assert_eq!(resolved.get("background"), Some(&phi_ext::Rgb(20, 20, 26)));
+    assert_eq!(resolved.get("accent"), Some(&phi_ext::Rgb(100, 200, 220)));
+    assert_eq!(resolved.get("border"), Some(&phi_ext::Rgb(50, 50, 60)));
+    assert_eq!(resolved.get("ansi_0"), Some(&phi_ext::Rgb(0, 0, 0)));
+    assert_eq!(resolved.get("ansi_1"), Some(&phi_ext::Rgb(200, 80, 80)));
+}
+
+#[tokio::test]
+async fn lua_register_spinner_works() {
+    let source = r#"
+phi.register_spinner("my-spinner", {
+    frames = {"|", "/", "-", "\\"},
+    frame_interval_ms = 120
+})
+"#;
+    let rt = load_lua(source);
+
+    let spinner = rt.first_spinner().unwrap();
+    assert_eq!(spinner.name, "my-spinner");
+    assert_eq!(spinner.frames.len(), 4);
+    assert_eq!(spinner.frame_interval_ms, 120);
+    assert_eq!(spinner.frame_at(0), "|");
+    assert_eq!(spinner.frame_at(120), "/");
+    assert_eq!(spinner.frame_at(240), "-");
+    assert_eq!(spinner.frame_at(360), "\\");
+    assert_eq!(spinner.frame_at(480), "|"); // wraps
+}
+
+#[tokio::test]
+async fn lua_register_thinking_expression_works() {
+    let source = r#"
+phi.register_thinking_expression("my-expr", {
+    expressions = {"thinking...", "pondering..."},
+    tool_expression = "working...",
+    expression_interval_ms = 1500
+})
+"#;
+    let rt = load_lua(source);
+
+    let expr = rt.first_thinking_expression().unwrap();
+    assert_eq!(expr.name, "my-expr");
+    assert_eq!(expr.expressions.len(), 2);
+    assert_eq!(expr.tool_expression, "working...");
+    assert_eq!(expr.expression_interval_ms, 1500);
+    assert_eq!(expr.expression(0, false), "thinking...");
+    assert_eq!(expr.expression(1500, false), "pondering...");
+    assert_eq!(expr.expression(0, true), "working...");
+}
+
+#[tokio::test]
+async fn lua_multiple_visual_registrations() {
+    let source = r#"
+phi.register_theme("theme-a", { foreground = {255, 255, 255} })
+phi.register_theme("theme-b", { foreground = {0, 0, 0} })
+phi.register_spinner("spinner-a", { frames = {"."}, frame_interval_ms = 100 })
+phi.register_spinner("spinner-b", { frames = {"x", "y"}, frame_interval_ms = 200 })
+phi.register_thinking_expression("expr-a", {
+    expressions = {"a"},
+    tool_expression = "b",
+    expression_interval_ms = 1000
+})
+"#;
+    let rt = load_lua(source);
+
+    assert_eq!(rt.list_themes(), vec!["theme-a", "theme-b"]);
+    assert_eq!(rt.list_spinners(), vec!["spinner-a", "spinner-b"]);
+    assert_eq!(rt.list_thinking_expressions(), vec!["expr-a"]);
+
+    let theme_a = rt.get_theme("theme-a").unwrap();
+    let theme_b = rt.get_theme("theme-b").unwrap();
+    assert_eq!(
+        theme_a.resolve(None).get("foreground"),
+        Some(&phi_ext::Rgb(255, 255, 255))
+    );
+    assert_eq!(
+        theme_b.resolve(None).get("foreground"),
+        Some(&phi_ext::Rgb(0, 0, 0))
+    );
+
+    let spinner_a = rt.get_spinner("spinner-a").unwrap();
+    let spinner_b = rt.get_spinner("spinner-b").unwrap();
+    assert_eq!(spinner_a.frames, vec!["."]);
+    assert_eq!(spinner_b.frames, vec!["x", "y"]);
+}
+
+#[tokio::test]
+async fn lua_register_overlay_works() {
+    let source = r#"
+phi.register_overlay("my-overlay", {
+    description = "My custom overlay",
+    toggle_key = "m",
+    render = function()
+        return {
+            "This is a custom overlay",
+            "registered from Lua!",
+            "Press Esc to close.",
+        }
+    end
+})
+"#;
+    let rt = load_lua(source);
+
+    assert_eq!(rt.list_overlays(), vec!["my-overlay"]);
+    let overlay = rt.get_overlay("my-overlay").unwrap();
+    assert_eq!(overlay.name, "my-overlay");
+    assert_eq!(overlay.description, "My custom overlay");
+    assert_eq!(overlay.toggle_key, "m");
+}
