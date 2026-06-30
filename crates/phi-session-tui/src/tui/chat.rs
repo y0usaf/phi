@@ -78,7 +78,7 @@ impl Ui {
     pub(super) fn repl_code_lines(&self, depth: usize, body: &str, max: usize) -> Vec<String> {
         let trimmed = body.trim_end();
         let mut rows = Vec::new();
-        if !trimmed.is_empty() {
+        if !trimmed.is_empty() && max > 0 {
             let wrap_width = if self.block_active {
                 self.box_width()
                     .saturating_sub(2)
@@ -499,10 +499,18 @@ impl Ui {
         failed: bool,
     ) -> Vec<String> {
         let identity = tool_identity(name, args, &self.palette);
-        // pi-style tool card: the Box(1,1,bgFn) provides the only padding.
-        // Content is flat — no depth indentation, no gutter. The call
-        // (anchor) is the first line; the result (output) follows, each
-        // line in toolOutput color. Matches pi's ToolExecutionComponent:
+        let padding = self.tools.tool_padding;
+
+        // tool_max_lines = 0: one-line summary `glyph tool ╱ detail`, mirroring
+        // pi-compact's compact tools: `✓ bash ╱ git status`.
+        if self.tools.tool_max_lines == 0 {
+            return self.compact_tool_rows(&identity, output, failed, padding);
+        }
+
+        // Full card: pi-style tool card with configurable padding. Content is
+        // flat — no depth indentation, no gutter. The call (anchor) is the
+        // first line; the result (output) follows, each line in toolOutput
+        // color. Matches pi's ToolExecutionComponent:
         //   renderCall → Text(bold toolTitle + colored args)
         //   renderResult → Text(toolOutput output)
         let content_width = self.box_width().saturating_sub(2).max(1);
@@ -565,7 +573,63 @@ impl Ui {
         } else {
             &self.palette.tool_success_bg
         };
-        render_boxed(&content, bg, self.box_width())
+        render_boxed_padded(&content, bg, self.box_width(), padding)
+    }
+
+    /// One-line compact tool summary: `{glyph} {anchor} {DIM}╱{RESET} {detail}`.
+    /// Mirrors pi-compact's compact tools: `✓ bash ╱ git status`.
+    /// The anchor carries the tool verb + canonical argument (already styled
+    /// by `tool_identity`); the detail is a plain truncated first line of the
+    /// result output. Wrapped in `render_boxed_padded` so the background colour
+    /// (success/error) is preserved and padding is configurable.
+    fn compact_tool_rows(
+        &self,
+        identity: &super::tool_display::Identity,
+        output: &str,
+        failed: bool,
+        padding: usize,
+    ) -> Vec<String> {
+        let glyph = if failed {
+            format!("{}✗{RESET}", &self.palette.error_fg)
+        } else {
+            format!("{}✓{RESET}", &self.palette.tool_title_fg)
+        };
+        let anchor_plain = strip_ansi(&identity.anchor);
+        let detail = output
+            .trim()
+            .lines()
+            .find(|l| !l.trim().is_empty())
+            .unwrap_or("");
+        // Reserve space for `glyph ╱ ` prefix; cap the detail so the
+        // whole line fits the content width.
+        let prefix_width = visible_width(&strip_ansi(&format!("{glyph} {anchor_plain} ╱ ")));
+        let content_width = self.box_width().saturating_sub(2).max(1);
+        let detail_budget = content_width.saturating_sub(prefix_width).max(1);
+        let detail_trunc = if detail.chars().count() <= detail_budget {
+            detail.to_owned()
+        } else {
+            let keep = detail_budget.saturating_sub(1);
+            let mut short: String = detail.chars().take(keep).collect();
+            short.push('…');
+            short
+        };
+        let line = if detail_trunc.is_empty() {
+            format!("{glyph} {anchor_plain}")
+        } else {
+            format!("{glyph} {anchor_plain} {DIM}╱{RESET} {detail_trunc}")
+        };
+        let bg = if failed {
+            if self.block_active {
+                &self.palette.tool_error_bg_nested
+            } else {
+                &self.palette.tool_error_bg
+            }
+        } else if self.block_active {
+            &self.palette.tool_success_bg_nested
+        } else {
+            &self.palette.tool_success_bg
+        };
+        render_boxed_padded(&[line], bg, self.box_width(), padding)
     }
 
     pub(super) fn subcall_result_rows(
@@ -757,7 +821,7 @@ impl Ui {
         if self.expand_tools {
             usize::MAX
         } else {
-            CODE_PREVIEW_LINES
+            self.tools.repl_max_lines
         }
     }
 
@@ -765,7 +829,7 @@ impl Ui {
         if self.expand_tools {
             usize::MAX
         } else {
-            OUTPUT_PREVIEW_LINES
+            self.tools.tool_max_lines
         }
     }
 }
