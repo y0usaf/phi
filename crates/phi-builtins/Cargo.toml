@@ -5,6 +5,9 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+phi-ext.workspace = true
+phi-tui.workspace = true
+anyhow.workspace = true
 
 [dev-dependencies]
 async-trait.workspace = true
