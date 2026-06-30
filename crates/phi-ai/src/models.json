@@ -38801,7 +38801,7 @@
   },
   {
     "id": "gemini-2.5-flash-lite-preview-09-2025-thinking",
-    "name": "Gemini 2.5 Flash Lite Preview (09/2025) – Thinking",
+    "name": "Gemini 2.5 Flash Lite Preview (09/2025) \u2013 Thinking",
     "api": "openai-completions",
     "provider": "nano-gpt",
     "base_url": "https://nano-gpt.com/api/v1",
@@ -38843,7 +38843,7 @@
   },
   {
     "id": "gemini-2.5-flash-preview-09-2025-thinking",
-    "name": "Gemini 2.5 Flash Preview (09/2025) – Thinking",
+    "name": "Gemini 2.5 Flash Preview (09/2025) \u2013 Thinking",
     "api": "openai-completions",
     "provider": "nano-gpt",
     "base_url": "https://nano-gpt.com/api/v1",
