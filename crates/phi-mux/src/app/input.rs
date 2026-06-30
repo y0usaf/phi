@@ -128,9 +128,7 @@ impl MuxApp {
         if let Some(stroke) = KeyStroke::from_key_event(&key) {
             if self.active_extension_overlay.is_none() {
                 for spec in &self.extension_overlays {
-                    if KeyStroke::parse(&spec.toggle_key)
-                        .is_ok_and(|target| target == stroke)
-                    {
+                    if KeyStroke::parse(&spec.toggle_key).is_ok_and(|target| target == stroke) {
                         let name = spec.name.clone();
                         let state = (spec.init_state)();
                         let spec = spec.clone();
@@ -287,4 +285,3 @@ fn terminal_point(layout: &CellLayout, column: u16, row: u16) -> SelectionPoint 
         row: row.clamp(0, (rect.rows - 1).max(0)) as u16,
     }
 }
-

@@ -169,8 +169,7 @@ impl KeyStroke {
         // the modifiers.  This lets a binding like "ctrl+?" match the real
         // Ctrl+Shift+/ keypress regardless of whether the terminal reports
         // the SHIFT flag for symbol keys.
-        let shift =
-            raw_shift && !matches!(key.code, KeyCode::Char(c) if !c.is_ascii_alphabetic());
+        let shift = raw_shift && !matches!(key.code, KeyCode::Char(c) if !c.is_ascii_alphabetic());
 
         Some(Self {
             modifiers: KeyModifiers {
