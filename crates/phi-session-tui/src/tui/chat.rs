@@ -38,7 +38,7 @@ impl Ui {
             let last = body.len() - 1;
             body[last] = format!("{}{OSC133_ZONE_END}{OSC133_ZONE_FINAL}", body[last]);
         }
-        render_boxed(&body, bg, width)
+        render_boxed_padded(&body, bg, width, self.tools.user_padding)
     }
 
     pub(super) fn tool_lines(
@@ -159,7 +159,7 @@ impl Ui {
     pub(super) fn status_rows_bg(&self, _depth: usize, text: &str, bg: &str) -> Vec<String> {
         let content_width = self.box_width().saturating_sub(2).max(1);
         let wrapped = wrap_ansi(text, content_width);
-        render_boxed(&wrapped, bg, self.box_width())
+        render_boxed_padded(&wrapped, bg, self.box_width(), self.tools.tool_padding)
     }
 
     pub(super) fn push_status(&mut self, depth: usize, text: String) -> Option<(usize, usize)> {
@@ -320,7 +320,7 @@ impl Ui {
     /// (i.e. a prior child card or flat line is still touching), a blank line
     /// is inserted so consecutive child blocks never visually touch.
     pub(super) fn ensure_block_gap(&mut self) {
-        if !self.block_active {
+        if !self.block_active || self.tools.gap == 0 {
             return;
         }
         if self.block.last().is_some_and(|row| !row.is_empty()) {
@@ -334,13 +334,17 @@ impl Ui {
     /// messages, REPL blocks, tool cards, assistant prose) never visually
     /// touch.
     pub(super) fn ensure_pending_gap(&mut self) {
+        if self.tools.gap == 0 {
+            return;
+        }
         let needs_gap = match self.pending.last() {
             Some(TranscriptEntry::RawLines(lines)) => lines.last().is_some_and(|l| !l.is_empty()),
             Some(_) => true,
             None => false,
         };
         if needs_gap {
-            self.pending.push(TranscriptEntry::RawLines(vec![String::new()]));
+            self.pending
+                .push(TranscriptEntry::RawLines(vec![String::new()]));
         }
     }
 
@@ -352,7 +356,11 @@ impl Ui {
         self.block_errored = false;
         self.block_active = true;
         self.push_row(format!("{}repl{}", &self.palette.tool_title_fg, RESET));
-        self.push_row(String::new());
+        // Skip the blank separator line when REPL code is suppressed
+        // (repl_max_lines == 0): the header stands alone.
+        if self.tools.repl_max_lines > 0 {
+            self.push_row(String::new());
+        }
     }
 
     pub(super) fn commit_block(&mut self) {
@@ -366,7 +374,7 @@ impl Ui {
         } else {
             &self.palette.tool_success_bg
         };
-        let rows = render_repl_block(&body, bg, self.panel_width());
+        let rows = render_repl_block(&body, bg, self.panel_width(), self.tools.repl_padding);
         self.ensure_pending_gap();
         self.pending.push(TranscriptEntry::RawLines(rows));
         self.open_tool_rows.clear();
@@ -683,7 +691,7 @@ impl Ui {
         } else {
             &self.palette.tool_success_bg
         };
-        render_boxed(&rows, bg, self.box_width())
+        render_boxed_padded(&rows, bg, self.box_width(), self.tools.tool_padding)
     }
 
     #[allow(clippy::too_many_arguments, dead_code)]
@@ -723,7 +731,8 @@ impl Ui {
 
     pub(super) fn push_user_message(&mut self, text: &str) {
         self.ensure_pending_gap();
-        self.pending.push(TranscriptEntry::UserMessage(text.to_owned()));
+        self.pending
+            .push(TranscriptEntry::UserMessage(text.to_owned()));
         self.last_activity = false;
     }
 
@@ -743,7 +752,8 @@ impl Ui {
             self.after_block.extend(card);
         } else {
             self.ensure_pending_gap();
-            self.pending.push(TranscriptEntry::AssistantProse(text.to_owned()));
+            self.pending
+                .push(TranscriptEntry::AssistantProse(text.to_owned()));
         }
         self.last_activity = false;
     }

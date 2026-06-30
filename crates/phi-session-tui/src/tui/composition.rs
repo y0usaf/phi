@@ -122,36 +122,62 @@ impl Ui {
         let mut body = Vec::new();
         // Header (same as begin_block)
         body.push(format!("{}repl{}", &self.palette.tool_title_fg, RESET));
-        body.push(String::new());
+        // Skip the blank separator line when REPL code is suppressed
+        // (repl_max_lines == 0): the header stands alone.
+        if self.tools.repl_max_lines > 0 {
+            body.push(String::new());
+        }
         // Code
         body.extend(self.repl_code_lines(0, &data.code, self.code_limit()));
         // Tools
         for tool in &data.tools {
             let depth = tool.depth + 1;
             // Replicate ensure_block_gap: if last body row is non-empty, add blank
-            if body.last().is_some_and(|row| !row.is_empty()) {
+            // (unless tools.gap == 0).
+            if self.tools.gap > 0 && body.last().is_some_and(|row| !row.is_empty()) {
                 body.push(String::new());
             }
             let failed = tool.error.is_some();
             let output = tool.error.as_deref().unwrap_or(&tool.result);
-            let lang = if failed { None } else { tool_preview_lang(&tool.name, &tool.args) };
-            body.extend(self.tool_result_rows(depth, &tool.name, &tool.args, output, self.output_limit(), lang, failed));
+            let lang = if failed {
+                None
+            } else {
+                tool_preview_lang(&tool.name, &tool.args)
+            };
+            body.extend(self.tool_result_rows(
+                depth,
+                &tool.name,
+                &tool.args,
+                output,
+                self.output_limit(),
+                lang,
+                failed,
+            ));
         }
         // Subcalls
         for subcall in &data.subcalls {
             let depth = subcall.depth;
-            if body.last().is_some_and(|row| !row.is_empty()) {
+            if self.tools.gap > 0 && body.last().is_some_and(|row| !row.is_empty()) {
                 body.push(String::new());
             }
             let label = subcall_title(&subcall.model, &subcall.prompt_preview, &self.palette);
-            let content = subcall.error.as_deref().or(subcall.result_preview.as_deref());
-            body.extend(self.subcall_result_rows(depth, &label, content, self.output_limit(), subcall.error.is_some()));
+            let content = subcall
+                .error
+                .as_deref()
+                .or(subcall.result_preview.as_deref());
+            body.extend(self.subcall_result_rows(
+                depth,
+                &label,
+                content,
+                self.output_limit(),
+                subcall.error.is_some(),
+            ));
         }
         // Output
         let filtered = strip_tool_echoes(&data.stdout, &data.tools, 0);
         let preview_rows = self.preview_rows_with_lang(0, &filtered, self.output_limit(), None);
         if !preview_rows.is_empty() {
-            if body.last().is_some_and(|row| !row.is_empty()) {
+            if self.tools.gap > 0 && body.last().is_some_and(|row| !row.is_empty()) {
                 body.push(String::new());
             }
             let prefix = indent(0);
@@ -167,7 +193,7 @@ impl Ui {
         // Stderr
         let stderr_rows = self.preview_rows_with_lang(0, &data.stderr, self.output_limit(), None);
         if !stderr_rows.is_empty() {
-            if body.last().is_some_and(|row| !row.is_empty()) {
+            if self.tools.gap > 0 && body.last().is_some_and(|row| !row.is_empty()) {
                 body.push(String::new());
             }
             let prefix = indent(0);
@@ -189,7 +215,7 @@ impl Ui {
         } else {
             &self.palette.tool_success_bg
         };
-        render_repl_block(&body, bg, self.panel_width())
+        render_repl_block(&body, bg, self.panel_width(), self.tools.repl_padding)
     }
 
     pub(super) fn current_live_transcript_blocks(&self) -> Vec<TranscriptBlock> {
@@ -211,6 +237,7 @@ impl Ui {
                     &self.block,
                     &self.palette.tool_pending_bg,
                     self.panel_width(),
+                    self.tools.repl_padding,
                 ));
                 blocks.push(TranscriptBlock {
                     key: "live:repl-block".to_owned(),
