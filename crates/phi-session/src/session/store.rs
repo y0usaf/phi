@@ -268,7 +268,12 @@ impl SessionStore {
         let path = tmp.into_temp_path();
         let path_str = path.display().to_string();
         path.keep()?;
-        let start = output.len().saturating_sub(max_bytes);
+        let mut start = output.len().saturating_sub(max_bytes);
+        // Round down to the nearest UTF-8 char boundary so we never slice
+        // into the middle of a multi-byte character (which would panic).
+        while start < output.len() && !output.is_char_boundary(start) {
+            start += 1;
+        }
         let tail = output[start..].to_owned();
         Ok(SpillResult {
             tail,

@@ -549,6 +549,24 @@ mod tests {
     }
 
     #[test]
+    fn spill_output_multibyte_char_boundary() {
+        // Output containing multi-byte UTF-8 characters (box-drawing
+        // dashes ─, 3 bytes each) that would cause a panic if the tail
+        // slice started in the middle of a character.
+        let prefix = "─".repeat(2_000); // 6_000 bytes of 3-byte chars
+        let suffix = "x".repeat(5_000); // 5_000 bytes of ASCII
+        let large = format!("{prefix}{suffix}");
+        let result = SessionStore::spill_output(&large, 4096).unwrap();
+        // tail must be valid UTF-8 and a suffix of `large`
+        assert!(large.ends_with(&result.tail));
+        assert!(result.tail.len() <= 4096);
+        let path = result.full_output_path.expect("should have a spill path");
+        let on_disk = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(on_disk, large);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn full_output_path_roundtrips_in_jsonl() {
         let tmp = tempfile::tempdir().unwrap();
         let mut store = store_in(tmp.path());
