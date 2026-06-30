@@ -9,6 +9,7 @@ use super::sidebar::{
 };
 use super::statusbar::render_statusbar;
 use super::terminal_scene::render_terminal;
+use super::visual_context::VisualContext;
 use crate::grid::cell_surface::{CellSurface, display_cell_width, truncate_to_cells};
 use crate::grid::color::Color;
 use crate::grid::layout::{CellLayout, CellRect};
@@ -72,6 +73,7 @@ pub fn render_scene(
     mode: MuxMode,
     now_ms: u64,
     scrollback_total: usize,
+    visual: &VisualContext,
 ) -> Option<HardwareCursorPos> {
     let sidebar_panel =
         (layout.sidebar.cols > 0 && layout.sidebar.rows > 0).then_some(layout.sidebar);
@@ -84,6 +86,7 @@ pub fn render_scene(
             sidebar_viewport,
             palette,
             now_ms,
+            visual,
         );
     }
     let cursor = render_terminal(
@@ -102,6 +105,7 @@ pub fn render_scene(
         palette,
         mode,
         now_ms,
+        visual,
     );
     cursor
 }
@@ -115,6 +119,7 @@ pub fn render_sidebar(
     viewport: &[SidebarViewportItem],
     palette: &ScenePalette,
     now_ms: u64,
+    visual: &VisualContext,
 ) {
     surface.fill_rect(panel, palette.fg, palette.sidebar_bg);
 
@@ -182,8 +187,14 @@ pub fn render_sidebar(
 
             SidebarRowKind::Session { .. } => {
                 let status = row.status.map(|status| {
+                    let glyph = match status {
+                        SidebarStatusKind::Active => visual.spinner_frame(now_ms),
+                        SidebarStatusKind::Interrupted | SidebarStatusKind::Notification => {
+                            sidebar_status_glyph(status, now_ms).to_string()
+                        }
+                    };
                     (
-                        sidebar_status_glyph(status, now_ms),
+                        glyph,
                         animated_sidebar_status_color(status, palette, now_ms, item.visible_row),
                     )
                 });
@@ -194,6 +205,7 @@ pub fn render_sidebar(
                 };
                 let indent_cols = content.cols.min(display_cell_width(branch) as i32);
                 let reserved_cells = status
+                    .as_ref()
                     .map(|(glyph, _)| display_cell_width(glyph) as i32 + 1)
                     .unwrap_or(0);
                 let text_cols = content
@@ -252,10 +264,10 @@ pub fn render_sidebar(
                 }
 
                 if let Some((glyph, color)) = status {
-                    let glyph_cols = display_cell_width(glyph) as i32;
+                    let glyph_cols = display_cell_width(&glyph) as i32;
                     let glyph_col = content.col + content.cols.saturating_sub(glyph_cols);
                     surface.put_text_styled(
-                        glyph_col, row_y, glyph_cols, color, row_bg, glyph, reverse, false,
+                        glyph_col, row_y, glyph_cols, color, row_bg, &glyph, reverse, false,
                     );
                 }
             }

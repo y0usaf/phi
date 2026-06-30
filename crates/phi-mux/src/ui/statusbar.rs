@@ -3,6 +3,7 @@
 use super::palette::ScenePalette;
 use super::scene::{Chrome, MuxMode, StatusNoteKind};
 use super::sidebar::SIDEBAR_ANIMATION_FRAME_MS;
+use super::visual_context::VisualContext;
 use crate::grid::cell_surface::{
     CellSurface, char_cell_width, display_cell_width, truncate_to_cells,
 };
@@ -102,6 +103,7 @@ pub(super) fn render_statusbar(
     palette: &ScenePalette,
     mode: MuxMode,
     now_ms: u64,
+    _visual: &VisualContext,
 ) {
     if panel.cols <= 0 || panel.rows <= 0 {
         return;
@@ -379,6 +381,7 @@ mod tests {
             &ScenePalette::default(),
             MuxMode::Normal,
             0,
+            &VisualContext::default(),
         );
         let row: String = (0..80)
             .map(|col| {
