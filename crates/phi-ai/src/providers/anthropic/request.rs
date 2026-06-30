@@ -7,6 +7,7 @@ use crate::types::{
 pub(super) const ANTHROPIC_VERSION: &str = "2023-06-01";
 pub(super) const OAUTH_BETA: &str = "claude-code-20250219,oauth-2025-04-20";
 pub(super) const CLAUDE_CLI_VERSION: &str = "2.0.14";
+pub(super) const INTERLEAVED_THINKING_BETA: &str = "interleaved-thinking-2025-05-14";
 
 fn anthropic_tool_schema(tool: &ToolDefinition) -> Value {
     json!({
@@ -49,26 +50,42 @@ pub(super) fn build_body(model: &Model, ctx: &Context, opts: &StreamOptions) -> 
 
     // Tool definitions: sent as the native Anthropic `tools` array so the
     // model emits `tool_use` content blocks instead of text-based fences.
-    // We force `tool_choice: {"type": "any"}` so the model must call a tool
-    // every turn — without it, reasoning models default to `auto` and loop
-    // in prose. Anthropic rejects forced `tool_choice` when thinking is
-    // enabled, so when tools are present we drop `thinking` to make the
-    // forced call succeed (mirroring pi's `disableThinkingIfToolChoiceForced`).
+    // When thinking is enabled we leave `tool_choice` at the API default
+    // (`auto`) so thinking and tool use coexist — matching pi's behavior
+    // (pi's `streamSimpleAnthropic` never sets `tool_choice`). When thinking
+    // is disabled we force `tool_choice: {"type": "any"}` so the model must
+    // call a tool every turn instead of looping in prose.
     let has_tools = !ctx.tools.is_empty();
     if has_tools {
         body["tools"] = Value::Array(ctx.tools.iter().map(anthropic_tool_schema).collect());
+    }
+
+    // Compute the thinking value (effort string for adaptive models, token
+    // budget for budget-based models). `thinking_value` returns None when
+    // thinking is off or unsupported.
+    let thinking_val = model.thinking_value(opts.thinking);
+    let thinking_enabled = thinking_val.is_some();
+
+    if has_tools && !thinking_enabled {
+        // No thinking: force a tool call to prevent prose looping.
         body["tool_choice"] = json!({ "type": "any" });
     }
 
-    let thinking_budget = if has_tools {
-        None // Forced tool_choice is incompatible with thinking — skip it.
-    } else {
-        model
-            .thinking_value(opts.thinking)
-            .and_then(|v| v.parse::<u64>().ok())
-    };
-    if let Some(budget) = thinking_budget {
-        body["thinking"] = json!({ "type": "enabled", "budget_tokens": budget });
+    if let Some(val) = thinking_val {
+        if model.adaptive_thinking {
+            // Adaptive thinking: the model decides when/how much to think.
+            // The effort string controls reasoning depth via `output_config`.
+            body["thinking"] = json!({ "type": "adaptive", "display": "summarized" });
+            body["output_config"] = json!({ "effort": val });
+        } else {
+            // Budget-based thinking for older Anthropic models.
+            let budget = val.parse::<u64>().unwrap_or(1024);
+            body["thinking"] = json!({
+                "type": "enabled",
+                "budget_tokens": budget,
+                "display": "summarized",
+            });
+        }
     } else if let Some(temperature) = opts.temperature {
         body["temperature"] = json!(temperature);
     }
@@ -179,6 +196,7 @@ mod tests {
             max_tokens: 4096,
             headers: BTreeMap::new(),
             thinking_levels: None,
+            adaptive_thinking: false,
         }
     }
 
@@ -504,11 +522,13 @@ mod tests {
         assert!(body.get("tool_choice").is_none());
     }
 
-    /// When tools are present, thinking must be dropped because Anthropic
-    /// rejects forced `tool_choice` alongside `thinking: enabled`.
+    /// When thinking is enabled and tools are present, thinking is preserved
+    /// and `tool_choice` is NOT forced — matching pi's behavior (pi never sets
+    /// `tool_choice` in its simple stream path). Thinking + tools coexist via
+    /// the interleaved-thinking beta header (added in `mod.rs`).
     #[test]
-    fn build_body_drops_thinking_when_tools_present() {
-        // A reasoning-capable model with thinking levels.
+    fn build_body_preserves_thinking_with_tools() {
+        // A budget-based (non-adaptive) reasoning model with thinking levels.
         let mut m = model();
         m.reasoning = true;
         let mut levels = BTreeMap::new();
@@ -527,12 +547,92 @@ mod tests {
         let mut opts = StreamOptions::new(Auth::ApiKey("k".to_owned()));
         opts.thinking = ThinkingLevel::Low;
         let body = build_body(&m, &ctx, &opts);
-        // tool_choice is forced
-        assert_eq!(body["tool_choice"]["type"], "any");
-        // thinking is NOT present (would 400 alongside forced tool_choice)
+        // tool_choice is NOT forced when thinking is enabled
         assert!(
-            body.get("thinking").is_none(),
-            "thinking must be dropped when tool_choice is forced"
+            body.get("tool_choice").is_none(),
+            "tool_choice must not be forced when thinking is enabled"
+        );
+        // thinking IS present (coexists with tools)
+        assert_eq!(body["thinking"]["type"], "enabled");
+        assert_eq!(body["thinking"]["budget_tokens"], 8000);
+        assert_eq!(body["thinking"]["display"], "summarized");
+    }
+
+    /// When thinking is disabled and tools are present, `tool_choice` is
+    /// forced to `any` to prevent the model from looping in prose.
+    #[test]
+    fn build_body_forces_tool_choice_when_thinking_off_and_tools_present() {
+        let m = model(); // reasoning=false => no thinking
+
+        let ctx = Context {
+            system_prompt: Some("sys".to_owned()),
+            messages: vec![Message::User(UserMessage::new("hi"))],
+            tools: vec![ToolDefinition {
+                name: "repl".to_owned(),
+                description: "Run code".to_owned(),
+                input_schema: json!({"type": "object"}),
+            }],
+        };
+        let opts = StreamOptions::new(Auth::ApiKey("k".to_owned()));
+        let body = build_body(&m, &ctx, &opts);
+        assert_eq!(body["tool_choice"]["type"], "any");
+        assert!(body.get("thinking").is_none());
+    }
+
+    /// Adaptive thinking models send `thinking.type: "adaptive"` and
+    /// `output_config.effort` instead of budget-based thinking.
+    #[test]
+    fn build_body_adaptive_thinking_sends_effort() {
+        let mut m = model();
+        m.reasoning = true;
+        m.adaptive_thinking = true;
+        let mut levels = BTreeMap::new();
+        levels.insert(ThinkingLevel::High, Some("high".to_owned()));
+        levels.insert(ThinkingLevel::XHigh, Some("xhigh".to_owned()));
+        m.thinking_levels = Some(levels);
+
+        let ctx = Context {
+            system_prompt: Some("sys".to_owned()),
+            messages: vec![Message::User(UserMessage::new("hi"))],
+            ..Default::default()
+        };
+        let mut opts = StreamOptions::new(Auth::ApiKey("k".to_owned()));
+        opts.thinking = ThinkingLevel::XHigh;
+        let body = build_body(&m, &ctx, &opts);
+        assert_eq!(body["thinking"]["type"], "adaptive");
+        assert_eq!(body["thinking"]["display"], "summarized");
+        assert_eq!(body["output_config"]["effort"], "xhigh");
+        // No budget_tokens for adaptive models
+        assert!(body["thinking"].get("budget_tokens").is_none());
+    }
+
+    /// Adaptive thinking + tools: thinking preserved, no forced tool_choice.
+    #[test]
+    fn build_body_adaptive_thinking_with_tools() {
+        let mut m = model();
+        m.reasoning = true;
+        m.adaptive_thinking = true;
+        let mut levels = BTreeMap::new();
+        levels.insert(ThinkingLevel::High, Some("high".to_owned()));
+        m.thinking_levels = Some(levels);
+
+        let ctx = Context {
+            system_prompt: Some("sys".to_owned()),
+            messages: vec![Message::User(UserMessage::new("hi"))],
+            tools: vec![ToolDefinition {
+                name: "repl".to_owned(),
+                description: "Run code".to_owned(),
+                input_schema: json!({"type": "object"}),
+            }],
+        };
+        let mut opts = StreamOptions::new(Auth::ApiKey("k".to_owned()));
+        opts.thinking = ThinkingLevel::High;
+        let body = build_body(&m, &ctx, &opts);
+        assert_eq!(body["thinking"]["type"], "adaptive");
+        assert_eq!(body["output_config"]["effort"], "high");
+        assert!(
+            body.get("tool_choice").is_none(),
+            "no forced tool_choice for adaptive thinking + tools"
         );
     }
 
@@ -556,6 +656,7 @@ mod tests {
         assert!(body.get("tool_choice").is_none());
         assert_eq!(body["thinking"]["type"], "enabled");
         assert_eq!(body["thinking"]["budget_tokens"], 8000);
+        assert_eq!(body["thinking"]["display"], "summarized");
     }
 
     // --- convert_messages with ToolCall and ToolResult ---

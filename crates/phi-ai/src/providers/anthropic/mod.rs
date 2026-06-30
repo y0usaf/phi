@@ -8,7 +8,9 @@ use crate::registry::ApiProvider;
 use crate::stream::{AssistantEventStream, EventSink};
 use crate::types::{Api, Auth, Context, Model, StreamOptions};
 
-use request::{ANTHROPIC_VERSION, CLAUDE_CLI_VERSION, OAUTH_BETA, build_body};
+use request::{
+    ANTHROPIC_VERSION, CLAUDE_CLI_VERSION, INTERLEAVED_THINKING_BETA, OAUTH_BETA, build_body,
+};
 use response::Parser;
 
 pub struct AnthropicProvider {
@@ -57,18 +59,39 @@ async fn run(
     let url = format!("{}/v1/messages", model.base_url.trim_end_matches('/'));
     let mut handler = Parser::new(&model);
 
+    // Determine if the interleaved thinking beta header is needed:
+    // non-adaptive models with thinking enabled + tools require the beta
+    // to interleave thinking blocks with tool_use blocks. Adaptive models
+    // have interleaved thinking built in, so the beta is skipped for them.
+    let needs_interleaved_beta = body.get("thinking").is_some()
+        && body.get("tools").is_some()
+        && body["thinking"]["type"] != "adaptive";
+
     let build_request = |client: &reqwest::Client| {
         let mut request = client
             .post(&url)
             .header("anthropic-version", ANTHROPIC_VERSION)
             .header("accept", "application/json");
         request = match &opts.auth {
-            Auth::OAuthToken(token) => request
-                .bearer_auth(token)
-                .header("anthropic-beta", OAUTH_BETA)
-                .header("user-agent", format!("claude-cli/{CLAUDE_CLI_VERSION}"))
-                .header("x-app", "cli"),
-            Auth::ApiKey(key) => request.header("x-api-key", key),
+            Auth::OAuthToken(token) => {
+                let beta = if needs_interleaved_beta {
+                    format!("{OAUTH_BETA},{INTERLEAVED_THINKING_BETA}")
+                } else {
+                    OAUTH_BETA.to_owned()
+                };
+                request
+                    .bearer_auth(token)
+                    .header("anthropic-beta", &beta)
+                    .header("user-agent", format!("claude-cli/{CLAUDE_CLI_VERSION}"))
+                    .header("x-app", "cli")
+            }
+            Auth::ApiKey(key) => {
+                let mut request = request.header("x-api-key", key);
+                if needs_interleaved_beta {
+                    request = request.header("anthropic-beta", INTERLEAVED_THINKING_BETA);
+                }
+                request
+            }
             Auth::ChatGptOAuth { access, .. } => request.bearer_auth(access),
         };
         for (name, value) in &model.headers {
