@@ -122,15 +122,22 @@ impl MuxApp {
         }
 
         // Check extension overlay toggle keys.
-        if let Some(ch) = key_char(&key) {
-            for spec in &self.extension_overlays {
-                if spec.toggle_key == ch.to_string() && self.active_extension_overlay.is_none() {
-                    let name = spec.name.clone();
-                    let state = (spec.init_state)();
-                    let spec = spec.clone();
-                    self.active_extension_overlay =
-                        Some(super::ActiveExtensionOverlay { name, spec, state });
-                    return;
+        //
+        // Toggle keys are parsed as KeyStroke strings (e.g. "ctrl+?") so
+        // that modifiers are honoured, unlike the old raw-char matching.
+        if let Some(stroke) = KeyStroke::from_key_event(&key) {
+            if self.active_extension_overlay.is_none() {
+                for spec in &self.extension_overlays {
+                    if KeyStroke::parse(&spec.toggle_key)
+                        .is_ok_and(|target| target == stroke)
+                    {
+                        let name = spec.name.clone();
+                        let state = (spec.init_state)();
+                        let spec = spec.clone();
+                        self.active_extension_overlay =
+                            Some(super::ActiveExtensionOverlay { name, spec, state });
+                        return;
+                    }
                 }
             }
         }
@@ -281,15 +288,3 @@ fn terminal_point(layout: &CellLayout, column: u16, row: u16) -> SelectionPoint 
     }
 }
 
-/// Extract the character from a key event if it's a simple Char key
-/// with no control modifier.
-fn key_char(key: &KeyEvent) -> Option<char> {
-    if key.modifiers.contains(KeyModifiers::CONTROL) {
-        return None;
-    }
-    if let KeyCode::Char(c) = key.code {
-        Some(c)
-    } else {
-        None
-    }
-}

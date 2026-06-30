@@ -140,11 +140,10 @@ impl KeyStroke {
     }
 
     pub fn from_key_event(key: &KeyEvent) -> Option<Self> {
-        let modifiers = KeyModifiers {
-            control: key.modifiers.contains(event::KeyModifiers::CONTROL),
-            shift: key.modifiers.contains(event::KeyModifiers::SHIFT),
-            alt: key.modifiers.contains(event::KeyModifiers::ALT),
-        };
+        let control = key.modifiers.contains(event::KeyModifiers::CONTROL);
+        let alt = key.modifiers.contains(event::KeyModifiers::ALT);
+        let raw_shift = key.modifiers.contains(event::KeyModifiers::SHIFT);
+
         let token = match key.code {
             KeyCode::Char(' ') => KeyToken::Named(NamedKeyToken::Space),
             KeyCode::Char(c) => KeyToken::Character(c.to_ascii_lowercase().to_string()),
@@ -164,8 +163,21 @@ impl KeyStroke {
             KeyCode::Backspace => KeyToken::Named(NamedKeyToken::Backspace),
             _ => return None,
         };
+
+        // For non-alphabetic characters, Shift is already encoded in the
+        // character itself (e.g. Shift+/ = '?'), so don't duplicate it in
+        // the modifiers.  This lets a binding like "ctrl+?" match the real
+        // Ctrl+Shift+/ keypress regardless of whether the terminal reports
+        // the SHIFT flag for symbol keys.
+        let shift =
+            raw_shift && !matches!(key.code, KeyCode::Char(c) if !c.is_ascii_alphabetic());
+
         Some(Self {
-            modifiers,
+            modifiers: KeyModifiers {
+                control,
+                shift,
+                alt,
+            },
             key: token,
         })
     }

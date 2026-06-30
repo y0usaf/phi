@@ -39,8 +39,9 @@ pub enum OverlayOutcome {
 pub struct OverlaySpec {
     pub name: String,
     pub description: String,
-    /// The key that toggles this overlay (e.g. "?" for help).
-    /// The TUI binds this in its keymap.
+    /// The key that toggles this overlay, expressed as a KeyStroke string
+    /// (e.g. "ctrl+?", "a", "ctrl+shift+n"). The TUI parses and matches
+    /// this against incoming key events with full modifier support.
     pub toggle_key: String,
     /// Factory closure: creates the initial state when the overlay opens.
     pub init_state: Arc<dyn Fn() -> Box<dyn Any + Send + Sync> + Send + Sync>,

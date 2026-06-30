@@ -17,8 +17,9 @@ use phi_ext::{
 /// The built-in overlay extension.
 ///
 /// Registers:
-/// - `phi:about` overlay — a simple info panel toggled by pressing `A`
-///   (shift+a), showing version info and closing on Esc/Enter/q.
+/// - `phi:about` overlay — a simple info panel toggled by pressing
+///   `Ctrl+Shift+/` (a.k.a. `Ctrl+?`), showing version info and closing
+///   on Esc/Enter/q.
 pub struct DefaultOverlayExtension;
 
 /// State for the about overlay.
@@ -39,7 +40,7 @@ impl Extension for DefaultOverlayExtension {
         host.register_overlay(OverlaySpec::new(
             "phi:about",
             "About Phi — version and build info",
-            "A", // toggle key: Shift+A
+            "ctrl+?", // toggle key: Ctrl+Shift+/ (a.k.a. Ctrl+?)
             // init_state
             Arc::new(|| Box::new(AboutState::default()) as Box<dyn Any + Send + Sync>),
             // render
@@ -195,7 +196,7 @@ mod tests {
             .get("phi:about")
             .expect("about overlay registered");
         assert_eq!(overlay.name, "phi:about");
-        assert_eq!(overlay.toggle_key, "A");
+        assert_eq!(overlay.toggle_key, "ctrl+?");
         assert!(overlay.description.contains("version"));
     }
 

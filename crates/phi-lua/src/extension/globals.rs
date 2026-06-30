@@ -191,7 +191,7 @@ pub(super) fn setup_phi_global(lua: &mlua::Lua) -> mlua::Result<()> {
     phi.set("register_thinking_expression", register_thinking_expr_fn)?;
 
     // phi.register_overlay(name, opts)
-    // opts: { description = "...", toggle_key = "A", render = function() ... end }
+    // opts: { description = "...", toggle_key = "ctrl+?", render = function() ... end }
     // The render function returns a table of text lines (array of strings).
     // The TUI draws these lines in a bordered box.
     let register_overlay_fn = lua.create_function(|lua, (name, opts): (String, mlua::Table)| {
