@@ -12,7 +12,7 @@ use mlua::LuaSerdeExt as _;
 
 use serde::Deserialize;
 
-/// Generates a struct with the twelve fields shared across [`Config`],
+/// Generates a struct with the eleven fields shared across [`Config`],
 /// [`CliArgs`], and [`Settings`], plus any extra trailing fields. Each
 /// invocation supplies its own resolved types, so adding or renaming a
 /// shared field here propagates to all three structs automatically.
@@ -70,12 +70,46 @@ shared_fields_struct! {
         timeout: Option<u64>,
         max_errors: Option<usize>,
         max_concurrent_subcalls: Option<usize>,
+        tools: Option<ToolsConfig>,
         pub mux: Option<MuxConfig>,
         /// User-configured skill directories or files to scan for `SKILL.md`.
         /// Paths support `~` expansion; relative paths resolve against `cwd`.
         /// Example: `skills = { "~/.claude/skills", ".forge/skills" }`
         pub skills: Option<Vec<String>>,
     }
+}
+
+/// Tool display configuration: how many output lines to show per tool card,
+/// how many code lines to show per REPL block, how much padding around tool
+/// cards / REPL blocks / user messages, and how much gap between tool blocks.
+/// Configured in config.lua as
+/// `tools = { tool_max_lines = 0, repl_max_lines = 0, tool_padding = 0, repl_padding = 0, user_padding = 0, gap = 0 }`.
+#[derive(Debug, Default, Clone, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct ToolsConfig {
+    /// How many output lines to show per tool card. 0 = only the header (anchor) line.
+    pub tool_max_lines: Option<usize>,
+    /// How many code lines to show per REPL block. 0 = only the "repl" header line.
+    pub repl_max_lines: Option<usize>,
+    /// Box padding around tool/subcall/status cards (0-1). 0 = no padding lines. Default: 1.
+    pub tool_padding: Option<usize>,
+    /// Box padding around REPL blocks (0-1). 0 = no padding lines. Default: 1.
+    pub repl_padding: Option<usize>,
+    /// Box padding around user message cards (0-1). 0 = no padding lines. Default: 1.
+    pub user_padding: Option<usize>,
+    /// Gap between tool blocks (0-1). 0 = no blank line. Default: 1.
+    pub gap: Option<usize>,
+}
+
+/// Resolved tool display settings (after applying defaults).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToolsSettings {
+    pub tool_max_lines: usize,
+    pub repl_max_lines: usize,
+    pub tool_padding: usize,
+    pub repl_padding: usize,
+    pub user_padding: usize,
+    pub gap: usize,
 }
 
 /// Settings for mux mode (the in-process session multiplexer).
@@ -162,6 +196,27 @@ impl Config {
             }
             take_mux!(enabled, keybinds, sidebar_width);
         }
+        if let Some(other_tools) = other.tools {
+            let tools = self.tools.get_or_insert_with(ToolsConfig::default);
+            if other_tools.tool_max_lines.is_some() {
+                tools.tool_max_lines = other_tools.tool_max_lines;
+            }
+            if other_tools.repl_max_lines.is_some() {
+                tools.repl_max_lines = other_tools.repl_max_lines;
+            }
+            if other_tools.tool_padding.is_some() {
+                tools.tool_padding = other_tools.tool_padding;
+            }
+            if other_tools.repl_padding.is_some() {
+                tools.repl_padding = other_tools.repl_padding;
+            }
+            if other_tools.user_padding.is_some() {
+                tools.user_padding = other_tools.user_padding;
+            }
+            if other_tools.gap.is_some() {
+                tools.gap = other_tools.gap;
+            }
+        }
     }
 }
 
@@ -182,6 +237,12 @@ shared_fields_struct! {
         timeout: Option<u64>,
         max_errors: Option<usize>,
         max_concurrent_subcalls: Option<usize>,
+        pub tools_tool_max_lines: Option<usize>,
+        pub tools_repl_max_lines: Option<usize>,
+        pub tools_tool_padding: Option<usize>,
+        pub tools_repl_padding: Option<usize>,
+        pub tools_user_padding: Option<usize>,
+        pub tools_gap: Option<usize>,
     }
 }
 
@@ -200,6 +261,7 @@ shared_fields_struct! {
         timeout: Option<u64>,
         max_errors: Option<usize>,
         max_concurrent_subcalls: usize,
+        pub tools: ToolsSettings,
         /// User-configured skill paths (from config.lua `skills` field).
         pub skills: Vec<String>,
     }
@@ -243,6 +305,23 @@ impl Settings {
                 .max_concurrent_subcalls
                 .or(config.max_concurrent_subcalls)
                 .unwrap_or(4),
+            tools: {
+                let cfg = config.tools.unwrap_or_default();
+                ToolsSettings {
+                    tool_max_lines: args
+                        .tools_tool_max_lines
+                        .or(cfg.tool_max_lines)
+                        .unwrap_or(5),
+                    repl_max_lines: args
+                        .tools_repl_max_lines
+                        .or(cfg.repl_max_lines)
+                        .unwrap_or(8),
+                    tool_padding: args.tools_tool_padding.or(cfg.tool_padding).unwrap_or(1),
+                    repl_padding: args.tools_repl_padding.or(cfg.repl_padding).unwrap_or(1),
+                    user_padding: args.tools_user_padding.or(cfg.user_padding).unwrap_or(1),
+                    gap: args.tools_gap.or(cfg.gap).unwrap_or(1),
+                }
+            },
             skills: config.skills.unwrap_or_default(),
         }
     }
@@ -338,5 +417,69 @@ mod tests {
         let settings = Settings::resolve(&args, Config::default(), false);
         assert_eq!(settings.thinking, "high");
         assert_eq!(settings.sub_model_thinking, "low");
+    }
+
+    #[test]
+    fn tools_defaults() {
+        let args = CliArgs::default();
+        let settings = Settings::resolve(&args, Config::default(), false);
+        assert_eq!(settings.tools.tool_max_lines, 5);
+        assert_eq!(settings.tools.repl_max_lines, 8);
+        assert_eq!(settings.tools.tool_padding, 1);
+        assert_eq!(settings.tools.repl_padding, 1);
+        assert_eq!(settings.tools.user_padding, 1);
+        assert_eq!(settings.tools.gap, 1);
+    }
+
+    #[test]
+    fn tools_from_config() {
+        let args = CliArgs::default();
+        let config = eval(
+            "return { tools = { tool_max_lines = 0, repl_max_lines = 0, tool_padding = 0, repl_padding = 0, user_padding = 0, gap = 0 } }",
+        )
+        .unwrap();
+        let settings = Settings::resolve(&args, config, false);
+        assert_eq!(settings.tools.tool_max_lines, 0);
+        assert_eq!(settings.tools.repl_max_lines, 0);
+        assert_eq!(settings.tools.tool_padding, 0);
+        assert_eq!(settings.tools.repl_padding, 0);
+        assert_eq!(settings.tools.user_padding, 0);
+        assert_eq!(settings.tools.gap, 0);
+    }
+
+    #[test]
+    fn tools_cli_overrides_config() {
+        let args = CliArgs {
+            tools_tool_max_lines: Some(10),
+            ..Default::default()
+        };
+        let config = eval("return { tools = { tool_max_lines = 0 } }").unwrap();
+        let settings = Settings::resolve(&args, config, false);
+        assert_eq!(settings.tools.tool_max_lines, 10);
+        assert_eq!(settings.tools.tool_padding, 1);
+        assert_eq!(settings.tools.repl_padding, 1);
+        assert_eq!(settings.tools.user_padding, 1);
+        assert_eq!(settings.tools.gap, 1);
+    }
+
+    #[test]
+    fn tools_repl_max_lines_from_config() {
+        let args = CliArgs {
+            tools_repl_max_lines: Some(3),
+            ..Default::default()
+        };
+        let settings = Settings::resolve(&args, Config::default(), false);
+        assert_eq!(settings.tools.repl_max_lines, 3);
+    }
+
+    #[test]
+    fn tools_project_overlays_global() {
+        let mut global =
+            eval("return { tools = { tool_max_lines = 8, tool_padding = 1 } }").unwrap();
+        let project = eval("return { tools = { tool_max_lines = 0, gap = 0 } }").unwrap();
+        global.overlay(project);
+        assert_eq!(global.tools.as_ref().unwrap().tool_max_lines, Some(0));
+        assert_eq!(global.tools.as_ref().unwrap().tool_padding, Some(1));
+        assert_eq!(global.tools.as_ref().unwrap().gap, Some(0));
     }
 }
