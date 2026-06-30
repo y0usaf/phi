@@ -98,6 +98,18 @@ pub struct Theme {
     /// REPL block background (bg tinted toward ANSI 8).
     pub repl_bg: Rgb,
 
+    // --- Nested tool backgrounds (slightly brighter than the base) ---
+    // When a tool card is rendered inside a REPL block, it sits on the
+    // same colour as the block's outer background. These "nested"
+    // variants are a few steps brighter so the inner card stands out
+    // from its enclosing container.
+    /// Nested tool pending background (brightened `tool_pending_bg`).
+    pub tool_pending_bg_nested: Rgb,
+    /// Nested tool success background (brightened `tool_success_bg`).
+    pub tool_success_bg_nested: Rgb,
+    /// Nested tool error background (brightened `tool_error_bg`).
+    pub tool_error_bg_nested: Rgb,
+
     // --- Chrome ---
     /// Chrome agent label (ANSI 7 / white, bold).
     pub chrome_agent: Rgb,
@@ -270,6 +282,13 @@ pub fn generate_theme(colors: &TerminalColors) -> Theme {
         tool_success_bg: tint_bg(bg, colors, 2),
         tool_error_bg: tint_bg(bg, colors, 1),
         repl_bg: tint_bg(bg, colors, 8),
+
+        // Nested tool backgrounds: brighten the base bg so a tool card
+        // nested inside a REPL block (which uses the same base bg) is
+        // distinguishable from its enclosing container.
+        tool_pending_bg_nested: brighten(tint_bg(bg, colors, 8), 8),
+        tool_success_bg_nested: brighten(tint_bg(bg, colors, 2), 8),
+        tool_error_bg_nested: brighten(tint_bg(bg, colors, 1), 8),
 
         // Chrome
         chrome_agent: col(7),
@@ -633,6 +652,22 @@ mod tests {
     fn brighten_saturates() {
         assert_eq!(brighten(Rgb(200, 200, 200), 100), Rgb(255, 255, 255));
         assert_eq!(brighten(Rgb(100, 100, 100), 50), Rgb(150, 150, 150));
+    }
+
+    #[test]
+    fn nested_tool_bgs_are_brighter_than_base() {
+        let colors = colors_from(Rgb(20, 20, 26), Rgb(220, 220, 220));
+        let theme = generate_theme(&colors);
+        // Each nested variant should be strictly brighter than its base.
+        assert_eq!(
+            theme.tool_pending_bg_nested,
+            brighten(theme.tool_pending_bg, 8)
+        );
+        assert_eq!(
+            theme.tool_success_bg_nested,
+            brighten(theme.tool_success_bg, 8)
+        );
+        assert_eq!(theme.tool_error_bg_nested, brighten(theme.tool_error_bg, 8));
     }
 
     #[test]
