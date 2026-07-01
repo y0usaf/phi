@@ -178,23 +178,21 @@ fn query_metadata_counts_message_lists() {
 }
 
 #[test]
-fn identity_neutral_cyber_risk_default_on() {
-    // A bare-RLM build still emits the cyber_risk guardrail via const fallback.
+fn no_cyber_risk_section_by_default() {
+    // Matches ref/pi + ref/oh-my-pi, which ship no in-prompt security or
+    // URL-guessing instruction. The enumerated attack-technique list used to
+    // trip newer models' dual-use input classifiers into a blanket refusal.
     let prompt = build_system_prompt(&SystemPromptOptions::default());
-    assert!(prompt.contains("Assist with authorized security testing"));
-    assert!(prompt.contains("NEVER generate or guess URLs"));
+    assert!(!prompt.contains("Assist with authorized security testing"));
+    assert!(!prompt.contains("NEVER generate or guess URLs"));
 }
 
 #[test]
-fn cyber_risk_section_sits_between_identity_and_core_tools() {
+fn identity_section_precedes_core_tools() {
     let prompt = build_system_prompt(&SystemPromptOptions::default());
     let identity = prompt.find("You are a Recursive Language Model").unwrap();
-    let cyber = prompt
-        .find("Assist with authorized security testing")
-        .unwrap();
     let core = prompt.find("Available in the REPL:").unwrap();
-    assert!(identity < cyber, "cyber_risk must follow identity");
-    assert!(cyber < core, "cyber_risk must precede core_tools");
+    assert!(identity < core, "identity must precede core_tools");
 }
 
 #[test]

@@ -179,11 +179,11 @@ fn quiet_sub() -> Arc<ScriptedLm> {
 
 #[test]
 fn system_prompt_structure() {
-    // The prompt is now minimal (ref/rlm style): identity + cyber_risk +
-    // core_tools + mechanics + orchestrator; no ported coding-agent
-    // sections (# Doing tasks / # Executing actions / # Using your REPL
-    // helpers / # Tone and style / # Output efficiency). The gate on
-    // `user_prologue` is gone.
+    // The prompt is now minimal (ref/rlm style): identity + core_tools +
+    // mechanics + orchestrator; no ported coding-agent sections (# Doing
+    // tasks / # Executing actions / # Using your REPL helpers / # Tone and
+    // style / # Output efficiency) and no cyber-risk section (refs ship
+    // none). The gate on `user_prologue` is gone.
     let bare = rlm(
         RlmConfig {
             env_info: Some("# Environment\n - Primary working directory: /x".into()),
@@ -198,7 +198,7 @@ fn system_prompt_structure() {
     assert!(!bare_prompt.contains("# Using your REPL helpers"));
     assert!(!bare_prompt.contains("# Tone and style"));
     assert!(!bare_prompt.contains("# Output efficiency"));
-    assert!(bare_prompt.contains("Assist with authorized security testing"));
+    assert!(!bare_prompt.contains("Assist with authorized security testing"));
     assert!(bare_prompt.contains("Available in the REPL:"));
     assert!(bare_prompt.contains("# Environment"));
     assert!(bare_prompt.contains("As an RLM, you should act as an orchestrator"));

@@ -65,16 +65,13 @@ pub struct Skill {
 /// Pi-style composable system-prompt options. Each field overrides a default
 /// section; `build_system_prompt` composes them in a fixed order.
 ///
-/// Identity-neutral sections (`cyber_risk`) fall back to their `DEFAULT_*`
-/// const when `None` — they are on unless overridden/empty. `env_info` is
-/// caller-supplied data (like `cwd`) with no const fallback.
+/// Sections with a `DEFAULT_*` const fall back to it when `None` — they are on
+/// unless overridden/empty. `env_info` is caller-supplied data (like `cwd`)
+/// with no const fallback.
 #[derive(Clone, Debug, Default)]
 pub struct SystemPromptOptions<'a> {
     /// Opening identity line. Defaults to `DEFAULT_IDENTITY`.
     pub identity: Option<&'a str>,
-    /// Dual-use security boundary + URL-guessing restriction. Defaults to
-    /// `DEFAULT_CYBER_RISK`. Identity-neutral; default-on.
-    pub cyber_risk: Option<&'a str>,
     /// Core REPL tool listing. Defaults to `DEFAULT_REPL_TOOLS`.
     pub core_tools: Option<&'a str>,
     /// Pre-formatted custom-tools listing (e.g. coding helpers). Wrapped in a
@@ -107,20 +104,17 @@ pub struct SystemPromptOptions<'a> {
 /// Compose a system prompt from `SystemPromptOptions`, mirroring pi's
 /// `buildSystemPrompt`. Sections are joined with blank lines in a fixed order:
 ///
-/// identity → cyber_risk → core_tools → custom_tools → mechanics →
+/// identity → core_tools → custom_tools → mechanics →
 /// extra_guidelines → orchestrator → turn_scarcity → project_context →
 /// available_skills → env_info → cwd → append
 ///
-/// Identity-neutral sections fall back to their `DEFAULT_*` const (on unless
+/// Sections with a `DEFAULT_*` const fall back to it (on unless
 /// overridden/empty); `env_info` is caller-supplied data with no fallback.
 pub fn build_system_prompt(opts: &SystemPromptOptions) -> String {
     let mut sections: Vec<String> = Vec::new();
 
     // identity
     sections.push(opts.identity.unwrap_or(DEFAULT_IDENTITY).to_owned());
-
-    // cyber_risk (identity-neutral; default-on via const fallback)
-    push_non_empty_or_default(&mut sections, opts.cyber_risk, DEFAULT_CYBER_RISK);
 
     // core_tools
     sections.push(opts.core_tools.unwrap_or(DEFAULT_REPL_TOOLS).to_owned());
@@ -215,16 +209,5 @@ fn push_if_non_empty(sections: &mut Vec<String>, value: Option<&str>) {
         && !text.is_empty()
     {
         sections.push(text.to_owned());
-    }
-}
-
-/// Push `value`, or `default` if `value` is `None`. An explicit `Some("")` skips
-/// the section entirely (override-to-off). Used for identity-neutral sections
-/// that are on unless overridden/empty.
-fn push_non_empty_or_default(sections: &mut Vec<String>, value: Option<&str>, default: &str) {
-    match value {
-        Some(text) if !text.is_empty() => sections.push(text.to_owned()),
-        Some(_) => {} // explicit empty → suppress
-        None => sections.push(default.to_owned()),
     }
 }

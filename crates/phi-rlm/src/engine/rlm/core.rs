@@ -308,9 +308,7 @@ impl Rlm {
         history
     }
 
-    /// Build the `SystemPromptOptions` for this RLM from its config. The
-    /// identity-neutral section `cyber_risk` falls back to its `DEFAULT_*`
-    /// const inside `build_system_prompt`, so it is left `None` here.
+    /// Build the `SystemPromptOptions` for this RLM from its config.
     /// `env_info` is caller-supplied data threaded from `RlmConfig::env_info`.
     ///
     /// The gate is re-evaluated every build (cold root and each warm `send`),
