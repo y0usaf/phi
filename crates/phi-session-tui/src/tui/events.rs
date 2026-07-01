@@ -472,7 +472,8 @@ impl Ui {
         // Add a keep-alive interest for the active run: the equalizer,
         // thinking expressions, spinner frames, and tool header shimmer
         // all derive their phase from clock.now_ms() while a run is in
-        // flight. The baseline keep-alive keeps the clock alive regardless.
+        // flight. When the run ends this interest is removed, but the
+        // baseline keep-alive keeps the clock alive for chrome shimmer.
         self.clock.add_keep_alive();
         self.turn = 0;
         self.stream.clear();
@@ -1054,9 +1055,8 @@ impl Ui {
         self.live_code = None;
         self.running = None;
         // Remove the run's keep-alive interest: the equalizer/spinner no
-        // longer need dedicated ticks. The baseline keep-alive (chrome
-        // shimmer/gradient) keeps the clock alive, so animations continue
-        // smoothly even when idle.
+        // longer need dedicated ticks. The baseline keep-alive keeps the
+        // clock alive so chrome shimmer/gradient text continue animating.
         self.clock.remove_keep_alive();
         self.stream.clear();
         self.thinking.clear();

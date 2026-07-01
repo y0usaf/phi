@@ -5,9 +5,8 @@
 use std::io::Write;
 
 use crossterm::event::{
-    DisableBracketedPaste, DisableFocusChange, EnableBracketedPaste,
-    EnableFocusChange, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
-    PushKeyboardEnhancementFlags,
+    DisableBracketedPaste, DisableFocusChange, EnableBracketedPaste, EnableFocusChange,
+    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use unicode_segmentation::UnicodeSegmentation;

@@ -19,6 +19,7 @@ pub use cells::{
     display_cell_width, truncate_line_in_place_to_width, truncate_line_preserving_suffix_to_width,
     truncate_line_to_width, truncate_line_with_ellipsis_to_width, truncate_to_cells,
 };
+pub use clock::{ANIMATION_FRAME_MS, AnimationClock};
 pub use crossterm;
 pub use editor::{Editor, EditorAction};
 pub use fuzzy::{fuzzy_filter, fuzzy_match};
@@ -26,7 +27,6 @@ pub use fuzzy::{fuzzy_filter, fuzzy_match};
 pub use markdown::{
     MarkdownPalette, highlight_code, highlight_diff_line, highlight_output, render_markdown,
 };
-pub use clock::{ANIMATION_FRAME_MS, AnimationClock};
 pub use palette::{Rgb, TerminalColors, detect_terminal_colors};
 pub use selector::{Selector, SelectorItem, SelectorOutcome};
 pub use spinner::{

@@ -7,11 +7,11 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result};
-use phi_tui::{AnimationClock, RawModeGuard};
 use phi_tui::crossterm::event::{
     DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyEvent, KeyEventKind,
     KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
+use phi_tui::{AnimationClock, RawModeGuard};
 use tokio::sync::mpsc;
 
 use super::command_line::{CommandLineEvent, CommandLineState, command_line_start_col};

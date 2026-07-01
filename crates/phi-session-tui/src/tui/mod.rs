@@ -332,9 +332,10 @@ pub async fn run(setup: TuiSetup, mut io: SessionIo) -> Result<()> {
         Some(rx) => InputSource::Forwarded(rx),
         None => InputSource::Tty(EventStream::new()),
     };
-    // Coalesce redraws to the same 40ms cadence as the spinner tick: bursts
-    // of stream deltas collapse into one frame instead of repainting per
-    // SSE chunk. Terminals bottleneck at ~25fps anyway.
+    // Frame cadence: both the draw coalescer and the animation timer fire at
+    // 40ms, so bursts of stream deltas collapse into one frame and each
+    // animation wake-up produces exactly one render. Terminals bottleneck at
+    // ~25fps anyway.
     const FRAME: Duration = Duration::from_millis(40);
     let mut last_draw = tokio::time::Instant::now();
     let mut dirty = false;
@@ -395,30 +396,13 @@ pub async fn run(setup: TuiSetup, mut io: SessionIo) -> Result<()> {
                 ui.handle_login_msg(msg);
                 false
             }
-            // Clock-driven timer: the universal animation clock always ticks
-            // (baseline keep-alive = 1 for the always-visible chrome shimmer
-            // and gradient text). When a run is in flight an additional
-            // keep-alive is active, but the baseline ensures the clock never
-            // pauses — animations move continuously, not just on keystrokes.
-            // Focus-aware: 16ms when focused (~60fps wake-up, throttled to
-            // FRAME by the draw coalescer below), 32ms when blurred.
-            _ = async {
-                if ui.clock.is_ticking() {
-                    tokio::time::sleep_until(
-                        tokio::time::Instant::now()
-                            + Duration::from_millis(ui.clock.tick_interval_ms()),
-                    ).await
-                } else {
-                    // Should never happen (baseline keep-alive), but guard
-                    // against edge cases: sleep long, any real event cancels.
-                    tokio::time::sleep(Duration::from_secs(3600)).await
-                }
-            }, if ui.clock.is_ticking() => {
-                ui.clock.tick();
-                ui.refresh_open_activity_rows();
-                for msg in ui.runtime.drain_notifications() {
-                    ui.pending.push(TranscriptEntry::RawLines(vec![msg]));
-                }
+            // Animation timer: the clock has a baseline keep-alive so it is
+            // always ticking — wake at FRAME cadence so animated surfaces
+            // (chrome shimmer, gradient text, equalizer, spinner, tool
+            // shimmer) stay in motion even when no run is in flight.
+            // Bursting at the same cadence as the draw coalescer below means
+            // each wake-up produces exactly one render — no redundant work.
+            _ = tokio::time::sleep_until(last_draw + FRAME), if ui.clock.is_ticking() => {
                 false
             }
             _ = tokio::time::sleep_until(last_draw + FRAME), if dirty => false,
@@ -479,10 +463,20 @@ pub async fn run(setup: TuiSetup, mut io: SessionIo) -> Result<()> {
         }
         dirty = true;
         if last_draw.elapsed() >= FRAME {
-            // Tick the clock so now_ms() returns a fresh snapshot for
-            // this render frame. All animation functions called during
-            // ui.draw() see the same value.
-            ui.clock.tick();
+            // Tick the clock exactly once per frame so now_ms() returns a
+            // fresh snapshot shared by refresh_open_activity_rows() (tool
+            // header shimmer) and draw() (equalizer, statusbar shimmer,
+            // gradient text). Single tick → all animated surfaces are in
+            // phase — no incongruity between tool rows and chrome. With the
+            // baseline keep-alive the clock is always ticking, so this guard
+            // is always true, but is kept defensively.
+            if ui.clock.is_ticking() {
+                ui.clock.tick();
+                ui.refresh_open_activity_rows();
+                for msg in ui.runtime.drain_notifications() {
+                    ui.pending.push(TranscriptEntry::RawLines(vec![msg]));
+                }
+            }
             if let Err(e) = ui.draw() {
                 eprintln!("phi: render error: {e}");
             }
@@ -546,8 +540,9 @@ struct Ui {
     /// frames, tool header shimmer, chrome bar shimmer). All animated
     /// surfaces derive their phase from `clock.now_ms()`.
     /// keepAlive: add when a run starts (equalizer/spinner active), remove
-    /// when it ends — so the clock pauses and the event loop stops waking
-    /// on timer when nothing is animating.
+    /// when it ends. A baseline keep-alive of 1 keeps the clock always
+    /// ticking so the chrome shimmer/gradient text animate continuously;
+    /// the run adds a second interest for equalizer/spinner during a turn.
     pub(super) clock: phi_tui::AnimationClock,
     pub(super) palette: InlinePalette,
     /// Cancel token of the in-flight turn, if any.
