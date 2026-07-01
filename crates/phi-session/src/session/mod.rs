@@ -723,4 +723,45 @@ mod tests {
         assert_eq!(exchanges[0].repls[0].prose, "Let me fix the test.");
         assert_eq!(exchanges[0].repls[0].code, "print(1)");
     }
+
+    #[test]
+    fn branch_restore_preserves_interrupted_exchange() {
+        // A crash mid-turn leaves a user prompt + checkpointed REPLs but
+        // no assistant response. branch_restore must still include this
+        // exchange so restore_session can reconstruct history_N and the
+        // REPL variables from the interrupted turn.
+        let tmp = tempfile::tempdir().unwrap();
+        let mut store = store_in(tmp.path());
+        // First completed exchange
+        store.append(Role::User, "q1").unwrap();
+        store.append(Role::Assistant, "a1").unwrap();
+
+        // Second exchange: user prompt + checkpointed REPL, then "crash"
+        // — no assistant response appended.
+        store.append(Role::User, "q2").unwrap();
+        store
+            .append_repl(ReplRecord {
+                prose: String::new(),
+                code: "x = 42".to_owned(),
+                stdout: String::new(),
+                stderr: String::new(),
+                duration_secs: 0.1,
+                kind: ReplKind::Agent,
+                tools: Vec::new(),
+                subcalls: Vec::new(),
+            })
+            .unwrap();
+
+        let (exchanges, pending) = store.branch_restore();
+        assert!(pending.is_empty());
+        assert_eq!(exchanges.len(), 2, "interrupted exchange must not be dropped");
+        assert_eq!(exchanges[0].prompt, "q1");
+        assert_eq!(exchanges[0].response, "a1");
+        // The interrupted exchange: prompt preserved, repls preserved,
+        // response is empty (no assistant text was written).
+        assert_eq!(exchanges[1].prompt, "q2");
+        assert_eq!(exchanges[1].response, "");
+        assert_eq!(exchanges[1].repls.len(), 1);
+        assert_eq!(exchanges[1].repls[0].code, "x = 42");
+    }
 }

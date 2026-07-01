@@ -113,15 +113,25 @@ impl SessionStore {
         let (branch, trailing_shell) = self.branch_exchanges();
         let exchanges = branch
             .into_iter()
-            .filter_map(|exchange| {
-                let response = exchange.response?;
+            .map(|exchange| {
+                // An exchange with no assistant response (crash mid-turn)
+                // still carries checkpointed REPL executions that must be
+                // restored into the env. Only preserve it when it has repls
+                // — a bare user prompt with no response and no repls is just
+                // pending input, not an interrupted turn with work to recover.
+                let has_content = exchange.response.is_some() || !exchange.repls.is_empty();
+                if !has_content {
+                    return None;
+                }
+                let response = exchange.response.map(|e| e.text.clone()).unwrap_or_default();
                 Some(phi_rlm::RestoredExchange {
                     pre_shell: exchange.pre_shell.into_iter().map(restored).collect(),
                     prompt: exchange.prompt.text.clone(),
                     repls: exchange.repls.into_iter().map(restored).collect(),
-                    response: response.text.clone(),
+                    response,
                 })
             })
+            .flatten()
             .collect();
         let pending = trailing_shell
             .into_iter()
