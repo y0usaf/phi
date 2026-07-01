@@ -81,6 +81,10 @@ pub struct RestoredSubcall {
 /// A REPL execution restored from the canonical session stream.
 #[derive(Clone, Debug)]
 pub struct RestoredRepl {
+    /// Intermediate assistant prose that preceded this repl block,
+    /// restored from the durable log so the model's reasoning chain
+    /// between steps survives session resume.
+    pub prose: String,
     pub code: String,
     pub stdout: String,
     pub stderr: String,
@@ -106,7 +110,7 @@ pub fn push_repl_turns(
     max_output_chars: usize,
 ) {
     history.push(ChatMessage::assistant_with_tools(
-        String::new(),
+        repl.prose.clone(),
         vec![ToolCall {
             id: String::new(),
             name: "repl".to_owned(),
@@ -200,5 +204,35 @@ pub async fn dispatch_cancelable(runtime: &Option<Arc<AppRuntime>>, event: Lifec
         rt.dispatch_cancelable(event).await.unwrap_or(false)
     } else {
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn push_repl_turns_includes_intermediate_prose() {
+        // The model's intermediate prose between repl steps must be
+        // included in the restored history so the model's reasoning
+        // chain survives session resume (instead of empty strings).
+        let repl = RestoredRepl {
+            prose: "Let me fix the test.".to_owned(),
+            code: "print(1)".to_owned(),
+            stdout: "1
+"
+            .to_owned(),
+            stderr: String::new(),
+            subcalls: Vec::new(),
+        };
+        let mut history = Vec::new();
+        push_repl_turns(&mut history, &repl, 4096);
+        assert_eq!(history.len(), 2);
+        // The assistant tool-call message must carry the prose.
+        assert_eq!(history[0].role, Role::Assistant);
+        assert_eq!(history[0].content, "Let me fix the test.");
+        assert!(!history[0].tool_calls.is_empty());
+        // The tool result message.
+        assert_eq!(history[1].role, Role::Tool);
     }
 }

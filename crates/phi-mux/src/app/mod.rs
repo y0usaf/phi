@@ -91,6 +91,7 @@ pub async fn run(shared: SharedResources, mux_config: MuxConfig, cwd: PathBuf) -
     }
 
     let guard = RawModeGuard::new().context("mux requires a tty")?;
+    tui::restore_terminal_on_signals();
     let mut stdout = std::io::stdout();
     let _ = phi_tui::crossterm::execute!(stdout, EnableMouseCapture);
     // The mux owns the whole screen (unlike the inline single-session TUI).
@@ -261,19 +262,26 @@ pub(crate) struct ActiveExtensionOverlay {
     pub(crate) state: std::boxed::Box<dyn std::any::Any + Send + Sync>,
 }
 
+/// Panic hook: restore the terminal to cooked mode first (the unwind may
+/// never reach the guard's `Drop`, and raw mode garbles any output), then
+/// log with a backtrace and print to the now-readable stderr.
 fn install_panic_log_hook() {
     std::panic::set_hook(Box::new(|info| {
-        let Some(dirs) = directories::ProjectDirs::from("", "", "phi") else {
-            return;
-        };
-        let path = dirs.data_dir().join("mux-panic.log");
-        if let Ok(mut file) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
+        phi_tui::emergency_restore();
+        let log_path = directories::ProjectDirs::from("", "", "phi")
+            .map(|dirs| dirs.data_dir().join("mux-panic.log"));
+        if let Some(path) = &log_path
+            && let Ok(mut file) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
         {
             let _ = writeln!(file, "[{:?}] panic: {info}", std::time::SystemTime::now());
             let _ = writeln!(file, "{}", std::backtrace::Backtrace::force_capture());
+        }
+        eprintln!("phi mux panicked: {info}");
+        if let Some(path) = log_path {
+            eprintln!("(panic log: {})", path.display());
         }
     }));
 }

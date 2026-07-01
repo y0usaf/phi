@@ -106,13 +106,22 @@ impl Ui {
                     {
                         return true;
                     }
+                    // When ctrl+c is consumed by a more specific action
+                    // (cancel a run/login, clear typed text), disarm the
+                    // quit window — otherwise the "press again to quit"
+                    // hint fires spuriously and a second ctrl+c meant as
+                    // another cancel would exit the app. Only an idle
+                    // ctrl+c on an empty editor arms quit-confirm.
                     if self.running.is_some() {
                         self.cancel_run();
+                        self.last_ctrl_c = None;
                     } else if self.login.is_some() {
                         self.cancel_login();
-                    } else {
+                        self.last_ctrl_c = None;
+                    } else if !self.editor.is_empty() || self.popup.is_some() {
                         self.editor.clear();
                         self.popup = None;
+                        self.last_ctrl_c = None;
                     }
                     return false;
                 }
@@ -163,9 +172,9 @@ impl Ui {
                     if !code.trim().is_empty() {
                         let _ = login.code_tx.send(code.trim().to_owned());
                         self.editor.clear();
-                        self.pending.push(TranscriptEntry::RawLines(vec![format!(
-                            "{DIM}[code submitted]{RESET}"
-                        )]));
+                        self.pending.push(TranscriptEntry::RawLines(vec![
+                            self.note(&"[code submitted]"),
+                        ]));
                     }
                     return false;
                 }
@@ -186,14 +195,14 @@ impl Ui {
             Event::Resize(width, height) => {
                 // resize() no-ops on same dimensions (terminals fire several
                 // resize events per window adjustment). When the size really
-                // changed, do an absolute clear (clear_all: erase-screen +
-                // erase-scrollback + cursor-home sequence) so the
-                // physical cursor is homed to row 0 — matching the
-                // cursor_row = 0 that resize() just set. Without this, the
-                // next render's move_to_origin would emit zero cursor-up
-                // commands, leaving stale chrome in scrollback.
+                // changed, clear the viewport (erase-screen + cursor-home) so
+                // the physical cursor is homed to row 0 — matching the
+                // cursor_row = 0 that resize() just set. Saved scrollback is
+                // deliberately NOT erased (no \x1b[3J): the user's history —
+                // including everything from before phi started — survives a
+                // window resize.
                 self.term.resize(width, height);
-                let _ = self.term.clear_all();
+                let _ = self.term.clear_viewport();
                 // transcript_entries store raw data that re-renders at the
                 // current width on every draw(), so resize naturally flexes
                 // — no replay needed. Just reset committed_rows so all
@@ -249,41 +258,41 @@ impl Ui {
             "/help" => {
                 for spec in COMMANDS {
                     let usage = format!("/{} {}", spec.name, spec.args);
-                    self.pending.push(TranscriptEntry::RawLines(vec![format!(
-                        "{DIM}{:<20}{}{RESET}",
-                        usage.trim_end(),
-                        spec.desc
-                    )]));
+                    self.pending
+                        .push(TranscriptEntry::RawLines(vec![self.note(&format!(
+                            "{:<20}{}",
+                            usage.trim_end(),
+                            spec.desc
+                        ))]));
                 }
                 // Also list extension-registered commands.
                 for (name, desc) in self.runtime.list_extension_commands() {
                     let usage = format!("/{}", name);
-                    self.pending.push(TranscriptEntry::RawLines(vec![format!(
-                        "{DIM}{:<20}{}{RESET}",
-                        usage, desc
-                    )]));
+                    self.pending.push(TranscriptEntry::RawLines(vec![
+                        self.note(&format!("{:<20}{}", usage, desc)),
+                    ]));
                 }
-                self.pending.push(TranscriptEntry::RawLines(vec![format!(
-                    "{DIM}!cmd                run bash(cmd) in the REPL; the model sees it next turn{RESET}"
+                self.pending.push(TranscriptEntry::RawLines(vec![self.note(
+                    &"!cmd                run bash(cmd) in the REPL; the model sees it next turn",
                 )]));
-                self.pending.push(TranscriptEntry::RawLines(vec![format!(
-                    "{DIM}!!cmd               run bash(cmd) without showing the model{RESET}"
-                )]));
-                self.pending.push(TranscriptEntry::RawLines(vec![format!(
-                    "{DIM}keys: enter send (mode-dependent mid-run) · shift+enter newline · tab complete/cycle send mode · up/down history{RESET}"
-                )]));
-                self.pending.push(TranscriptEntry::RawLines(vec![format!(
-                    "{DIM}      ctrl-z undo · ctrl-y redo · ctrl-r yank · ctrl-p cycle model · ctrl-l models · shift+tab thinking level{RESET}"
-                )]));
-                self.pending.push(TranscriptEntry::RawLines(vec![format!(
-                    "{DIM}      ctrl-t show/hide thinking · ctrl-o expand tool output · ctrl-g $EDITOR · ctrl-q suspend · ctrl-x cycle send mode{RESET}"
-                )]));
-                self.pending.push(TranscriptEntry::RawLines(vec![format!(
-                    "{DIM}      esc cancel · ctrl-c ctrl-c quit{RESET}"
-                )]));
-                self.pending.push(TranscriptEntry::RawLines(vec![format!(
-                    "{DIM}      esc esc session tree (empty editor){RESET}"
-                )]));
+                self.pending.push(TranscriptEntry::RawLines(vec![
+                    self.note(&"!!cmd               run bash(cmd) without showing the model"),
+                ]));
+                self.pending.push(TranscriptEntry::RawLines(vec![
+                    self.note(&"keys: enter send (mode-dependent mid-run) · shift+enter newline · tab complete/cycle send mode · up/down history"),
+                ]));
+                self.pending.push(TranscriptEntry::RawLines(vec![
+                    self.note(&"      ctrl-z undo · ctrl-y redo · ctrl-r yank · ctrl-p cycle model · ctrl-l models · shift+tab thinking level"),
+                ]));
+                self.pending.push(TranscriptEntry::RawLines(vec![
+                    self.note(&"      ctrl-t show/hide thinking · ctrl-o expand tool output · ctrl-g $EDITOR · ctrl-q suspend · ctrl-x cycle send mode"),
+                ]));
+                self.pending.push(TranscriptEntry::RawLines(vec![
+                    self.note(&"      esc cancel · ctrl-c ctrl-c quit"),
+                ]));
+                self.pending.push(TranscriptEntry::RawLines(vec![
+                    self.note(&"      esc esc session tree (empty editor)"),
+                ]));
             }
             "/new" => {
                 let _ = cmd_tx.send(Cmd::Reset);
@@ -295,9 +304,9 @@ impl Ui {
                         .pending
                         .push(TranscriptEntry::RawLines(vec![self.err(&e)])),
                 }
-                self.pending.push(TranscriptEntry::RawLines(vec![format!(
-                    "{DIM}[session reset]{RESET}"
-                )]));
+                self.pending.push(TranscriptEntry::RawLines(vec![
+                    self.note(&"[session reset]"),
+                ]));
             }
             "/resume" => self.open_resume_selector(),
             "/tree" => self.open_tree_selector(),
@@ -339,9 +348,9 @@ impl Ui {
                     provider.to_owned()
                 };
                 match self.storage.logout(&provider) {
-                    Ok(()) => self.pending.push(TranscriptEntry::RawLines(vec![format!(
-                        "{DIM}[logged out of {provider}]{RESET}"
-                    )])),
+                    Ok(()) => self.pending.push(TranscriptEntry::RawLines(vec![
+                        self.note(&format!("[logged out of {provider}]")),
+                    ])),
                     Err(e) => self
                         .pending
                         .push(TranscriptEntry::RawLines(vec![self.err(&e)])),
@@ -448,8 +457,9 @@ impl Ui {
         } else {
             self.ensure_pending_gap();
             self.pending.push(TranscriptEntry::RawLines(vec![format!(
-                "{tool}${RESET} {DIM}{cmd}{RESET}",
-                tool = &self.palette.tool_title_fg
+                "{tool}${RESET} {tert}{cmd}{RESET}",
+                tool = &self.palette.tool_title_fg,
+                tert = &self.palette.text_tertiary
             )]));
             self.last_activity = false;
         }
@@ -477,7 +487,9 @@ impl Ui {
         self.clock.add_keep_alive();
         self.turn = 0;
         self.stream.clear();
+        self.stream_backlog.clear();
         self.thinking.clear();
+        self.thinking_backlog.clear();
         self.thinking_log.clear();
         self.status = "thinking...".to_owned();
         let _ = cmd_tx.send(Cmd::Prompt {
@@ -500,9 +512,9 @@ impl Ui {
 
     pub(super) fn start_login(&mut self, provider: &str) {
         if self.login.is_some() {
-            self.pending.push(TranscriptEntry::RawLines(vec![format!(
-                "{DIM}[a login is already in progress]{RESET}"
-            )]));
+            self.pending.push(TranscriptEntry::RawLines(vec![
+                self.note(&"[a login is already in progress]"),
+            ]));
             return;
         }
         let name = if provider.is_empty() {
@@ -544,9 +556,8 @@ impl Ui {
         match msg {
             LoginMsg::Info(text) => {
                 for line in text.lines() {
-                    self.pending.push(TranscriptEntry::RawLines(vec![format!(
-                        "{DIM}{line}{RESET}"
-                    )]));
+                    self.pending
+                        .push(TranscriptEntry::RawLines(vec![self.note(&line)]));
                 }
             }
             LoginMsg::Done { provider, result } => {
@@ -555,9 +566,11 @@ impl Ui {
                     Ok(()) => self.pending.push(TranscriptEntry::RawLines(vec![format!(
                         "{BOLD}logged in to {provider}{RESET}"
                     )])),
-                    Err(e) if e.to_lowercase().contains("cancel") => self.pending.push(
-                        TranscriptEntry::RawLines(vec![format!("{DIM}[login cancelled]{RESET}")]),
-                    ),
+                    Err(e) if e.to_lowercase().contains("cancel") => {
+                        self.pending.push(TranscriptEntry::RawLines(vec![
+                            self.note(&"[login cancelled]"),
+                        ]))
+                    }
                     Err(e) => self.pending.push(TranscriptEntry::RawLines(vec![format!(
                         "{}login failed:{RESET} {e}",
                         &self.palette.error_fg
@@ -629,7 +642,9 @@ impl Ui {
         self.turn = iteration + 1;
         self.status = "thinking...".to_owned();
         self.stream.clear();
+        self.stream_backlog.clear();
         self.thinking.clear();
+        self.thinking_backlog.clear();
         if iteration == 0 {
             self.thinking_log.clear();
         } else if !self.thinking_log.trim().is_empty() {
@@ -639,22 +654,66 @@ impl Ui {
     }
 
     fn handle_root_delta(&mut self, delta: String) {
-        self.stream.push_str(&delta);
+        // Queued, not appended: `drain_stream_backlogs` moves a bounded
+        // budget into `stream` per frame so bursts render as flowing text.
+        self.stream_backlog.push_str(&delta);
         self.streamed = true;
-        // Keep streamed assistant prose live-only. The durable JSONL
-        // assistant message is appended at run completion, so the
-        // retained transcript must also commit prose at that message
-        // boundary instead of turning paragraph-stable deltas into
-        // separate Assistant cards.
+        // Streamed prose is committed to the in-memory transcript by
+        // `push_prose` (called from `handle_root_text` or
+        // `handle_code_exec_start`). Intermediate prose is also
+        // accumulated into `pending_prose` so it can be persisted as
+        // `ReplRecord.prose` at the next code execution checkpoint,
+        // surviving session resume.
     }
 
     fn handle_root_thinking_delta(&mut self, delta: String) {
-        self.thinking.push_str(&delta);
+        self.thinking_backlog.push_str(&delta);
+        // The turn-wide log is the persistence source: it must carry the
+        // full delta immediately, never paced.
         self.thinking_log.push_str(&delta);
+    }
+
+    /// Move one frame's budget from the pacing backlogs into the visible
+    /// buffers. The budget is proportional to the backlog so a large burst
+    /// catches up in a few hundred ms while a steady token flow passes
+    /// through almost unbuffered; short tails drain whole to avoid a
+    /// dribble at the end. Cuts fall on `char` boundaries.
+    pub(super) fn drain_stream_backlogs(&mut self) {
+        fn drain_budget(backlog: &mut String, into: &mut String) {
+            if backlog.is_empty() {
+                return;
+            }
+            let total = backlog.chars().count();
+            let budget = if total <= 24 {
+                total
+            } else {
+                (total / 8).clamp(24, 512)
+            };
+            let cut = backlog
+                .char_indices()
+                .nth(budget)
+                .map(|(i, _)| i)
+                .unwrap_or(backlog.len());
+            into.push_str(&backlog[..cut]);
+            backlog.drain(..cut);
+        }
+        drain_budget(&mut self.stream_backlog, &mut self.stream);
+        drain_budget(&mut self.thinking_backlog, &mut self.thinking);
+    }
+
+    /// Flush the prose backlog whole. Every commit point that takes or
+    /// clears `stream` must call this first — pacing is presentation only
+    /// and must never make a commit see partial text.
+    pub(super) fn flush_stream_backlog(&mut self) {
+        if !self.stream_backlog.is_empty() {
+            let backlog = std::mem::take(&mut self.stream_backlog);
+            self.stream.push_str(&backlog);
+        }
     }
 
     fn handle_root_text(&mut self, text: String) {
         self.flush_thinking();
+        self.flush_stream_backlog();
         // Commit the iteration's prose as a single assistant card. With
         // native tool calls, the model's text stream is pure prose — code
         // arrives via `CodeExecStart`/`CodeExecEnd` events, never as
@@ -676,6 +735,7 @@ impl Ui {
             // Flush any streamed prose above the code block. With tool
             // calls, code never appears in the text stream, so the entire
             // stream buffer is prose.
+            self.flush_stream_backlog();
             let prose = std::mem::take(&mut self.stream);
             if !prose.is_empty() {
                 self.push_prose(&prose);
@@ -688,6 +748,10 @@ impl Ui {
             self.open_subcall_rows.clear();
             self.begin_block();
             self.live_code = Some(code.clone());
+            // Drain accumulated prose into live_prose so it is persisted
+            // as ReplRecord.prose at CodeExecEnd. This is the model's
+            // reasoning between steps — it must survive session resume.
+            self.live_prose = std::mem::take(&mut self.pending_prose);
         }
         // When tool_summary is enabled, suppress live repl block rendering;
         // a consolidated summary card is rendered after all repls complete.
@@ -716,7 +780,9 @@ impl Ui {
                 let duration_secs = duration.as_secs_f64();
                 let tools = std::mem::take(&mut self.live_tools);
                 let subcalls = std::mem::take(&mut self.live_subcalls);
+                let prose = std::mem::take(&mut self.live_prose);
                 let _ = self.store.append_repl(session::ReplRecord {
+                    prose,
                     code: code.clone(),
                     stdout: stdout.clone(),
                     stderr: stderr.clone(),
@@ -727,11 +793,23 @@ impl Ui {
                 });
                 // Discard the incrementally-built live block and rebuild
                 // from the stored record so live and replay use the same
-                // rendering path.
+                // rendering path. In the live session the prose was already
+                // rendered by `push_prose` during RootText/CodeExecStart,
+                // so pass an empty string here to avoid duplication. On
+                // resume, `replay_branch` in navigation.rs passes the
+                // persisted prose field so it renders the interleaving.
                 self.block.clear();
                 self.block_active = false;
                 self.after_block.clear();
-                self.push_repl_replay(&code, &stdout, &stderr, duration_secs, &tools, &subcalls);
+                self.push_repl_replay(
+                    "",
+                    &code,
+                    &stdout,
+                    &stderr,
+                    duration_secs,
+                    &tools,
+                    &subcalls,
+                );
             } else {
                 self.block_errored = !stderr.is_empty();
                 self.live_tools.clear();
@@ -764,7 +842,8 @@ impl Ui {
             running_status_text_shimmer(
                 &label,
                 &self.visual.spinner_frame(elapsed),
-                self.palette.shimmer_accent,
+                &self.palette.working_fg.clone(),
+                self.palette.working_shimmer,
                 elapsed,
             ),
         ) {
@@ -840,7 +919,17 @@ impl Ui {
             )
         };
         if let Some(row) = self.open_tool_rows.remove(&key) {
-            self.replace_block_rows(row.start, row.len, rows);
+            let new_len = self.replace_block_rows(row.start, row.len, rows.clone());
+            // Completion pulse: the finished card's anchor sweeps green for
+            // a beat — the magenta→green hue cross marks the state change.
+            if error.is_none() && !rows.is_empty() && self.block_active {
+                self.flash_rows.push(FlashRow {
+                    start: row.start,
+                    len: new_len,
+                    expires_ms: self.clock.now_ms() + COMPLETION_FLASH_MS,
+                    rows,
+                });
+            }
             self.last_activity = true;
         } else {
             for row in rows {
@@ -870,7 +959,8 @@ impl Ui {
                 running_status_text_shimmer(
                     &label,
                     &self.visual.spinner_frame(elapsed),
-                    self.palette.shimmer_accent,
+                    &self.palette.working_fg.clone(),
+                    self.palette.working_shimmer,
                     elapsed,
                 ),
             ) {
@@ -1011,6 +1101,7 @@ impl Ui {
                 self.push_preview(0, &res.stderr, self.output_limit());
                 self.commit_block();
                 let _ = self.store.append_repl(session::ReplRecord {
+                    prose: String::new(),
                     code,
                     stdout: res.stdout,
                     stderr: res.stderr,
@@ -1024,9 +1115,8 @@ impl Ui {
                 let output = format!("{}{}", res.stdout, res.stderr);
                 self.ensure_pending_gap();
                 if output.trim().is_empty() {
-                    self.pending.push(TranscriptEntry::RawLines(vec![format!(
-                        "{DIM}(no output){RESET}"
-                    )]));
+                    self.pending
+                        .push(TranscriptEntry::RawLines(vec![self.note(&"(no output)")]));
                 } else {
                     self.pending.push(TranscriptEntry::RawLines(
                         output.trim_end().lines().map(str::to_owned).collect(),
@@ -1053,13 +1143,19 @@ impl Ui {
         self.fail_open_activity_rows();
         self.commit_block();
         self.live_code = None;
+        self.pending_prose.clear();
+        self.live_prose.clear();
         self.running = None;
         // Remove the run's keep-alive interest: the equalizer/spinner no
         // longer need dedicated ticks. The baseline keep-alive keeps the
         // clock alive so chrome shimmer/gradient text continue animating.
         self.clock.remove_keep_alive();
+        // The completion carries the full response text; whatever is still
+        // queued for pacing is a stale copy of the same bytes.
         self.stream.clear();
+        self.stream_backlog.clear();
         self.thinking.clear();
+        self.thinking_backlog.clear();
         let display_text = assistant_display_text(&completion.response, &self.thinking_log);
         self.thinking_log.clear();
         // Mirror the env's history condition so the store and the REPL's

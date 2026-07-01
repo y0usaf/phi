@@ -25,8 +25,42 @@ use phi_session::config;
 use phi_session_tui::{session_builder, tui};
 use tokio_util::sync::CancellationToken;
 
-#[tokio::main]
-async fn main() -> Result<()> {
+/// glibc's default arena policy (up to 8 x cores) trades memory for lock
+/// contention headroom — a poor fit for a long-running TUI, where it shows
+/// up as steadily growing RSS. Cap arenas before any thread allocates.
+/// jemalloc builds replace the allocator wholesale via the attributes
+/// above; musl has no `mallopt`, hence the `gnu` guard.
+#[cfg(all(target_os = "linux", target_env = "gnu", not(feature = "jemalloc")))]
+fn configure_system_allocator() {
+    unsafe extern "C" {
+        fn mallopt(param: i32, value: i32) -> i32;
+    }
+
+    const M_ARENA_MAX: i32 = -8;
+    let arena_max = std::env::var("PHI_GLIBC_ARENA_MAX")
+        .ok()
+        .and_then(|value| value.trim().parse::<i32>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(4);
+
+    let _ = unsafe { mallopt(M_ARENA_MAX, arena_max) };
+}
+
+#[cfg(not(all(target_os = "linux", target_env = "gnu", not(feature = "jemalloc"))))]
+fn configure_system_allocator() {}
+
+fn main() -> Result<()> {
+    // Must run before the runtime spawns worker threads: arena caps only
+    // apply to arenas that don't exist yet.
+    configure_system_allocator();
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("failed to build tokio runtime")?
+        .block_on(async_main())
+}
+
+async fn async_main() -> Result<()> {
     let args = Args::parse();
     let storage = Arc::new(AuthStorage::new(auth_path()?));
 

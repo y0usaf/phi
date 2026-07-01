@@ -19,26 +19,43 @@ impl Ui {
 
     pub(super) fn user_card_lines(&self, text: &str) -> Vec<String> {
         let rendered = render_markdown(text, self.markdown_width(), &self.palette.markdown);
-        let width = self.panel_width();
-        let bg = &self.palette.user_message_bg;
-        // pi-style: full-width background fill with 1-cell padding (Box(1,1,bgFn)),
-        // no header label. OSC 133 zone markers wrap first/last lines.
-        let mut body: Vec<String> = rendered
-            .into_iter()
-            .map(|line| {
-                if line.is_empty() {
-                    String::new()
-                } else {
-                    format!("{fg}{line}{RESET}", fg = &self.palette.user_fg)
-                }
-            })
-            .collect();
-        if !body.is_empty() {
+        // Crush-style voice marker: a colored left-gutter bar on every line
+        // instead of a background wash. The accent bar is the role signal;
+        // the reading surface stays flat. `user_padding` extends the bar
+        // above/below the text. OSC 133 zone markers wrap first/last lines.
+        let bar = format!("{}\u{258C}{RESET}", &self.palette.accent_fg);
+        let mut body: Vec<String> = Vec::with_capacity(rendered.len() + 2);
+        for _ in 0..self.tools.user_padding {
+            body.push(bar.clone());
+        }
+        for line in rendered {
+            if line.is_empty() {
+                body.push(bar.clone());
+            } else {
+                body.push(format!(
+                    "{bar} {fg}{line}{RESET}",
+                    fg = &self.palette.user_fg
+                ));
+            }
+        }
+        for _ in 0..self.tools.user_padding {
+            body.push(bar.clone());
+        }
+        // OSC 133 zones bracket the CONTENT lines, not the padding bars —
+        // shell integrations locate the semantic start of user input from
+        // the A marker, which must sit on the first text line.
+        let pad = self.tools.user_padding;
+        if body.len() > pad * 2 {
+            body[pad] = format!("{OSC133_ZONE_START}{}", body[pad]);
+            let last_content = body.len() - 1 - pad;
+            body[last_content] =
+                format!("{}{OSC133_ZONE_END}{OSC133_ZONE_FINAL}", body[last_content]);
+        } else if !body.is_empty() {
             body[0] = format!("{OSC133_ZONE_START}{}", body[0]);
             let last = body.len() - 1;
             body[last] = format!("{}{OSC133_ZONE_END}{OSC133_ZONE_FINAL}", body[last]);
         }
-        render_boxed_padded(&body, bg, width, self.tools.user_padding)
+        body
     }
 
     pub(super) fn tool_lines(
@@ -95,7 +112,10 @@ impl Ui {
             if rows.len() > max {
                 let hidden = rows.len() - max;
                 rows.truncate(max);
-                rows.push(format!("{DIM}… ({hidden} more lines){RESET}"));
+                rows.push(format!(
+                    "{}… ({hidden} more lines){RESET}",
+                    &self.palette.text_tertiary
+                ));
             }
         }
         let prefix = if self.block_active {
@@ -122,7 +142,7 @@ impl Ui {
         if self.expand_thinking {
             self.tool_lines(
                 0,
-                &format!("{DIM}thinking{RESET}"),
+                &format!("{}thinking{RESET}", &self.palette.text_tertiary),
                 &self.thinking,
                 usize::MAX,
             )
@@ -132,6 +152,11 @@ impl Ui {
     }
 
     pub(super) fn flush_thinking(&mut self) {
+        // Committing must see the full text, not the paced prefix.
+        if !self.thinking_backlog.is_empty() {
+            let backlog = std::mem::take(&mut self.thinking_backlog);
+            self.thinking.push_str(&backlog);
+        }
         let thinking = std::mem::take(&mut self.thinking);
         if thinking.trim().is_empty() {
             return;
@@ -196,6 +221,11 @@ impl Ui {
                 row.start = ((row.start as isize) + delta) as usize;
             }
         }
+        for flash in self.flash_rows.iter_mut() {
+            if flash.start >= after {
+                flash.start = ((flash.start as isize) + delta) as usize;
+            }
+        }
     }
 
     pub(super) fn replace_block_rows(
@@ -222,7 +252,10 @@ impl Ui {
         let now_ms = self.clock.now_ms();
         let spinner = self.visual.spinner_frame(now_ms);
         let elapsed = now_ms;
-        let shimmer = self.palette.shimmer_accent;
+        // State arc: magenta while working, green on completion. The hue
+        // cross at the finish line is what makes "done" legible at a glance.
+        let shimmer = self.palette.working_shimmer;
+        let spinner_fg = self.palette.working_fg.clone();
 
         let mut tool_ids: Vec<((usize, u64), usize)> = self
             .open_tool_rows
@@ -239,7 +272,13 @@ impl Ui {
                 row.len,
                 self.status_rows(
                     row.depth,
-                    &running_status_text_shimmer(&row.label, &spinner, shimmer, elapsed),
+                    &running_status_text_shimmer(
+                        &row.label,
+                        &spinner,
+                        &spinner_fg,
+                        shimmer,
+                        elapsed,
+                    ),
                 ),
             );
             if let Some(open) = self.open_tool_rows.get_mut(&id) {
@@ -263,13 +302,58 @@ impl Ui {
                 row.len,
                 self.status_rows(
                     row.depth,
-                    &running_status_text_shimmer(&row.label, &spinner, shimmer, elapsed),
+                    &running_status_text_shimmer(
+                        &row.label,
+                        &spinner,
+                        &spinner_fg,
+                        shimmer,
+                        elapsed,
+                    ),
                 ),
             );
             if let Some(open) = self.open_subcall_rows.get_mut(idx) {
                 open.len = new_len;
             }
         }
+
+        self.refresh_completion_flashes(now_ms);
+    }
+
+    /// Drive the completion pulses: while a flash is live, the card's anchor
+    /// line sweeps with the success (green) shimmer; on expiry the plain
+    /// rows are restored and the flash dropped. The magenta→green hue cross
+    /// is the completion celebration.
+    fn refresh_completion_flashes(&mut self, now_ms: u64) {
+        if self.flash_rows.is_empty() {
+            return;
+        }
+        let success = self.palette.shimmer_accent;
+        let mut flashes = std::mem::take(&mut self.flash_rows);
+        // Process from the bottom up so earlier replacements can't shift
+        // later starts mid-loop (lengths are equal, but stay defensive).
+        flashes.sort_by_key(|f| std::cmp::Reverse(f.start));
+        let mut keep: Vec<FlashRow> = Vec::with_capacity(flashes.len());
+        for flash in flashes {
+            if now_ms >= flash.expires_ms {
+                self.replace_block_rows(flash.start, flash.len, flash.rows.clone());
+                continue;
+            }
+            let mut rows = flash.rows.clone();
+            if let Some(first) = rows.first_mut() {
+                *first = shimmer_ansi(first, success, now_ms);
+            }
+            self.replace_block_rows(flash.start, flash.len, rows);
+            keep.push(flash);
+        }
+        // Invariant: self.flash_rows is empty here — it was taken at the top
+        // and nothing on the rendering path (replace_block_rows,
+        // shift_open_row_starts) pushes to it; handle_tool_end is the only
+        // pusher and it runs on the event-dispatch path, not during render.
+        debug_assert!(
+            self.flash_rows.is_empty(),
+            "flash_rows must be empty mid-render"
+        );
+        self.flash_rows = keep;
     }
 
     pub(super) fn fail_open_activity_rows(&mut self) {
@@ -284,27 +368,24 @@ impl Ui {
             let Some(row) = self.open_tool_rows.remove(&id) else {
                 continue;
             };
-            self.replace_block_rows(
-                row.start,
-                row.len,
-                self.status_rows_bg(
-                    row.depth,
-                    &failed_status_text(&row.label, None, None, &self.palette),
-                    &self.palette.tool_error_bg_nested,
-                ),
-            );
+            let rows = self.failed_rows(&row.label);
+            self.replace_block_rows(row.start, row.len, rows);
         }
         while let Some(row) = self.open_subcall_rows.pop_back() {
-            self.replace_block_rows(
-                row.start,
-                row.len,
-                self.status_rows_bg(
-                    row.depth,
-                    &failed_status_text(&row.label, None, None, &self.palette),
-                    &self.palette.tool_error_bg_nested,
-                ),
-            );
+            let rows = self.failed_rows(&row.label);
+            self.replace_block_rows(row.start, row.len, rows);
         }
+    }
+
+    /// Flat failure line(s) for an interrupted/failed activity row: the red
+    /// ✗ status text, wrapped to the content width. No background tint —
+    /// the glyph and color carry the state.
+    fn failed_rows(&self, label: &str) -> Vec<String> {
+        let content_width = self.box_width().saturating_sub(2).max(1);
+        wrap_ansi(
+            &failed_status_text(label, None, None, &self.palette),
+            content_width,
+        )
     }
 
     pub(super) fn push_row(&mut self, row: String) {
@@ -353,6 +434,7 @@ impl Ui {
         self.block.clear();
         self.open_tool_rows.clear();
         self.open_subcall_rows.clear();
+        self.flash_rows.clear();
         self.block_errored = false;
         self.block_active = true;
         self.push_row(format!("{}repl{}", &self.palette.tool_title_fg, RESET));
@@ -367,14 +449,24 @@ impl Ui {
         if !self.block_active {
             return;
         }
+        // Restore any still-pulsing completion flashes to their plain rows
+        // so a frozen mid-pulse frame is never committed to scrollback.
+        let flashes = std::mem::take(&mut self.flash_rows);
+        for flash in flashes {
+            self.replace_block_rows(flash.start, flash.len, flash.rows.clone());
+        }
         self.block_active = false;
         let body = std::mem::take(&mut self.block);
-        let bg = if self.block_errored {
-            &self.palette.tool_error_bg
-        } else {
-            &self.palette.tool_success_bg
-        };
-        let rows = render_repl_block(&body, bg, self.panel_width(), self.tools.repl_padding);
+        // One neutral container surface for committed REPL blocks: failures
+        // are signaled by the ✗ glyphs and error text inside, not by tinting
+        // the whole container. Three surfaces total (terminal, repl, pending)
+        // instead of six.
+        let rows = render_repl_block(
+            &body,
+            &self.palette.repl_bg,
+            self.panel_width(),
+            self.tools.repl_padding,
+        );
         self.ensure_pending_gap();
         self.pending.push(TranscriptEntry::RawLines(rows));
         self.open_tool_rows.clear();
@@ -401,7 +493,11 @@ impl Ui {
         } else if depth == 0 {
             self.ensure_pending_gap();
         }
-        let rows = render_flat(&format!("{DIM}{text}{RESET}"), depth, &[]);
+        let rows = render_flat(
+            &format!("{}{text}{RESET}", &self.palette.text_tertiary),
+            depth,
+            &[],
+        );
         for row in rows {
             self.push_row(row);
         }
@@ -459,7 +555,10 @@ impl Ui {
         if rows.len() > max {
             let hidden = rows.len() - max;
             rows.truncate(max);
-            rows.push(format!("{DIM}… ({hidden} more lines){RESET}"));
+            rows.push(format!(
+                "{}… ({hidden} more lines){RESET}",
+                &self.palette.text_tertiary
+            ));
         }
         rows
     }
@@ -507,38 +606,48 @@ impl Ui {
         failed: bool,
     ) -> Vec<String> {
         let identity = tool_identity(name, args, &self.palette);
-        let padding = self.tools.tool_padding;
 
         // tool_max_lines = 0: one-line summary `glyph tool ╱ detail`, mirroring
         // pi-compact's compact tools: `✓ bash ╱ git status`.
         if self.tools.tool_max_lines == 0 {
-            return self.compact_tool_rows(&identity, output, failed, padding);
+            return self.compact_tool_rows(&identity, output, failed);
         }
 
-        // Full card: pi-style tool card with configurable padding. Content is
-        // flat — no depth indentation, no gutter. The call (anchor) is the
-        // first line; the result (output) follows, each line in toolOutput
-        // color. Matches pi's ToolExecutionComponent:
-        //   renderCall → Text(bold toolTitle + colored args)
-        //   renderResult → Text(toolOutput output)
+        // Full card: flat, crush-style — no background tint. The colored
+        // status glyph (✓ bright green / ✗ red) is the only state signal;
+        // the anchor carries the identity, and the output folds under it
+        // at a 2-space indent in the secondary text level. Removing the
+        // per-state background washes keeps the transcript a single flat
+        // surface where hue is reserved for meaning. (`tool_padding` applies
+        // to the pending tinted box only — flat cards carry no padding rows.)
+        let glyph = if failed {
+            format!("{}\u{2717}{RESET}", &self.palette.error_fg)
+        } else {
+            format!("{}\u{2713}{RESET}", &self.palette.success_fg)
+        };
         let content_width = self.box_width().saturating_sub(2).max(1);
+        let anchor_width = content_width.saturating_sub(2).max(1);
         let mut content: Vec<String> = Vec::new();
-        // Call line (anchor)
-        content.extend(wrap_ansi(&identity.anchor, content_width));
-        // Identity body (multi-line commands, etc.)
-        for line in &identity.body {
-            content.extend(wrap_ansi(line, content_width));
+        // Anchor line: glyph + identity; wrapped continuations hang under it.
+        for (i, line) in wrap_ansi(&identity.anchor, anchor_width)
+            .into_iter()
+            .enumerate()
+        {
+            if i == 0 {
+                content.push(format!("{glyph} {line}"));
+            } else {
+                content.push(format!("  {line}"));
+            }
         }
-        // pi-style: a blank line separates the call header from the
-        // result output. pi's renderResult implementations start their
-        // text with a leading \n (e.g. formatReadResult returns
-        // `\n${...}`, rebuildBashResultRenderComponent uses
-        // new Text(`\n${styledOutput}`, 0, 0)). Since the call and
-        // result are separate children in the same Box, that \n renders
-        // as an empty line between them.
+        // Identity body (multi-line commands, etc.) hangs under the anchor.
+        let body_width = content_width.saturating_sub(2).max(1);
+        for line in &identity.body {
+            for wrapped in wrap_ansi(line, body_width) {
+                content.push(format!("  {wrapped}"));
+            }
+        }
         let trimmed = output.trim_end();
         if !trimmed.is_empty() {
-            content.push(String::new());
             let base_rows: Vec<String> = match lang {
                 Some(lang) => highlight_code(trimmed, Some(lang), &self.palette.markdown),
                 None => trimmed
@@ -553,54 +662,39 @@ impl Ui {
                 .into_iter()
                 .flat_map(|line| {
                     let colored = format!("{}{line}{RESET}", &self.palette.tool_output_fg);
-                    wrap_ansi(&colored, content_width)
+                    wrap_ansi(&colored, body_width)
                 })
                 .collect();
             let shown = output_rows.len().min(max);
-            content.extend(output_rows[..shown].to_vec());
+            for row in &output_rows[..shown] {
+                content.push(format!("  {row}"));
+            }
             if output_rows.len() > max {
                 content.push(format!(
-                    "{}… ({} more lines){RESET}",
-                    &self.palette.muted_fg,
+                    "  {}… ({} more lines){RESET}",
+                    &self.palette.text_tertiary,
                     output_rows.len() - max
                 ));
             }
         }
-        // State-based background (pending → success/error). When the
-        // tool card is rendered inside an active REPL block, use the
-        // slightly-brighter "nested" variant so the inner card stands out
-        // from the enclosing container (which uses the same base bg).
-        let bg = if failed {
-            if self.block_active {
-                &self.palette.tool_error_bg_nested
-            } else {
-                &self.palette.tool_error_bg
-            }
-        } else if self.block_active {
-            &self.palette.tool_success_bg_nested
-        } else {
-            &self.palette.tool_success_bg
-        };
-        render_boxed_padded(&content, bg, self.box_width(), padding)
+        content
     }
 
-    /// One-line compact tool summary: `{glyph} {anchor} {DIM}╱{RESET} {detail}`.
+    /// One-line compact tool summary: `{glyph} {anchor} ╱ {detail}`.
     /// Mirrors pi-compact's compact tools: `✓ bash ╱ git status`.
     /// The anchor carries the tool verb + canonical argument (already styled
     /// by `tool_identity`); the detail is a plain truncated first line of the
-    /// result output. Wrapped in `render_boxed_padded` so the background colour
-    /// (success/error) is preserved and padding is configurable.
+    /// result output. Flat — the colored glyph is the only state signal.
     fn compact_tool_rows(
         &self,
         identity: &super::tool_display::Identity,
         output: &str,
         failed: bool,
-        padding: usize,
     ) -> Vec<String> {
         let glyph = if failed {
             format!("{}✗{RESET}", &self.palette.error_fg)
         } else {
-            format!("{}✓{RESET}", &self.palette.tool_title_fg)
+            format!("{}✓{RESET}", &self.palette.success_fg)
         };
         let anchor_plain = strip_ansi(&identity.anchor);
         let detail = output
@@ -624,20 +718,12 @@ impl Ui {
         let line = if detail_trunc.is_empty() {
             format!("{glyph} {anchor_plain}")
         } else {
-            format!("{glyph} {anchor_plain} {DIM}╱{RESET} {detail_trunc}")
+            format!(
+                "{glyph} {anchor_plain} {}╱{RESET} {}{detail_trunc}{RESET}",
+                &self.palette.text_ghost, &self.palette.text_secondary
+            )
         };
-        let bg = if failed {
-            if self.block_active {
-                &self.palette.tool_error_bg_nested
-            } else {
-                &self.palette.tool_error_bg
-            }
-        } else if self.block_active {
-            &self.palette.tool_success_bg_nested
-        } else {
-            &self.palette.tool_success_bg
-        };
-        render_boxed_padded(&[line], bg, self.box_width(), padding)
+        vec![line]
     }
 
     /// Consolidated summary card for all REPL blocks and tool calls in a turn.
@@ -654,7 +740,7 @@ impl Ui {
         if repl_count == 0 && tools.is_empty() {
             return Vec::new();
         }
-        let ck = format!("{}✓{RESET}", &self.palette.tool_title_fg);
+        let ck = format!("{}✓{RESET}", &self.palette.success_fg);
         let nr = format!("{}✗{RESET}", &self.palette.error_fg);
 
         // Build per-category tallies.
@@ -680,31 +766,23 @@ impl Ui {
             }
         }
 
-        // Outer box: repl count line (flat text → gets the outer bg).
-        // Inner box: tool tallies rendered via render_boxed_padded with the
-        // lighter nested bg, so they nest visually under the repl count —
-        // matching how individual tool cards sit inside REPL blocks.
+        // Flat summary lines inside one neutral REPL container: the colored
+        // ✓/✗ glyphs carry the state; indentation carries the nesting.
         let panel_width = self.panel_width();
+        let content_width = self.box_width().saturating_sub(2).max(1);
         let mut body: Vec<String> = Vec::new();
 
-        // Repl count (flat text line — painted with the outer bg by
-        // render_repl_block).
         if repl_count > 0 {
             let noun = if repl_count == 1 { "repl" } else { "repls" };
             body.push(format!("{ck} {repl_count} {noun}"));
         }
 
-        // Inner tool tallies (boxed child card with nested bg).
         let total = tools.len();
         if total > 0 || any_failed {
-            let inner_width = self.box_width();
-            let inner_content_width = inner_width.saturating_sub(2).max(1);
-            let mut inner: Vec<String> = Vec::new();
-
             if total > 0 {
                 let noun = if total == 1 { "tool" } else { "tools" };
-                let line = format!("  {ck} {total} {noun}");
-                inner.extend(wrap_ansi(&line, inner_content_width));
+                let line = format!("{ck} {total} {noun}");
+                body.extend(wrap_ansi(&line, content_width));
             }
             for (cat, ok, failed) in tallies {
                 if ok == 0 && failed == 0 {
@@ -727,33 +805,22 @@ impl Ui {
                 if ok > 0 {
                     let noun = if ok == 1 { singular } else { plural };
                     let line = format!("  {ck} {ok} {noun}");
-                    inner.extend(wrap_ansi(&line, inner_content_width));
+                    body.extend(wrap_ansi(&line, content_width));
                 }
                 if failed > 0 {
                     let line = format!("  {nr} {failed}");
-                    inner.extend(wrap_ansi(&line, inner_content_width));
+                    body.extend(wrap_ansi(&line, content_width));
                 }
             }
-
-            // Render inner box with the lighter nested bg so it stands out
-            // from the outer box, exactly like tool cards inside REPL blocks.
-            let nested_bg = if any_failed {
-                &self.palette.tool_error_bg_nested
-            } else {
-                &self.palette.tool_success_bg_nested
-            };
-            let inner_box =
-                render_boxed_padded(&inner, nested_bg, inner_width, self.tools.tool_padding);
-            body.extend(inner_box);
         }
 
-        // Wrap the whole thing in an outer REPL-style box.
-        let outer_bg = if any_failed {
-            &self.palette.tool_error_bg
-        } else {
-            &self.palette.tool_success_bg
-        };
-        render_repl_block(&body, outer_bg, panel_width, self.tools.repl_padding)
+        // One neutral container surface — error state lives in the glyphs.
+        render_repl_block(
+            &body,
+            &self.palette.repl_bg,
+            panel_width,
+            self.tools.repl_padding,
+        )
     }
 
     pub(super) fn subcall_result_rows(
@@ -764,50 +831,48 @@ impl Ui {
         max: usize,
         failed: bool,
     ) -> Vec<String> {
-        // pi-style: flat content (label + output) in a Box(1,1,bgFn).
-        // No depth indentation — the box is the visual structure.
+        // Flat, like tool cards: colored status glyph + label anchor, with
+        // the output folded under at a 2-space indent. No background tint.
+        let glyph = if failed {
+            format!("{}\u{2717}{RESET}", &self.palette.error_fg)
+        } else {
+            format!("{}\u{2713}{RESET}", &self.palette.success_fg)
+        };
         let content_width = self.box_width().saturating_sub(2).max(1);
+        let anchor_width = content_width.saturating_sub(2).max(1);
         let mut rows: Vec<String> = Vec::new();
-        rows.extend(wrap_ansi(label, content_width));
+        for (i, line) in wrap_ansi(label, anchor_width).into_iter().enumerate() {
+            if i == 0 {
+                rows.push(format!("{glyph} {line}"));
+            } else {
+                rows.push(format!("  {line}"));
+            }
+        }
         if let Some(text) = content {
             let trimmed = text.trim_end();
             if !trimmed.is_empty() {
-                // pi-style blank line separating header from output
-                // (mirrors the \n prefix in pi's renderResult implementations).
-                rows.push(String::new());
+                let body_width = content_width.saturating_sub(2).max(1);
                 let output_rows: Vec<String> = trimmed
                     .lines()
                     .flat_map(|line| {
                         let colored = format!("{}{line}{RESET}", &self.palette.tool_output_fg);
-                        wrap_ansi(&colored, content_width)
+                        wrap_ansi(&colored, body_width)
                     })
                     .collect();
                 let shown = output_rows.len().min(max);
-                rows.extend(output_rows[..shown].to_vec());
+                for row in &output_rows[..shown] {
+                    rows.push(format!("  {row}"));
+                }
                 if output_rows.len() > max {
                     rows.push(format!(
-                        "{}… ({} more lines){RESET}",
-                        &self.palette.muted_fg,
+                        "  {}… ({} more lines){RESET}",
+                        &self.palette.text_tertiary,
                         output_rows.len() - max
                     ));
                 }
             }
         }
-        // Use the slightly-brighter nested variant when rendered inside an
-        // active REPL block so the subcall card stands out from the
-        // enclosing container.
-        let bg = if failed {
-            if self.block_active {
-                &self.palette.tool_error_bg_nested
-            } else {
-                &self.palette.tool_error_bg
-            }
-        } else if self.block_active {
-            &self.palette.tool_success_bg_nested
-        } else {
-            &self.palette.tool_success_bg
-        };
-        render_boxed_padded(&rows, bg, self.box_width(), self.tools.tool_padding)
+        rows
     }
 
     #[allow(clippy::too_many_arguments, dead_code)]
@@ -857,6 +922,17 @@ impl Ui {
         if text.is_empty() {
             return;
         }
+        // Accumulate intermediate assistant prose for durable persistence.
+        // Drained into ReplRecord.prose at the next CodeExecStart so the
+        // model's reasoning between steps survives session resume.
+        if !self.pending_prose.is_empty() {
+            self.pending_prose.push_str(
+                "
+
+",
+            );
+        }
+        self.pending_prose.push_str(text);
         if self.block_active {
             // Prose flushed while a block is active goes to after_block,
             // committed after the block closes. Ensure a gap from any prior
@@ -892,6 +968,7 @@ impl Ui {
 
     pub(super) fn push_repl_replay(
         &mut self,
+        prose: &str,
         code: &str,
         stdout: &str,
         stderr: &str,
@@ -899,6 +976,18 @@ impl Ui {
         tools: &[session::ToolCall],
         subcalls: &[session::SubcallRecord],
     ) {
+        // Intermediate prose that preceded this repl block during the live
+        // turn. Render it as an assistant prose card so resumed sessions
+        // show the same interleaving (breaking up consecutive ReplBlocks).
+        // NOTE: do not call `push_prose` here — that would accumulate into
+        // `pending_prose`, which must stay empty during replay (it is
+        // only populated during live model execution).
+        if !prose.trim().is_empty() {
+            self.ensure_pending_gap();
+            self.pending
+                .push(TranscriptEntry::AssistantProse(prose.to_owned()));
+            self.last_activity = false;
+        }
         self.ensure_pending_gap();
         self.pending.push(TranscriptEntry::ReplBlock(ReplBlockData {
             code: code.to_owned(),
