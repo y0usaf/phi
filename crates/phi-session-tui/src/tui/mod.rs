@@ -21,9 +21,10 @@ use phi_rlm::{
 use phi_tui::crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers};
 use phi_tui::{
     Editor, EditorAction, LiveCursor, RawModeGuard, Selector, SelectorItem, SelectorOutcome,
-    Terminal, TerminalColors, detect_terminal_colors, equalizer_glyphs, fill_bg, fuzzy_filter,
-    gradient_text_animated, highlight_code, highlight_diff_line, highlight_output, render_markdown,
-    shimmer_ansi, strip_ansi, visible_width, wrap_ansi, wrap_ansi_locate,
+    SelectorStyle, Terminal, TerminalColors, detect_terminal_colors, equalizer_glyphs, fill_bg,
+    fuzzy_filter, gradient_text, gradient_text_animated, highlight_code, highlight_diff_line,
+    highlight_output, render_markdown, shimmer_ansi, strip_ansi, visible_width, wrap_ansi,
+    wrap_ansi_locate,
 };
 
 use phi_session::files::FileSearcher;
@@ -36,8 +37,6 @@ use tokio_util::sync::CancellationToken;
 
 pub(super) const RESET: &str = "\x1b[0m";
 pub(super) const BOLD: &str = "\x1b[1m";
-pub(super) const DIM: &str = "\x1b[2m";
-pub(super) const CYAN: &str = "\x1b[36m";
 mod chat;
 mod composition;
 mod editor;
@@ -205,25 +204,61 @@ impl InputSource {
     }
 }
 
-/// Install a panic hook that logs the panic info to a file before the
-/// default hook prints to stderr. This ensures a diagnostic trail even
-/// when the terminal is in raw mode (where stderr output may be garbled).
+/// Install a panic hook that restores the terminal to cooked mode, logs
+/// the panic to a file, and prints it to the (now readable) stderr. The
+/// restore cannot be left to the guard's `Drop`: the unwind may never
+/// reach it (panic on a spawned task, panic=abort), and the default
+/// hook's output would be garbled while still in raw mode.
 fn install_panic_log_hook() {
     std::panic::set_hook(Box::new(|info| {
-        let Some(dirs) = directories::ProjectDirs::from("", "", "phi") else {
-            return;
-        };
-        let path = dirs.data_dir().join("tui-panic.log");
-        if let Ok(mut file) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
+        phi_tui::emergency_restore();
+        let log_path = directories::ProjectDirs::from("", "", "phi")
+            .map(|dirs| dirs.data_dir().join("tui-panic.log"));
+        if let Some(path) = &log_path
+            && let Ok(mut file) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
         {
             use std::io::Write;
             let _ = writeln!(file, "[{:?}] panic: {info}", std::time::SystemTime::now());
         }
+        eprintln!("phi panicked: {info}");
+        if let Some(path) = log_path {
+            eprintln!("(panic log: {})", path.display());
+        }
     }));
 }
+
+/// Restore the terminal before dying on SIGTERM/SIGHUP/SIGINT. Fatal
+/// signals never run destructors — without this, `kill phi` (or the
+/// terminal emulator closing) leaves the shell in raw mode with no echo.
+/// Exits with the conventional 128+signum code.
+#[cfg(unix)]
+pub fn restore_terminal_on_signals() {
+    tokio::spawn(async {
+        use tokio::signal::unix::{SignalKind, signal};
+        let (Ok(mut term), Ok(mut hup), Ok(mut int)) = (
+            signal(SignalKind::terminate()),
+            signal(SignalKind::hangup()),
+            signal(SignalKind::interrupt()),
+        ) else {
+            return;
+        };
+        let signum = tokio::select! {
+            _ = term.recv() => 15,
+            _ = hup.recv() => 1,
+            // Raw mode keeps ctrl-c as a key event (handled in the input
+            // loop); this arm only fires for an externally sent SIGINT.
+            _ = int.recv() => 2,
+        };
+        phi_tui::emergency_restore();
+        std::process::exit(128 + signum);
+    });
+}
+
+#[cfg(not(unix))]
+pub fn restore_terminal_on_signals() {}
 
 pub async fn run(setup: TuiSetup, mut io: SessionIo) -> Result<()> {
     install_panic_log_hook();
@@ -281,6 +316,11 @@ pub async fn run(setup: TuiSetup, mut io: SessionIo) -> Result<()> {
     } else {
         Some(RawModeGuard::new()?)
     };
+    if guard.is_some() {
+        // Standalone only: in embedded mode the mux owns the tty and
+        // registers the signal handler itself.
+        restore_terminal_on_signals();
+    }
     let (width, height) = io
         .dimensions
         .unwrap_or_else(|| phi_tui::crossterm::terminal::size().unwrap_or((80, 24)));
@@ -335,8 +375,10 @@ pub async fn run(setup: TuiSetup, mut io: SessionIo) -> Result<()> {
     // Frame cadence: both the draw coalescer and the animation timer fire at
     // 40ms, so bursts of stream deltas collapse into one frame and each
     // animation wake-up produces exactly one render. Terminals bottleneck at
-    // ~25fps anyway.
+    // ~25fps anyway. When the window is blurred the cadence halves (80ms) —
+    // invisible animations don't deserve full-rate wake-ups.
     const FRAME: Duration = Duration::from_millis(40);
+    const FRAME_BLURRED: Duration = Duration::from_millis(80);
     let mut last_draw = tokio::time::Instant::now();
     let mut dirty = false;
 
@@ -365,6 +407,11 @@ pub async fn run(setup: TuiSetup, mut io: SessionIo) -> Result<()> {
     }
 
     loop {
+        let frame = if ui.clock.is_focused() {
+            FRAME
+        } else {
+            FRAME_BLURRED
+        };
         let quit = tokio::select! {
             maybe = input.next() => match maybe {
                 #[cfg(unix)]
@@ -402,10 +449,10 @@ pub async fn run(setup: TuiSetup, mut io: SessionIo) -> Result<()> {
             // shimmer) stay in motion even when no run is in flight.
             // Bursting at the same cadence as the draw coalescer below means
             // each wake-up produces exactly one render — no redundant work.
-            _ = tokio::time::sleep_until(last_draw + FRAME), if ui.clock.is_ticking() => {
+            _ = tokio::time::sleep_until(last_draw + frame), if ui.clock.is_ticking() => {
                 false
             }
-            _ = tokio::time::sleep_until(last_draw + FRAME), if dirty => false,
+            _ = tokio::time::sleep_until(last_draw + frame), if dirty => false,
         };
         if quit {
             break;
@@ -462,7 +509,7 @@ pub async fn run(setup: TuiSetup, mut io: SessionIo) -> Result<()> {
             }
         }
         dirty = true;
-        if last_draw.elapsed() >= FRAME {
+        if last_draw.elapsed() >= frame {
             // Tick the clock exactly once per frame so now_ms() returns a
             // fresh snapshot shared by refresh_open_activity_rows() (tool
             // header shimmer) and draw() (equalizer, statusbar shimmer,
@@ -472,6 +519,9 @@ pub async fn run(setup: TuiSetup, mut io: SessionIo) -> Result<()> {
             // is always true, but is kept defensively.
             if ui.clock.is_ticking() {
                 ui.clock.tick();
+                // Pace queued stream text into view: one bounded drain per
+                // frame turns bursty provider chunks into a smooth flow.
+                ui.drain_stream_backlogs();
                 ui.refresh_open_activity_rows();
                 for msg in ui.runtime.drain_notifications() {
                     ui.pending.push(TranscriptEntry::RawLines(vec![msg]));
@@ -500,7 +550,11 @@ pub async fn run(setup: TuiSetup, mut io: SessionIo) -> Result<()> {
     phi_tui::drain_input();
     let _ = tokio::time::timeout(Duration::from_secs(5), session_task).await;
     if !io.embedded {
-        println!("bye");
+        // Close with the same brand gradient the greeting opened with.
+        println!(
+            "{} bye",
+            gradient_text("phi", ui.palette.accent_2, ui.palette.spinner_accent)
+        );
     }
     Ok(())
 }
@@ -607,6 +661,14 @@ struct Ui {
     /// Code of the in-flight depth-0 agent ```repl``` block, stashed at
     /// `CodeExecStart` and persisted to the session store at `CodeExecEnd`.
     pub(super) live_code: Option<String>,
+    /// Intermediate assistant prose accumulated since the last repl
+    /// checkpoint. Drained into the next ReplRecord.prose at
+    /// handle_code_exec_start so it is durably persisted and survives
+    /// session resume.
+    pub(super) pending_prose: String,
+    /// Prose drained from pending_prose at CodeExecStart, stashed so
+    /// CodeExecEnd can persist it as ReplRecord.prose alongside the code.
+    pub(super) live_prose: String,
     /// Tool calls observed inside the in-flight depth-0 ```repl``` block; args
     /// stashed at `ToolStart`, completed at `ToolEnd`, persisted with the
     /// block at `CodeExecEnd` so resume re-renders the same tool cards.
@@ -621,6 +683,11 @@ struct Ui {
     pub(super) live_subcalls: Vec<session::SubcallRecord>,
     /// Live subcall status rows inside the buffered block.
     pub(super) open_subcall_rows: std::collections::VecDeque<OpenSubcallRow>,
+    /// Just-completed tool cards briefly pulsing with the success shimmer
+    /// (the completion celebration). Driven by `refresh_completion_flashes`.
+    /// Focus state lives on `clock` (set by FocusGained/FocusLost): when
+    /// blurred, the chrome shimmer stops and the prompt dims.
+    pub(super) flash_rows: Vec<FlashRow>,
     /// Prose flushed while a block is active; committed after the block so
     /// scrollback stays chronological.
     pub(super) after_block: Vec<String>,
@@ -630,8 +697,16 @@ struct Ui {
     /// Streamed root-model text for the current iteration, minus the
     /// paragraphs/fences already flushed to scrollback.
     pub(super) stream: String,
+    /// Text received but not yet shown: provider chunks arrive in bursts,
+    /// so deltas queue here and `drain_stream_backlogs` moves a bounded,
+    /// backlog-proportional budget into `stream` each frame — tokens flow
+    /// smoothly instead of step-changing. Commit points flush it whole.
+    pub(super) stream_backlog: String,
     /// Streamed provider thinking for the current iteration.
     pub(super) thinking: String,
+    /// Pacing queue for `thinking`, same contract as `stream_backlog`.
+    /// (`thinking_log` gets deltas immediately — persistence never lags.)
+    pub(super) thinking_backlog: String,
     /// Provider thinking captured across the whole in-flight turn so replay
     /// can re-render historical thinking blocks under the current toggle.
     pub(super) thinking_log: String,
@@ -729,15 +804,20 @@ impl Ui {
             block_active: false,
             block_errored: false,
             live_code: None,
+            pending_prose: String::new(),
+            live_prose: String::new(),
             live_tools: Vec::new(),
             open_tool_args: std::collections::HashMap::new(),
             open_tool_rows: std::collections::HashMap::new(),
             live_subcalls: Vec::new(),
             open_subcall_rows: std::collections::VecDeque::new(),
+            flash_rows: Vec::new(),
             after_block: Vec::new(),
             last_activity: false,
             stream: String::new(),
+            stream_backlog: String::new(),
             thinking: String::new(),
+            thinking_backlog: String::new(),
             thinking_log: String::new(),
             streamed: false,
             status: String::new(),
@@ -766,15 +846,34 @@ impl Ui {
         format!("{}{msg}{RESET}", &self.palette.warning_fg)
     }
 
+    /// Tertiary-level informational notice (`[resumed session …]` etc.).
+    pub(super) fn note(&self, msg: &impl std::fmt::Display) -> String {
+        format!("{}{msg}{RESET}", &self.palette.text_tertiary)
+    }
+
+    /// Theme-derived colors for the full-width selector widget.
+    pub(super) fn selector_style(&self) -> SelectorStyle {
+        SelectorStyle {
+            accent: self.palette.accent_fg.clone(),
+            current: self.palette.success_fg.clone(),
+            muted: self.palette.text_tertiary.clone(),
+        }
+    }
+
     fn greet(&mut self, missing_credentials: &[String]) {
+        // Brand moment: the wordmark carries the one gradient in the UI
+        // (accent_2 → accent), everything else on the line recedes.
+        let wordmark = gradient_text("phi", self.palette.accent_2, self.palette.spinner_accent);
         self.pending.push(TranscriptEntry::RawLines(vec![format!(
-            "{BOLD}phi{RESET} {DIM}· {} · /help for commands{RESET}",
-            self.model_label
+            "{wordmark} {tert}· {} · /help for commands{RESET}",
+            self.model_label,
+            tert = &self.palette.text_tertiary
         )]));
         for provider in missing_credentials {
             self.pending.push(TranscriptEntry::RawLines(vec![format!(
-                "{}no credentials for '{provider}'{RESET} {DIM}— type /login to authenticate{RESET}",
-                &self.palette.warning_fg
+                "{}no credentials for '{provider}'{RESET} {tert}— type /login to authenticate{RESET}",
+                &self.palette.warning_fg,
+                tert = &self.palette.text_tertiary
             )]));
         }
     }
@@ -1007,11 +1106,11 @@ mod tests {
         }
     }
 
-    // Flat form: one `● read <path>` header (green ● = success, no ✓ glyph,
-    // no `─` rule) with the path shown once (the read tool's identity IS the
-    // anchor, so the body holds only the output preview). Confirms the anchor
-    // is not duplicated as a body line and that no box chrome (┌/├/└) or
-    // `Activity`/`Output` section labels appear.
+    // Flat form: one `✓ read <path>` anchor (colored glyph = the only state
+    // signal, no `─` rule) with the path shown once (the read tool's identity
+    // IS the anchor, so the body holds only the output preview). Confirms the
+    // anchor is not duplicated as a body line and that no box chrome (┌/├/└)
+    // or `Activity`/`Output` section labels appear.
     #[test]
     fn tool_result_merges_activity_and_output_sections() {
         let ui = test_ui(80, 24);
@@ -1030,13 +1129,12 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
 
-        // Header carries the green ● (no ✓ glyph, no `─` rule) and the anchor
-        // (path) once.
+        // Anchor carries the ✓ glyph and the path once; no `─` rule.
         assert!(plain.contains("read"), "{plain}");
-        assert!(!plain.contains("✓"), "{plain}");
+        assert_eq!(plain.matches('✓').count(), 1, "{plain}");
         assert!(!plain.contains('─'), "{plain}");
         assert!(plain.contains("crates/phi-session/src/usage.rs"), "{plain}");
-        // Output preview folds under the header as plain body lines.
+        // Output preview folds under the anchor as indented body lines.
         assert!(plain.contains("//! usage"), "{plain}");
         assert!(plain.contains("//! details"), "{plain}");
         // The canonical path appears once — never re-shown as a body line.
@@ -1051,9 +1149,13 @@ mod tests {
         assert!(!plain.contains('└'), "{plain}");
         assert!(!plain.contains("Activity"), "{plain}");
         assert!(!plain.contains("Output"), "{plain}");
-        // Pi-style boxed block: 1-space left pad (Box(1,1)). "read" starts
-        // after 1 space. No depth indentation — the box IS the structure.
-        assert!(plain.lines().any(|l| l.starts_with(" read")), "{plain}");
+        // Flat card: `✓ read …` anchor with output hanging at a 2-space
+        // indent underneath. No box, no gutter glyph.
+        assert!(plain.lines().any(|l| l.starts_with("✓ read")), "{plain}");
+        assert!(
+            plain.lines().any(|l| l.starts_with("  //! usage")),
+            "{plain}"
+        );
         assert!(!plain.lines().any(|l| l.contains('⎿')), "{plain}");
     }
 
@@ -1070,7 +1172,7 @@ mod tests {
 
         let lines = render_repl_block(
             &ui.block,
-            &ui.palette.tool_success_bg,
+            &ui.palette.repl_bg,
             ui.panel_width(),
             ui.tools.repl_padding,
         );
@@ -1409,7 +1511,7 @@ nothing to commit
         ui.running = None;
         ui.pending.clear();
         ui.push_assistant_message("Here is code that ran:");
-        ui.push_repl_replay("print(1)", "1\n", "", 0.005, &[], &[]);
+        ui.push_repl_replay("", "print(1)", "1\n", "", 0.005, &[], &[]);
         let replay_plain = pending_plain(&mut ui);
         assert!(!replay_plain.contains("turn"), "{replay_plain}");
         assert!(replay_plain.contains("print(1)"), "{replay_plain}");
@@ -1805,6 +1907,49 @@ match1
     }
 
     #[test]
+    fn stream_pacing_drains_bounded_then_commits_whole() {
+        let mut ui = test_ui(80, 24);
+        ui.running = Some(CancellationToken::new());
+        ui.handle_rlm_event(RlmEvent::IterationStart {
+            depth: 0,
+            iteration: 0,
+        });
+
+        // A large multi-byte burst queues rather than appearing at once.
+        let burst = "héllo wörld 🚀 ".repeat(200);
+        ui.handle_rlm_event(RlmEvent::RootDelta {
+            depth: 0,
+            iteration: 0,
+            delta: burst.clone(),
+        });
+        assert!(ui.stream.is_empty(), "burst must queue, not append");
+
+        // One frame drains a bounded, non-empty budget on char boundaries.
+        ui.drain_stream_backlogs();
+        assert!(!ui.stream.is_empty());
+        assert!(
+            ui.stream.len() < burst.len(),
+            "drain must be bounded, got {} bytes",
+            ui.stream.len()
+        );
+
+        // The commit point sees the complete text, not the paced prefix.
+        ui.handle_rlm_event(RlmEvent::RootText {
+            depth: 0,
+            iteration: 0,
+            text: burst.clone(),
+        });
+        assert!(ui.stream.is_empty());
+        assert!(ui.stream_backlog.is_empty());
+        let lines = pending_lines(&mut ui);
+        let joined = lines.join("\n");
+        assert!(
+            joined.matches('🚀').count() >= 200,
+            "committed prose must carry the full burst"
+        );
+    }
+
+    #[test]
     fn streamed_paragraphs_commit_as_one_assistant_message_card() {
         let mut ui = test_ui(80, 24);
         ui.running = Some(CancellationToken::new());
@@ -2018,6 +2163,7 @@ match1
         ui.store.append(session::Role::User, "q1").unwrap();
         ui.store
             .append_repl(session::ReplRecord {
+                prose: String::new(),
                 code: "print(bash('echo hi'))".to_owned(),
                 stdout: "line1\nline2\nline3\nline4\nline5\nline6\n".to_owned(),
                 stderr: String::new(),
@@ -2096,10 +2242,11 @@ match1
     // is distinguishable from the enclosing container (which uses the
     // base bg). A tool card rendered standalone (no block) uses the base.
     #[test]
-    fn nested_tool_block_uses_lighter_background() {
+    fn completed_tool_cards_are_flat_with_colored_glyph() {
+        // Completed tool cards carry no background tint anywhere — the
+        // colored ✓/✗ glyph is the only state signal. Standalone and nested
+        // cards render identically flat.
         let ui = test_ui(80, 24);
-
-        // Standalone tool card (no active block) → base success bg.
         let standalone = ui.tool_result_rows(
             0,
             "read_file",
@@ -2110,19 +2257,16 @@ match1
             false,
         );
         assert!(
-            standalone
-                .iter()
-                .any(|l| l.contains(&ui.palette.tool_success_bg)),
-            "standalone tool card should use the base success bg"
+            !standalone.iter().any(|l| l.contains("\x1b[48")),
+            "completed tool card must not carry a background: {standalone:?}"
         );
         assert!(
-            !standalone
+            standalone
                 .iter()
-                .any(|l| l.contains(&ui.palette.tool_success_bg_nested)),
-            "standalone tool card should NOT use the nested success bg"
+                .any(|l| l.contains(&ui.palette.success_fg) && l.contains('✓')),
+            "success glyph missing: {standalone:?}"
         );
 
-        // Nested tool card (block active) → nested (lighter) success bg.
         let mut ui = test_ui(80, 24);
         ui.begin_block();
         assert!(ui.block_active);
@@ -2136,16 +2280,25 @@ match1
             false,
         );
         assert!(
-            nested
-                .iter()
-                .any(|l| l.contains(&ui.palette.tool_success_bg_nested)),
-            "nested tool card should use the lighter nested success bg"
+            !nested.iter().any(|l| l.contains("\x1b[48")),
+            "nested tool card must not carry a background: {nested:?}"
+        );
+
+        // Failed card: red ✗ glyph, still flat.
+        let failed = ui.tool_result_rows(
+            1,
+            "read_file",
+            &serde_json::json!({"path": "x.rs"}),
+            "boom",
+            usize::MAX,
+            None,
+            true,
         );
         assert!(
-            !nested
+            failed
                 .iter()
-                .any(|l| l.contains(&ui.palette.tool_success_bg)),
-            "nested tool card should NOT use the base success bg"
+                .any(|l| l.contains(&ui.palette.error_fg) && l.contains('✗')),
+            "failure glyph missing: {failed:?}"
         );
     }
 
@@ -2223,6 +2376,7 @@ match1
         ui.push_user_message("hello");
         ui.push_prose("here is some code:");
         ui.push_repl_replay(
+            "",
             "print(1)",
             "1
 ",
@@ -2351,6 +2505,78 @@ match1
         assert!(
             wide_lines < narrow_lines,
             "wide line count {wide_lines} should be less than narrow line count {narrow_lines}"
+        );
+    }
+
+    #[test]
+    fn intermediate_prose_is_persisted_and_survives_replay() {
+        // Intermediate assistant prose (the model's narration between
+        // repl steps) must be persisted in the store and rendered on
+        // replay. Without this, resumed sessions collapse all repls into
+        // one summary card and the model's reasoning chain is lost.
+        let mut ui = test_ui(100, 30);
+        ui.running = Some(CancellationToken::new());
+        ui.store.append(session::Role::User, "q1").unwrap();
+
+        // The model produces prose, then a code tool call.
+        ui.handle_rlm_event(RlmEvent::IterationStart {
+            depth: 0,
+            iteration: 0,
+        });
+        ui.handle_rlm_event(RlmEvent::RootText {
+            depth: 0,
+            iteration: 0,
+            text: "Let me fix the test.".to_owned(),
+        });
+        ui.handle_rlm_event(RlmEvent::CodeExecStart {
+            depth: 0,
+            iteration: 0,
+            code: "print(1)".to_owned(),
+        });
+        ui.handle_rlm_event(RlmEvent::CodeExecEnd {
+            depth: 0,
+            iteration: 0,
+            stdout: "1
+"
+            .to_owned(),
+            stderr: String::new(),
+            duration: Duration::from_millis(5),
+        });
+
+        // The prose must be in the persisted ReplEntry.
+        let repl = ui
+            .store
+            .branch_items()
+            .into_iter()
+            .find_map(|item| match item {
+                session::BranchItem::Repl(repl) => Some(repl.clone()),
+                session::BranchItem::Message(_) => None,
+            })
+            .expect("checkpointed repl");
+        assert_eq!(
+            repl.prose, "Let me fix the test.",
+            "prose must be persisted in ReplEntry"
+        );
+
+        // Clear the live transcript and replay from the store.
+        ui.pending.clear();
+        ui.replay_branch();
+
+        // The replayed transcript must contain the prose BEFORE the repl
+        // block, not collapsed into a single summary card.
+        let lines = pending_lines(&mut ui);
+        let plain: Vec<String> = lines.iter().map(|l| phi_tui::strip_ansi(l)).collect();
+        let prose_idx = plain
+            .iter()
+            .position(|l| l.contains("Let me fix the test."))
+            .expect("prose must be rendered on replay");
+        let code_idx = plain
+            .iter()
+            .position(|l| l.contains("print(1)"))
+            .expect("repl block must be rendered on replay");
+        assert!(
+            prose_idx < code_idx,
+            "prose must appear before repl block on replay"
         );
     }
 }

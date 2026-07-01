@@ -33,6 +33,18 @@ pub struct Theme {
     /// Heading text (slightly brighter than muted).
     pub heading: Rgb,
 
+    // --- Text value ramp (crush-style four-level hierarchy) ---
+    // Hierarchy is carried by luminance, not hue: `foreground` is the
+    // primary level; these three are progressively quieter blends of the
+    // foreground toward the background. Every muted surface picks a level
+    // instead of relying on the terminal's uncontrolled SGR `DIM`.
+    /// Secondary text — body content one step below primary (tool output).
+    pub text_secondary: Rgb,
+    /// Tertiary text — annotations, hints, truncation notices, arg values.
+    pub text_tertiary: Rgb,
+    /// Ghost text — structural marks: rules, fence borders, placeholders.
+    pub text_ghost: Rgb,
+
     // --- Surfaces (gray ramp derived from background) ---
     /// Canvas / panel background (gray ramp level 2).
     pub surface: Rgb,
@@ -245,6 +257,12 @@ pub fn generate_theme(colors: &TerminalColors) -> Theme {
         muted,
         heading: grays[9], // brighter than muted
 
+        // Text value ramp: deliberate, roughly equal luminance steps from
+        // primary (fg) down toward the background.
+        text_secondary: fade_toward(bg, fg, 200),
+        text_tertiary: fade_toward(bg, fg, 140),
+        text_ghost: fade_toward(bg, fg, 80),
+
         // Surfaces
         surface: grays[2],
         surface_raised: grays[3],
@@ -442,19 +460,20 @@ const fn cube_component(component: u8) -> u8 {
     }
 }
 
-/// Format an `Rgb` as a truecolor foreground SGR escape.
+/// Format an `Rgb` as a foreground SGR escape: truecolor where the
+/// terminal supports it, quantized to xterm-256 where it doesn't.
 pub fn fg_escape(c: Rgb) -> String {
-    format!("\x1b[38;2;{};{};{}m", c.0, c.1, c.2)
+    crate::color_cap::fg_sequence(c)
 }
 
-/// Format an `Rgb` as a truecolor background SGR escape.
+/// Format an `Rgb` as a background SGR escape (see [`fg_escape`]).
 pub fn bg_escape(c: Rgb) -> String {
-    format!("\x1b[48;2;{};{};{}m", c.0, c.1, c.2)
+    crate::color_cap::bg_sequence(c)
 }
 
-/// Format an `Rgb` as a bold + truecolor foreground SGR escape.
+/// Format an `Rgb` as a bold + foreground SGR escape (see [`fg_escape`]).
 pub fn bold_fg_escape(c: Rgb) -> String {
-    format!("\x1b[1m\x1b[38;2;{};{};{}m", c.0, c.1, c.2)
+    format!("\x1b[1m{}", crate::color_cap::fg_sequence(c))
 }
 
 // ---------------------------------------------------------------------------
@@ -598,6 +617,17 @@ mod tests {
     }
 
     #[test]
+    fn text_ramp_descends_in_luminance() {
+        let colors = colors_from(Rgb(20, 20, 26), Rgb(220, 220, 220));
+        let theme = generate_theme(&colors);
+        let lum = |c: Rgb| luminance_rgb(c.0, c.1, c.2);
+        assert!(lum(theme.foreground) > lum(theme.text_secondary));
+        assert!(lum(theme.text_secondary) > lum(theme.text_tertiary));
+        assert!(lum(theme.text_tertiary) > lum(theme.text_ghost));
+        assert!(lum(theme.text_ghost) > lum(theme.background));
+    }
+
+    #[test]
     fn muted_text_is_neutral_and_lighter_on_dark_than_background() {
         let colors = colors_from(Rgb(20, 20, 26), Rgb(220, 220, 220));
         let theme = generate_theme(&colors);
@@ -670,13 +700,17 @@ mod tests {
         assert_eq!(theme.tool_error_bg_nested, brighten(theme.tool_error_bg, 8));
     }
 
+    // Escape-format tests pin the capability so they don't depend on the
+    // harness environment (first force wins process-wide; harmless later).
     #[test]
     fn fg_escape_formats_truecolor() {
+        crate::color_cap::force_color_capability(crate::color_cap::ColorCapability::TrueColor);
         assert_eq!(fg_escape(Rgb(130, 160, 230)), "\x1b[38;2;130;160;230m");
     }
 
     #[test]
     fn bold_fg_escape_includes_bold() {
+        crate::color_cap::force_color_capability(crate::color_cap::ColorCapability::TrueColor);
         assert_eq!(
             bold_fg_escape(Rgb(255, 210, 120)),
             "\x1b[1m\x1b[38;2;255;210;120m"

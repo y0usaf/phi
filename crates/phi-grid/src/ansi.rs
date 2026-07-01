@@ -240,7 +240,11 @@ impl AnsiCodegen {
         }
         let (r, g, b) = color.rgb_components();
         use std::fmt::Write;
-        let _ = write!(self.buf, "\x1b[38;2;{r};{g};{b}m");
+        if phi_tui::has_truecolor() {
+            let _ = write!(self.buf, "\x1b[38;2;{r};{g};{b}m");
+        } else {
+            let _ = write!(self.buf, "\x1b[38;5;{}m", phi_tui::rgb_to_xterm256(r, g, b));
+        }
     }
 
     fn write_bg(&mut self, color: Color) {
@@ -267,7 +271,11 @@ impl AnsiCodegen {
         }
         let (r, g, b) = color.rgb_components();
         use std::fmt::Write;
-        let _ = write!(self.buf, "\x1b[48;2;{r};{g};{b}m");
+        if phi_tui::has_truecolor() {
+            let _ = write!(self.buf, "\x1b[48;2;{r};{g};{b}m");
+        } else {
+            let _ = write!(self.buf, "\x1b[48;5;{}m", phi_tui::rgb_to_xterm256(r, g, b));
+        }
     }
 
     /// Emit a cursor move. Uses a relative forward move (`\x1b[NC`) only when
@@ -761,7 +769,11 @@ fn write_fg<W: Write>(out: &mut W, color: Color) -> io::Result<()> {
         };
     }
     let (r, g, b) = color.rgb_components();
-    write!(out, "\x1b[38;2;{r};{g};{b}m")
+    if phi_tui::has_truecolor() {
+        write!(out, "\x1b[38;2;{r};{g};{b}m")
+    } else {
+        write!(out, "\x1b[38;5;{}m", phi_tui::rgb_to_xterm256(r, g, b))
+    }
 }
 
 fn write_bg<W: Write>(out: &mut W, color: Color) -> io::Result<()> {
@@ -776,7 +788,11 @@ fn write_bg<W: Write>(out: &mut W, color: Color) -> io::Result<()> {
         };
     }
     let (r, g, b) = color.rgb_components();
-    write!(out, "\x1b[48;2;{r};{g};{b}m")
+    if phi_tui::has_truecolor() {
+        write!(out, "\x1b[48;2;{r};{g};{b}m")
+    } else {
+        write!(out, "\x1b[48;5;{}m", phi_tui::rgb_to_xterm256(r, g, b))
+    }
 }
 
 #[cfg(test)]
@@ -838,6 +854,7 @@ mod tests {
 
     #[test]
     fn recolors_reversed_cells_when_only_colors_change() {
+        phi_tui::color_cap::force_color_capability(phi_tui::color_cap::ColorCapability::TrueColor);
         let mut renderer = AnsiRenderer::default();
         let mut surface = CellSurface::new(2, 1, DEFAULT_FG, DEFAULT_BG);
         surface.put_text_styled(

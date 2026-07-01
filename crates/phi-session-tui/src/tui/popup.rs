@@ -116,7 +116,7 @@ pub(crate) enum PopupOutcome {
 
 pub(crate) const POPUP_MAX_VISIBLE: usize = 6;
 
-pub(crate) fn render_popup(popup: &Popup) -> Vec<String> {
+pub(crate) fn render_popup(popup: &Popup, p: &InlinePalette) -> Vec<String> {
     let total = popup.items.len();
     let start = popup
         .selected
@@ -137,17 +137,24 @@ pub(crate) fn render_popup(popup: &Popup) -> Vec<String> {
         .map(|(i, item)| {
             if i == popup.selected {
                 format!(
-                    "{CYAN}› {:<width$}{RESET}  {DIM}{}{RESET}",
-                    item.label, item.desc
+                    "{}\u{258C}{RESET} {:<width$}  {}{}{RESET}",
+                    &p.accent_fg, item.label, &p.text_tertiary, item.desc
                 )
             } else {
-                format!("{DIM}  {:<width$}  {}{RESET}", item.label, item.desc)
+                // Labels stay at the terminal's primary foreground (they're
+                // the candidates being scanned); only the desc annotation
+                // recedes to the tertiary level.
+                format!(
+                    "  {:<width$}  {}{}{RESET}",
+                    item.label, &p.text_tertiary, item.desc
+                )
             }
         })
         .collect();
     if total > start + POPUP_MAX_VISIBLE {
         lines.push(format!(
-            "{DIM}  … {} more{RESET}",
+            "{}  … {} more{RESET}",
+            &p.text_ghost,
             total - start - POPUP_MAX_VISIBLE
         ));
     }

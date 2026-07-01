@@ -1,7 +1,7 @@
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use super::constants::{BOLD, CYAN, DIM, ITALIC, MarkdownPalette, RESET, UNDERLINE};
+use super::constants::{BOLD, ITALIC, MarkdownPalette, RESET, UNDERLINE};
 use super::highlight::highlight_code_cached;
 
 /// Color a diff-preview line: additions green, deletions red, hunk headers
@@ -40,10 +40,13 @@ impl<'p> Style<'p> {
             s.push_str(ITALIC);
         }
         if self.dim {
-            s.push_str(DIM);
+            s.push_str(&palette.muted);
         }
-        if self.code || self.heading {
-            s.push_str(CYAN);
+        if self.code {
+            s.push_str(&palette.inline_code);
+        }
+        if self.heading {
+            s.push_str(&palette.heading);
         }
         if self.subhead {
             s.push_str(&palette.subhead);
@@ -53,7 +56,7 @@ impl<'p> Style<'p> {
         }
         if self.link {
             s.push_str(UNDERLINE);
-            s.push_str(CYAN);
+            s.push_str(&palette.heading);
         }
         s
     }
@@ -173,7 +176,8 @@ impl<'p> Renderer<'p> {
                 Event::HardBreak => self.flush_line(),
                 Event::Rule => {
                     self.blank_line();
-                    let line = format!("{DIM}{}{RESET}", "─".repeat(self.width));
+                    let ghost = &self.palette.ghost;
+                    let line = format!("{ghost}{}{RESET}", "─".repeat(self.width));
                     self.lines.push(line);
                 }
                 Event::TaskListMarker(done) => {
@@ -217,7 +221,10 @@ impl<'p> Renderer<'p> {
                         let fence = &self.palette.repl_fence;
                         self.lines.push(format!("{fence}```repl{RESET}"));
                     } else {
-                        self.lines.push(format!("{DIM}\u{2502}{RESET} {lang}"));
+                        self.lines.push(format!(
+                            "{}\u{2502}{RESET} {}{lang}{RESET}",
+                            &self.palette.ghost, &self.palette.muted
+                        ));
                     }
                     self.code_lang = Some(lang.to_string());
                 }
@@ -300,8 +307,11 @@ impl<'p> Renderer<'p> {
                 let title_width = self.col.min(self.width);
                 self.flush_line();
                 if level == HeadingLevel::H1 && title_width > 0 {
-                    self.lines
-                        .push(format!("{DIM}{}{RESET}", "─".repeat(title_width)));
+                    self.lines.push(format!(
+                        "{}{}{RESET}",
+                        &self.palette.ghost,
+                        "─".repeat(title_width)
+                    ));
                 }
             }
             TagEnd::BlockQuote(_) => {
@@ -358,7 +368,8 @@ impl<'p> Renderer<'p> {
             TagEnd::Table => {
                 let rows = std::mem::take(&mut self.table_rows);
                 let alignments = std::mem::take(&mut self.table_alignments);
-                let table_lines = render_table_with_width(&rows, &alignments, self.width);
+                let table_lines =
+                    render_table_with_width(&rows, &alignments, self.width, self.palette);
                 self.lines.extend(table_lines);
                 self.in_table = false;
                 self.table_current_cell.clear();
@@ -439,8 +450,10 @@ impl<'p> Renderer<'p> {
     fn push_code_text(&mut self, text: &str) {
         let highlighted = highlight_code_cached(text, self.code_lang.as_deref(), self.palette);
         for line in highlighted {
-            self.lines
-                .push(format!("{DIM}\u{2502}{RESET} {line}{RESET}"));
+            self.lines.push(format!(
+                "{}\u{2502}{RESET} {line}{RESET}",
+                &self.palette.ghost
+            ));
         }
         self.started = true;
     }
@@ -568,11 +581,14 @@ fn wrap_table_cell(cell: &str, width: usize) -> Vec<String> {
 
 /// Render a markdown table as ANSI-styled `Vec<String>`, ported from jcode's
 /// `render_table` + `render_table_with_width`.  Uses `BOLD`/`RESET` for the
-/// header row, "│" separators, and "─┼─" for the separator line.
+/// header row, "│" separators, and "─┼─" for the separator line. Structural
+/// marks (cell separators, the header rule) render in the palette's ghost
+/// level so the grid recedes behind the content.
 pub(super) fn render_table_with_width(
     rows: &[Vec<String>],
     _alignments: &[pulldown_cmark::Alignment],
     width: usize,
+    palette: &MarkdownPalette,
 ) -> Vec<String> {
     if rows.is_empty() {
         return vec![];
@@ -659,7 +675,11 @@ pub(super) fn render_table_with_width(
                 let padded = format!("{}{}", display_text, " ".repeat(pad));
 
                 if i > 0 {
-                    line.push('│');
+                    if is_header {
+                        line.push_str(&format!("{RESET}{}│{RESET}{BOLD}", &palette.ghost));
+                    } else {
+                        line.push_str(&format!("{}│{RESET}", &palette.ghost));
+                    }
                 }
                 line.push_str(&padded);
             }
@@ -674,7 +694,7 @@ pub(super) fn render_table_with_width(
                 .map(|&w| "─".repeat(w))
                 .collect::<Vec<_>>()
                 .join("─┼─");
-            lines.push(separator);
+            lines.push(format!("{}{separator}{RESET}", &palette.ghost));
         }
     }
 

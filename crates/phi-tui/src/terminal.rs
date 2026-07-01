@@ -3,10 +3,12 @@
 //! screen — output stays in the terminal's history, like phi's TUI.
 
 use std::io::Write;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crossterm::event::{
-    DisableBracketedPaste, DisableFocusChange, EnableBracketedPaste, EnableFocusChange,
-    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
+    EnableFocusChange, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
+    PushKeyboardEnhancementFlags,
 };
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use unicode_segmentation::UnicodeSegmentation;
@@ -38,6 +40,35 @@ pub struct RawModeGuard {
     kitty: bool,
 }
 
+/// Whether a `RawModeGuard` currently has the terminal in raw mode, and
+/// whether kitty flags were pushed — recorded globally so a panic hook or
+/// signal handler can restore the terminal without a guard reference
+/// (signals and panics don't run `Drop`).
+static RESTORE_ACTIVE: AtomicBool = AtomicBool::new(false);
+static RESTORE_KITTY: AtomicBool = AtomicBool::new(false);
+
+/// Restore the terminal to cooked mode from anywhere: panic hooks and
+/// signal handlers, where the guard itself is out of reach. Idempotent,
+/// and a no-op while no guard is active (e.g. embedded mode). Goes beyond
+/// the guard's own teardown because the process may die mid-frame: closes
+/// a possibly-open synchronized update, re-shows the cursor, and drops
+/// mouse capture (the mux enables that outside the guard).
+pub fn emergency_restore() {
+    if !RESTORE_ACTIVE.swap(false, Ordering::SeqCst) {
+        return;
+    }
+    let mut out = std::io::stdout();
+    if RESTORE_KITTY.load(Ordering::SeqCst) {
+        let _ = crossterm::execute!(out, PopKeyboardEnhancementFlags);
+    }
+    let _ = crossterm::execute!(out, DisableMouseCapture);
+    let _ = crossterm::execute!(out, DisableFocusChange);
+    let _ = crossterm::execute!(out, DisableBracketedPaste);
+    let _ = write!(out, "{SYNC_END}{SHOW_CURSOR}");
+    let _ = out.flush();
+    let _ = disable_raw_mode();
+}
+
 impl RawModeGuard {
     pub fn new() -> std::io::Result<Self> {
         enable_raw_mode()?;
@@ -61,9 +92,12 @@ impl RawModeGuard {
                 PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
             );
         }
+        RESTORE_KITTY.store(self.kitty, Ordering::SeqCst);
+        RESTORE_ACTIVE.store(true, Ordering::SeqCst);
     }
 
     fn teardown(&self) {
+        RESTORE_ACTIVE.store(false, Ordering::SeqCst);
         let mut out = std::io::stdout();
         if self.kitty {
             let _ = crossterm::execute!(out, PopKeyboardEnhancementFlags);
@@ -168,8 +202,9 @@ impl<W: Write> Terminal<W> {
         self.width = w;
         self.height = h;
         // Reflow invalidates row accounting; the caller (events.rs) must
-        // run `clear_all()` so the physical cursor is homed to (0,0) —
-        // matching `cursor_row = 0` below — before the next render.
+        // run `clear_viewport()` so the physical cursor is homed to (0,0)
+        // — matching `cursor_row = 0` below — before the next render.
+        // Saved scrollback is intentionally preserved.
         self.prev.clear();
         self.cursor_row = 0;
         self.cursor_col = 0;
@@ -372,6 +407,21 @@ impl<W: Write> Terminal<W> {
         // \x1b[2J clears the viewport, \x1b[3J drops saved scrollback,
         // \x1b[H homes the cursor.
         self.out.write_all(b"\x1b[2J\x1b[3J\x1b[H")?;
+        self.out.flush()?;
+        self.prev.clear();
+        self.cursor_row = 0;
+        self.cursor_col = 0;
+        self.cursor_shown = false;
+        Ok(())
+    }
+
+    /// Clear the viewport and home the cursor WITHOUT touching saved
+    /// scrollback (no `\x1b[3J`). Used on resize: the transcript re-renders
+    /// at the new width, but the user's scrollback — including everything
+    /// from before phi started — survives. A stale copy of the transcript
+    /// may remain above, which is how ordinary CLI output behaves too.
+    pub fn clear_viewport(&mut self) -> std::io::Result<()> {
+        self.out.write_all(b"\x1b[2J\x1b[H")?;
         self.out.flush()?;
         self.prev.clear();
         self.cursor_row = 0;

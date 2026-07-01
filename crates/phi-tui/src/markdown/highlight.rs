@@ -1,4 +1,4 @@
-use std::collections::{HashMap, hash_map::DefaultHasher};
+use std::collections::{HashMap, VecDeque, hash_map::DefaultHasher};
 use std::hash::{Hash, Hasher};
 use std::sync::{LazyLock, Mutex};
 
@@ -12,8 +12,16 @@ const HIGHLIGHT_CACHE_LIMIT: usize = 256;
 
 /// Thread-safe cache for syntax-highlighted code blocks.
 /// Keyed by `hash_code(code, lang)`; stores the ANSI-escaped output lines.
-static HIGHLIGHT_CACHE: LazyLock<Mutex<HashMap<u64, Vec<String>>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+/// `order` tracks insertion order so eviction drops only the oldest entry —
+/// clearing wholesale would cold-start every visible block at once.
+#[derive(Default)]
+struct HighlightCache {
+    entries: HashMap<u64, Vec<String>>,
+    order: VecDeque<u64>,
+}
+
+static HIGHLIGHT_CACHE: LazyLock<Mutex<HighlightCache>> =
+    LazyLock::new(|| Mutex::new(HighlightCache::default()));
 
 /// Hash a code block's content and language tag to a 64-bit key.
 fn hash_code(code: &str, lang: Option<&str>) -> u64 {
@@ -27,8 +35,8 @@ fn hash_code(code: &str, lang: Option<&str>) -> u64 {
 ///
 /// On a cache hit the previously rendered ANSI lines are returned without
 /// re-tokenizing. On a miss the code is highlighted via `highlight_code`
-/// and stored for subsequent calls. The cache evicts entirely when it
-/// reaches `HIGHLIGHT_CACHE_LIMIT` entries (simple clear-all strategy).
+/// and stored for subsequent calls. Past `HIGHLIGHT_CACHE_LIMIT` entries,
+/// the oldest-inserted entries are evicted one at a time.
 #[allow(clippy::collapsible_if)]
 pub fn highlight_code_cached(
     code: &str,
@@ -38,7 +46,7 @@ pub fn highlight_code_cached(
     let hash = hash_code(code, lang);
 
     if let Ok(cache) = HIGHLIGHT_CACHE.lock() {
-        if let Some(lines) = cache.get(&hash).cloned() {
+        if let Some(lines) = cache.entries.get(&hash).cloned() {
             return lines;
         }
     }
@@ -46,10 +54,18 @@ pub fn highlight_code_cached(
     let lines = highlight_code(code, lang, palette);
 
     if let Ok(mut cache) = HIGHLIGHT_CACHE.lock() {
-        if cache.len() >= HIGHLIGHT_CACHE_LIMIT {
-            cache.clear();
+        // A racing miss for the same block may have inserted already; the
+        // key goes into `order` only when it is genuinely new so the two
+        // structures stay 1:1.
+        if cache.entries.insert(hash, lines.clone()).is_none() {
+            cache.order.push_back(hash);
         }
-        cache.insert(hash, lines.clone());
+        while cache.entries.len() > HIGHLIGHT_CACHE_LIMIT {
+            let Some(oldest) = cache.order.pop_front() else {
+                break;
+            };
+            cache.entries.remove(&oldest);
+        }
     }
 
     lines
@@ -192,11 +208,19 @@ pub(super) fn soften_sgr_params(params: &str) -> String {
             )
         {
             let (r, g, b) = soften_rgb(r, g, b);
-            out.push("38".to_owned());
-            out.push("2".to_owned());
-            out.push(r.to_string());
-            out.push(g.to_string());
-            out.push(b.to_string());
+            // syntect always emits truecolor; this pass is also where the
+            // output gets quantized for terminals that can't render it.
+            if crate::color_cap::has_truecolor() {
+                out.push("38".to_owned());
+                out.push("2".to_owned());
+                out.push(r.to_string());
+                out.push(g.to_string());
+                out.push(b.to_string());
+            } else {
+                out.push("38".to_owned());
+                out.push("5".to_owned());
+                out.push(crate::color_cap::rgb_to_xterm256(r, g, b).to_string());
+            }
             i += 5;
             continue;
         }

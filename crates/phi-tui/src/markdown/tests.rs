@@ -1,4 +1,4 @@
-use super::constants::{BOLD, CYAN, DIM, MarkdownPalette, RESET, UNDERLINE};
+use super::constants::{BOLD, MarkdownPalette, RESET, UNDERLINE};
 use super::highlight::*;
 
 use crate::highlight_code;
@@ -31,9 +31,10 @@ fn renders_paragraphs_with_wrapping() {
 
 #[test]
 fn renders_heading_bold() {
-    let lines = render_markdown("# Title\n\nbody", 80, &palette());
+    let p = palette();
+    let lines = render_markdown("# Title\n\nbody", 80, &p);
     assert!(lines[0].contains(BOLD));
-    assert!(lines[0].contains(CYAN));
+    assert!(lines[0].contains(&p.heading));
     let p = plain(&lines);
     assert_eq!(p[0], "Title");
     assert!(!p[0].contains('#'), "literal markdown marker leaked: {p:?}");
@@ -90,8 +91,9 @@ fn wrapped_list_items_hang_under_text() {
 
 #[test]
 fn inline_code_styled() {
-    let lines = render_markdown("use `foo()` here", 80, &palette());
-    assert!(lines[0].contains(CYAN));
+    let p = palette();
+    let lines = render_markdown("use `foo()` here", 80, &p);
+    assert!(lines[0].contains(&p.inline_code));
     assert_eq!(plain(&lines)[0], "use foo() here");
 }
 
@@ -107,6 +109,7 @@ fn links_show_styled_text_and_url() {
 
 #[test]
 fn fenced_code_is_highlighted_and_closed() {
+    crate::color_cap::force_color_capability(crate::color_cap::ColorCapability::TrueColor);
     let lines = render_markdown("```rust\nlet x = 1;\n```", 80, &palette());
     let p = plain(&lines);
     assert_eq!(p.first().unwrap(), "\u{2502} rust");
@@ -121,13 +124,16 @@ fn fenced_code_is_highlighted_and_closed() {
 
 #[test]
 fn unknown_language_falls_back_to_dim() {
-    let lines = render_markdown("```nosuchlang\nfoo bar\n```", 80, &palette());
+    let p = palette();
+    let lines = render_markdown("```nosuchlang\nfoo bar\n```", 80, &p);
     let code = lines.iter().find(|l| l.contains("foo bar")).unwrap();
-    assert!(code.contains(DIM));
+    // Unknown-language code renders behind the ghost fence bar unhighlighted.
+    assert!(code.contains(&p.ghost), "{code:?}");
 }
 
 #[test]
 fn common_language_aliases_are_highlighted() {
+    crate::color_cap::force_color_capability(crate::color_cap::ColorCapability::TrueColor);
     let p = palette();
     for lang in ["ts", "tsx", "js", "jsx", "py", "sh", "shell", "console"] {
         let sample = match lang {
@@ -156,6 +162,7 @@ fn blockquote_prefixed() {
 
 #[test]
 fn highlight_code_treats_repl_as_python() {
+    crate::color_cap::force_color_capability(crate::color_cap::ColorCapability::TrueColor);
     let lines = highlight_code("print(1)", Some("repl"), &palette());
     assert_eq!(lines.len(), 1);
     assert!(lines[0].contains("\x1b[38;2;"), "no highlight: {lines:?}");
@@ -163,6 +170,7 @@ fn highlight_code_treats_repl_as_python() {
 
 #[test]
 fn code_default_tokens_never_render_white() {
+    crate::color_cap::force_color_capability(crate::color_cap::ColorCapability::TrueColor);
     // base16-ocean.dark default fg is #c0c5ce (192;197;206): near-white.
     // It must be softened to gray so only model prose reads as white.
     let lines = highlight_code("fn main() {}", Some("rust"), &palette());
@@ -298,7 +306,7 @@ fn task_list_markers_colored() {
         .iter()
         .find(|l| crate::terminal::strip_ansi(l).contains("[ ]"))
         .unwrap();
-    assert!(todo.contains(DIM), "{todo:?}");
+    assert!(todo.contains(&p.muted), "{todo:?}");
 }
 
 #[test]
@@ -319,7 +327,7 @@ fn h3_headings_use_subhead_accent() {
     assert!(lines[0].contains(BOLD), "{lines:?}");
     assert!(lines[0].contains(&p.subhead), "{lines:?}");
     let lines = render_markdown("## Big Title", 80, &p);
-    assert!(lines[0].contains(CYAN), "{lines:?}");
+    assert!(lines[0].contains(&p.heading), "{lines:?}");
     assert!(!lines[0].contains(&p.subhead), "{lines:?}");
 }
 

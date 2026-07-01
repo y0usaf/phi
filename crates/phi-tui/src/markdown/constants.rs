@@ -13,10 +13,8 @@ use crate::theme::Theme;
 // 0/1/3/4/6 etc.), so they already follow the user's terminal theme.
 pub(super) const RESET: &str = "\x1b[0m";
 pub(super) const BOLD: &str = "\x1b[1m";
-pub(super) const DIM: &str = "\x1b[2m";
 pub(super) const ITALIC: &str = "\x1b[3m";
 pub(super) const UNDERLINE: &str = "\x1b[4m";
-pub(super) const CYAN: &str = "\x1b[36m";
 
 pub(super) static SYNTAXES: LazyLock<SyntaxSet> = LazyLock::new(SyntaxSet::load_defaults_newlines);
 
@@ -34,6 +32,14 @@ pub(super) static FALLBACK_THEME: LazyLock<SyntaxTheme> = LazyLock::new(|| {
 /// (base16-ocean family) as the fallback.
 #[derive(Clone)]
 pub struct MarkdownPalette {
+    /// Heading text (theme accent — probed truecolor, not raw ANSI 36).
+    pub heading: String,
+    /// Inline code spans (theme secondary accent).
+    pub inline_code: String,
+    /// Tertiary text: language labels, truncation hints.
+    pub muted: String,
+    /// Ghost text: rules, fence borders, quote indents — structural marks.
+    pub ghost: String,
     pub repl_fence: String,
     pub marker_accent: String,
     pub task_done: String,
@@ -58,6 +64,10 @@ impl MarkdownPalette {
     /// Previous hardcoded values (base16-ocean family).
     pub fn default_const() -> Self {
         Self {
+            heading: s("\x1b[36m"),
+            inline_code: s("\x1b[35m"),
+            muted: s("\x1b[38;2;120;128;148m"),
+            ghost: s("\x1b[38;2;80;86;104m"),
             repl_fence: s("\x1b[38;2;180;140;255m"),
             marker_accent: s("\x1b[38;2;130;160;230m"),
             task_done: s("\x1b[38;2;130;200;130m"),
@@ -84,6 +94,10 @@ impl MarkdownPalette {
     /// `Theme`'s `Rgb` fields as truecolor escapes.
     pub fn from_theme(t: &Theme) -> Self {
         Self {
+            heading: fg_escape(t.accent),
+            inline_code: fg_escape(t.accent_2),
+            muted: fg_escape(t.text_tertiary),
+            ghost: fg_escape(t.text_ghost),
             repl_fence: fg_escape(t.md_repl_fence),
             marker_accent: fg_escape(t.md_marker_accent),
             task_done: fg_escape(t.md_task_done),

@@ -65,7 +65,8 @@ impl Ui {
         for (index, line) in usage_overlay_lines(&report).into_iter().enumerate() {
             items.push(SelectorItem::new(format!("usage-{index}"), line));
         }
-        let widget = Selector::new(format!("Usage · {} entries", report.entries), items, false);
+        let widget = Selector::new(format!("Usage · {} entries", report.entries), items, false)
+            .with_style(self.selector_style());
         self.open_selector(SelectorKind::Usage, widget);
     }
 
@@ -101,7 +102,7 @@ impl Ui {
         } else {
             "Switch Sub Model"
         };
-        let mut widget = Selector::new(title, items, true);
+        let mut widget = Selector::new(title, items, true).with_style(self.selector_style());
         widget.preselect(&current);
         self.open_selector(SelectorKind::Model { root }, widget);
     }
@@ -150,10 +151,9 @@ impl Ui {
         let new_id = model.id.clone();
         target.set_model(model.clone());
         self.model_label = model_label(&self.root_lm.model(), &self.sub_lm.model());
-        self.pending.push(TranscriptEntry::RawLines(vec![format!(
-            "{DIM}[{which} → {}/{new_id}]{RESET}",
-            new_provider
-        )]));
+        self.pending.push(TranscriptEntry::RawLines(vec![
+            self.note(&format!("[{which} → {}/{new_id}]", new_provider)),
+        ]));
         self.warn_if_missing_credentials(new_provider.clone());
 
         // ── Extension: ModelSelect ──────────────────────────────────────

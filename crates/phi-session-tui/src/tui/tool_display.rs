@@ -11,23 +11,26 @@ pub(crate) fn subcall_title(model: &str, prompt_preview: &str, p: &InlinePalette
         .collect::<Vec<_>>()
         .join(" ");
     format!(
-        "{subcall}{model}{RESET} {DIM}←{RESET} {strfg}\"{prompt_preview}\"{RESET}",
+        "{subcall}{model}{RESET} {ghost}←{RESET} {strfg}\"{prompt_preview}\"{RESET}",
         subcall = &p.subcall_accent,
+        ghost = &p.text_ghost,
         strfg = &p.string_fg,
     )
 }
 
 /// Format a running tool/subcall status line with an ANSI-aware shimmer sweep
 /// applied to the label, mirroring claude-code's glimmer shimmer for in-flight
-/// tool headers. The spinner glyph is not shimmered.
+/// tool headers. The spinner glyph carries the working color (`spinner_fg`)
+/// but is not shimmered.
 pub(crate) fn running_status_text_shimmer(
     label: &str,
     spinner: &str,
+    spinner_fg: &str,
     shimmer: phi_tui::Rgb,
     elapsed_ms: u64,
 ) -> String {
     let shimmed = shimmer_ansi(label, shimmer, elapsed_ms);
-    format!("{spinner} {shimmed}")
+    format!("{spinner_fg}{spinner}{RESET} {shimmed}")
 }
 
 pub(crate) fn failed_status_text(
@@ -41,7 +44,7 @@ pub(crate) fn failed_status_text(
         .unwrap_or_default();
     let detail = detail
         .filter(|d| !d.trim().is_empty())
-        .map(|d| format!(" {DIM}—{RESET} {d}"))
+        .map(|d| format!(" {ghost}—{RESET} {d}", ghost = &p.text_ghost))
         .unwrap_or_default();
     format!("{}✗{RESET} {label}{duration}{detail}", p.error_fg)
 }
@@ -97,9 +100,10 @@ pub(crate) fn tool_identity(name: &str, args: &serde_json::Value, p: &InlinePale
                 })
                 .collect();
             format!(
-                "{tool}{name}{RESET} {DIM}{}{RESET}",
+                "{tool}{name}{RESET} {tert}{}{RESET}",
                 pairs.join(" "),
                 tool = &p.tool_title_fg,
+                tert = &p.text_tertiary,
             )
         }
         _ => format!("{tool}{name}{RESET}", tool = &p.tool_title_fg),
@@ -126,7 +130,7 @@ pub(crate) fn tool_identity(name: &str, args: &serde_json::Value, p: &InlinePale
             serde_json::to_string_pretty(args)
                 .unwrap_or_else(|_| args.to_string())
                 .lines()
-                .map(|line| format!("{DIM}{line}{RESET}"))
+                .map(|line| format!("{}{line}{RESET}", &p.text_tertiary))
                 .collect()
         } else {
             Vec::new()
@@ -140,9 +144,10 @@ pub(crate) fn tool_identity(name: &str, args: &serde_json::Value, p: &InlinePale
                 // Multi-line: anchor is the truncated first line; the full
                 // command is the body, so the canonical content is shown once.
                 format!(
-                    "{tool}${RESET} {DIM}{}{RESET}",
+                    "{tool}${RESET} {tert}{}{RESET}",
                     one_line(cmd),
                     tool = &p.tool_title_fg,
+                    tert = &p.text_tertiary,
                 )
             } else {
                 let echoed = one_line(cmd);

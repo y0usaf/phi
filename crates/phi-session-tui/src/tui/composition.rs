@@ -241,16 +241,14 @@ impl Ui {
                 }
             }
         }
-        // Determine bg
-        let bg = if data.tools.iter().any(|t| t.error.is_some())
-            || data.subcalls.iter().any(|s| s.error.is_some())
-            || !data.stderr.is_empty()
-        {
-            &self.palette.tool_error_bg
-        } else {
-            &self.palette.tool_success_bg
-        };
-        render_repl_block(&body, bg, self.panel_width(), self.tools.repl_padding)
+        // One neutral container surface: failures are signaled by the ✗
+        // glyphs and error text inside, not by tinting the whole container.
+        render_repl_block(
+            &body,
+            &self.palette.repl_bg,
+            self.panel_width(),
+            self.tools.repl_padding,
+        )
     }
 
     pub(super) fn current_live_transcript_blocks(&self) -> Vec<TranscriptBlock> {
@@ -301,10 +299,36 @@ impl Ui {
             }
         }
 
-        // Queued messages are part of the transcript — they're waiting to be
-        // sent once the current turn completes.  Render them as the last
-        // live block so they appear at the very bottom of the transcript,
-        // just above the separator line.
+        // Thinking animation at the growing edge of the content — directly
+        // where the next output will appear, not floating in the footer.
+        // The animation lives at the site of the reward: the equalizer +
+        // expression sit right after the streaming prose (or where prose
+        // will materialize), gradient cyan→magenta with a light glint sweep.
+        // Hue changes are reserved for state changes (magenta = working,
+        // green = done), so the overlay is a foreground glint, not a color.
+        if self.running.is_some() {
+            let elapsed = self.clock.now_ms();
+            let tool_active = !self.open_tool_rows.is_empty() || !self.open_subcall_rows.is_empty();
+            let glyphs = equalizer_glyphs(elapsed);
+            let expression = self.visual.thinking_expression(elapsed, tool_active);
+            let p = &self.palette;
+            let text = format!("{glyphs} {expression}");
+            blocks.push(TranscriptBlock {
+                key: "live:equalizer".to_owned(),
+                lines: vec![gradient_text_animated(
+                    &text,
+                    p.spinner_accent,
+                    p.accent_2,
+                    p.glint,
+                    elapsed,
+                )],
+                finalized: false,
+            });
+        }
+
+        // Queued messages are the last live block — waiting to be sent once
+        // the current turn completes, shown at the very bottom, just above
+        // the separator line.
         if self.running.is_some() && !self.queued.is_empty() {
             let p = &self.palette;
             let mode = "queued";
@@ -318,9 +342,9 @@ impl Ui {
                     } else {
                         String::new()
                     };
-                    format!("{}{}{} > ", &p.muted_fg, mode, count)
+                    format!("{}{}{} > ", &p.text_tertiary, mode, count)
                 } else {
-                    format!("{}  > ", &p.muted_fg)
+                    format!("{}  > ", &p.text_tertiary)
                 };
                 lines.push(format!("{}{}{}{}", prefix, first, more, RESET));
             }
@@ -331,76 +355,42 @@ impl Ui {
             });
         }
 
-        // Equalizer thinking animation at the very bottom of the transcript,
-        // just above the separator line. Shown while a run is in flight.
-        if self.running.is_some() {
-            let elapsed = self.clock.now_ms();
-            let tool_active = !self.open_tool_rows.is_empty() || !self.open_subcall_rows.is_empty();
-            let glyphs = equalizer_glyphs(elapsed);
-            let expression = self.visual.thinking_expression(elapsed, tool_active);
-            let p = &self.palette;
-            // Gradient the entire line — bars + phrase — from accent (cyan) →
-            // accent_2 (magenta), matching phi-mux's sidebar gradient text.
-            // The animated variant overlays a time-driven, position-shifted
-            // shimmer (blending toward the running/green status color), which
-            // slides and cycles across the text — reproducing phi-mux's
-            // `render_sidebar_gradient_text` Active-status shimmer.
-            let text = format!("{glyphs} {expression}");
-            blocks.push(TranscriptBlock {
-                key: "live:equalizer".to_owned(),
-                lines: vec![gradient_text_animated(
-                    &text,
-                    p.spinner_accent,
-                    p.accent_2,
-                    p.shimmer_accent,
-                    elapsed,
-                )],
-                finalized: false,
-            });
-        }
-
         blocks
     }
 
+    /// Chrome segment 1: brand wordmark + usage. The gradient wordmark IS
+    /// the brand signal — no agent icon. Tokens and cost recede to the
+    /// tertiary level; they're ambient data, not calls to action.
     pub(super) fn render_chrome_agent(&self) -> String {
         let active = self.usage.total_tokens > 0;
-        let mut result = String::with_capacity(64);
-
-        let agent_str = format!("{} phi", agent_symbol());
-        result.push_str(&format!(
-            "{}{agent_str}{RESET}",
-            &self.palette.chrome_agent_fg
-        ));
+        let mut result = gradient_text("phi", self.palette.accent_2, self.palette.spinner_accent);
 
         if active {
             let tokens = format_tokens(self.usage.total_tokens);
-            result.push_str(&format!(
-                " {}{tokens}{RESET}",
-                &self.palette.chrome_agent_fg
-            ));
+            result.push_str(&format!(" {}{tokens}{RESET}", &self.palette.text_tertiary));
         }
 
         if active && self.usage.cost.total > 0.0 {
             result.push_str(&format!(
-                " {}{}{:.2}{RESET}",
-                &self.palette.chrome_cost_fg,
-                cost_symbol(),
-                self.usage.cost.total
+                " {}${:.2}{RESET}",
+                &self.palette.text_tertiary, self.usage.cost.total
             ));
         }
 
         result
     }
 
+    /// Chrome segment 3: model name (the single bold chrome datum) + the
+    /// thinking level in its progression color. No icon — the name is the
+    /// information.
     pub(super) fn render_chrome_model(&self) -> String {
         let mut result = String::with_capacity(64);
 
         let model_id = &self.root_lm.model().id;
         let short_model = model_id.rsplit('/').next().unwrap_or(model_id);
         result.push_str(&format!(
-            "{}{} {short_model}{RESET}",
-            &self.palette.chrome_model_fg,
-            model_symbol()
+            "{}{short_model}{RESET}",
+            &self.palette.chrome_model_fg
         ));
 
         if let Some(effort) = effort_label(self.root_lm.thinking(), self.term.width()) {
@@ -421,15 +411,11 @@ impl Ui {
             self.branch_at = std::time::Instant::now();
         }
         // Always render the statusbar first (separator + header), whether a
-        // selector is open or not — like Pi's permanent footer.
+        // selector is open or not — like Pi's permanent footer. The rule is
+        // a divider, not content: it uses the theme's border role, felt more
+        // than seen.
         let sep = "\u{2500}".repeat(width);
-        let bg = p.terminal_bg;
-        lines.push(format!(
-            "\x1b[38;2;{};{};{}m{sep}{RESET}",
-            255 - bg.0,
-            255 - bg.1,
-            255 - bg.2,
-        ));
+        lines.push(format!("{}{sep}{RESET}", &p.chrome_border));
 
         let current_dir = self
             .cwd
@@ -438,40 +424,36 @@ impl Ui {
             .map(String::from)
             .unwrap_or_else(|| ".".to_string());
         let elapsed = self.clock.now_ms();
-        let shim = self.palette.shimmer_accent;
 
-        // Build each statusbar section independently and apply shimmer_ansi
-        // to each one. The shimmer is percentage-based (position = fraction of
-        // section width), so all sections sync naturally — the highlight sits
-        // at the same relative position across all sections simultaneously,
-        // making the shimmer appear to travel across the whole bar in sync.
-        let agent = shimmer_ansi(&self.render_chrome_agent(), shim, elapsed);
-        let dir = shimmer_ansi(
-            &format!(
-                "{}{} {current_dir}{RESET}",
-                &self.palette.chrome_dir_fg,
-                dir_symbol()
-            ),
-            shim,
-            elapsed,
-        );
-        let mut header = format!("{agent}  {dir}");
+        // Three segments: wordmark+usage · dir/branch · model+thinking.
+        // No folder/branch icons — the text already says what it is.
+        let agent = self.render_chrome_agent();
+        let mut dir = format!("{}{current_dir}{RESET}", &self.palette.chrome_dir_fg);
         if let Some(branch) = &self.branch
             && branch != &current_dir
         {
-            let branch_part = shimmer_ansi(
-                &format!(
-                    "{}{} {branch}{RESET}",
-                    &self.palette.chrome_dir_fg,
-                    branch_symbol()
-                ),
-                shim,
-                elapsed,
-            );
-            header.push_str(&format!("  {branch_part}"));
+            dir.push_str(&format!(
+                " {}·{RESET} {}{branch}{RESET}",
+                &self.palette.text_ghost, &self.palette.chrome_dir_fg
+            ));
         }
-        let model = shimmer_ansi(&self.render_chrome_model(), shim, elapsed);
-        header.push_str(&format!("  {model}"));
+        let model = self.render_chrome_model();
+
+        // The chrome shimmers only while a run is in flight AND the window
+        // has focus: idle = calm, working = alive, blurred = still. The
+        // shimmer is percentage-based (position = fraction of section
+        // width), so all sections sweep in sync.
+        let header = if self.running.is_some() && self.clock.is_focused() {
+            let shim = self.palette.working_shimmer;
+            format!(
+                "{}  {}  {}",
+                shimmer_ansi(&agent, shim, elapsed),
+                shimmer_ansi(&dir, shim, elapsed),
+                shimmer_ansi(&model, shim, elapsed)
+            )
+        } else {
+            format!("{agent}  {dir}  {model}")
+        };
         lines.push(header);
 
         // Render the selector (if open) or the editor underneath the
@@ -491,28 +473,39 @@ impl Ui {
             } else {
                 "up/down select \u{00b7} enter confirm \u{00b7} esc cancel"
             };
-            lines.push(format!("{muted_fg}{hint}{RESET}", muted_fg = &p.muted_fg));
+            lines.push(format!("{tert}{hint}{RESET}", tert = &p.text_tertiary));
         } else {
             let (editor_lines, (row, col)) = self.editor.render();
             // Editor prompt: chevron on row 0, 2-space indent on continuation.
+            // When the window is blurred the chevron dims to ghost — a clear
+            // signal that keystrokes are going elsewhere. An empty editor
+            // shows a ghost placeholder so the input is never a silent void.
+            let prompt_fg = if self.clock.is_focused() {
+                &self.palette.chrome_dir_fg
+            } else {
+                &self.palette.text_ghost
+            };
+            let placeholder = if self.running.is_some() {
+                "queue a follow-up…"
+            } else {
+                "ready"
+            };
             let editor_top = lines.len();
             let input_inner = width.saturating_sub(2).max(1);
             let mut input_cursor = None;
             let mut rendered_rows_before_cursor = 0usize;
             for (absolute_row, line) in editor_lines.iter().enumerate() {
                 let content = if absolute_row == 0 {
-                    if line.is_empty() {
+                    if line.is_empty() && self.editor.text().is_empty() {
                         format!(
-                            "{}{}{RESET} ",
-                            &self.palette.chrome_dir_fg,
-                            success_symbol()
+                            "{prompt_fg}{}{RESET} {}{placeholder}{RESET}",
+                            success_symbol(),
+                            &self.palette.text_ghost
                         )
+                    } else if line.is_empty() {
+                        format!("{prompt_fg}{}{RESET} ", success_symbol())
                     } else {
-                        format!(
-                            "{}{}{RESET} {line}",
-                            &self.palette.chrome_dir_fg,
-                            success_symbol()
-                        )
+                        format!("{prompt_fg}{}{RESET} {line}", success_symbol())
                     }
                 } else {
                     format!("  {line}")
@@ -552,7 +545,19 @@ impl Ui {
             // in the live transcript, above the separator line.)
 
             if let Some(popup) = &self.popup {
-                lines.extend(render_popup(popup));
+                lines.extend(render_popup(popup, &self.palette));
+            }
+
+            // Quit confirmation: the first ctrl+c opens a 500ms window; the
+            // hint makes that state visible instead of silently arming it.
+            if self
+                .last_ctrl_c
+                .is_some_and(|t| t.elapsed() < Duration::from_millis(500))
+            {
+                lines.push(format!(
+                    "{}press ctrl+c again to quit{RESET}",
+                    &p.warning_fg
+                ));
             }
 
             let hints: &[&str] = if self.login.is_some() {
@@ -567,7 +572,7 @@ impl Ui {
                 &[]
             };
             for hint in hints {
-                lines.push(format!("{muted_fg}{hint}{RESET}", muted_fg = &p.muted_fg));
+                lines.push(format!("{tert}{hint}{RESET}", tert = &p.text_tertiary));
             }
         }
         (lines, cursor)

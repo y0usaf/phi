@@ -237,7 +237,7 @@ impl Editor {
 
     fn move_left(&mut self) {
         if self.col > 0 {
-            self.col = prev_char_boundary(&self.lines[self.row], self.col);
+            self.col = prev_grapheme_boundary(&self.lines[self.row], self.col);
         } else if self.row > 0 {
             self.row -= 1;
             self.col = self.lines[self.row].len();
@@ -247,7 +247,7 @@ impl Editor {
     fn move_right(&mut self) {
         let line = &self.lines[self.row];
         if self.col < line.len() {
-            self.col = next_char_boundary(line, self.col);
+            self.col = next_grapheme_boundary(line, self.col);
         } else if self.row + 1 < self.lines.len() {
             self.row += 1;
             self.col = 0;
@@ -303,7 +303,7 @@ impl Editor {
     fn delete_back(&mut self) {
         if self.col > 0 {
             let line = &mut self.lines[self.row];
-            let start = prev_char_boundary(line, self.col);
+            let start = prev_grapheme_boundary(line, self.col);
             line.replace_range(start..self.col, "");
             self.col = start;
         } else if self.row > 0 {
@@ -318,7 +318,7 @@ impl Editor {
         let line_len = self.lines[self.row].len();
         if self.col < line_len {
             let line = &mut self.lines[self.row];
-            let end = next_char_boundary(line, self.col);
+            let end = next_grapheme_boundary(line, self.col);
             line.replace_range(self.col..end, "");
         } else if self.row + 1 < self.lines.len() {
             let next = self.lines.remove(self.row + 1);
@@ -435,26 +435,31 @@ fn is_word_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
 
-fn prev_char_boundary(s: &str, idx: usize) -> usize {
-    if idx == 0 || idx > s.len() {
-        return 0;
-    }
-    let mut i = idx - 1;
-    while i > 0 && !s.is_char_boundary(i) {
-        i -= 1;
-    }
-    i
+/// Byte index of the start of the grapheme cluster before `idx`. Grapheme
+/// clusters (not chars) are the user-visible cursor unit: a flag emoji or
+/// `e` + combining accent must move/delete as one, or the cursor lands
+/// inside it and a delete leaves half a glyph behind.
+fn prev_grapheme_boundary(s: &str, idx: usize) -> usize {
+    use unicode_segmentation::UnicodeSegmentation as _;
+    let idx = idx.min(s.len());
+    s.grapheme_indices(true)
+        .map(|(start, _)| start)
+        .take_while(|start| *start < idx)
+        .last()
+        .unwrap_or(0)
 }
 
-fn next_char_boundary(s: &str, idx: usize) -> usize {
+/// Byte index of the end of the grapheme cluster containing (or starting
+/// at) `idx`.
+fn next_grapheme_boundary(s: &str, idx: usize) -> usize {
+    use unicode_segmentation::UnicodeSegmentation as _;
     if idx >= s.len() {
         return s.len();
     }
-    let mut i = idx + 1;
-    while i < s.len() && !s.is_char_boundary(i) {
-        i += 1;
-    }
-    i
+    s.grapheme_indices(true)
+        .map(|(start, grapheme)| start + grapheme.len())
+        .find(|end| *end > idx)
+        .unwrap_or(s.len())
 }
 
 #[cfg(test)]
@@ -519,6 +524,23 @@ mod tests {
         ed.handle_key(key(KeyCode::Left));
         ed.handle_key(key(KeyCode::Backspace));
         assert_eq!(ed.text(), "é");
+    }
+
+    #[test]
+    fn grapheme_cluster_cursor_and_backspace() {
+        // Multi-codepoint clusters must move/delete as single units:
+        // thumbs-up + skin tone (2 scalars, 8 bytes) and e + combining
+        // acute (2 scalars, 3 bytes).
+        let mut ed = Editor::new();
+        ed.insert_str("a\u{1F44D}\u{1F3FD}e\u{301}b");
+        ed.handle_key(key(KeyCode::Backspace));
+        assert_eq!(ed.text(), "a\u{1F44D}\u{1F3FD}e\u{301}");
+        ed.handle_key(key(KeyCode::Backspace));
+        assert_eq!(ed.text(), "a\u{1F44D}\u{1F3FD}");
+        ed.handle_key(key(KeyCode::Left));
+        assert_eq!(ed.render().1, (0, 1)); // cursor before the whole emoji
+        ed.handle_key(key(KeyCode::Delete));
+        assert_eq!(ed.text(), "a");
     }
 
     #[test]

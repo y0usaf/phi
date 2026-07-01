@@ -10,11 +10,33 @@ use crate::fuzzy::fuzzy_match;
 
 const RESET: &str = "\x1b[0m";
 const BOLD: &str = "\x1b[1m";
-const DIM: &str = "\x1b[2m";
-const CYAN: &str = "\x1b[36m";
-const GREEN: &str = "\x1b[32m";
 /// Upper bound on the number of list rows, regardless of terminal height.
 const DEFAULT_MAX_VISIBLE: usize = 10;
+
+/// Theme-derived escape strings for the selector's three color roles. The
+/// host constructs this from its palette so the focus marker, current-item
+/// check, and muted detail text follow the terminal theme instead of
+/// hardcoded ANSI slots.
+#[derive(Clone)]
+pub struct SelectorStyle {
+    /// Focus marker (`▌`) and query prompt color.
+    pub accent: String,
+    /// Current-item `✓` color.
+    pub current: String,
+    /// Detail annotations, pager footer, "no matches" placeholder.
+    pub muted: String,
+}
+
+impl Default for SelectorStyle {
+    /// ANSI-slot fallback used when no theme has been probed.
+    fn default() -> Self {
+        Self {
+            accent: "\x1b[36m".to_owned(),
+            current: "\x1b[32m".to_owned(),
+            muted: "\x1b[2m".to_owned(),
+        }
+    }
+}
 
 /// One selectable row. `label` and `detail` are plain text; the selector
 /// applies its own styling.
@@ -70,6 +92,7 @@ pub struct Selector {
     /// Pre-lowercased "label detail value" haystack per item, built once when
     /// the items are set so `refilter` does not reallocate per keystroke.
     search_blobs: Vec<String>,
+    style: SelectorStyle,
 }
 
 impl Selector {
@@ -84,7 +107,14 @@ impl Selector {
             filtered,
             selected: 0,
             search_blobs,
+            style: SelectorStyle::default(),
         }
+    }
+
+    /// Replace the default ANSI-slot colors with theme-derived escapes.
+    pub fn with_style(mut self, style: SelectorStyle) -> Self {
+        self.style = style;
+        self
     }
 
     pub fn items(&self) -> &[SelectorItem] {
@@ -181,7 +211,7 @@ impl Selector {
 
         let mut lines = vec![format!("{BOLD}{}{RESET}", self.title)];
         let cursor = self.searchable.then(|| {
-            lines.push(format!("{BOLD}›{RESET} {}", self.query));
+            lines.push(format!("{}›{RESET} {}", self.style.accent, self.query));
             (
                 1,
                 2 + self
@@ -194,7 +224,7 @@ impl Selector {
 
         let total = self.filtered.len();
         if total == 0 {
-            lines.push(format!("{DIM}  no matches{RESET}"));
+            lines.push(format!("{}  no matches{RESET}", self.style.muted));
             return (lines, cursor);
         }
 
@@ -209,23 +239,28 @@ impl Selector {
             let selected = start + pos == self.selected;
             let mark = if item.current { " ✓" } else { "" };
             let label = truncate(&item.label, width.saturating_sub(4));
-            // Minimalist focus cue: just a › cursor + bold for selected,
-            // two-space indent + plain text for unselected. No background.
+            // Minimalist focus cue: a thick left bar (crush-style ▌) + bold
+            // for selected, two-space indent + plain text for unselected.
+            // No background.
             let mut line = if selected {
-                format!("{CYAN}›{RESET} {BOLD}{label}{RESET}")
+                format!("{}▌{RESET} {BOLD}{label}{RESET}", self.style.accent)
             } else {
                 format!("  {label}")
             };
             if !item.detail.is_empty() {
-                line.push_str(&format!(" {DIM}{}{RESET}", item.detail));
+                line.push_str(&format!(" {}{}{RESET}", self.style.muted, item.detail));
             }
             if !mark.is_empty() {
-                line.push_str(&format!("{GREEN}{mark}{RESET}"));
+                line.push_str(&format!("{}{mark}{RESET}", self.style.current));
             }
             lines.push(line);
         }
         if total > visible {
-            lines.push(format!("{DIM}  ({}/{total}){RESET}", self.selected + 1));
+            lines.push(format!(
+                "{}  ({}/{total}){RESET}",
+                self.style.muted,
+                self.selected + 1
+            ));
         }
         (lines, cursor)
     }

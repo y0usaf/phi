@@ -91,8 +91,9 @@ pub fn gradient_text(text: &str, from: crate::palette::Rgb, to: crate::palette::
     let mut out = String::with_capacity(chars.len() * 16);
     for (i, ch) in chars.iter().enumerate() {
         let mix = ((i as u16 * 255) / denom).min(255) as u8;
-        let crate::palette::Rgb(r, g, b) = crate::fade_toward(from, to, mix);
-        out.push_str(&format!("\x1b[38;2;{r};{g};{b}m{ch}"));
+        let rgb = crate::fade_toward(from, to, mix);
+        out.push_str(&crate::color_cap::fg_sequence(rgb));
+        out.push(*ch);
     }
     out.push_str("\x1b[0m");
     out
@@ -197,8 +198,9 @@ pub fn gradient_text_animated(
         let base = crate::fade_toward(from, to, mix);
         let intensity = shimmer_triangle_intensity(elapsed_ms, i);
         let blend = shimmer_triangle_blend(intensity);
-        let crate::palette::Rgb(r, g, b) = crate::fade_toward(base, shimmer, blend);
-        out.push_str(&format!("\x1b[38;2;{r};{g};{b}m{ch}"));
+        let rgb = crate::fade_toward(base, shimmer, blend);
+        out.push_str(&crate::color_cap::fg_sequence(rgb));
+        out.push(*ch);
     }
     out.push_str("\x1b[0m");
     out
@@ -265,6 +267,14 @@ fn parse_sgr_fg(sgr_state: &[&str]) -> Option<crate::palette::Rgb> {
                 let g = parts[3].trim().parse::<u8>().ok()?;
                 let b = parts[4].trim().parse::<u8>().ok()?;
                 return Some(crate::palette::Rgb(r, g, b));
+            }
+        }
+        // Indexed: 38;5;N (emitted when quantizing for 256-color terminals)
+        if body.starts_with("38;5;") {
+            let parts: Vec<&str> = body.split(';').collect();
+            if parts.len() == 3 {
+                let idx = parts[2].trim().parse::<u8>().ok()?;
+                return Some(crate::theme::ansi_index_to_rgb(idx));
             }
         }
         // Basic 8/16 color fg: 30-37, 90-97
@@ -409,7 +419,7 @@ pub fn shimmer_ansi(text: &str, shimmer: crate::palette::Rgb, elapsed_ms: u64) -
             // Parse the current fg color from the SGR state so we can blend it.
             let base_fg = parse_sgr_fg(&sgr_state).unwrap_or(crate::palette::Rgb(170, 170, 170));
             let blended = crate::fade_toward(base_fg, shimmer, blend);
-            let blended_rgb = format!("[38;2;{};{};{}m", blended.0, blended.1, blended.2);
+            let blended_rgb = crate::color_cap::fg_sequence(blended);
 
             // Emit blended color plus preserved text attributes.
             out.push_str(&blended_rgb);
@@ -437,20 +447,13 @@ pub fn shimmer_ansi(text: &str, shimmer: crate::palette::Rgb, elapsed_ms: u64) -
 
 /// Thinking expressions cycled while the agent is working (no active tool).
 ///
-/// Mirrors the pi-input-revamp `THINKING_EXPRESSIONS` array. Each phrase is
-/// shown for 2 seconds before cycling to the next.
-pub const THINKING_EXPRESSIONS: [&str; 7] = [
-    "thinking hard...",
-    "pondering...",
-    "cranking its neurons...",
-    "cooking up an answer...",
-    "crunching numbers...",
-    "stirring its circuits...",
-    "shuffling tokens...",
-];
+/// One quiet word each — the gradient animation carries the visual weight;
+/// the label is just a status word, not competing copy.
+pub const THINKING_EXPRESSIONS: [&str; 4] =
+    ["thinking...", "reasoning...", "pondering...", "working..."];
 
 /// Default expression shown when a tool is actively running.
-pub const DEFAULT_TOOL_EXPRESSION: &str = "doing something complex...";
+pub const DEFAULT_TOOL_EXPRESSION: &str = "running...";
 
 /// Number of milliseconds each thinking expression is displayed before cycling.
 pub const THINKING_EXPRESSION_MS: u64 = 2000;
@@ -634,6 +637,7 @@ mod tests {
         // * (STEPS/2) = 252/255 toward the shimmer color. Verify that at the
         // peak the output differs from the base gradient but is not a hard
         // replacement (i.e. it's a blend, not shimmer == base).
+        crate::color_cap::force_color_capability(crate::color_cap::ColorCapability::TrueColor);
         let from = crate::palette::Rgb(0, 0, 0);
         let to = crate::palette::Rgb(0, 0, 0);
         let shimmer = crate::palette::Rgb(255, 255, 255);

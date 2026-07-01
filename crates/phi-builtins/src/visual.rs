@@ -62,18 +62,17 @@ impl Extension for DefaultVisualExtension {
         ))?;
 
         // -- Default thinking expressions --
+        // One or two quiet words each: the gradient animation carries the
+        // visual weight, the label is just a status word.
         host.register_thinking_expression(ThinkingExpressionSpec::new(
             "phi:default",
             vec![
-                "thinking hard...".to_string(),
+                "thinking...".to_string(),
+                "reasoning...".to_string(),
                 "pondering...".to_string(),
-                "cranking its neurons...".to_string(),
-                "cooking up an answer...".to_string(),
-                "crunching numbers...".to_string(),
-                "stirring its circuits...".to_string(),
-                "shuffling tokens...".to_string(),
+                "working...".to_string(),
             ],
-            "doing something complex...",
+            "running...",
             2000,
         ))?;
 
@@ -705,11 +704,11 @@ mod tests {
 
         let expr = rt.first_thinking_expression().unwrap();
         assert_eq!(expr.name, "phi:default");
-        assert_eq!(expr.expressions.len(), 7);
-        assert_eq!(expr.tool_expression, "doing something complex...");
+        assert_eq!(expr.expressions.len(), 4);
+        assert_eq!(expr.tool_expression, "running...");
         assert_eq!(expr.expression_interval_ms, 2000);
-        assert_eq!(expr.expression(0, false), "thinking hard...");
-        assert_eq!(expr.expression(0, true), "doing something complex...");
+        assert_eq!(expr.expression(0, false), "thinking...");
+        assert_eq!(expr.expression(0, true), "running...");
     }
 
     #[test]
@@ -799,6 +798,7 @@ mod tests {
 
     #[test]
     fn default_visual_extension_registers_text_effects() {
+        phi_tui::color_cap::force_color_capability(phi_tui::color_cap::ColorCapability::TrueColor);
         let rt = RuntimeBuilder::new()
             .register_extension(DefaultVisualExtension)
             .build()

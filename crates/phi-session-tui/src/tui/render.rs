@@ -397,6 +397,22 @@ pub(crate) struct OpenSubcallRow {
     pub(crate) len: usize,
 }
 
+/// A just-completed tool card whose anchor line briefly pulses with the
+/// success shimmer — the state-change celebration. While `now < expires_ms`
+/// the anchor is re-rendered each frame with a green sweep; on expiry the
+/// plain `rows` are restored and the flash is dropped.
+#[derive(Clone)]
+pub(crate) struct FlashRow {
+    pub(crate) start: usize,
+    pub(crate) len: usize,
+    pub(crate) expires_ms: u64,
+    /// The final (plain) card rows restored after the pulse.
+    pub(crate) rows: Vec<String>,
+}
+
+/// How long the completion pulse sweeps the anchor line, in milliseconds.
+pub(crate) const COMPLETION_FLASH_MS: u64 = 450;
+
 #[derive(Clone)]
 pub(crate) struct TranscriptBlock {
     pub(crate) key: String,
