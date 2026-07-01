@@ -36,6 +36,11 @@ pub struct ProviderLm {
 /// Transient-looking provider failures are retried; auth/4xx errors are not.
 fn is_transient(error: &str) -> bool {
     let e = error.to_ascii_lowercase();
+    // A quota/billing 429 is terminal — waiting cannot fix it, so don't
+    // burn the backoff schedule before telling the user.
+    if phi_ai::providers::is_terminal_rate_limit(&e) {
+        return false;
+    }
     let codes = ["429", "500", "502", "503", "504", "529"];
     codes.iter().any(|c| e.contains(c))
         || e.contains("overloaded")
@@ -215,8 +220,10 @@ impl LanguageModel for ProviderLm {
                         && !streamed.load(std::sync::atomic::Ordering::Relaxed) =>
                 {
                     // Race backoff against cancel so a stop request
-                    // doesn't wait out the retry sleep.
+                    // doesn't wait out the retry sleep. +/-20% jitter
+                    // spreads clients out during a correlated outage.
                     let backoff = BASE_BACKOFF_MS << attempt;
+                    let backoff = (backoff as f32 * rand::random_range(0.8f32..1.2f32)) as u64;
                     attempt += 1;
                     tokio::select! {
                         () = tokio::time::sleep(std::time::Duration::from_millis(backoff)) => {}
@@ -447,5 +454,10 @@ mod tests {
         assert!(!is_transient("HTTP 401 unauthorized"));
         assert!(!is_transient("no credentials for provider 'anthropic'"));
         assert!(!is_transient("HTTP 400 invalid request"));
+        // Quota/billing 429s are terminal, not transient.
+        assert!(!is_transient("HTTP 429: insufficient_quota"));
+        assert!(!is_transient(
+            "HTTP 429: monthly usage limit reached, billing required"
+        ));
     }
 }

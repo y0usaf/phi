@@ -12,11 +12,32 @@ pub(crate) fn fresh_transport_client() -> reqwest::Result<reqwest::Client> {
     reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(30))
         .pool_max_idle_per_host(0)
+        .http2_keep_alive_interval(Duration::from_secs(30))
+        .http2_keep_alive_timeout(Duration::from_secs(15))
         .build()
 }
 
 pub(crate) fn retryable_status(status: reqwest::StatusCode) -> bool {
     status.as_u16() == 408 || status.as_u16() == 429 || status.is_server_error()
+}
+
+/// A 429 that no amount of waiting will fix: exhausted quota/credits or a
+/// billing problem. Retrying these burns the full backoff schedule before
+/// surfacing an error the user must act on anyway, so fail fast instead.
+/// Public so the engine-level retry in phi-rlm applies the same rule.
+pub fn is_terminal_rate_limit(body: &str) -> bool {
+    let body = body.to_lowercase();
+    const TERMINAL_MARKERS: &[&str] = &[
+        "insufficient_quota",
+        "quota_exceeded",
+        "billing",
+        "monthly usage limit",
+        "usage limit reached",
+        "out of budget",
+        "credit balance",
+        "purchase credits",
+    ];
+    TERMINAL_MARKERS.iter().any(|m| body.contains(m))
 }
 
 /// Exponential backoff with +/-20% jitter to spread retries during correlated

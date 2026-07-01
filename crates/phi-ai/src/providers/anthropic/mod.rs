@@ -20,7 +20,7 @@ pub struct AnthropicProvider {
 impl AnthropicProvider {
     pub fn new() -> Self {
         Self {
-            client: http_client().expect("reqwest client must build"),
+            client: http_client(),
         }
     }
 }

@@ -6,6 +6,10 @@ use crate::types::{
 
 pub(super) const ANTHROPIC_VERSION: &str = "2023-06-01";
 pub(super) const OAUTH_BETA: &str = "claude-code-20250219,oauth-2025-04-20";
+/// Compliance shim the API requires as the first system block to honor OAuth
+/// tokens; without it every request is rejected with a 429 rate_limit_error.
+pub(super) const CLAUDE_CODE_IDENTITY: &str =
+    "You are Claude Code, Anthropic's official CLI for Claude.";
 pub(super) const CLAUDE_CLI_VERSION: &str = "2.0.14";
 pub(super) const INTERLEAVED_THINKING_BETA: &str = "interleaved-thinking-2025-05-14";
 
@@ -32,9 +36,10 @@ pub(super) fn build_body(model: &Model, ctx: &Context, opts: &StreamOptions) -> 
     });
 
     let mut system = Vec::new();
-    if is_oauth && let Some(identity) = &opts.identity {
-        // OAuth requests may require a carrier identity block as the
-        // first system block (e.g. the Claude Code compliance shim).
+    if is_oauth {
+        // OAuth requests require a carrier identity block as the first
+        // system block; `opts.identity` may override the default shim.
+        let identity = opts.identity.as_deref().unwrap_or(CLAUDE_CODE_IDENTITY);
         system.push(json!({ "type": "text", "text": identity }));
     }
     if let Some(prompt) = &ctx.system_prompt {
@@ -192,7 +197,7 @@ mod tests {
         ToolDefinition, ToolResultMessage, UserMessage,
     };
 
-    use super::{build_body, convert_messages};
+    use super::{CLAUDE_CODE_IDENTITY, build_body, convert_messages};
     use crate::types::{AssistantContent, AssistantMessage};
     use serde_json::json;
 
@@ -215,9 +220,6 @@ mod tests {
             adaptive_thinking: false,
         }
     }
-
-    /// Test-only identity string, mirroring the former hardcoded constant.
-    const CLAUDE_CODE_IDENTITY: &str = "You are Claude Code, Anthropic's official CLI for Claude.";
 
     /// The substantive RLM identity that `build_system_prompt` produces and that
     /// `ctx.system_prompt` carries in the real flow.
@@ -258,7 +260,8 @@ mod tests {
 
     /// Track 0: the OAuth path emits the compliance shim (uncached) followed by
     /// the cached RLM identity, in that order. The shim is a carrier required
-    /// to validate the token; the RLM identity is the substantive one.
+    /// to validate the token; the RLM identity is the substantive one. The
+    /// shim is applied by default — no `opts.identity` needed.
     #[test]
     fn oauth_path_emits_shim_then_cached_rlm_block() {
         let ctx = Context {
@@ -266,8 +269,7 @@ mod tests {
             messages: vec![],
             ..Default::default()
         };
-        let mut opts = StreamOptions::new(Auth::OAuthToken("token".to_owned()));
-        opts.identity = Some(CLAUDE_CODE_IDENTITY.to_owned());
+        let opts = StreamOptions::new(Auth::OAuthToken("token".to_owned()));
         let body = build_body(&model(), &ctx, &opts);
         let system = body["system"].as_array().expect("system array");
         assert_eq!(system.len(), 2, "oauth path: shim + cached RLM block");
@@ -292,19 +294,21 @@ mod tests {
         );
     }
 
-    /// OAuth path without an identity shim emits only the system prompt block.
+    /// A caller-supplied `opts.identity` overrides the default shim.
     #[test]
-    fn oauth_path_without_identity_emits_single_block() {
+    fn oauth_path_custom_identity_overrides_default_shim() {
         let ctx = Context {
             system_prompt: Some(RLM_IDENTITY.to_owned()),
             messages: vec![],
             ..Default::default()
         };
-        let opts = StreamOptions::new(Auth::OAuthToken("token".to_owned()));
+        let mut opts = StreamOptions::new(Auth::OAuthToken("token".to_owned()));
+        opts.identity = Some("custom identity".to_owned());
         let body = build_body(&model(), &ctx, &opts);
         let system = body["system"].as_array().expect("system array");
-        assert_eq!(system.len(), 1, "no identity => single system block");
-        assert_eq!(system[0]["text"].as_str(), Some(RLM_IDENTITY));
+        assert_eq!(system.len(), 2, "custom identity => shim + system prompt");
+        assert_eq!(system[0]["text"].as_str(), Some("custom identity"));
+        assert_eq!(system[1]["text"].as_str(), Some(RLM_IDENTITY));
     }
 
     /// `cache_control: false` suppresses all `cache_control` markers.

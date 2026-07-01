@@ -22,7 +22,7 @@ pub struct OpenAiCompletionsProvider {
 impl OpenAiCompletionsProvider {
     pub fn new() -> Self {
         Self {
-            client: http_client().expect("reqwest client must build"),
+            client: http_client(),
         }
     }
 }

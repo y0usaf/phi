@@ -1,24 +1,44 @@
 pub mod anthropic;
+pub mod cursor;
 pub mod openai_completions;
 pub mod openai_responses;
 mod retry;
 mod sse;
 
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use crate::stream::{AssistantEvent, EventSink};
 use crate::types::{Model, StopReason, StreamOptions};
 
+pub use retry::is_terminal_rate_limit;
 pub(crate) use retry::{
     fresh_transport_client, is_transient_transport_error, parse_retry_after, retry_delay,
     retryable_status,
 };
 pub(crate) use sse::{CappedSse, CappedSseError, MAX_SSE_EVENT_BYTES, SseHandler};
 
-pub(crate) fn http_client() -> reqwest::Result<reqwest::Client> {
-    reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(30))
-        .build()
+/// The one shared client: every provider clones this handle, so all
+/// requests share a single connection pool (clone is an Arc bump, not a
+/// new pool). HTTP/2 keepalive pings detect a silently-dead streaming
+/// connection instead of letting a turn hang until the request timeout;
+/// TCP keepalive covers the HTTP/1.1 fallback.
+pub(crate) fn http_client() -> reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .connect_timeout(Duration::from_secs(30))
+                .tcp_keepalive(Duration::from_secs(30))
+                .pool_idle_timeout(Duration::from_secs(90))
+                .pool_max_idle_per_host(8)
+                .http2_keep_alive_interval(Duration::from_secs(30))
+                .http2_keep_alive_timeout(Duration::from_secs(15))
+                .http2_keep_alive_while_idle(true)
+                .build()
+                .expect("shared reqwest client must build")
+        })
+        .clone()
 }
 
 /// Sends the request with retries; on success, forwards SSE events to the
@@ -75,7 +95,10 @@ pub(crate) async fn run_sse<H: SseHandler>(
                 } else {
                     format!("HTTP {}: {}", status.as_u16(), body)
                 };
-                if retryable_status(status) && attempt < opts.max_retries {
+                if retryable_status(status)
+                    && attempt < opts.max_retries
+                    && !is_terminal_rate_limit(&body)
+                {
                     tokio::time::sleep(retry_delay(attempt, retry_after)).await;
                     attempt += 1;
                     if retry_client.is_none()

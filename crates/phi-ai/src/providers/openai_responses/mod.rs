@@ -18,7 +18,7 @@ pub struct OpenAiResponsesProvider {
 impl OpenAiResponsesProvider {
     pub fn new() -> Self {
         Self {
-            client: http_client().expect("reqwest client must build"),
+            client: http_client(),
         }
     }
 }
