@@ -1,4 +1,43 @@
-def read_file(path, offset=0, limit=2000, raw=False):
+def read_file(path, offset=0, limit=2000, raw=False, fresh=False):
+    """Read a file and return its contents.
+
+    Identical calls on an unchanged file return a one-line stub instead of
+    re-emitting the full content, keeping REPL history bounded.  Pass
+    fresh=True to force a full re-read regardless of cache state.
+    """
+    abspath = _os.path.abspath(path)
+    cache_key = (abspath, offset, limit, raw)
+
+    # Check disk metadata to detect staleness.
+    try:
+        st = _os.stat(abspath)
+        mtime_ns = st.st_mtime_ns
+        size = st.st_size
+    except OSError:
+        mtime_ns = None
+        size = None
+
+    # Decide whether the cached entry (if any) is still valid.
+    cached = _read_file_cache.get(cache_key)
+    if (
+        not fresh
+        and cached is not None
+        and mtime_ns is not None
+        and cached[0] == mtime_ns
+        and cached[1] == size
+    ):
+        # Cache hit: return a short stub instead of re-emitting the full content.
+        # Count non-annotation lines from the cached result (body rows, not the
+        # [path#TAG] header or [truncated: ...] footer).
+        cached_result = cached[2]
+        n = sum(
+            1
+            for ln in cached_result.splitlines()
+            if ln and not ln.startswith("[")
+        )
+        return "[%s unchanged since last read (%d lines already shown). Pass fresh=True to re-emit, or slice from your own variables.]" % (path, n)
+
+    # Cache miss, stale, or fresh=True: read from disk.
     with open(path, errors="replace") as f:
         raw_text = f.read()
     _bom, full_text = _hashline_strip_bom(raw_text)
@@ -13,10 +52,30 @@ def read_file(path, offset=0, limit=2000, raw=False):
                 offset,
                 offset + len(chunk),
             )
-        return _prelude_truncate(text)
-    start_line = int(offset) + 1
-    seen_lines = range(start_line, min(len(lines), start_line + limit - 1) + 1)
-    return _hashline_format_view(path, full_text, start_line, limit, seen_lines=seen_lines)
+        result = _prelude_truncate(text)
+    else:
+        start_line = int(offset) + 1
+        seen_lines = range(start_line, min(len(lines), start_line + limit - 1) + 1)
+        result = _hashline_format_view(path, full_text, start_line, limit, seen_lines=seen_lines)
+
+    # Store in cache; evict oldest entry if at capacity.  Re-inserting an
+    # existing key moves it to the newest position (delete-then-insert).
+    if cache_key in _read_file_cache:
+        del _read_file_cache[cache_key]
+    if len(_read_file_cache) >= _READ_FILE_CACHE_LIMIT:
+        _read_file_cache.pop(next(iter(_read_file_cache)))
+    if mtime_ns is not None:
+        _read_file_cache[cache_key] = (mtime_ns, size, result)
+
+    return result
+
+
+# Cache keyed by (abspath, offset, limit, raw) → (mtime_ns, size, formatted_result).
+# Underscore prefix hides it from SHOW_VARS (_var_names filters names starting with '_').
+# Bounded to 64 entries; oldest insertion is evicted when full (dict preserves insertion
+# order in Python 3.7+, so next(iter(...)) yields the oldest key).
+_READ_FILE_CACHE_LIMIT = 64
+_read_file_cache = {}
 
 
 @_tool

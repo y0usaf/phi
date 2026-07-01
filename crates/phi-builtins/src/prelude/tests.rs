@@ -226,7 +226,7 @@ async fn hashline_helpers_roundtrip() {
     );
 
     let patch = format!(
-        r#"view = read_file({path:?})
+        r#"view = read_file({path:?}, fresh=True)
 header = view.splitlines()[0]
 patch = header + "\nSWAP 2.=2:\n+    return 'hello ' + name\n"
 print(edit_file(patch=patch))"#
@@ -770,5 +770,129 @@ print(edit_file(patch=patch))"#
         "should detect noop: {}",
         r.stdout
     );
+    repl.shutdown().await;
+}
+
+// ── read_file cache tests ─────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn read_file_cache_stub_on_unchanged_file() {
+    // Second read of an unchanged file should return the one-line stub instead
+    // of re-emitting the full content.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cached.txt");
+    let path = path.to_str().unwrap();
+    std::fs::write(path, "line one\nline two\nline three\n").unwrap();
+    let (mut repl, _events) = started().await;
+
+    // First read: should return full hashline-formatted content.
+    let r = repl
+        .exec(&format!("print(read_file({path:?}))"), EXEC_TIMEOUT)
+        .await
+        .unwrap();
+    assert!(
+        r.stdout.contains("1:line one"),
+        "first read should return full content: {}",
+        r.stdout
+    );
+
+    // Second read: file unchanged, should return the stub.
+    let r = repl
+        .exec(&format!("print(read_file({path:?}))"), EXEC_TIMEOUT)
+        .await
+        .unwrap();
+    assert!(
+        r.stdout.contains("unchanged since last read"),
+        "second read of unchanged file should return stub: {}",
+        r.stdout
+    );
+    assert!(
+        !r.stdout.contains("1:line one"),
+        "stub should not re-emit file content: {}",
+        r.stdout
+    );
+
+    repl.shutdown().await;
+}
+
+#[tokio::test]
+async fn read_file_cache_miss_after_file_modified() {
+    // After the file changes on disk the cache should detect staleness via
+    // mtime/size and return fresh content, not the stub.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("modified.txt");
+    let path = path.to_str().unwrap();
+    std::fs::write(path, "original content\n").unwrap();
+    let (mut repl, _events) = started().await;
+
+    // Prime the cache.
+    let r = repl
+        .exec(&format!("print(read_file({path:?}))"), EXEC_TIMEOUT)
+        .await
+        .unwrap();
+    assert!(
+        r.stdout.contains("1:original content"),
+        "first read: {}",
+        r.stdout
+    );
+
+    // Overwrite the file from outside the prelude so write_file does not
+    // update the cache (testing external-write detection via stat).
+    std::fs::write(path, "updated content\n").unwrap();
+
+    // Second read: mtime/size differ, so full content should be returned.
+    let r = repl
+        .exec(&format!("print(read_file({path:?}))"), EXEC_TIMEOUT)
+        .await
+        .unwrap();
+    assert!(
+        r.stdout.contains("1:updated content"),
+        "read after external write should return fresh content: {}",
+        r.stdout
+    );
+    assert!(
+        !r.stdout.contains("unchanged since last read"),
+        "should not return stub after file changed: {}",
+        r.stdout
+    );
+
+    repl.shutdown().await;
+}
+
+#[tokio::test]
+async fn read_file_cache_fresh_bypasses_stub() {
+    // fresh=True must force a full re-read even when the file is unchanged.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("forced.txt");
+    let path = path.to_str().unwrap();
+    std::fs::write(path, "alpha\nbeta\n").unwrap();
+    let (mut repl, _events) = started().await;
+
+    // Prime the cache.
+    let r = repl
+        .exec(&format!("print(read_file({path:?}))"), EXEC_TIMEOUT)
+        .await
+        .unwrap();
+    assert!(r.stdout.contains("1:alpha"), "first read: {}", r.stdout);
+
+    // Second read with fresh=True: should return full content, not the stub.
+    let r = repl
+        .exec(
+            &format!("print(read_file({path:?}, fresh=True))"),
+            EXEC_TIMEOUT,
+        )
+        .await
+        .unwrap();
+    assert!(
+        r.stdout.contains("1:alpha"),
+        "fresh=True should return full content: {}",
+        r.stdout
+    );
+    assert!(
+        !r.stdout.contains("unchanged since last read"),
+        "fresh=True must not return stub: {}",
+        r.stdout
+    );
+
     repl.shutdown().await;
 }
