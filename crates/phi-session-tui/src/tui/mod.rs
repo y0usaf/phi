@@ -275,8 +275,17 @@ pub async fn run(setup: TuiSetup, mut io: SessionIo) -> Result<()> {
     let (done_tx, mut done_rx) = mpsc::unbounded_channel::<Done>();
     let (login_tx, mut login_rx) = mpsc::unbounded_channel::<LoginMsg>();
 
+    // Extract the steer-queue Arc before the session moves into the spawned
+    // task. The TUI holds this clone and pushes to it while a run is in
+    // flight; the session's save-point closure drains it at each iteration
+    // boundary inside `run_loop`. No channel needed — the Arc<Mutex<_>> is
+    // the rendezvous.
+    let session = RlmSession::new(rlm, payload);
+    let steer_queue = session.steer_queue();
+
     let session_task = tokio::spawn(async move {
-        let mut session = RlmSession::new(rlm, payload);
+        // `mut` re-binding so the async block can call &mut self methods.
+        let mut session = session;
         while let Some(cmd) = cmd_rx.recv().await {
             match cmd {
                 Cmd::Prompt { text, cancel } => {
@@ -338,6 +347,9 @@ pub async fn run(setup: TuiSetup, mut io: SessionIo) -> Result<()> {
         io.host_modal_tx.take(),
         runtime,
     );
+    // Wire the session's steer queue into the UI so mid-run prompt
+    // submissions can push directly to the queue the save-point closure drains.
+    ui.steer_queue = steer_queue;
     // Always populate the visual context from the extension runtime —
     // the runtime has extensions (spinners, thinking expressions, text
     // effects) registered in both standalone and embedded modes.
@@ -632,6 +644,11 @@ struct Ui {
     /// Follow-up prompts queued while a turn is in flight; sent FIFO as
     /// turns complete.
     pub(super) queued: Vec<String>,
+    /// Shared steer queue: plain prompts submitted while a run is in flight
+    /// are pushed here so they reach `run_loop`'s save-point hook at the
+    /// next iteration boundary. The session task holds the other Arc clone
+    /// via its save-point closure; no channel is needed.
+    pub(super) steer_queue: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     /// How messages submitted mid-run get dispatched (queue/interleave/interrupt).
     /// Time of the last ctrl-c; a second one within 500ms quits.
     pub(super) last_ctrl_c: Option<std::time::Instant>,
@@ -726,7 +743,8 @@ struct Ui {
     pub(super) login_tx: mpsc::UnboundedSender<LoginMsg>,
     pub(super) host_modal_tx: Option<mpsc::UnboundedSender<HostModalRequest>>,
     pub(super) pending_host_modal: Option<PendingHostModal>,
-    /// Usage of the most recent completed run (footer stats).
+    /// Cumulative usage across the whole session (footer stats). Each
+    /// completed run's per-turn delta is added here.
     pub(super) usage: Usage,
     /// Cached git branch for the footer, refreshed on a short TTL.
     pub(super) branch: Option<String>,
@@ -774,6 +792,23 @@ impl Ui {
             .supported_models()
             .map(|m| format!("{}/{}", m.provider, m.id))
             .collect();
+        // Rebuild session usage totals from the persisted store so the
+        // footer resumes with the session's real cumulative usage instead
+        // of resetting to zero.
+        let usage = {
+            let totals = phi_session::usage::session_usage_totals(store.path());
+            Usage {
+                input: totals.input_tokens,
+                output: totals.output_tokens,
+                cache_read: totals.cache_read_tokens,
+                cache_write: totals.cache_creation_tokens,
+                total_tokens: totals.total_tokens(),
+                cost: phi_ai::Cost {
+                    total: totals.total_cost,
+                    ..Default::default()
+                },
+            }
+        };
         Self {
             term,
             editor: Editor::new(),
@@ -793,6 +828,7 @@ impl Ui {
             expand_thinking: false,
             tools,
             queued: Vec::new(),
+            steer_queue: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             last_ctrl_c: None,
             pending: Vec::new(),
             transcript: Transcript::new(),
@@ -832,7 +868,7 @@ impl Ui {
             login_tx,
             host_modal_tx,
             pending_host_modal: None,
-            usage: Usage::default(),
+            usage,
             branch: None,
             branch_at: std::time::Instant::now() - Duration::from_secs(60),
         }

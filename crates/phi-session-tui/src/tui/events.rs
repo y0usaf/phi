@@ -233,11 +233,11 @@ impl Ui {
         }
     }
 
-    /// Dispatch a message (prompt or shell escape) when the agent is
-    /// running.  Messages are always queued — they are sent FIFO once the
-    /// current turn completes.  To interrupt the run instead, the user
-    /// presses Tab on an empty editor.  When the agent is idle, sends
-    /// immediately via `send`.
+    /// Dispatch a shell escape or other non-plain input when the agent is
+    /// running. These are queued and sent FIFO once the current turn
+    /// completes. Plain chat prompts bypass this and steer directly via
+    /// `steer_mid_run`. To interrupt the run, the user presses Tab on an
+    /// empty editor. When the agent is idle, dispatches immediately via `send`.
     pub(super) fn dispatch_mid_run(
         &mut self,
         text: &str,
@@ -248,7 +248,23 @@ impl Ui {
             send(self, text, cmd_tx);
             return;
         }
+        // Shell escapes and other non-plain inputs queue as before; plain
+        // prompts are steered directly via `steer_mid_run` in `submit`.
         self.queued.push(text.to_owned());
+    }
+
+    /// Steer a plain user message into the in-flight run. Pushes to the
+    /// shared steer queue (drained by `run_loop`'s save-point hook at the
+    /// next iteration boundary) and renders the message immediately in the
+    /// chat view so the user sees their interjection without waiting for the
+    /// turn to finish.
+    pub(super) fn steer_mid_run(&mut self, text: &str) {
+        if let Ok(mut q) = self.steer_queue.lock() {
+            q.push(text.to_owned());
+        }
+        // Mirror the same visual treatment as a normal user message so the
+        // interjection is immediately visible in the transcript.
+        self.push_user_message(text);
     }
 
     pub(super) fn submit(&mut self, text: &str, cmd_tx: &mpsc::UnboundedSender<Cmd>) -> bool {
@@ -419,11 +435,15 @@ impl Ui {
                 }
             }
             prompt => {
-                // Plain prompts dispatch according to the send mode when the
-                // agent is running (slash commands above run immediately).
-                self.dispatch_mid_run(prompt, cmd_tx, |ui, text, tx| {
-                    ui.send_prompt(text, tx);
-                });
+                // When a run is in flight, plain prompts steer into the
+                // in-flight turn via the save-point queue rather than waiting
+                // until the turn completes. Shell escapes (handled above) and
+                // other special inputs keep their existing queued behaviour.
+                if self.running.is_some() {
+                    self.steer_mid_run(prompt);
+                } else {
+                    self.send_prompt(prompt, cmd_tx);
+                }
             }
         }
         false
@@ -1206,7 +1226,10 @@ impl Ui {
             _ => session::ExchangeStatus::Completed,
         };
         let _ = self.store.end_exchange(status);
-        self.usage = completion.usage;
+        // `completion.usage` is the per-turn delta (`complete_run_since`);
+        // accumulate it so the chrome shows session totals rather than
+        // silently replacing them with the last turn's numbers.
+        self.usage.add(&completion.usage);
         self.pending
             .push(TranscriptEntry::RawLines(vec![String::new()]));
         self.last_activity = false;
