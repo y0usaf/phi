@@ -138,6 +138,7 @@ impl PythonRepl {
                                 name,
                                 args,
                                 kwargs,
+                                preamble,
                             } => {
                                 let request = match kind.as_str() {
                                     "llm" => SubcallRequest::Llm {
@@ -147,6 +148,7 @@ impl PythonRepl {
                                     "rlm" => SubcallRequest::Rlm {
                                         prompt: prompt.unwrap_or_default(),
                                         model,
+                                        preamble,
                                     },
                                     "fn" => SubcallRequest::HostFn {
                                         name: name.unwrap_or_default(),
@@ -180,7 +182,10 @@ impl PythonRepl {
                                         Ok(SubcallResponse::Text(text)) => {
                                             json!({"type": "subcall_result", "id": id, "text": text})
                                         }
-                                        Ok(SubcallResponse::Value(value)) => {
+                                        // Json and Value both land in the "value" field so
+                                        // the Python side receives the dict/value verbatim.
+                                        Ok(SubcallResponse::Json(value))
+                                        | Ok(SubcallResponse::Value(value)) => {
                                             json!({"type": "subcall_result", "id": id, "value": value})
                                         }
                                         Err(error) => {

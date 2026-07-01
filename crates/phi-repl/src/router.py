@@ -212,27 +212,31 @@ class Env:
             return "Error: %s" % frame["error"]
         return frame.get("text", "")
 
-    def _subagent(self, prompt, model=None):
-        frame = _subcall({"kind": "rlm", "prompt": str(prompt), "model": model})
+    def _subagent(self, prompt, model=None, preamble=None):
+        payload = {"kind": "rlm", "prompt": str(prompt), "model": model}
+        if preamble is not None:
+            payload["preamble"] = str(preamble)
+        frame = _subcall(payload)
         if frame.get("error") is not None:
-            return "Error: %s" % frame["error"]
-        return frame.get("text", "")
+            return {"text": "Error: %s" % frame["error"], "stop": "failed", "iterations": 0, "ok": False}
+        # The host returns a dict via frame["value"]; return it verbatim.
+        return frame.get("value", frame.get("text", ""))
 
-    def _batched(self, fn, prompts, model):
+    def _batched(self, fn, prompts, model, **kwargs):
         prompts = list(prompts)
         if not prompts:
             return []
         if len(prompts) == 1:
-            return [fn(prompts[0], model)]
+            return [fn(prompts[0], model, **kwargs)]
         workers = min(self.max_concurrent, len(prompts))
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            return list(pool.map(lambda p: fn(p, model), prompts))
+            return list(pool.map(lambda p: fn(p, model, **kwargs), prompts))
 
     def _llm_query_batched(self, prompts, model=None):
         return self._batched(self._llm_query, prompts, model)
 
-    def _subagent_batched(self, prompts, model=None):
-        return self._batched(self._subagent, prompts, model)
+    def _subagent_batched(self, prompts, model=None, preamble=None):
+        return self._batched(self._subagent, prompts, model, preamble=preamble)
 
     def _restore_scaffold(self):
         """Undo model overwrites of scaffold names so the next cell still works."""

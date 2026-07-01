@@ -35,6 +35,10 @@ pub(crate) enum DriverFrame {
         args: Option<Value>,
         #[serde(default)]
         kwargs: Option<Value>,
+        /// Present on `kind = "rlm"` frames when the caller passed `preamble=`.
+        /// Forwarded to the child RLM as its `user_prologue`.
+        #[serde(default)]
+        preamble: Option<String>,
     },
     AnswerState {
         id: u64,

@@ -860,14 +860,15 @@ async fn timeout_checked_before_iteration() {
 async fn subagent_spawns_child_rlm() {
     // Parent and child share the same root model: responses pop in
     // call order — parent iter 1, child iters 1-2, parent iter 2.
+    // subagent() now returns a dict; REPL code accesses r['text'].
     let root = Arc::new(
         ScriptedLm::new(
             "root-model",
             &[
-                "Delegating.\n```repl\nr = subagent('child task')\nprint(r)\n```",
+                "Delegating.\n```repl\nr = subagent('child task')\nprint(r['text'])\n```",
                 "Probing.\n```repl\nprint(context)\n```",
                 "```repl\nanswer['content'] = 'child saw: ' + context\nanswer['ready'] = True\n```",
-                "```repl\nanswer['content'] = r\nanswer['ready'] = True\n```",
+                "```repl\nanswer['content'] = r['text']\nanswer['ready'] = True\n```",
             ],
         )
         .with_usage(Usage {
@@ -963,12 +964,14 @@ async fn llm_query_preview_is_single_line() {
 
 #[tokio::test]
 async fn subagent_preview_is_single_line() {
+    // subagent() returns a dict; the test only checks the preview event,
+    // so we access r['text'] to form the parent's final answer.
     let root = Arc::new(ScriptedLm::new(
         "root-model",
         &[
             "```repl\nr = subagent(\"\"\"first line\n\nsecond\tline\"\"\")\n```",
             "```repl\nanswer['content'] = 'child ok'\nanswer['ready'] = True\n```",
-            "```repl\nanswer['content'] = r\nanswer['ready'] = True\n```",
+            "```repl\nanswer['content'] = r['text']\nanswer['ready'] = True\n```",
         ],
     ));
     let config = RlmConfig {
@@ -1002,11 +1005,12 @@ async fn subagent_preview_is_single_line() {
 
 #[tokio::test]
 async fn subagent_model_override_roots_the_child() {
+    // subagent() returns a dict; extract text for the final answer.
     let root = Arc::new(ScriptedLm::new(
         "root-model",
         &[
             "```repl\nr = subagent('task', model='fast')\n```",
-            "```repl\nanswer['content'] = r\nanswer['ready'] = True\n```",
+            "```repl\nanswer['content'] = r['text']\nanswer['ready'] = True\n```",
         ],
     ));
     let fast = Arc::new(ScriptedLm::new(
@@ -1046,11 +1050,12 @@ async fn subagent_model_override_roots_the_child() {
 #[tokio::test]
 async fn subagent_at_max_rlm_depth_is_plain_completion() {
     // Default max_rlm_depth = 1: no child run, the sub model answers.
+    // subagent() returns a dict with stop='fallback'; extract r['text'].
     let root = Arc::new(ScriptedLm::new(
         "root-model",
         &[
             "```repl\nr = subagent('q')\n```",
-            "```repl\nanswer['content'] = r\nanswer['ready'] = True\n```",
+            "```repl\nanswer['content'] = r['text']\nanswer['ready'] = True\n```",
         ],
     ));
     let sub = Arc::new(ScriptedLm::new("sub-model", &[]).with_default("sub says deep"));
@@ -1350,4 +1355,219 @@ async fn cancel_returns_promptly_during_streaming() {
         result.stop,
         result.error,
     );
+}
+
+#[tokio::test]
+async fn subagent_returns_structured_dict_with_stop_and_ok() {
+    // Verify the dict contract: subagent() returns {'text', 'stop', 'iterations', 'ok'}.
+    // A child that answers normally has stop='answer' and ok=True.
+    // Responses are popped in call order: parent iter 1 fires the subagent,
+    // the child answers in 1 iteration, then parent iter 2 inspects the dict.
+    let root = Arc::new(ScriptedLm::new(
+        "root-model",
+        &[
+            // Parent iter 1: delegate.
+            "```repl\nr = subagent('what is 2+2?')\n```",
+            // Child iter 1 (runs inside subagent above).
+            "```repl\nanswer['content'] = 'four'\nanswer['ready'] = True\n```",
+            // Parent iter 2: inspect the dict fields.
+            "```repl\nanswer['content'] = '%s|%s|%s|%s' % (r['text'], r['stop'], r['iterations'], r['ok'])\nanswer['ready'] = True\n```",
+        ],
+    ));
+    let config = RlmConfig {
+        max_rlm_depth: 2,
+        ..RlmConfig::default()
+    };
+    let engine = rlm(config, root.clone(), quiet_sub());
+    let result = engine
+        .completion(
+            ContextPayload::Str("ctx".into()),
+            None,
+            &CancellationToken::new(),
+        )
+        .await;
+    assert_eq!(result.stop, StopCause::Answer, "{:?}", result.error);
+    // The answer encodes the dict fields: text|stop|iterations|ok.
+    let parts: Vec<&str> = result.response.split('|').collect();
+    assert_eq!(
+        parts.len(),
+        4,
+        "expected 4 pipe-separated fields: {}",
+        result.response
+    );
+    assert_eq!(parts[0], "four", "text should be the child's answer");
+    assert_eq!(
+        parts[1], "answer",
+        "stop should be 'answer' for a clean finish"
+    );
+    assert_eq!(parts[2], "1", "child answered in 1 iteration");
+    assert_eq!(parts[3], "True", "ok should be True for a clean answer");
+}
+
+#[tokio::test]
+async fn subagent_depth_cap_returns_fallback_stop() {
+    // At max_rlm_depth the engine degrades to a flat one-shot; the dict
+    // must carry stop='fallback' and ok=True (error-free flat completion).
+    let root = Arc::new(ScriptedLm::new(
+        "root-model",
+        &[
+            "```repl\nr = subagent('q')\n```",
+            "```repl\nanswer['content'] = r['stop'] + '|' + str(r['ok']) + '|' + str(r['iterations'])\nanswer['ready'] = True\n```",
+        ],
+    ));
+    let sub = Arc::new(ScriptedLm::new("sub-model", &[]).with_default("flat answer"));
+    let engine = rlm(RlmConfig::default(), root, sub);
+    // depth=0, max_rlm_depth=1 → next_depth=1 >= 1, triggers the fallback.
+    let result = engine
+        .completion(
+            ContextPayload::Str("ctx".into()),
+            None,
+            &CancellationToken::new(),
+        )
+        .await;
+    assert_eq!(result.stop, StopCause::Answer, "{:?}", result.error);
+    // stop='fallback', ok=True (no error), iterations=0 (flat call, no loop).
+    assert_eq!(result.response, "fallback|True|0");
+}
+
+#[tokio::test]
+async fn subagent_ok_false_on_turn_exhaustion() {
+    // A child that exhausts its turns returns stop='default_answer' and ok=False.
+    // This validates that the parent can detect incomplete work programmatically.
+    // Responses are popped in call order: parent iter 1 fires the subagent,
+    // the child runs to exhaustion (2 repl turns + nudge response), then
+    // the parent's iter 2 inspects the dict.
+    let root = Arc::new(ScriptedLm::new(
+        "root-model",
+        &[
+            // Parent iter 1: delegate.
+            "```repl\nr = subagent('hard task')\n```",
+            // Child iter 1 (child runs inside subagent above).
+            "thinking 1\n```repl\nprint('hi')\n```",
+            // Child iter 2.
+            "thinking 2\n```repl\nprint('hi')\n```",
+            // Child: synthesized answer after DEFAULT_ANSWER_NUDGE (no repl block).
+            "best guess after exhaustion",
+            // Parent iter 2: inspect the dict.
+            "```repl\nanswer['content'] = str(r['ok']) + '|' + r['stop']\nanswer['ready'] = True\n```",
+        ],
+    ));
+    let config = RlmConfig {
+        max_rlm_depth: 2,
+        max_iterations: 2,
+        ..RlmConfig::default()
+    };
+    let engine = rlm(config, root.clone(), quiet_sub());
+    let result = engine
+        .completion(
+            ContextPayload::Str("ctx".into()),
+            None,
+            &CancellationToken::new(),
+        )
+        .await;
+    assert_eq!(result.stop, StopCause::Answer, "{:?}", result.error);
+    // ok=False because the child stopped with DefaultAnswer (turn-starved).
+    assert_eq!(result.response, "False|default_answer");
+}
+
+#[tokio::test]
+async fn restore_session_recreates_context_variables() {
+    // After restore_session, context_N variables must exist for each
+    // restored exchange's prompt and the contexts counter must be advanced
+    // so the next live send doesn't overwrite an existing context slot.
+    // The model's response reads context_1 to verify it was restored.
+    let root = Arc::new(ScriptedLm::new(
+        "root-model",
+        &["```repl
+answer['content'] = context_1
+answer['ready'] = True
+```"],
+    ));
+    let engine = rlm(RlmConfig::default(), root.clone(), quiet_sub());
+    let mut session = RlmSession::new(engine, ContextPayload::Str("payload".into()));
+    let cancel = CancellationToken::new();
+
+    // Simulate a restored session with one completed exchange.
+    let exchanges = vec![RestoredExchange {
+        pre_shell: vec![],
+        prompt: "what is the answer".to_owned(),
+        repls: vec![RestoredRepl {
+            prose: String::new(),
+            code: "x = 1".to_owned(),
+            stdout: String::new(),
+            stderr: String::new(),
+            subcalls: vec![],
+        }],
+        response: "the answer is 42".to_owned(),
+    }];
+    session.restore_session(&exchanges, &[]).await.unwrap();
+
+    // After restore, contexts should be 2 (context_0 = payload, context_1 = restored prompt)
+    assert_eq!(session.contexts, 2, "contexts counter must advance past restored exchanges");
+
+    // The next live send should see context_1 (restored prompt) and
+    // create context_2 (the new prompt), not overwrite context_1.
+    let result = session.send("echo the context", &cancel).await;
+    assert_eq!(result.stop, StopCause::Answer);
+    assert_eq!(result.response, "what is the answer");
+
+    // Verify the prompt advertised 3 contexts (0=payload, 1=restored, 2=new)
+    let prompts = root.recorded_prompts();
+    let joined = prompts[0]
+        .iter()
+        .map(|m| m.content.clone())
+        .collect::<Vec<_>>()
+        .join("
+");
+    assert!(
+        joined.contains("3 contexts available"),
+        "should advertise 3 contexts after restore + new send, got: {joined}"
+    );
+
+    session.shutdown().await;
+}
+
+#[tokio::test]
+async fn restore_session_preserves_interrupted_exchange_variables() {
+    // An interrupted exchange (no assistant response) must still be
+    // restored so its REPL variables and history_N are available.
+    let root = Arc::new(ScriptedLm::new(
+        "root-model",
+        &["```repl
+answer['content'] = str(history_0[0]['content'])
+answer['ready'] = True
+```"],
+    ));
+    let engine = rlm(RlmConfig::default(), root, quiet_sub());
+    let mut session = RlmSession::new(engine, ContextPayload::Str("payload".into()));
+    let cancel = CancellationToken::new();
+
+    // One interrupted exchange: prompt + repl, but empty response.
+    let exchanges = vec![RestoredExchange {
+        pre_shell: vec![],
+        prompt: "do some work".to_owned(),
+        repls: vec![RestoredRepl {
+            prose: String::new(),
+            code: "result = 'work done'".to_owned(),
+            stdout: String::new(),
+            stderr: String::new(),
+            subcalls: vec![],
+        }],
+        response: String::new(),
+    }];
+    session.restore_session(&exchanges, &[]).await.unwrap();
+
+    // The exchange counter must have advanced despite no response.
+    assert_eq!(session.exchanges, 1, "interrupted exchange must still be restored as history_0");
+
+    // history_0 should exist and contain the user prompt as the first message.
+    let result = session.send("check history", &cancel).await;
+    assert_eq!(result.stop, StopCause::Answer);
+    assert!(
+        result.response.contains("do some work"),
+        "history_0 should contain the interrupted exchange's prompt, got: {}",
+        result.response
+    );
+
+    session.shutdown().await;
 }

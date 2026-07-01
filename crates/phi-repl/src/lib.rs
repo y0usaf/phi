@@ -87,6 +87,9 @@ pub enum SubcallRequest {
     Rlm {
         prompt: String,
         model: Option<String>,
+        /// Optional task brief passed from the caller. Forwarded to the child
+        /// as `user_prologue` so it starts with parent context rather than blank.
+        preamble: Option<String>,
     },
     /// Host-registered REPL function call.
     HostFn {
@@ -103,8 +106,10 @@ pub enum SubcallRequest {
 
 #[derive(Clone, Debug)]
 pub enum SubcallResponse {
-    /// For Llm/Rlm: the response text.
+    /// For `llm_query`: the plain response text.
     Text(String),
+    /// For `subagent`: a structured result dict, returned verbatim to the REPL.
+    Json(Value),
     /// For HostFn: a JSON value returned to the REPL.
     Value(Value),
 }
