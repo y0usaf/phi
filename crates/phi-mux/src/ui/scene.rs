@@ -4,8 +4,7 @@
 use super::palette::ScenePalette;
 use super::screen_snapshot::ScreenSnapshot;
 use super::sidebar::{
-    SIDEBAR_ANIMATION_FRAME_MS, SidebarRow, SidebarRowKind, SidebarStatusKind, SidebarViewportItem,
-    sidebar_status_glyph,
+    SidebarRow, SidebarRowKind, SidebarStatusKind, SidebarViewportItem, sidebar_status_glyph,
 };
 use super::statusbar::render_statusbar;
 use super::terminal_scene::render_terminal;
@@ -324,6 +323,13 @@ fn render_sidebar_scrollbar(
     }
 }
 
+/// Render text with a per-character left-to-right colour gradient and,
+/// when `status` is `Active`, a triangle-wave shimmer overlay.
+///
+/// The shimmer uses [`phi_tui::shimmer_triangle_intensity`] and
+/// [`phi_tui::shimmer_triangle_blend`] — the same shared parameters as the
+/// statusbar shimmer and the thinking-equalizer gradient, so all three
+/// surfaces conform to one intensity and blend strength.
 #[allow(clippy::too_many_arguments)]
 fn render_sidebar_gradient_text(
     surface: &mut CellSurface,
@@ -358,10 +364,10 @@ fn render_sidebar_gradient_text(
         let mut fg = theme::fade_toward(from, to, mix);
         if let Some(SidebarStatusKind::Active) = status {
             let slot = phase_slot + (cursor - rect.col).max(0) as usize;
-            let phase = ((now_ms / SIDEBAR_ANIMATION_FRAME_MS) as usize + slot) % 24;
-            let intensity = if phase < 12 { phase } else { 24 - phase };
+            let intensity = phi_tui::shimmer_triangle_intensity(now_ms, slot);
+            let blend = phi_tui::shimmer_triangle_blend(intensity);
             let status_color = sidebar_status_color_for_palette(status.unwrap(), palette);
-            fg = theme::fade_toward(fg, status_color, (intensity * 21).min(255) as u8);
+            fg = theme::fade_toward(fg, status_color, blend);
         }
         let mut buf = [0; 4];
         surface.put_cell_span_styled(
@@ -587,9 +593,11 @@ fn animated_sidebar_status_color(
     match status {
         SidebarStatusKind::Interrupted | SidebarStatusKind::Notification => base,
         SidebarStatusKind::Active => {
-            let phase = ((now_ms / SIDEBAR_ANIMATION_FRAME_MS) as usize + slot) % 24;
-            let intensity = if phase < 12 { phase } else { 24 - phase };
-            theme::fade_toward(base, palette.accent_2, (intensity * 10).min(180) as u8)
+            // Use the shared triangle-wave intensity, but a gentler blend
+            // (intensity * 10, max 120/255 ≈ 47 %) since this modulates a
+            // status glyph colour, not a gradient text shimmer.
+            let intensity = phi_tui::shimmer_triangle_intensity(now_ms, slot);
+            theme::fade_toward(base, palette.accent_2, (intensity * 10).min(180))
         }
     }
 }

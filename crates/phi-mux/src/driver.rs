@@ -92,6 +92,7 @@ pub async fn spawn(
     size: (u16, u16),
     shared: &SharedResources,
     channels: &MuxChannels,
+    terminal_colors: phi_tui::TerminalColors,
 ) -> Result<SessionHandle> {
     let mut setup = session_builder::build_session(cwd, shared, resume).await?;
 
@@ -147,6 +148,7 @@ pub async fn spawn(
         suspend_tx: Some(sess_suspend_tx),
         host_modal_tx: Some(sess_host_modal_tx),
         cwd: cwd.to_path_buf(),
+        terminal_colors: Some(terminal_colors),
     };
     // Run the session under its own unwind boundary so one panicking
     // session marks itself crashed instead of taking the mux down.

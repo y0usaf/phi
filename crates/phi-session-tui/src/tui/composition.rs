@@ -44,12 +44,40 @@ impl Ui {
         {
             self.transcript_cache.clear();
             let entries: Vec<TranscriptEntry> = self.transcript_entries.clone();
-            for (i, entry) in entries.iter().enumerate() {
-                let lines = self.render_entry(entry);
-                if lines.is_empty() {
-                    continue;
+            // When tool_summary is enabled, collect tools across consecutive
+            // ReplBlock entries and render a single consolidated summary card
+            // after the run, instead of per-block summaries.
+            let mut i = 0;
+            while i < entries.len() {
+                if self.tools.tool_summary && matches!(entries[i], TranscriptEntry::ReplBlock(..)) {
+                    // Count consecutive ReplBlock entries and collect their tools.
+                    let mut all_tools: Vec<session::ToolCall> = Vec::new();
+                    let mut repl_count: usize = 0;
+                    let run_start = i;
+                    while i < entries.len() && matches!(entries[i], TranscriptEntry::ReplBlock(..))
+                    {
+                        if let TranscriptEntry::ReplBlock(ref data) = entries[i] {
+                            all_tools.extend(data.tools.iter().cloned());
+                        }
+                        repl_count += 1;
+                        i += 1;
+                    }
+                    // Render the consolidated summary card for the run.
+                    let saved = self.block_active;
+                    self.block_active = false;
+                    let summary_lines = self.tool_summary_rows(&all_tools, repl_count);
+                    self.block_active = saved;
+                    if !summary_lines.is_empty() {
+                        self.transcript_cache
+                            .push((format!("tx:summary:{run_start}"), summary_lines));
+                    }
+                } else {
+                    let lines = self.render_entry(&entries[i]);
+                    if !lines.is_empty() {
+                        self.transcript_cache.push((format!("tx:{i}"), lines));
+                    }
+                    i += 1;
                 }
-                self.transcript_cache.push((format!("tx:{i}"), lines));
             }
             self.transcript_cache_width = cur_width;
             self.transcript_cache_expanded = cur_expanded;
@@ -119,6 +147,13 @@ impl Ui {
     }
 
     pub(super) fn render_repl_block_from_data(&self, data: &ReplBlockData) -> Vec<String> {
+        // When tool_summary is enabled, individual REPL blocks are suppressed;
+        // a single consolidated summary card (with repl count + tool tallies)
+        // is rendered after the run of consecutive blocks (see render loop in
+        // draw()).
+        if self.tools.tool_summary {
+            return Vec::new();
+        }
         let mut body = Vec::new();
         // Header (same as begin_block)
         body.push(format!("{}repl{}", &self.palette.tool_title_fg, RESET));

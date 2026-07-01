@@ -72,23 +72,10 @@ pub fn equalizer_glyphs(elapsed_ms: u64) -> String {
     out
 }
 
-/// Linearly interpolate between two RGB colors.
-///
-/// Port of phi-mux's `theme::fade_toward`: blends `from` toward `to` by
-/// `mix`/255 on each channel.
-fn fade_rgb(from: crate::palette::Rgb, to: crate::palette::Rgb, mix: u8) -> crate::palette::Rgb {
-    let blend = |a: u8, b: u8| -> u8 {
-        let a = u16::from(a);
-        let b = u16::from(b);
-        let mix = u16::from(mix);
-        (((a * (255 - mix)) + (b * mix)) / 255) as u8
-    };
-    crate::palette::Rgb(
-        blend(from.0, to.0),
-        blend(from.1, to.1),
-        blend(from.2, to.2),
-    )
-}
+// Color blending is now unified through `crate::fade_toward` (from
+// `theme.rs`), which is the single source of truth for RGB interpolation
+// across all of phi.  Previously this module had a private `fade_rgb` that
+// was mathematically identical; it has been removed to avoid duplication.
 
 /// Apply a per-character left-to-right RGB gradient to `text`.
 ///
@@ -104,29 +91,89 @@ pub fn gradient_text(text: &str, from: crate::palette::Rgb, to: crate::palette::
     let mut out = String::with_capacity(chars.len() * 16);
     for (i, ch) in chars.iter().enumerate() {
         let mix = ((i as u16 * 255) / denom).min(255) as u8;
-        let crate::palette::Rgb(r, g, b) = fade_rgb(from, to, mix);
+        let crate::palette::Rgb(r, g, b) = crate::fade_toward(from, to, mix);
         out.push_str(&format!("\x1b[38;2;{r};{g};{b}m{ch}"));
     }
     out.push_str("\x1b[0m");
     out
 }
 
-/// Animation frame duration (ms) for the thinking-gradient shimmer.
+// ── Shared shimmer constants ─────────────────────────────────────────
+//
+// These are the **single source of truth** for all shimmer/gradient
+// animation parameters across phi.  Every consumer — the mux compositor
+// (sidebar gradient, statusbar shimmer), the session-TUI (chrome bar,
+// tool status shimmer, thinking-equalizer gradient), and the
+// extension-registered text effects — must reference these constants
+// rather than hardcoding its own copy.
+
+/// Animation frame duration (ms) for all triangle-wave shimmer effects.
 ///
-/// Matches phi-mux's `SIDEBAR_ANIMATION_FRAME_MS`: each step of the
-/// 24-step triangle wave advances every 40 ms, so a full sweep cycle
-/// takes 24 * 40 = 960 ms.
-pub const THINKING_ANIMATION_FRAME_MS: u64 = 40;
+/// Each step of the triangle wave advances every 40 ms.  Combined with
+/// [`SHIMMER_TRIANGLE_STEPS`] (24 steps), a full sweep cycle takes
+/// 24 × 40 = 960 ms.
+///
+/// This replaces the former `SIDEBAR_ANIMATION_FRAME_MS` in phi-mux and
+/// the separate `THINKING_ANIMATION_FRAME_MS` that existed here — they
+/// were the same value (40 ms) defined in two places.
+pub const SHIMMER_FRAME_MS: u64 = 40;
+
+/// Number of steps in the triangle wave.  The wave rises for `STEPS / 2`
+/// steps (0 → 12) then falls for `STEPS / 2` steps (12 → 0), producing
+/// a symmetric sweep.  A full cycle is `SHIMMER_FRAME_MS × STEPS` = 960 ms.
+pub const SHIMMER_TRIANGLE_STEPS: usize = 24;
+
+/// Multiplier applied to the triangle-wave intensity (0..12) to produce
+/// the blend amount (0..252).  At the peak (intensity = 12), the blend is
+/// 12 × 21 = 252/255 ≈ 99 % — the character's colour is almost fully
+/// replaced by the shimmer accent.  This value is shared by the mux
+/// sidebar gradient, the mux statusbar shimmer, and the thinking-equalizer
+/// gradient so all three peak at the same intensity.
+pub const SHIMMER_TRIANGLE_BLEND: u8 = 21;
+
+/// Compute the triangle-wave shimmer intensity for a given frame + slot.
+///
+/// Returns a value in `0..(STEPS/2)` (i.e. 0..12).  At `phase = 0` the
+/// intensity is 0 (no shimmer); at `phase = STEPS/2` it peaks at 12.
+/// This is the single function every triangle-wave consumer should call
+/// instead of inlining the `if phase < 12 { phase } else { 24 - phase }`
+/// formula.
+#[inline]
+pub fn shimmer_triangle_intensity(elapsed_ms: u64, slot: usize) -> u8 {
+    let frame = (elapsed_ms / SHIMMER_FRAME_MS) as usize;
+    let phase = (frame + slot) % SHIMMER_TRIANGLE_STEPS;
+    let half = SHIMMER_TRIANGLE_STEPS / 2;
+    if phase < half {
+        phase as u8
+    } else {
+        (SHIMMER_TRIANGLE_STEPS - phase) as u8
+    }
+}
+
+/// Compute the blend amount (0..252) from the triangle-wave intensity.
+///
+/// Convenience: `intensity * SHIMMER_TRIANGLE_BLEND`, clamped to 255.
+#[inline]
+pub fn shimmer_triangle_blend(intensity: u8) -> u8 {
+    (intensity.saturating_mul(SHIMMER_TRIANGLE_BLEND)).min(255)
+}
+
+/// Backward-compat alias for `SHIMMER_FRAME_MS`.
+pub const THINKING_ANIMATION_FRAME_MS: u64 = SHIMMER_FRAME_MS;
 
 /// Apply a per-character left-to-right RGB gradient with a time-driven,
-/// position-shifted shimmer overlay, mirroring phi-mux's
-/// `render_sidebar_gradient_text` for the `Active` sidebar status.
+/// position-shifted shimmer overlay.
+///
+/// This and phi-mux's `render_sidebar_gradient_text` both use the shared
+/// [`shimmer_triangle_intensity`] / [`shimmer_triangle_blend`] functions,
+/// so they produce the same shimmer strength.
 ///
 /// For each character:
 /// 1. Compute the base left->right blend (`from` -> `to`) by character index.
-/// 2. Compute a triangle-wave phase = `((elapsed_ms / FRAME_MS) + i) % 24`.
-/// 3. Intensity = `if phase < 12 { phase } else { 24 - phase }` (0..12).
-/// 4. Blend the base color toward `shimmer` by `intensity * 21` (max 252).
+/// 2. Compute the triangle-wave intensity via
+///    [`shimmer_triangle_intensity`] (shared with the mux sidebar/statusbar).
+/// 3. Blend the base color toward `shimmer` by
+///    [`shimmer_triangle_blend`] (shared).
 ///
 /// Because the phase incorporates both `elapsed_ms` (time) and `i`
 /// (position), the wave appears to sweep left-to-right across the text and
@@ -144,14 +191,13 @@ pub fn gradient_text_animated(
         return String::new();
     }
     let denom = (chars.len() - 1).max(1) as u16;
-    let frame = (elapsed_ms / THINKING_ANIMATION_FRAME_MS) as usize;
     let mut out = String::with_capacity(chars.len() * 16);
     for (i, ch) in chars.iter().enumerate() {
         let mix = ((i as u16 * 255) / denom).min(255) as u8;
-        let base = fade_rgb(from, to, mix);
-        let phase = (frame + i) % 24;
-        let intensity = if phase < 12 { phase } else { 24 - phase };
-        let crate::palette::Rgb(r, g, b) = fade_rgb(base, shimmer, (intensity * 21).min(255) as u8);
+        let base = crate::fade_toward(from, to, mix);
+        let intensity = shimmer_triangle_intensity(elapsed_ms, i);
+        let blend = shimmer_triangle_blend(intensity);
+        let crate::palette::Rgb(r, g, b) = crate::fade_toward(base, shimmer, blend);
         out.push_str(&format!("\x1b[38;2;{r};{g};{b}m{ch}"));
     }
     out.push_str("\x1b[0m");
@@ -171,18 +217,18 @@ pub const SHIMMER_CYCLE_MS: u64 = 2000;
 /// A wider window (e.g. 0.25 = 25%) keeps the shimmer visible on short
 /// tool names like "read" (4 chars), while on longer text the window scales
 /// up proportionally.
-const SHIMMER_WINDOW_FRAC: f64 = 0.25;
+pub const SHIMMER_WINDOW_FRAC: f64 = 0.25;
 
 /// Minimum shimmer window width in columns, so very short text still shows
 /// a visible highlight.
-const SHIMMER_MIN_WINDOW: usize = 3;
+pub const SHIMMER_MIN_WINDOW: usize = 3;
 
 /// Blend strength toward the shimmer color at the glimmer peak (0..255).
 /// A high value (200) makes the shimmer clearly visible even on light/white
 /// text — instead of a hard color replacement (which flashes jarringly), we
 /// interpolate the base fg toward the shimmer color by this amount, matching
 /// claude-code's `interpolateColor` approach in its "tool-use" shimmer mode.
-const SHIMMER_BLEND_PEAK: u8 = 200;
+pub const SHIMMER_BLEND_PEAK: u8 = 200;
 
 /// Check if an SGR escape sequence is a text attribute (bold, italic,
 /// underline, etc.) rather than a color code. Used by `shimmer_ansi` to
@@ -362,7 +408,7 @@ pub fn shimmer_ansi(text: &str, shimmer: crate::palette::Rgb, elapsed_ms: u64) -
 
             // Parse the current fg color from the SGR state so we can blend it.
             let base_fg = parse_sgr_fg(&sgr_state).unwrap_or(crate::palette::Rgb(170, 170, 170));
-            let blended = fade_rgb(base_fg, shimmer, blend);
+            let blended = crate::fade_toward(base_fg, shimmer, blend);
             let blended_rgb = format!("[38;2;{};{};{}m", blended.0, blended.1, blended.2);
 
             // Emit blended color plus preserved text attributes.
@@ -521,6 +567,87 @@ mod tests {
                 "unexpected char: {c}"
             );
         }
+    }
+
+    #[test]
+    fn shimmer_constants_are_consistent() {
+        // The shared constants must match the values that were previously
+        // hardcoded in phi-mux (SIDEBAR_ANIMATION_FRAME_MS = 40, % 24, * 21).
+        assert_eq!(SHIMMER_FRAME_MS, 40);
+        assert_eq!(SHIMMER_TRIANGLE_STEPS, 24);
+        assert_eq!(SHIMMER_TRIANGLE_BLEND, 21);
+        // Full cycle = 24 * 40 = 960 ms.
+        assert_eq!(SHIMMER_FRAME_MS * SHIMMER_TRIANGLE_STEPS as u64, 960);
+        // THINKING_ANIMATION_FRAME_MS is now an alias for SHIMMER_FRAME_MS.
+        assert_eq!(THINKING_ANIMATION_FRAME_MS, SHIMMER_FRAME_MS);
+    }
+
+    #[test]
+    fn shimmer_triangle_intensity_matches_old_inline_math() {
+        // Verify that shimmer_triangle_intensity produces the same values as
+        // the old inline formula: phase = (frame + slot) % 24, intensity =
+        // if phase < 12 { phase } else { 24 - phase }.
+        for now_ms in (0..2000).step_by(40) {
+            for slot in 0..30 {
+                let frame = (now_ms / SHIMMER_FRAME_MS) as usize;
+                let phase = (frame + slot) % SHIMMER_TRIANGLE_STEPS;
+                let expected = if phase < 12 {
+                    phase as u8
+                } else {
+                    (24 - phase) as u8
+                };
+                assert_eq!(
+                    shimmer_triangle_intensity(now_ms, slot),
+                    expected,
+                    "mismatch at now_ms={now_ms}, slot={slot}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn shimmer_triangle_blend_clamps() {
+        // Peak intensity = 12, blend = 12 * 21 = 252.
+        assert_eq!(shimmer_triangle_blend(12), 252);
+        // Zero intensity → zero blend.
+        assert_eq!(shimmer_triangle_blend(0), 0);
+        // Never exceeds 255.
+        assert!(shimmer_triangle_blend(255) <= 255);
+    }
+
+    #[test]
+    fn shimmer_triangle_intensity_cycles() {
+        // One full cycle later → same intensity.
+        let cycle = SHIMMER_FRAME_MS * SHIMMER_TRIANGLE_STEPS as u64;
+        for slot in 0..24 {
+            assert_eq!(
+                shimmer_triangle_intensity(300, slot),
+                shimmer_triangle_intensity(300 + cycle, slot),
+                "not periodic at slot={slot}"
+            );
+        }
+    }
+
+    #[test]
+    fn gradient_text_animated_uses_shared_blend() {
+        // The animated gradient should blend at most SHIMMER_TRIANGLE_BLEND
+        // * (STEPS/2) = 252/255 toward the shimmer color. Verify that at the
+        // peak the output differs from the base gradient but is not a hard
+        // replacement (i.e. it's a blend, not shimmer == base).
+        let from = crate::palette::Rgb(0, 0, 0);
+        let to = crate::palette::Rgb(0, 0, 0);
+        let shimmer = crate::palette::Rgb(255, 255, 255);
+        // Use enough chars that some char index falls on a peak slot.
+        let text = "abcdefghijklmnop"; // 16 chars, indices 0..15
+        // Find a timestamp where some char gets intensity 12.
+        for ms in (0..960).step_by(40) {
+            let result = gradient_text_animated(text, from, to, shimmer, ms);
+            if result.contains("38;2;252;252;252m") {
+                // Peak blend (12 * 21 = 252) found.
+                return;
+            }
+        }
+        panic!("never found a peak blend (252) in the gradient output");
     }
 
     #[test]

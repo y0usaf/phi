@@ -678,7 +678,11 @@ impl Ui {
             self.begin_block();
             self.live_code = Some(code.clone());
         }
-        self.push_repl_block(depth, &code, self.code_limit());
+        // When tool_summary is enabled, suppress live repl block rendering;
+        // a consolidated summary card is rendered after all repls complete.
+        if !self.tools.tool_summary {
+            self.push_repl_block(depth, &code, self.code_limit());
+        }
     }
 
     fn handle_code_exec_end(
@@ -807,15 +811,23 @@ impl Ui {
         } else {
             tool_preview_lang(&name, &args)
         };
-        let rows = self.tool_result_rows(
-            depth + 1,
-            &name,
-            &args,
-            output,
-            self.output_limit(),
-            lang,
-            error.is_some(),
-        );
+        let rows = if self.tools.tool_summary {
+            // When tool_summary is enabled, suppress individual tool cards
+            // during live execution — just clear the spinner. Tools are
+            // accumulated in live_tools and rendered as a consolidated
+            // summary after the repl block completes.
+            Vec::new()
+        } else {
+            self.tool_result_rows(
+                depth + 1,
+                &name,
+                &args,
+                output,
+                self.output_limit(),
+                lang,
+                error.is_some(),
+            )
+        };
         if let Some(row) = self.open_tool_rows.remove(&key) {
             self.replace_block_rows(row.start, row.len, rows);
             self.last_activity = true;

@@ -293,7 +293,15 @@ impl MuxApp {
         let shared = &self.shared;
         let channels = &self.channels;
         let futures = specs.iter().map(|(key, cwd, resume)| {
-            driver::spawn(*key, cwd, resume.as_deref(), pane, shared, channels)
+            driver::spawn(
+                *key,
+                cwd,
+                resume.as_deref(),
+                pane,
+                shared,
+                channels,
+                self.terminal_colors.clone(),
+            )
         });
         let results = futures::future::join_all(futures).await;
 
@@ -348,6 +356,7 @@ impl MuxApp {
             pane,
             &self.shared,
             &self.channels,
+            self.terminal_colors.clone(),
         )
         .await;
         let Some(project) = self.workspace.projects.get_mut(project_index) else {

@@ -7,7 +7,11 @@ use crate::grid::theme::{HEADING, MUTED, TEXT};
 use crate::status::SessionStatus;
 use crate::workspace::{MuxProject, MuxSession};
 
-pub const SIDEBAR_ANIMATION_FRAME_MS: u64 = 40;
+/// Re-export the shared shimmer frame duration from `phi-tui` so the
+/// mux sidebar, statusbar, and scene all reference the same constant.
+/// Previously this was a separate `const SIDEBAR_ANIMATION_FRAME_MS = 40`
+/// that had to be kept in sync manually with `phi-tui`'s copy.
+pub use phi_tui::SHIMMER_FRAME_MS as SIDEBAR_ANIMATION_FRAME_MS;
 pub use phi_tui::{
     SPINNER_FRAME_MS as SIDEBAR_SPINNER_FRAME_MS, SPINNER_FRAMES as SIDEBAR_SPINNER_FRAMES,
 };

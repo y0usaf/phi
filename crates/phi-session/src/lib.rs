@@ -10,5 +10,6 @@ pub mod files;
 pub mod prompts;
 pub mod session;
 pub mod skills;
+pub mod tool_summary;
 pub mod transcript;
 pub mod usage;

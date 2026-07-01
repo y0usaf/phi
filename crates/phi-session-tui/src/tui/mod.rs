@@ -21,7 +21,7 @@ use phi_rlm::{
 use phi_tui::crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers};
 use phi_tui::{
     Editor, EditorAction, LiveCursor, RawModeGuard, Selector, SelectorItem, SelectorOutcome,
-    Terminal, detect_terminal_colors, equalizer_glyphs, fill_bg, fuzzy_filter,
+    Terminal, TerminalColors, detect_terminal_colors, equalizer_glyphs, fill_bg, fuzzy_filter,
     gradient_text_animated, highlight_code, highlight_diff_line, highlight_output, render_markdown,
     shimmer_ansi, strip_ansi, visible_width, wrap_ansi, wrap_ansi_locate,
 };
@@ -163,6 +163,12 @@ pub struct SessionIo {
     pub suspend_tx: Option<mpsc::UnboundedSender<SuspendRequest>>,
     pub host_modal_tx: Option<mpsc::UnboundedSender<HostModalRequest>>,
     pub cwd: PathBuf,
+    /// Terminal colors probed by the host (OSC 10/11/4). When `Some`, the
+    /// session TUI derives its palette from these instead of probing the
+    /// terminal itself — the mux already owns the raw terminal and has
+    /// already probed, so the embedded session reuses that result. When
+    /// `None` (standalone mode), the session probes its own terminal.
+    pub terminal_colors: Option<TerminalColors>,
 }
 
 impl SessionIo {
@@ -175,6 +181,7 @@ impl SessionIo {
             suspend_tx: None,
             host_modal_tx: None,
             cwd,
+            terminal_colors: None,
         }
     }
 }
@@ -291,14 +298,26 @@ pub async fn run(setup: TuiSetup, mut io: SessionIo) -> Result<()> {
         io.host_modal_tx.take(),
         runtime,
     );
-    // Probe the host terminal's colors (OSC 10/11/4) once, inside raw mode,
-    // and derive the inline TUI palette from them. Falls back to the built-in
-    // hardcoded palette when the terminal doesn't answer in time.
-    if !io.embedded
-        && let Some(colors) = detect_terminal_colors(Duration::from_millis(150))
-    {
+    // Always populate the visual context from the extension runtime —
+    // the runtime has extensions (spinners, thinking expressions, text
+    // effects) registered in both standalone and embedded modes.
+    ui.visual = VisualContext::from_runtime(Some(&ui.runtime));
+
+    // Derive the inline TUI palette from the terminal's colors so the
+    // session content matches the mux chrome. In embedded mode the mux has
+    // already probed the terminal (it owns the raw tty), so we reuse its
+    // result via `io.terminal_colors` instead of probing again. In
+    // standalone mode we probe here. Falls back to the built-in hardcoded
+    // palette when no colors are available.
+    let colors = if let Some(tc) = io.terminal_colors.take() {
+        Some(tc)
+    } else if !io.embedded {
+        detect_terminal_colors(Duration::from_millis(150))
+    } else {
+        None
+    };
+    if let Some(colors) = colors {
         ui.palette = InlinePalette::from_terminal_colors(&colors);
-        ui.visual = VisualContext::from_runtime(Some(&ui.runtime));
     }
     // Resume when the session has any message entries, regardless of the
     // leaf pointer. A session navigated to root (leaf None) still has
@@ -808,6 +827,7 @@ mod tests {
                     repl_padding: 1,
                     user_padding: 1,
                     gap: 1,
+                    tool_summary: false,
                 },
                 storage,
                 registry,

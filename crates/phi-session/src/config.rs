@@ -83,7 +83,7 @@ shared_fields_struct! {
 /// how many code lines to show per REPL block, how much padding around tool
 /// cards / REPL blocks / user messages, and how much gap between tool blocks.
 /// Configured in config.lua as
-/// `tools = { tool_max_lines = 0, repl_max_lines = 0, tool_padding = 0, repl_padding = 0, user_padding = 0, gap = 0 }`.
+/// `tools = { tool_max_lines = 0, repl_max_lines = 0, tool_padding = 0, repl_padding = 0, user_padding = 0, gap = 0, tool_summary = false }`.
 #[derive(Debug, Default, Clone, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct ToolsConfig {
@@ -99,6 +99,9 @@ pub struct ToolsConfig {
     pub user_padding: Option<usize>,
     /// Gap between tool blocks (0-1). 0 = no blank line. Default: 1.
     pub gap: Option<usize>,
+    /// Consolidate tool uses within a REPL block into a summary card
+    /// (counts by category with ✓/✗ glyphs) instead of individual tool cards.
+    pub tool_summary: Option<bool>,
 }
 
 /// Resolved tool display settings (after applying defaults).
@@ -110,6 +113,7 @@ pub struct ToolsSettings {
     pub repl_padding: usize,
     pub user_padding: usize,
     pub gap: usize,
+    pub tool_summary: bool,
 }
 
 /// Settings for mux mode (the in-process session multiplexer).
@@ -216,6 +220,9 @@ impl Config {
             if other_tools.gap.is_some() {
                 tools.gap = other_tools.gap;
             }
+            if other_tools.tool_summary.is_some() {
+                tools.tool_summary = other_tools.tool_summary;
+            }
         }
     }
 }
@@ -243,6 +250,7 @@ shared_fields_struct! {
         pub tools_repl_padding: Option<usize>,
         pub tools_user_padding: Option<usize>,
         pub tools_gap: Option<usize>,
+        pub tools_tool_summary: Option<bool>,
     }
 }
 
@@ -320,6 +328,10 @@ impl Settings {
                     repl_padding: args.tools_repl_padding.or(cfg.repl_padding).unwrap_or(1),
                     user_padding: args.tools_user_padding.or(cfg.user_padding).unwrap_or(1),
                     gap: args.tools_gap.or(cfg.gap).unwrap_or(1),
+                    tool_summary: args
+                        .tools_tool_summary
+                        .or(cfg.tool_summary)
+                        .unwrap_or(false),
                 }
             },
             skills: config.skills.unwrap_or_default(),

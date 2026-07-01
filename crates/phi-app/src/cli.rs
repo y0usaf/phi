@@ -121,6 +121,10 @@ pub struct Args {
     #[arg(long, value_name = "N")]
     pub tools_gap: Option<usize>,
 
+    /// Consolidate tool uses into a summary card instead of individual cards.
+    #[arg(long)]
+    pub tools_tool_summary: Option<bool>,
+
     /// Print full REPL code and output instead of trimmed previews.
     #[arg(short, long)]
     pub verbose: bool,
@@ -167,6 +171,7 @@ impl Args {
             tools_repl_padding: self.tools_repl_padding,
             tools_user_padding: self.tools_user_padding,
             tools_gap: self.tools_gap,
+            tools_tool_summary: self.tools_tool_summary,
         }
     }
 }

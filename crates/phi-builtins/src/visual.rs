@@ -15,8 +15,8 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use phi_ext::{
-    Extension, ExtensionHost, ExtensionManifest, Rgb, SpinnerSpec, TextEffectSpec, ThemeSpec,
-    ThinkingExpressionSpec,
+    Extension, ExtensionHost, ExtensionManifest, Rgb, SpinnerSpec, TerminalColorsProbe,
+    TextEffectSpec, ThemeSpec, ThinkingExpressionSpec,
 };
 
 /// The built-in visual extension.
@@ -24,8 +24,9 @@ use phi_ext::{
 /// Registers:
 /// - `phi:default` spinner (braille dot frames, 80ms interval)
 /// - `phi:default` thinking expressions (7 phrases, 2s interval)
-/// - `phi:default` theme (a declarative palette derived from the
-///   standard ANSI defaults, matching `phi_tui::default_terminal_colors`)
+/// - `phi:default` theme (a resolver that derives the full palette
+///   from the terminal's actual OSC-reported colours at resolve time,
+///   matching opencode's auto-theming approach)
 /// - `phi:default` text effects: gradient, shimmer, and equalizer
 ///   (wrapping the corresponding `phi_tui::spinner` animation functions)
 pub struct DefaultVisualExtension;
@@ -76,99 +77,28 @@ impl Extension for DefaultVisualExtension {
             2000,
         ))?;
 
-        // -- Default theme (declarative, from standard ANSI defaults) --
-        let colors = phi_tui::default_terminal_colors();
-        let theme = phi_tui::generate_theme(&colors);
-        let mut palette = BTreeMap::new();
-
-        // Core
-        palette.insert(
-            "foreground".into(),
-            Rgb(theme.foreground.0, theme.foreground.1, theme.foreground.2),
-        );
-        palette.insert(
-            "background".into(),
-            Rgb(theme.background.0, theme.background.1, theme.background.2),
-        );
-        palette.insert(
-            "muted".into(),
-            Rgb(theme.muted.0, theme.muted.1, theme.muted.2),
-        );
-        palette.insert(
-            "heading".into(),
-            Rgb(theme.heading.0, theme.heading.1, theme.heading.2),
-        );
-
-        // Surfaces
-        palette.insert(
-            "surface".into(),
-            Rgb(theme.surface.0, theme.surface.1, theme.surface.2),
-        );
-        palette.insert(
-            "surface_raised".into(),
-            Rgb(
-                theme.surface_raised.0,
-                theme.surface_raised.1,
-                theme.surface_raised.2,
-            ),
-        );
-        palette.insert(
-            "border".into(),
-            Rgb(theme.border.0, theme.border.1, theme.border.2),
-        );
-
-        // Accents
-        palette.insert(
-            "accent".into(),
-            Rgb(theme.accent.0, theme.accent.1, theme.accent.2),
-        );
-        palette.insert(
-            "accent_2".into(),
-            Rgb(theme.accent_2.0, theme.accent_2.1, theme.accent_2.2),
-        );
-
-        // Status
-        palette.insert(
-            "running".into(),
-            Rgb(theme.running.0, theme.running.1, theme.running.2),
-        );
-        palette.insert(
-            "success".into(),
-            Rgb(theme.success.0, theme.success.1, theme.success.2),
-        );
-        palette.insert(
-            "warning".into(),
-            Rgb(theme.warning.0, theme.warning.1, theme.warning.2),
-        );
-        palette.insert(
-            "error".into(),
-            Rgb(theme.error.0, theme.error.1, theme.error.2),
-        );
-
-        // Chrome
-        palette.insert(
-            "statusbar_bg".into(),
-            Rgb(
-                theme.statusbar_bg.0,
-                theme.statusbar_bg.1,
-                theme.statusbar_bg.2,
-            ),
-        );
-
-        // ANSI palette
-        for i in 0..16u8 {
-            let key = format!("ansi_{i}");
-            palette.insert(
-                key,
-                Rgb(
-                    theme.ansi[i as usize].0,
-                    theme.ansi[i as usize].1,
-                    theme.ansi[i as usize].2,
-                ),
-            );
-        }
-
-        host.register_theme(ThemeSpec::new("phi:default", palette))?;
+        // -- Default theme (resolver-based, adapts to the terminal) --
+        //
+        // Unlike a static palette baked from `default_terminal_colors()`,
+        // a resolver closure receives the *actual* terminal colours (OSC
+        // 10/11/4) at resolve time and derives the full theme from them —
+        // matching opencode's `generateSystem(colors, pick)` approach. This
+        // ensures the gray ramp, surfaces, borders, and ANSI mapping all
+        // reflect the user's real terminal rather than hardcoded defaults.
+        //
+        // When `from_extension_theme` resolves this spec, the resolver
+        // returns a palette derived from the same probe that was used to
+        // generate the base `Theme`, so the overlay is a no-op (same
+        // values). Third-party extension themes with static palettes still
+        // work — they only override the roles they specify.
+        host.register_theme(ThemeSpec::with_resolver(
+            "phi:default",
+            Arc::new(|probe: Option<&TerminalColorsProbe>| {
+                let colors = probe_to_terminal_colors(probe);
+                let theme = phi_tui::generate_theme(&colors);
+                theme_to_palette(&theme)
+            }),
+        ))?;
 
         // -- Default text effects (gradient, shimmer, equalizer) --
         //
@@ -224,9 +154,531 @@ impl Extension for DefaultVisualExtension {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Theme resolver helpers
+// ---------------------------------------------------------------------------
+
+/// Convert a `TerminalColorsProbe` (from `phi-ext`, which avoids a
+/// cross-crate dependency on `phi-tui`) back into a `phi_tui::TerminalColors`
+/// so the resolver can feed it into `generate_theme`.
+///
+/// When `probe` is `None` (no terminal probe available), falls back to the
+/// standard ANSI defaults — the same behaviour as before this change, but
+/// now only as a last resort rather than the always-on default.
+fn probe_to_terminal_colors(probe: Option<&TerminalColorsProbe>) -> phi_tui::TerminalColors {
+    match probe {
+        Some(p) => phi_tui::TerminalColors {
+            background: phi_tui::palette::Rgb(p.background.0, p.background.1, p.background.2),
+            foreground: phi_tui::palette::Rgb(p.foreground.0, p.foreground.1, p.foreground.2),
+            palette: p
+                .palette
+                .map(|opt| opt.map(|c| phi_tui::palette::Rgb(c.0, c.1, c.2))),
+        },
+        None => phi_tui::default_terminal_colors(),
+    }
+}
+
+/// Serialize a `phi_tui::Theme` into the role-name → `Rgb` map that
+/// `ThemeSpec::resolve` is expected to return.
+///
+/// Every role in the `Theme` struct is included so that `apply_extension_palette`
+/// in the mux can overlay the complete palette. For the built-in default theme
+/// this is a no-op overlay (same values as the base `generate_theme`), but the
+/// full map is available for any consumer that wants to inspect or compare
+/// individual roles.
+fn theme_to_palette(theme: &phi_tui::Theme) -> BTreeMap<String, Rgb> {
+    let mut p = BTreeMap::new();
+
+    // Core
+    p.insert(
+        "foreground".into(),
+        Rgb(theme.foreground.0, theme.foreground.1, theme.foreground.2),
+    );
+    p.insert(
+        "background".into(),
+        Rgb(theme.background.0, theme.background.1, theme.background.2),
+    );
+    p.insert(
+        "muted".into(),
+        Rgb(theme.muted.0, theme.muted.1, theme.muted.2),
+    );
+    p.insert(
+        "heading".into(),
+        Rgb(theme.heading.0, theme.heading.1, theme.heading.2),
+    );
+
+    // Surfaces
+    p.insert(
+        "surface".into(),
+        Rgb(theme.surface.0, theme.surface.1, theme.surface.2),
+    );
+    p.insert(
+        "surface_raised".into(),
+        Rgb(
+            theme.surface_raised.0,
+            theme.surface_raised.1,
+            theme.surface_raised.2,
+        ),
+    );
+    p.insert(
+        "border".into(),
+        Rgb(theme.border.0, theme.border.1, theme.border.2),
+    );
+
+    // Accents
+    p.insert(
+        "accent".into(),
+        Rgb(theme.accent.0, theme.accent.1, theme.accent.2),
+    );
+    p.insert(
+        "accent_2".into(),
+        Rgb(theme.accent_2.0, theme.accent_2.1, theme.accent_2.2),
+    );
+
+    // Status
+    p.insert(
+        "running".into(),
+        Rgb(theme.running.0, theme.running.1, theme.running.2),
+    );
+    p.insert(
+        "success".into(),
+        Rgb(theme.success.0, theme.success.1, theme.success.2),
+    );
+    p.insert(
+        "success_subtle".into(),
+        Rgb(
+            theme.success_subtle.0,
+            theme.success_subtle.1,
+            theme.success_subtle.2,
+        ),
+    );
+    p.insert(
+        "warning".into(),
+        Rgb(theme.warning.0, theme.warning.1, theme.warning.2),
+    );
+    p.insert(
+        "error".into(),
+        Rgb(theme.error.0, theme.error.1, theme.error.2),
+    );
+
+    // Chrome
+    p.insert(
+        "statusbar_bg".into(),
+        Rgb(
+            theme.statusbar_bg.0,
+            theme.statusbar_bg.1,
+            theme.statusbar_bg.2,
+        ),
+    );
+
+    // ANSI palette
+    for i in 0..16u8 {
+        let key = format!("ansi_{i}");
+        p.insert(
+            key,
+            Rgb(
+                theme.ansi[i as usize].0,
+                theme.ansi[i as usize].1,
+                theme.ansi[i as usize].2,
+            ),
+        );
+    }
+
+    // Chat / inline TUI roles
+    p.insert(
+        "tool_accent".into(),
+        Rgb(
+            theme.tool_accent.0,
+            theme.tool_accent.1,
+            theme.tool_accent.2,
+        ),
+    );
+    p.insert(
+        "tool_title".into(),
+        Rgb(theme.tool_title.0, theme.tool_title.1, theme.tool_title.2),
+    );
+    p.insert(
+        "tool_output".into(),
+        Rgb(
+            theme.tool_output.0,
+            theme.tool_output.1,
+            theme.tool_output.2,
+        ),
+    );
+    p.insert(
+        "subcall_accent".into(),
+        Rgb(
+            theme.subcall_accent.0,
+            theme.subcall_accent.1,
+            theme.subcall_accent.2,
+        ),
+    );
+    p.insert("path".into(), Rgb(theme.path.0, theme.path.1, theme.path.2));
+    p.insert(
+        "string".into(),
+        Rgb(theme.string.0, theme.string.1, theme.string.2),
+    );
+    p.insert(
+        "number".into(),
+        Rgb(theme.number.0, theme.number.1, theme.number.2),
+    );
+    p.insert(
+        "user_fg".into(),
+        Rgb(theme.user_fg.0, theme.user_fg.1, theme.user_fg.2),
+    );
+    p.insert(
+        "assistant_fg".into(),
+        Rgb(
+            theme.assistant_fg.0,
+            theme.assistant_fg.1,
+            theme.assistant_fg.2,
+        ),
+    );
+    p.insert(
+        "panel_repl".into(),
+        Rgb(theme.panel_repl.0, theme.panel_repl.1, theme.panel_repl.2),
+    );
+
+    // Chat backgrounds
+    p.insert(
+        "user_message_bg".into(),
+        Rgb(
+            theme.user_message_bg.0,
+            theme.user_message_bg.1,
+            theme.user_message_bg.2,
+        ),
+    );
+    p.insert(
+        "tool_pending_bg".into(),
+        Rgb(
+            theme.tool_pending_bg.0,
+            theme.tool_pending_bg.1,
+            theme.tool_pending_bg.2,
+        ),
+    );
+    p.insert(
+        "tool_success_bg".into(),
+        Rgb(
+            theme.tool_success_bg.0,
+            theme.tool_success_bg.1,
+            theme.tool_success_bg.2,
+        ),
+    );
+    p.insert(
+        "tool_error_bg".into(),
+        Rgb(
+            theme.tool_error_bg.0,
+            theme.tool_error_bg.1,
+            theme.tool_error_bg.2,
+        ),
+    );
+    p.insert(
+        "repl_bg".into(),
+        Rgb(theme.repl_bg.0, theme.repl_bg.1, theme.repl_bg.2),
+    );
+
+    // Nested tool backgrounds
+    p.insert(
+        "tool_pending_bg_nested".into(),
+        Rgb(
+            theme.tool_pending_bg_nested.0,
+            theme.tool_pending_bg_nested.1,
+            theme.tool_pending_bg_nested.2,
+        ),
+    );
+    p.insert(
+        "tool_success_bg_nested".into(),
+        Rgb(
+            theme.tool_success_bg_nested.0,
+            theme.tool_success_bg_nested.1,
+            theme.tool_success_bg_nested.2,
+        ),
+    );
+    p.insert(
+        "tool_error_bg_nested".into(),
+        Rgb(
+            theme.tool_error_bg_nested.0,
+            theme.tool_error_bg_nested.1,
+            theme.tool_error_bg_nested.2,
+        ),
+    );
+
+    // Chrome roles
+    p.insert(
+        "chrome_agent".into(),
+        Rgb(
+            theme.chrome_agent.0,
+            theme.chrome_agent.1,
+            theme.chrome_agent.2,
+        ),
+    );
+    p.insert(
+        "chrome_cost".into(),
+        Rgb(
+            theme.chrome_cost.0,
+            theme.chrome_cost.1,
+            theme.chrome_cost.2,
+        ),
+    );
+    p.insert(
+        "chrome_dir".into(),
+        Rgb(theme.chrome_dir.0, theme.chrome_dir.1, theme.chrome_dir.2),
+    );
+    p.insert(
+        "chrome_model".into(),
+        Rgb(
+            theme.chrome_model.0,
+            theme.chrome_model.1,
+            theme.chrome_model.2,
+        ),
+    );
+
+    // Thinking levels
+    p.insert(
+        "thinking_off".into(),
+        Rgb(
+            theme.thinking_off.0,
+            theme.thinking_off.1,
+            theme.thinking_off.2,
+        ),
+    );
+    p.insert(
+        "thinking_minimal".into(),
+        Rgb(
+            theme.thinking_minimal.0,
+            theme.thinking_minimal.1,
+            theme.thinking_minimal.2,
+        ),
+    );
+    p.insert(
+        "thinking_low".into(),
+        Rgb(
+            theme.thinking_low.0,
+            theme.thinking_low.1,
+            theme.thinking_low.2,
+        ),
+    );
+    p.insert(
+        "thinking_medium".into(),
+        Rgb(
+            theme.thinking_medium.0,
+            theme.thinking_medium.1,
+            theme.thinking_medium.2,
+        ),
+    );
+    p.insert(
+        "thinking_high".into(),
+        Rgb(
+            theme.thinking_high.0,
+            theme.thinking_high.1,
+            theme.thinking_high.2,
+        ),
+    );
+    p.insert(
+        "thinking_xhigh".into(),
+        Rgb(
+            theme.thinking_xhigh.0,
+            theme.thinking_xhigh.1,
+            theme.thinking_xhigh.2,
+        ),
+    );
+
+    // Markdown
+    p.insert(
+        "md_repl_fence".into(),
+        Rgb(
+            theme.md_repl_fence.0,
+            theme.md_repl_fence.1,
+            theme.md_repl_fence.2,
+        ),
+    );
+    p.insert(
+        "md_marker_accent".into(),
+        Rgb(
+            theme.md_marker_accent.0,
+            theme.md_marker_accent.1,
+            theme.md_marker_accent.2,
+        ),
+    );
+    p.insert(
+        "md_task_done".into(),
+        Rgb(
+            theme.md_task_done.0,
+            theme.md_task_done.1,
+            theme.md_task_done.2,
+        ),
+    );
+    p.insert(
+        "md_quote_bar".into(),
+        Rgb(
+            theme.md_quote_bar.0,
+            theme.md_quote_bar.1,
+            theme.md_quote_bar.2,
+        ),
+    );
+    p.insert(
+        "md_subhead".into(),
+        Rgb(theme.md_subhead.0, theme.md_subhead.1, theme.md_subhead.2),
+    );
+    p.insert(
+        "md_out_base".into(),
+        Rgb(
+            theme.md_out_base.0,
+            theme.md_out_base.1,
+            theme.md_out_base.2,
+        ),
+    );
+    p.insert(
+        "md_out_err".into(),
+        Rgb(theme.md_out_err.0, theme.md_out_err.1, theme.md_out_err.2),
+    );
+    p.insert(
+        "md_out_warn".into(),
+        Rgb(
+            theme.md_out_warn.0,
+            theme.md_out_warn.1,
+            theme.md_out_warn.2,
+        ),
+    );
+    p.insert(
+        "md_out_ok".into(),
+        Rgb(theme.md_out_ok.0, theme.md_out_ok.1, theme.md_out_ok.2),
+    );
+    p.insert(
+        "md_out_path".into(),
+        Rgb(
+            theme.md_out_path.0,
+            theme.md_out_path.1,
+            theme.md_out_path.2,
+        ),
+    );
+    p.insert(
+        "md_out_num".into(),
+        Rgb(theme.md_out_num.0, theme.md_out_num.1, theme.md_out_num.2),
+    );
+    p.insert(
+        "md_out_str".into(),
+        Rgb(theme.md_out_str.0, theme.md_out_str.1, theme.md_out_str.2),
+    );
+    p.insert(
+        "md_out_url".into(),
+        Rgb(theme.md_out_url.0, theme.md_out_url.1, theme.md_out_url.2),
+    );
+    p.insert(
+        "md_diff_add".into(),
+        Rgb(
+            theme.md_diff_add.0,
+            theme.md_diff_add.1,
+            theme.md_diff_add.2,
+        ),
+    );
+    p.insert(
+        "md_diff_del".into(),
+        Rgb(
+            theme.md_diff_del.0,
+            theme.md_diff_del.1,
+            theme.md_diff_del.2,
+        ),
+    );
+
+    // Syntax
+    p.insert(
+        "syntax_comment".into(),
+        Rgb(
+            theme.syntax_comment.0,
+            theme.syntax_comment.1,
+            theme.syntax_comment.2,
+        ),
+    );
+    p.insert(
+        "syntax_keyword".into(),
+        Rgb(
+            theme.syntax_keyword.0,
+            theme.syntax_keyword.1,
+            theme.syntax_keyword.2,
+        ),
+    );
+    p.insert(
+        "syntax_string".into(),
+        Rgb(
+            theme.syntax_string.0,
+            theme.syntax_string.1,
+            theme.syntax_string.2,
+        ),
+    );
+    p.insert(
+        "syntax_number".into(),
+        Rgb(
+            theme.syntax_number.0,
+            theme.syntax_number.1,
+            theme.syntax_number.2,
+        ),
+    );
+    p.insert(
+        "syntax_function".into(),
+        Rgb(
+            theme.syntax_function.0,
+            theme.syntax_function.1,
+            theme.syntax_function.2,
+        ),
+    );
+    p.insert(
+        "syntax_type".into(),
+        Rgb(
+            theme.syntax_type.0,
+            theme.syntax_type.1,
+            theme.syntax_type.2,
+        ),
+    );
+    p.insert(
+        "syntax_operator".into(),
+        Rgb(
+            theme.syntax_operator.0,
+            theme.syntax_operator.1,
+            theme.syntax_operator.2,
+        ),
+    );
+    p.insert(
+        "syntax_variable".into(),
+        Rgb(
+            theme.syntax_variable.0,
+            theme.syntax_variable.1,
+            theme.syntax_variable.2,
+        ),
+    );
+    p.insert(
+        "syntax_builtin".into(),
+        Rgb(
+            theme.syntax_builtin.0,
+            theme.syntax_builtin.1,
+            theme.syntax_builtin.2,
+        ),
+    );
+
+    // CLI glyphs
+    p.insert(
+        "glyph_active".into(),
+        Rgb(
+            theme.glyph_active.0,
+            theme.glyph_active.1,
+            theme.glyph_active.2,
+        ),
+    );
+    p.insert(
+        "glyph_ok".into(),
+        Rgb(theme.glyph_ok.0, theme.glyph_ok.1, theme.glyph_ok.2),
+    );
+    p.insert(
+        "glyph_err".into(),
+        Rgb(theme.glyph_err.0, theme.glyph_err.1, theme.glyph_err.2),
+    );
+
+    p
+}
+
 #[cfg(test)]
 mod tests {
-    use phi_ext::{Rgb, RuntimeBuilder};
+    use phi_ext::{Rgb, RuntimeBuilder, TerminalColorsProbe};
 
     use super::DefaultVisualExtension;
 
@@ -269,15 +721,80 @@ mod tests {
 
         let theme = rt.first_theme().unwrap();
         assert_eq!(theme.name, "phi:default");
-        assert!(theme.palette.contains_key("foreground"));
-        assert!(theme.palette.contains_key("background"));
-        assert!(theme.palette.contains_key("accent"));
-        assert!(theme.palette.contains_key("border"));
+        // The built-in default theme uses a resolver (not a static palette),
+        // so the static `palette` field is empty. The palette is produced
+        // by resolving the spec with a terminal colour probe.
+        assert!(theme.palette.is_empty());
+        assert!(theme.resolver.is_some());
+
+        // Resolve with default terminal colours and verify the full palette.
+        let probe = TerminalColorsProbe {
+            background: Rgb(0, 0, 0),
+            foreground: Rgb(192, 192, 192),
+            palette: [None; 16],
+        };
+        let resolved = theme.resolve(Some(&probe));
+        assert!(resolved.contains_key("foreground"));
+        assert!(resolved.contains_key("background"));
+        assert!(resolved.contains_key("accent"));
+        assert!(resolved.contains_key("border"));
         // ANSI palette should have all 16 entries
         for i in 0..16u8 {
             let key = format!("ansi_{i}");
-            assert!(theme.palette.contains_key(&key), "missing {key}");
+            assert!(resolved.contains_key(&key), "missing {key}");
         }
+    }
+
+    #[test]
+    fn default_theme_resolver_adapts_to_terminal_colors() {
+        // The resolver must derive different themes from different terminal
+        // backgrounds — this is the core of opencode-style auto-theming.
+        // A pure-black background should produce darker surfaces than a
+        // lighter dark background (e.g. #1e1e2e).
+        let rt = RuntimeBuilder::new()
+            .register_extension(DefaultVisualExtension)
+            .build()
+            .unwrap();
+
+        let theme = rt.first_theme().unwrap();
+
+        let black_bg = TerminalColorsProbe {
+            background: Rgb(0, 0, 0),
+            foreground: Rgb(192, 192, 192),
+            palette: [None; 16],
+        };
+        let dark_bg = TerminalColorsProbe {
+            background: Rgb(0x1e, 0x1e, 0x2e),
+            foreground: Rgb(0xc0, 0xc0, 0xc0),
+            palette: [None; 16],
+        };
+
+        let black_palette = theme.resolve(Some(&black_bg));
+        let dark_palette = theme.resolve(Some(&dark_bg));
+
+        // Surfaces should differ — the gray ramp is derived from the
+        // background, so a non-black bg produces lighter surfaces.
+        let black_surface = black_palette.get("surface").unwrap();
+        let dark_surface = dark_palette.get("surface").unwrap();
+        assert_ne!(
+            black_surface, dark_surface,
+            "surface should differ for different terminal backgrounds"
+        );
+
+        // Borders should also differ.
+        let black_border = black_palette.get("border").unwrap();
+        let dark_border = dark_palette.get("border").unwrap();
+        assert_ne!(
+            black_border, dark_border,
+            "border should differ for different terminal backgrounds"
+        );
+
+        // Background should match the probe.
+        assert_eq!(black_palette.get("background").unwrap(), &Rgb(0, 0, 0));
+        assert_eq!(
+            dark_palette.get("background").unwrap(),
+            &Rgb(0x1e, 0x1e, 0x2e)
+        );
     }
 
     #[test]

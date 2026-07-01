@@ -640,6 +640,122 @@ impl Ui {
         render_boxed_padded(&[line], bg, self.box_width(), padding)
     }
 
+    /// Consolidated summary card for all REPL blocks and tool calls in a turn.
+    /// Renders the repl count followed by per-category tool tallies with
+    /// ✓/✗ glyphs in a single boxed card. Used when `tool_summary` is enabled
+    /// instead of rendering individual REPL blocks and tool cards.
+    pub(super) fn tool_summary_rows(
+        &self,
+        tools: &[session::ToolCall],
+        repl_count: usize,
+    ) -> Vec<String> {
+        use phi_session::tool_summary::{ToolCategory, categorize};
+
+        if repl_count == 0 && tools.is_empty() {
+            return Vec::new();
+        }
+        let ck = format!("{}✓{RESET}", &self.palette.tool_title_fg);
+        let nr = format!("{}✗{RESET}", &self.palette.error_fg);
+
+        // Build per-category tallies.
+        let mut tallies: [(ToolCategory, usize, usize); 5] = [
+            (ToolCategory::Reads, 0, 0),
+            (ToolCategory::Edits, 0, 0),
+            (ToolCategory::Commands, 0, 0),
+            (ToolCategory::Searches, 0, 0),
+            (ToolCategory::Other, 0, 0),
+        ];
+        let mut any_failed = false;
+        for tool in tools {
+            let cat = categorize(&tool.name);
+            let idx = ToolCategory::order()
+                .iter()
+                .position(|c| *c == cat)
+                .unwrap();
+            if tool.error.is_some() {
+                tallies[idx].2 += 1;
+                any_failed = true;
+            } else {
+                tallies[idx].1 += 1;
+            }
+        }
+
+        // Outer box: repl count line (flat text → gets the outer bg).
+        // Inner box: tool tallies rendered via render_boxed_padded with the
+        // lighter nested bg, so they nest visually under the repl count —
+        // matching how individual tool cards sit inside REPL blocks.
+        let panel_width = self.panel_width();
+        let mut body: Vec<String> = Vec::new();
+
+        // Repl count (flat text line — painted with the outer bg by
+        // render_repl_block).
+        if repl_count > 0 {
+            let noun = if repl_count == 1 { "repl" } else { "repls" };
+            body.push(format!("{ck} {repl_count} {noun}"));
+        }
+
+        // Inner tool tallies (boxed child card with nested bg).
+        let total = tools.len();
+        if total > 0 || any_failed {
+            let inner_width = self.box_width();
+            let inner_content_width = inner_width.saturating_sub(2).max(1);
+            let mut inner: Vec<String> = Vec::new();
+
+            if total > 0 {
+                let noun = if total == 1 { "tool" } else { "tools" };
+                let line = format!("  {ck} {total} {noun}");
+                inner.extend(wrap_ansi(&line, inner_content_width));
+            }
+            for (cat, ok, failed) in tallies {
+                if ok == 0 && failed == 0 {
+                    continue;
+                }
+                let singular = match cat {
+                    ToolCategory::Reads => "read",
+                    ToolCategory::Edits => "edit",
+                    ToolCategory::Commands => "command",
+                    ToolCategory::Searches => "search",
+                    ToolCategory::Other => "other",
+                };
+                let plural = match cat {
+                    ToolCategory::Reads => "reads",
+                    ToolCategory::Edits => "edits",
+                    ToolCategory::Commands => "commands",
+                    ToolCategory::Searches => "searches",
+                    ToolCategory::Other => "others",
+                };
+                if ok > 0 {
+                    let noun = if ok == 1 { singular } else { plural };
+                    let line = format!("  {ck} {ok} {noun}");
+                    inner.extend(wrap_ansi(&line, inner_content_width));
+                }
+                if failed > 0 {
+                    let line = format!("  {nr} {failed}");
+                    inner.extend(wrap_ansi(&line, inner_content_width));
+                }
+            }
+
+            // Render inner box with the lighter nested bg so it stands out
+            // from the outer box, exactly like tool cards inside REPL blocks.
+            let nested_bg = if any_failed {
+                &self.palette.tool_error_bg_nested
+            } else {
+                &self.palette.tool_success_bg_nested
+            };
+            let inner_box =
+                render_boxed_padded(&inner, nested_bg, inner_width, self.tools.tool_padding);
+            body.extend(inner_box);
+        }
+
+        // Wrap the whole thing in an outer REPL-style box.
+        let outer_bg = if any_failed {
+            &self.palette.tool_error_bg
+        } else {
+            &self.palette.tool_success_bg
+        };
+        render_repl_block(&body, outer_bg, panel_width, self.tools.repl_padding)
+    }
+
     pub(super) fn subcall_result_rows(
         &self,
         _depth: usize,

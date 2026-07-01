@@ -153,6 +153,7 @@ pub async fn run(shared: SharedResources, mux_config: MuxConfig, cwd: PathBuf) -
         size: phi_tui::crossterm::terminal::size().unwrap_or((80, 24)),
         surface: CellSurface::default(),
         palette,
+        terminal_colors,
         visual_runtime,
         alt_screen_active: false,
         cached_scrollback_total: 0,
@@ -218,6 +219,11 @@ struct MuxApp {
     /// Resolved mux palette. Derived from the host terminal's OSC colors at
     /// startup; falls back to the built-in Charmtone palette.
     palette: ScenePalette,
+    /// The host terminal's OSC-reported colors (or the default fallback).
+    /// Stored so `driver::spawn` can pass them to each embedded session,
+    /// so the session TUI derives its palette from the same terminal colors
+    /// as the mux chrome.
+    terminal_colors: phi_tui::TerminalColors,
     /// Visual extension runtime: holds extension-registered visual specs
     /// (themes, spinners, thinking expressions, text effects) so the TUI
     /// rendering code can query them during the draw loop.

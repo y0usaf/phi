@@ -28,10 +28,12 @@ pub use markdown::{
 pub use palette::{Rgb, TerminalColors, detect_terminal_colors};
 pub use selector::{Selector, SelectorItem, SelectorOutcome};
 pub use spinner::{
-    DEFAULT_TOOL_EXPRESSION, EQUALIZER_BAR_COUNT, EQUALIZER_BARS, SHIMMER_CYCLE_MS,
-    SPINNER_FRAME_MS, SPINNER_FRAMES, Spinner, THINKING_ANIMATION_FRAME_MS, THINKING_EXPRESSION_MS,
-    THINKING_EXPRESSIONS, equalizer_glyphs, gradient_text, gradient_text_animated, shimmer_ansi,
-    spinner_frame_at, spinner_frame_index, thinking_expression,
+    DEFAULT_TOOL_EXPRESSION, EQUALIZER_BAR_COUNT, EQUALIZER_BARS, SHIMMER_BLEND_PEAK,
+    SHIMMER_CYCLE_MS, SHIMMER_FRAME_MS, SHIMMER_MIN_WINDOW, SHIMMER_TRIANGLE_BLEND,
+    SHIMMER_TRIANGLE_STEPS, SHIMMER_WINDOW_FRAC, SPINNER_FRAME_MS, SPINNER_FRAMES, Spinner,
+    THINKING_ANIMATION_FRAME_MS, THINKING_EXPRESSION_MS, THINKING_EXPRESSIONS, equalizer_glyphs,
+    gradient_text, gradient_text_animated, shimmer_ansi, shimmer_triangle_blend,
+    shimmer_triangle_intensity, spinner_frame_at, spinner_frame_index, thinking_expression,
 };
 pub use terminal::{
     LiveCursor, RawModeGuard, Terminal, drain_input, escape_len, fill_bg, strip_ansi,

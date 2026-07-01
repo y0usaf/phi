@@ -2,7 +2,6 @@
 
 use super::palette::ScenePalette;
 use super::scene::{Chrome, MuxMode, StatusNoteKind};
-use super::sidebar::SIDEBAR_ANIMATION_FRAME_MS;
 use super::visual_context::VisualContext;
 use crate::grid::cell_surface::{
     CellSurface, char_cell_width, display_cell_width, truncate_to_cells,
@@ -15,11 +14,12 @@ const STATUS_SEPARATOR_GLYPH: &str = "│";
 const STATUS_NOTE_OK_FG: Color = Color::rgb(0, 0, 0);
 const STATUS_NOTE_ERROR_FG: Color = Color::rgb(255, 255, 255);
 
-/// Render text with a sweeping shimmer highlight, mirroring the sidebar's
-/// `render_sidebar_gradient_text` triangle-wave shimmer. Each character's
-/// foreground is brightened by a shimmer intensity derived from `now_ms`
-/// and the character's column position, producing a highlight that sweeps
-/// left-to-right across the text and cycles repeatedly.
+/// Render text with a sweeping shimmer highlight.
+///
+/// Uses [`phi_tui::shimmer_triangle_intensity`] and
+/// [`phi_tui::shimmer_triangle_blend`] — the same shared triangle-wave
+/// parameters as the sidebar gradient and the thinking-equalizer, so all
+/// shimmer surfaces conform to one intensity and blend strength.
 ///
 /// `phase_offset` shifts the wave start position so different segments
 /// (mode label, project, session, status) shimmer with slight phase offsets
@@ -41,7 +41,6 @@ fn render_shimmer_text(
     if max_cols <= 0 || text.is_empty() {
         return;
     }
-    let frame = (now_ms / SIDEBAR_ANIMATION_FRAME_MS) as usize;
     let end = col + max_cols;
     let mut cursor = col;
     for ch in text.chars() {
@@ -53,11 +52,12 @@ fn render_shimmer_text(
             break;
         }
         let slot = phase_offset + (cursor - col).max(0) as usize;
-        let phase = (frame + slot) % 24;
-        let intensity = if phase < 12 { phase } else { 24 - phase };
-        // Blend strongly toward the shimmer color (max ~231/255 = 91%),
-        // matching the sidebar's proven `intensity * 21` approach.
-        let shimmered = theme::fade_toward(fg, shimmer_color, (intensity * 21).min(255) as u8);
+        // Use the shared triangle-wave shimmer from phi-tui so the
+        // statusbar, sidebar, and thinking-equalizer all conform to the
+        // same intensity and blend strength.
+        let intensity = phi_tui::shimmer_triangle_intensity(now_ms, slot);
+        let blend = phi_tui::shimmer_triangle_blend(intensity);
+        let shimmered = theme::fade_toward(fg, shimmer_color, blend);
         let mut buf = [0; 4];
         surface.put_cell_span_styled(
             cursor,
