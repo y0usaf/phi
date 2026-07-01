@@ -390,6 +390,8 @@ pub struct ArchivedSession {
     pub cwd: PathBuf,
     pub first_message: String,
     pub modified: Option<SystemTime>,
+    /// Aggregated token/cost totals for the archived session.
+    pub usage: phi_session::usage::UsageTotals,
 }
 
 pub fn archive_dir() -> Result<PathBuf> {
@@ -479,6 +481,7 @@ fn list_archived_in(archive: &Path) -> Vec<ArchivedSession> {
                 cwd: PathBuf::from(store.cwd()),
                 first_message,
                 modified: e.metadata().ok().and_then(|m| m.modified().ok()),
+                usage: phi_session::usage::session_usage_totals(&path),
                 path,
             })
         })

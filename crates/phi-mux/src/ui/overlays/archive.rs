@@ -202,7 +202,7 @@ pub fn render_archive_viewer(
         inner.cols,
         theme::brighten(palette.muted, 24),
         palette.bg,
-        "UPDATED  SESSION / PROJECT",
+        "UPDATED  TOKENS     COST SESSION / PROJECT",
     );
     let list_row = inner.row + 4;
     let footer_row = rect.row + rect.rows - 2;
@@ -284,11 +284,33 @@ fn archive_viewer_row_text(session: &ArchivedSession, now: SystemTime) -> String
         session.first_message.replace(['\n', '\r'], " ")
     };
     format!(
-        "{:<7} {}  {}",
+        "{:<7} {:>7} {:>8} {}  {}",
         archive_age_label(now, session.modified),
+        archive_tokens_label(session.usage.total_tokens()),
+        archive_cost_label(session.usage.total_cost),
         truncate_to_cells(&name, 48),
         session.cwd.display()
     )
+}
+
+fn archive_tokens_label(total_tokens: u64) -> String {
+    if total_tokens == 0 {
+        "-".to_string()
+    } else if total_tokens >= 1_000_000 {
+        format!("{:.1}M", total_tokens as f64 / 1e6)
+    } else if total_tokens >= 1_000 {
+        format!("{:.1}k", total_tokens as f64 / 1e3)
+    } else {
+        total_tokens.to_string()
+    }
+}
+
+fn archive_cost_label(total_cost: f64) -> String {
+    if total_cost <= 0.0 {
+        "-".to_string()
+    } else {
+        format!("${total_cost:.2}")
+    }
 }
 
 fn archive_age_label(now: SystemTime, modified: Option<SystemTime>) -> String {
