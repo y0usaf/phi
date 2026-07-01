@@ -12,9 +12,9 @@ impl Ui {
 
     fn require_idle(&mut self) -> bool {
         if !self.session_idle() {
-            self.pending.push(TranscriptEntry::RawLines(vec![format!(
-                "{DIM}[wait for the current run to finish]{RESET}"
-            )]));
+            self.pending.push(TranscriptEntry::RawLines(vec![
+                self.note(&"[wait for the current run to finish]"),
+            ]));
             return false;
         }
         true
@@ -38,14 +38,14 @@ impl Ui {
             })
             .collect();
         if items.is_empty() {
-            self.pending.push(TranscriptEntry::RawLines(vec![format!(
-                "{DIM}[no saved sessions for this directory]{RESET}"
-            )]));
+            self.pending.push(TranscriptEntry::RawLines(vec![
+                self.note(&"[no saved sessions for this directory]"),
+            ]));
             return;
         }
         self.open_selector(
             SelectorKind::Resume,
-            Selector::new("Resume Session", items, true),
+            Selector::new("Resume Session", items, true).with_style(self.selector_style()),
         );
     }
 
@@ -55,9 +55,9 @@ impl Ui {
         }
         let messages = self.store.user_messages();
         if messages.is_empty() {
-            self.pending.push(TranscriptEntry::RawLines(vec![format!(
-                "{DIM}[no messages to fork from]{RESET}"
-            )]));
+            self.pending.push(TranscriptEntry::RawLines(vec![
+                self.note(&"[no messages to fork from]"),
+            ]));
             return;
         }
         let total = messages.len();
@@ -70,7 +70,8 @@ impl Ui {
             })
             .collect();
         let last = messages.last().expect("non-empty").id.clone();
-        let mut widget = Selector::new("Fork from Message", items, false);
+        let mut widget =
+            Selector::new("Fork from Message", items, false).with_style(self.selector_style());
         widget.preselect(&last);
         self.open_selector(SelectorKind::Fork, widget);
     }
@@ -86,7 +87,7 @@ impl Ui {
             .into_iter()
             .map(|(depth, entry)| {
                 let marker = match entry.role {
-                    session::Role::User => "›",
+                    session::Role::User => "•",
                     session::Role::Assistant => "·",
                 };
                 SelectorItem::new(
@@ -101,12 +102,13 @@ impl Ui {
             })
             .collect();
         if items.is_empty() {
-            self.pending.push(TranscriptEntry::RawLines(vec![format!(
-                "{DIM}[no entries in this session]{RESET}"
-            )]));
+            self.pending.push(TranscriptEntry::RawLines(vec![
+                self.note(&"[no entries in this session]"),
+            ]));
             return;
         }
-        let mut widget = Selector::new("Session Tree", items, false);
+        let mut widget =
+            Selector::new("Session Tree", items, false).with_style(self.selector_style());
         if let Some(leaf) = &leaf {
             widget.preselect(leaf);
         }
@@ -140,14 +142,15 @@ impl Ui {
 
     pub(super) fn resume_session(&mut self, path: &str, cmd_tx: &mpsc::UnboundedSender<Cmd>) {
         match SessionStore::load(std::path::Path::new(path)) {
-            Ok(store) => {
+            Ok(mut store) => {
+                // Best-effort dead-line reclaim at the open-for-use moment.
+                let _ = store.compact();
                 self.store = store;
                 self.pending
                     .push(TranscriptEntry::RawLines(vec![String::new()]));
-                self.pending.push(TranscriptEntry::RawLines(vec![format!(
-                    "{DIM}[resumed session {}]{RESET}",
-                    self.store.id()
-                )]));
+                self.pending.push(TranscriptEntry::RawLines(vec![
+                    self.note(&format!("[resumed session {}]", self.store.id())),
+                ]));
                 self.replay_branch();
                 self.restore_rlm(cmd_tx);
             }
@@ -168,9 +171,9 @@ impl Ui {
                 self.store = store;
                 self.pending
                     .push(TranscriptEntry::RawLines(vec![String::new()]));
-                self.pending.push(TranscriptEntry::RawLines(vec![format!(
-                    "{DIM}[forked to new session]{RESET}"
-                )]));
+                self.pending.push(TranscriptEntry::RawLines(vec![
+                    self.note(&"[forked to new session]"),
+                ]));
                 self.replay_branch();
                 self.restore_rlm(cmd_tx);
                 self.editor.set_text(&text);
@@ -183,9 +186,9 @@ impl Ui {
 
     pub(super) fn navigate_tree(&mut self, entry_id: &str, cmd_tx: &mpsc::UnboundedSender<Cmd>) {
         if self.store.leaf() == Some(entry_id) {
-            self.pending.push(TranscriptEntry::RawLines(vec![format!(
-                "{DIM}[already at this point]{RESET}"
-            )]));
+            self.pending.push(TranscriptEntry::RawLines(vec![
+                self.note(&"[already at this point]"),
+            ]));
             return;
         }
         let Some(entry) = self.store.entry(entry_id) else {
@@ -198,9 +201,9 @@ impl Ui {
         let _ = self.store.set_leaf(leaf);
         self.pending
             .push(TranscriptEntry::RawLines(vec![String::new()]));
-        self.pending.push(TranscriptEntry::RawLines(vec![format!(
-            "{DIM}[navigated to selected point]{RESET}"
-        )]));
+        self.pending.push(TranscriptEntry::RawLines(vec![
+            self.note(&"[navigated to selected point]"),
+        ]));
         self.replay_branch();
         self.restore_rlm(cmd_tx);
         if let Some(text) = editor_text
@@ -221,6 +224,7 @@ impl Ui {
         enum ReplayItem {
             Message(session::Role, String),
             Repl {
+                prose: String,
                 code: String,
                 stdout: String,
                 stderr: String,
@@ -245,6 +249,7 @@ impl Ui {
                     ReplayItem::Message(entry.role, text)
                 }
                 session::BranchItem::Repl(repl) => ReplayItem::Repl {
+                    prose: repl.prose.clone(),
                     code: repl.code.clone(),
                     stdout: repl.stdout.clone(),
                     stderr: repl.stderr.clone(),
@@ -261,15 +266,22 @@ impl Ui {
                     session::Role::Assistant => self.push_assistant_message(&text),
                 },
                 ReplayItem::Repl {
+                    prose,
                     code,
                     stdout,
                     stderr,
                     duration_secs,
                     tools,
                     subcalls,
-                } => {
-                    self.push_repl_replay(&code, &stdout, &stderr, duration_secs, &tools, &subcalls)
-                }
+                } => self.push_repl_replay(
+                    &prose,
+                    &code,
+                    &stdout,
+                    &stderr,
+                    duration_secs,
+                    &tools,
+                    &subcalls,
+                ),
             }
         }
         // A previous run died mid-turn (exchange_start without its
@@ -279,10 +291,17 @@ impl Ui {
         if self.store.interrupted_exchange().is_some() {
             self.pending
                 .push(TranscriptEntry::RawLines(vec![String::new()]));
-            self.pending.push(TranscriptEntry::RawLines(vec![format!(
-                "{}previous run was interrupted mid-turn; completed work up to the last checkpoint is shown above{RESET}",
-                &self.palette.warning_fg
-            )]));
+            // A crash is a high-stakes state: label it in the error color so
+            // it never reads like a routine navigation note, and wrap it so
+            // narrow terminals don't overflow.
+            let notice = format!(
+                "{}interrupted:{RESET} previous run ended mid-turn — completed work up to the last checkpoint is shown above",
+                &self.palette.error_fg
+            );
+            self.pending.push(TranscriptEntry::RawLines(wrap_ansi(
+                &notice,
+                self.panel_width(),
+            )));
             self.last_activity = false;
             let _ = self.store.acknowledge_interrupted();
         }

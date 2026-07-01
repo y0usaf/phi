@@ -93,6 +93,7 @@ impl SessionStore {
     pub fn branch_restore(&self) -> (Vec<phi_rlm::RestoredExchange>, Vec<phi_rlm::RestoredRepl>) {
         fn restored(repl: &ReplEntry) -> phi_rlm::RestoredRepl {
             phi_rlm::RestoredRepl {
+                prose: repl.prose.clone(),
                 code: repl.code.clone(),
                 stdout: repl.stdout.clone(),
                 stderr: repl.stderr.clone(),

@@ -202,8 +202,12 @@ pub async fn build_session(
     } = shared;
     let settings = Settings::resolve(cli_args, Config::load(cwd)?, true);
 
-    let models = resolve_models(&settings, registry, storage).await?;
-    let runtime = build_runtime(cwd).await?;
+    // Model/auth resolution and the extension runtime don't depend on each
+    // other: overlap the auth/model latency with Lua discovery and boot.
+    let (models, runtime) = tokio::try_join!(
+        resolve_models(&settings, registry, storage),
+        build_runtime(cwd),
+    )?;
     let config = build_rlm_config(cwd, &settings, &runtime);
     let (root, sub) = build_providers(registry, storage, &models, settings.max_tokens);
 
@@ -214,7 +218,14 @@ pub async fn build_session(
 
     let payload = ContextPayload::Str(workspace_context(cwd));
     let store = match resume {
-        Some(path) => SessionStore::load(path)?,
+        Some(path) => {
+            let mut store = SessionStore::load(path)?;
+            // Opening for use is the one safe moment to reclaim dead log
+            // lines (stale leafs, closed exchange markers). Best-effort:
+            // a failed compact must not fail the resume.
+            let _ = store.compact();
+            store
+        }
         None => SessionStore::new(cwd)?,
     };
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();

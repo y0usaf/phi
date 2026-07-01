@@ -18,6 +18,11 @@ pub enum Role {
 pub struct Entry {
     pub id: String,
     pub parent_id: Option<String>,
+    /// RFC 3339 wall-clock time the entry was appended. Optional so
+    /// pre-timestamp session files keep loading; usage reporting
+    /// (usage/loading.rs) skips entries without one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<String>,
     pub role: Role,
     pub text: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -40,6 +45,17 @@ pub struct ReplEntry {
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_id: Option<String>,
+    /// RFC 3339 wall-clock time the repl block was appended. Optional so
+    /// pre-timestamp session files keep loading.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<String>,
+    /// Intermediate assistant prose that preceded this repl block during
+    /// the live turn. Persisted so resumed sessions show the model's
+    /// reasoning between steps (instead of collapsing all repls into one
+    /// summary card) and so the restored model history carries the
+    /// intermediate reasoning instead of empty strings.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub prose: String,
     pub code: String,
     #[serde(default)]
     pub stdout: String,
@@ -56,6 +72,11 @@ pub struct ReplEntry {
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct ReplRecord {
+    /// Intermediate assistant prose that preceded this repl block.
+    /// Forwarded from `pending_prose` at checkpoint time so it lands in
+    /// the durable JSONL and survives session resume.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub prose: String,
     pub code: String,
     #[serde(default)]
     pub stdout: String,
@@ -157,9 +178,17 @@ pub struct SessionUsage {
     pub model: String,
 }
 
+/// Newest session-file format this build reads/writes. Files without a
+/// version field (pre-versioning) deserialize as 0 and load normally;
+/// files newer than this are rejected at load instead of being
+/// misparsed or clobbered by an older phi.
+pub(super) const SESSION_VERSION: u32 = 1;
+
 #[derive(Serialize, Deserialize, Clone)]
 pub(super) struct Header {
     pub(super) id: String,
+    #[serde(default)]
+    pub(super) version: u32,
     pub(super) cwd: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) parent_session: Option<String>,
@@ -226,4 +255,8 @@ pub struct BranchExchange<'a> {
 
 pub(super) fn new_id() -> String {
     uuid::Uuid::now_v7().to_string()
+}
+
+pub(super) fn now_timestamp() -> String {
+    jiff::Timestamp::now().to_string()
 }

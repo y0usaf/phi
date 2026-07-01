@@ -9,7 +9,7 @@ use anyhow::{Context as _, Result};
 
 use super::types::{
     ExchangeEnd, ExchangeStart, ExchangeStatus, Header, LeafRecord, Line, ReplEntry, ReplRecord,
-    Role, SessionStore, SpillResult, new_id,
+    Role, SESSION_VERSION, SessionStore, SpillResult, new_id, now_timestamp,
 };
 
 /// Per-cwd session directory, mirroring pi: `sessions/--{cwd with
@@ -44,6 +44,7 @@ impl SessionStore {
             path,
             header: Header {
                 id,
+                version: SESSION_VERSION,
                 cwd: cwd.display().to_string(),
                 parent_session: None,
             },
@@ -101,6 +102,15 @@ impl SessionStore {
         }
         let header = header
             .with_context(|| format!("not a phi session file (no header): {}", path.display()))?;
+        // A file from a newer phi may carry records this build would
+        // misread or silently drop on rewrite — refuse instead.
+        anyhow::ensure!(
+            header.version <= SESSION_VERSION,
+            "session file version {} is newer than this phi understands (max {}): {}",
+            header.version,
+            SESSION_VERSION,
+            path.display()
+        );
         // Validate the leaf: a leaf pointing at an entry the tolerant
         // reader dropped (malformed line) falls back to the newest entry
         // rather than orphaning the branch. A None leaf (navigation to
@@ -197,6 +207,7 @@ impl SessionStore {
         let entry = super::types::Entry {
             id: new_id(),
             parent_id: self.leaf.clone(),
+            timestamp: Some(now_timestamp()),
             role,
             text: text.to_owned(),
             display_text,
@@ -204,8 +215,8 @@ impl SessionStore {
             usage_by_model,
         };
         // Disk first, memory second: an entry becomes a fact only once it
-        // is durably logged, so a failed write must not leave in-memory
-        // state ahead of the file.
+        // is logged, so a failed write must not leave in-memory state
+        // ahead of the file.
         let id = self.write_line(&Line::Message(entry.clone()))?;
         self.leaf = Some(entry.id.clone());
         if let Some(pid) = &entry.parent_id {
@@ -222,6 +233,8 @@ impl SessionStore {
         let entry = ReplEntry {
             id: new_id(),
             parent_id: self.leaf.clone(),
+            timestamp: Some(now_timestamp()),
+            prose: record.prose,
             code: record.code,
             stdout: record.stdout,
             stderr: record.stderr,
@@ -321,9 +334,9 @@ impl SessionStore {
         if !self.persisted {
             let dir = self.path.parent().expect("session path has a dir");
             std::fs::create_dir_all(dir)?;
-            // The header write must be as durable as every append: sync the
-            // file, then fsync the directory so the new name itself survives
-            // a crash (a session that exists in memory but not on disk would
+            // The header write must be fully durable: sync the file, then
+            // fsync the directory so the new name itself survives a crash
+            // (a session that exists in memory but not on disk would
             // violate the log-is-the-session invariant).
             let mut file = std::fs::OpenOptions::new()
                 .create_new(true)
@@ -342,10 +355,16 @@ impl SessionStore {
         }
         let mut file = std::fs::OpenOptions::new().append(true).open(&self.path)?;
         writeln!(file, "{}", serde_json::to_string(line)?)?;
-        // The log is the session: a line is a fact only after it reaches
-        // disk. Sessions append at human-interaction rates, so the fsync
-        // cost is negligible next to the LLM/REPL work it protects.
-        file.sync_data()?;
+        // Tiered durability: turn boundaries and branch navigation are the
+        // milestones a resume depends on, so `ExchangeEnd` and `Leaf` fsync
+        // — and an fsync flushes every earlier line of the turn with them.
+        // Mid-turn appends (messages, repls, `ExchangeStart`) only reach
+        // the page cache: they survive a process crash, and an OS/power
+        // crash truncating them is the designed interrupted-exchange
+        // signature, not corruption.
+        if matches!(line, Line::ExchangeEnd(_) | Line::Leaf(_)) {
+            file.sync_data()?;
+        }
         Ok(match line {
             Line::Message(entry) => entry.id.clone(),
             Line::Session(header) => header.id.clone(),
@@ -354,6 +373,99 @@ impl SessionStore {
             Line::ExchangeStart(start) => start.id.clone(),
             Line::ExchangeEnd(end) => end.id.clone(),
         })
+    }
+
+    /// Rewrite the log without records that no longer affect a load:
+    /// superseded `Leaf` lines and closed exchange-marker pairs. Every
+    /// message and repl line is live (they form the branch tree) and is
+    /// preserved verbatim; an unacknowledged interrupted exchange keeps
+    /// its open `ExchangeStart` so the crash signature survives. Writes
+    /// to a temp file and renames into place, so a crash mid-compact
+    /// leaves the original untouched. Only runs when it would reclaim at
+    /// least `COMPACT_MIN_SAVED_LINES`; returns whether it ran.
+    ///
+    /// Call when opening a session for use (resume), not while listing:
+    /// listing must never rewrite files behind the user's back.
+    pub fn compact(&mut self) -> Result<bool> {
+        const COMPACT_MIN_SAVED_LINES: usize = 64;
+        if !self.persisted {
+            return Ok(false);
+        }
+        let bytes = std::fs::read(&self.path)?;
+        let current_lines = bytes.iter().filter(|&&b| b == b'\n').count();
+        // A Leaf record is only needed when the effective leaf differs
+        // from the implicit one (the last message line).
+        let implicit_leaf = self.entries.last().map(|e| e.id.clone());
+        let needs_leaf = !self.entries.is_empty() && self.leaf != implicit_leaf;
+        let live_lines = 1 // header
+            + self.entries.len()
+            + self.repls.len()
+            + usize::from(needs_leaf)
+            + usize::from(self.interrupted_exchange.is_some())
+            + usize::from(self.open_exchange.is_some());
+        if current_lines.saturating_sub(live_lines) < COMPACT_MIN_SAVED_LINES {
+            return Ok(false);
+        }
+
+        let dir = self.path.parent().context("session path has a dir")?;
+        let tmp_path = dir.join(format!("{}.jsonl.compact", self.header.id));
+        {
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .truncate(true)
+                .write(true)
+                .open(&tmp_path)?;
+            writeln!(
+                file,
+                "{}",
+                serde_json::to_string(&Line::Session(self.header.clone()))?
+            )?;
+            for entry in &self.entries {
+                writeln!(
+                    file,
+                    "{}",
+                    serde_json::to_string(&Line::Message(entry.clone()))?
+                )?;
+            }
+            for repl in &self.repls {
+                writeln!(
+                    file,
+                    "{}",
+                    serde_json::to_string(&Line::Repl(repl.clone()))?
+                )?;
+            }
+            // Chronological precedence on reload: the interrupted marker
+            // first, then the currently open one (last start wins).
+            if let Some(id) = &self.interrupted_exchange {
+                writeln!(
+                    file,
+                    "{}",
+                    serde_json::to_string(&Line::ExchangeStart(ExchangeStart { id: id.clone() }))?
+                )?;
+            }
+            if let Some(id) = &self.open_exchange {
+                writeln!(
+                    file,
+                    "{}",
+                    serde_json::to_string(&Line::ExchangeStart(ExchangeStart { id: id.clone() }))?
+                )?;
+            }
+            if needs_leaf {
+                writeln!(
+                    file,
+                    "{}",
+                    serde_json::to_string(&Line::Leaf(LeafRecord {
+                        id: self.leaf.clone()
+                    }))?
+                )?;
+            }
+            file.sync_data()?;
+        }
+        std::fs::rename(&tmp_path, &self.path)?;
+        if let Ok(dir_handle) = std::fs::File::open(dir) {
+            let _ = dir_handle.sync_data();
+        }
+        Ok(true)
     }
 
     /// New session containing the lineage up to (but not including)
@@ -378,6 +490,7 @@ impl SessionStore {
             path: tmp_path.clone(),
             header: Header {
                 id,
+                version: SESSION_VERSION,
                 cwd: self.header.cwd.clone(),
                 parent_session: Some(self.path.display().to_string()),
             },

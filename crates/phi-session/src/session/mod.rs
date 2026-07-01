@@ -57,6 +57,83 @@ mod tests {
     }
 
     #[test]
+    fn compact_drops_dead_lines_and_preserves_state() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut store = store_in(tmp.path());
+        let q1 = store.append(Role::User, "q1").unwrap();
+        let a1 = store.append(Role::Assistant, "a1").unwrap();
+        store
+            .append_repl(ReplRecord {
+                prose: String::new(),
+                code: "1 + 1".into(),
+                stdout: "2".into(),
+                stderr: String::new(),
+                duration_secs: 0.1,
+                kind: ReplKind::Agent,
+                tools: Vec::new(),
+                subcalls: Vec::new(),
+            })
+            .unwrap();
+        // Closed exchange markers and a pile of superseded leaf records:
+        // all dead weight a compact should reclaim.
+        store.begin_exchange().unwrap();
+        store.end_exchange(ExchangeStatus::Completed).unwrap();
+        for _ in 0..40 {
+            store.set_leaf(Some(q1.clone())).unwrap();
+            store.set_leaf(Some(a1.clone())).unwrap();
+        }
+        // Land on a non-implicit leaf so compact must emit a Leaf record.
+        store.set_leaf(Some(q1.clone())).unwrap();
+
+        let lines_before = std::fs::read_to_string(store.path())
+            .unwrap()
+            .lines()
+            .count();
+        assert!(store.compact().unwrap(), "compact should run");
+        let lines_after = std::fs::read_to_string(store.path())
+            .unwrap()
+            .lines()
+            .count();
+        assert!(lines_after < lines_before);
+        // header + 2 messages + 1 repl + 1 leaf record
+        assert_eq!(lines_after, 5);
+
+        let loaded = SessionStore::load(store.path()).unwrap();
+        assert_eq!(loaded.entries.len(), 2);
+        assert_eq!(loaded.repls.len(), 1);
+        assert_eq!(loaded.leaf, Some(q1));
+        assert!(loaded.interrupted_exchange().is_none());
+    }
+
+    #[test]
+    fn compact_is_noop_below_threshold_and_keeps_interrupted_marker() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut store = store_in(tmp.path());
+        store.append(Role::User, "q1").unwrap();
+        store.begin_exchange().unwrap();
+        // Simulate a crash mid-turn: reload with the exchange still open.
+        let path = store.path().to_owned();
+        drop(store);
+        let mut loaded = SessionStore::load(&path).unwrap();
+        assert!(loaded.interrupted_exchange().is_some());
+        // Tiny file: nothing to reclaim, compact declines.
+        assert!(!loaded.compact().unwrap());
+
+        // Pile on dead leaf records until compact runs, then verify the
+        // interrupted marker survived the rewrite.
+        let q1 = loaded.entries[0].id.clone();
+        for _ in 0..40 {
+            loaded.set_leaf(None).unwrap();
+            loaded.set_leaf(Some(q1.clone())).unwrap();
+        }
+        assert!(loaded.compact().unwrap());
+        let reloaded = SessionStore::load(&path).unwrap();
+        assert!(reloaded.interrupted_exchange().is_some());
+        assert_eq!(reloaded.entries.len(), 1);
+        assert_eq!(reloaded.leaf, Some(q1));
+    }
+
+    #[test]
     fn set_leaf_branches_the_tree() {
         let tmp = tempfile::tempdir().unwrap();
         let mut store = store_in(tmp.path());
@@ -125,6 +202,7 @@ mod tests {
         let a1 = store.append(Role::Assistant, "a1").unwrap();
         store
             .append_repl(ReplRecord {
+                prose: String::new(),
                 code: "print(1)".to_owned(),
                 stdout: "1
 "
@@ -200,6 +278,7 @@ mod tests {
         let _a1 = store.append(Role::Assistant, "a1").unwrap();
         store
             .append_repl(ReplRecord {
+                prose: String::new(),
                 code: "print(llm_query('hi'))".to_owned(),
                 stdout: "world
 "
@@ -268,6 +347,7 @@ mod tests {
         store.append(Role::User, "q1").unwrap();
         store
             .append_repl(ReplRecord {
+                prose: String::new(),
                 code: "print(llm_query('x'))".to_owned(),
                 stdout: "done\n".to_owned(),
                 stderr: String::new(),
@@ -314,6 +394,7 @@ mod tests {
         let q1 = store.append(Role::User, "q1").unwrap();
         store
             .append_repl(ReplRecord {
+                prose: String::new(),
                 code: "print(1)".to_owned(),
                 stdout: "1
 "
@@ -374,6 +455,7 @@ mod tests {
         let q1 = store.append(Role::User, "q1").unwrap();
         store
             .append_repl(ReplRecord {
+                prose: String::new(),
                 code: "answer['content'] = 'done'\nanswer['ready'] = True".to_owned(),
                 stdout: String::new(),
                 stderr: String::new(),
@@ -575,6 +657,7 @@ mod tests {
         let spill = SessionStore::spill_output(&large, 4096).unwrap();
         store
             .append_repl(ReplRecord {
+                prose: String::new(),
                 code: "print(bash('big'))".to_owned(),
                 stdout: spill.tail.clone(),
                 stderr: String::new(),
@@ -606,5 +689,38 @@ mod tests {
         let path = spill.full_output_path.unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), large);
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn branch_restore_carries_intermediate_prose() {
+        // Intermediate assistant prose persisted as ReplRecord.prose must
+        // survive a load + branch_restore roundtrip so the model's
+        // reasoning chain between steps is available on session resume.
+        let tmp = tempfile::tempdir().unwrap();
+        let mut store = store_in(tmp.path());
+        store.append(Role::User, "q1").unwrap();
+        let _a1 = store.append(Role::Assistant, "a1").unwrap();
+        store
+            .append_repl(ReplRecord {
+                prose: "Let me fix the test.".to_owned(),
+                code: "print(1)".to_owned(),
+                stdout: "1
+"
+                .to_owned(),
+                stderr: String::new(),
+                duration_secs: 0.1,
+                kind: ReplKind::Agent,
+                tools: Vec::new(),
+                subcalls: Vec::new(),
+            })
+            .unwrap();
+
+        let loaded = SessionStore::load(store.path()).unwrap();
+        let (exchanges, pending) = loaded.branch_restore();
+        assert!(pending.is_empty());
+        assert_eq!(exchanges.len(), 1);
+        assert_eq!(exchanges[0].repls.len(), 1);
+        assert_eq!(exchanges[0].repls[0].prose, "Let me fix the test.");
+        assert_eq!(exchanges[0].repls[0].code, "print(1)");
     }
 }
