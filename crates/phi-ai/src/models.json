@@ -39709,7 +39709,7 @@
   },
   {
     "id": "gemini-2.5-flash-lite-preview-09-2025-thinking",
-    "name": "Gemini 2.5 Flash Lite Preview (09/2025) – Thinking",
+    "name": "Gemini 2.5 Flash Lite Preview (09/2025) \u2013 Thinking",
     "api": "openai-completions",
     "provider": "nano-gpt",
     "base_url": "https://nano-gpt.com/api/v1",
@@ -39757,7 +39757,7 @@
   },
   {
     "id": "gemini-2.5-flash-preview-09-2025-thinking",
-    "name": "Gemini 2.5 Flash Preview (09/2025) – Thinking",
+    "name": "Gemini 2.5 Flash Preview (09/2025) \u2013 Thinking",
     "api": "openai-completions",
     "provider": "nano-gpt",
     "base_url": "https://nano-gpt.com/api/v1",
@@ -79505,6 +79505,226 @@
     },
     "context_window": 200000,
     "max_tokens": 131072,
+    "headers": {}
+  },
+  {
+    "id": "composer-2.5",
+    "name": "Composer 2.5",
+    "api": "cursor-native",
+    "provider": "cursor",
+    "base_url": "https://api2.cursor.sh",
+    "reasoning": true,
+    "input": [
+      "text"
+    ],
+    "cost": {
+      "input": 0.0,
+      "output": 0.0,
+      "cache_read": 0.0,
+      "cache_write": 0.0
+    },
+    "context_window": 200000,
+    "max_tokens": 8192,
+    "headers": {}
+  },
+  {
+    "id": "composer-2-fast",
+    "name": "Composer 2 Fast",
+    "api": "cursor-native",
+    "provider": "cursor",
+    "base_url": "https://api2.cursor.sh",
+    "reasoning": true,
+    "input": [
+      "text"
+    ],
+    "cost": {
+      "input": 0.0,
+      "output": 0.0,
+      "cache_read": 0.0,
+      "cache_write": 0.0
+    },
+    "context_window": 200000,
+    "max_tokens": 8192,
+    "headers": {}
+  },
+  {
+    "id": "composer-2",
+    "name": "Composer 2",
+    "api": "cursor-native",
+    "provider": "cursor",
+    "base_url": "https://api2.cursor.sh",
+    "reasoning": true,
+    "input": [
+      "text"
+    ],
+    "cost": {
+      "input": 0.0,
+      "output": 0.0,
+      "cache_read": 0.0,
+      "cache_write": 0.0
+    },
+    "context_window": 200000,
+    "max_tokens": 8192,
+    "headers": {}
+  },
+  {
+    "id": "gpt-5.4-high",
+    "name": "GPT-5.4 High",
+    "api": "cursor-native",
+    "provider": "cursor",
+    "base_url": "https://api2.cursor.sh",
+    "reasoning": false,
+    "input": [
+      "text"
+    ],
+    "cost": {
+      "input": 0.0,
+      "output": 0.0,
+      "cache_read": 0.0,
+      "cache_write": 0.0
+    },
+    "context_window": 200000,
+    "max_tokens": 8192,
+    "headers": {}
+  },
+  {
+    "id": "gpt-5.4-medium",
+    "name": "GPT-5.4 Medium",
+    "api": "cursor-native",
+    "provider": "cursor",
+    "base_url": "https://api2.cursor.sh",
+    "reasoning": false,
+    "input": [
+      "text"
+    ],
+    "cost": {
+      "input": 0.0,
+      "output": 0.0,
+      "cache_read": 0.0,
+      "cache_write": 0.0
+    },
+    "context_window": 200000,
+    "max_tokens": 8192,
+    "headers": {}
+  },
+  {
+    "id": "gpt-5.4-low",
+    "name": "GPT-5.4 Low",
+    "api": "cursor-native",
+    "provider": "cursor",
+    "base_url": "https://api2.cursor.sh",
+    "reasoning": false,
+    "input": [
+      "text"
+    ],
+    "cost": {
+      "input": 0.0,
+      "output": 0.0,
+      "cache_read": 0.0,
+      "cache_write": 0.0
+    },
+    "context_window": 200000,
+    "max_tokens": 8192,
+    "headers": {}
+  },
+  {
+    "id": "gpt-5",
+    "name": "GPT-5",
+    "api": "cursor-native",
+    "provider": "cursor",
+    "base_url": "https://api2.cursor.sh",
+    "reasoning": false,
+    "input": [
+      "text"
+    ],
+    "cost": {
+      "input": 0.0,
+      "output": 0.0,
+      "cache_read": 0.0,
+      "cache_write": 0.0
+    },
+    "context_window": 200000,
+    "max_tokens": 8192,
+    "headers": {}
+  },
+  {
+    "id": "sonnet-4.6",
+    "name": "Sonnet 4.6",
+    "api": "cursor-native",
+    "provider": "cursor",
+    "base_url": "https://api2.cursor.sh",
+    "reasoning": false,
+    "input": [
+      "text"
+    ],
+    "cost": {
+      "input": 0.0,
+      "output": 0.0,
+      "cache_read": 0.0,
+      "cache_write": 0.0
+    },
+    "context_window": 200000,
+    "max_tokens": 8192,
+    "headers": {}
+  },
+  {
+    "id": "sonnet-4.6-thinking",
+    "name": "Sonnet 4.6 Thinking",
+    "api": "cursor-native",
+    "provider": "cursor",
+    "base_url": "https://api2.cursor.sh",
+    "reasoning": true,
+    "input": [
+      "text"
+    ],
+    "cost": {
+      "input": 0.0,
+      "output": 0.0,
+      "cache_read": 0.0,
+      "cache_write": 0.0
+    },
+    "context_window": 200000,
+    "max_tokens": 8192,
+    "headers": {}
+  },
+  {
+    "id": "opus-4.6",
+    "name": "Opus 4.6",
+    "api": "cursor-native",
+    "provider": "cursor",
+    "base_url": "https://api2.cursor.sh",
+    "reasoning": true,
+    "input": [
+      "text"
+    ],
+    "cost": {
+      "input": 0.0,
+      "output": 0.0,
+      "cache_read": 0.0,
+      "cache_write": 0.0
+    },
+    "context_window": 200000,
+    "max_tokens": 8192,
+    "headers": {}
+  },
+  {
+    "id": "gemini-3.1-pro",
+    "name": "Gemini 3.1 Pro",
+    "api": "cursor-native",
+    "provider": "cursor",
+    "base_url": "https://api2.cursor.sh",
+    "reasoning": false,
+    "input": [
+      "text"
+    ],
+    "cost": {
+      "input": 0.0,
+      "output": 0.0,
+      "cache_read": 0.0,
+      "cache_write": 0.0
+    },
+    "context_window": 200000,
+    "max_tokens": 8192,
     "headers": {}
   }
 ]

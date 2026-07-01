@@ -23,6 +23,7 @@ pub enum AuthCredential {
 pub enum OAuthProviderId {
     Anthropic,
     OpenAiCodex,
+    Cursor,
 }
 
 impl OAuthProviderId {
@@ -30,6 +31,7 @@ impl OAuthProviderId {
         match s {
             "anthropic" => Some(Self::Anthropic),
             "openai" | "openai-codex" => Some(Self::OpenAiCodex),
+            "cursor" => Some(Self::Cursor),
             _ => None,
         }
     }
@@ -40,6 +42,7 @@ impl OAuthProviderId {
         match self {
             Self::Anthropic => "anthropic",
             Self::OpenAiCodex => "openai",
+            Self::Cursor => "cursor",
         }
     }
 }

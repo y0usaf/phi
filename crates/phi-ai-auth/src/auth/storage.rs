@@ -210,6 +210,7 @@ fn auth_from_credentials(provider: OAuthProviderId, credentials: OAuthCredential
             account_id: credentials.account_id.unwrap_or_default(),
             access: credentials.access,
         },
+        OAuthProviderId::Cursor => Auth::OAuthToken(credentials.access),
     }
 }
 
@@ -252,6 +253,19 @@ fn env_auth(provider: &str) -> Option<Auth> {
         && !key.is_empty()
     {
         return Some(Auth::ApiKey(key));
+    }
+    // Cursor: can use an API key or a direct access token.
+    if provider == "cursor" {
+        if let Ok(token) = std::env::var("CURSOR_ACCESS_TOKEN")
+            && !token.is_empty()
+        {
+            return Some(Auth::OAuthToken(token));
+        }
+        if let Ok(key) = std::env::var("CURSOR_API_KEY")
+            && !key.is_empty()
+        {
+            return Some(Auth::ApiKey(key));
+        }
     }
     None
 }

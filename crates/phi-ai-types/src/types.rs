@@ -27,6 +27,8 @@ pub enum Api {
     GoogleVertex,
     #[serde(rename = "mistral-conversations")]
     MistralConversations,
+    #[serde(rename = "cursor-native")]
+    CursorNative,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
@@ -420,8 +422,9 @@ pub struct StreamOptions {
     pub timeout: Duration,
     pub max_retries: u32,
     /// Identity string injected as the uncached first system block for
-    /// OAuth-authenticated Anthropic requests. `None` (default) emits no
-    /// shim — the caller supplies the value instead of hardcoding it.
+    /// OAuth-authenticated Anthropic requests. `None` (default) falls back
+    /// to the provider's Claude Code compliance shim, which the API requires
+    /// before it will honor an OAuth token.
     pub identity: Option<String>,
     /// Whether the provider should apply `cache_control` breakpoints
     /// (Anthropic `ephemeral` markers) to the system prompt and last

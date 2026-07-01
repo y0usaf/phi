@@ -20,6 +20,7 @@ pub async fn login(
         (OAuthProviderId::OpenAiCodex, LoginMethod::DeviceCode) => {
             crate::auth::codex::login_device_code(callbacks, cancel).await
         }
+        (OAuthProviderId::Cursor, _) => crate::auth::cursor::login(callbacks, cancel).await,
     }
 }
 
@@ -30,5 +31,6 @@ pub async fn refresh(
     match provider {
         OAuthProviderId::Anthropic => crate::auth::anthropic::refresh(refresh_token).await,
         OAuthProviderId::OpenAiCodex => crate::auth::codex::refresh(refresh_token).await,
+        OAuthProviderId::Cursor => crate::auth::cursor::refresh(refresh_token).await,
     }
 }

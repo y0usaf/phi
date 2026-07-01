@@ -3,6 +3,7 @@
 mod anthropic;
 mod callback_server;
 mod codex;
+mod cursor;
 mod device_code;
 mod pkce;
 mod storage;

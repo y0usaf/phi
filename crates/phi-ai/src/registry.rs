@@ -31,6 +31,10 @@ impl Registry {
             Api::OpenAiCompletions,
             Arc::new(crate::providers::openai_completions::OpenAiCompletionsProvider::new()),
         );
+        providers.insert(
+            Api::CursorNative,
+            Arc::new(crate::providers::cursor::CursorProvider::new()),
+        );
         Self { models, providers }
     }
 
@@ -123,7 +127,10 @@ mod tests {
         assert!(supported.len() < total);
         assert!(supported.iter().all(|m| matches!(
             m.api,
-            Api::AnthropicMessages | Api::OpenAiResponses | Api::OpenAiCompletions
+            Api::AnthropicMessages
+                | Api::OpenAiResponses
+                | Api::OpenAiCompletions
+                | Api::CursorNative
         )));
         // Unqualified find prefers a supported model on id collisions; with
         // OpenAiCompletions registered, the 302ai variant is supported and
