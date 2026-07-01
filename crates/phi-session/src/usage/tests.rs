@@ -104,7 +104,7 @@ fn report_dedupes_per_model_not_just_timestamp_and_tokens() {
 }
 
 #[test]
-fn report_aggregates_by_day_and_model_skipping_archive_and_duplicates() {
+fn report_aggregates_by_day_and_model_including_archive_skipping_duplicates() {
     let tmp = tempfile::tempdir().unwrap();
     let project = tmp.path().join("--tmp-project--");
     fs::create_dir_all(&project).unwrap();
@@ -120,17 +120,19 @@ fn report_aggregates_by_day_and_model_skipping_archive_and_duplicates() {
     fs::create_dir_all(&archive).unwrap();
     fs::write(
         archive.join("old.jsonl"),
-        message("2026-01-02T12:00:00Z", "claude-opus-4-5", 999, 999, 9.0),
+        r#"{"type":"message","id":"archived","parent_id":null,"timestamp":"2026-01-02T12:00:00Z","role":"assistant","text":"hi","usage":{"input":999,"output":999,"cache_read":10,"cache_write":20,"cost_total":9.0,"model":"claude-opus-4-5"}}"#,
     )
     .unwrap();
 
     let report = load_usage_report_from_path(tmp.path());
 
-    assert_eq!(report.files_scanned, 1);
-    assert_eq!(report.entries, 2);
+    // Archived sessions still count toward usage: archiving must not
+    // retroactively shrink the report.
+    assert_eq!(report.files_scanned, 2);
+    assert_eq!(report.entries, 3);
     assert_eq!(report.skipped_duplicates, 1);
-    assert_eq!(report.totals.input_tokens, 107);
-    assert_eq!(report.days.len(), 2);
+    assert_eq!(report.totals.input_tokens, 1106);
+    assert_eq!(report.days.len(), 3);
     assert!(report.days[0].date > report.days[1].date);
     assert_eq!(
         report.days[0].model_breakdowns[0].model_name,

@@ -9,7 +9,9 @@ use std::sync::Arc;
 use super::types::*;
 use crate::session;
 
-/// All non-archived phi sessions, aggregated.
+/// All phi sessions, aggregated — including archived ones. Archiving a
+/// session moves its file under `ARCHIVE/` but must not retroactively
+/// erase its tokens/cost from the usage report.
 pub fn load_usage_report() -> UsageReport {
     match session::sessions_root() {
         Ok(root) => load_usage_report_from_path(&root),
@@ -71,6 +73,20 @@ pub fn load_usage_report_from_path(root: &Path) -> UsageReport {
     report
 }
 
+/// Deduplicated usage totals for a single session file (e.g. an archived
+/// session shown in the archive overlay).
+pub fn session_usage_totals(path: &Path) -> UsageTotals {
+    let mut processed = HashSet::new();
+    let mut totals = UsageTotals::default();
+    for entry in parse_usage_entries_from_file(path) {
+        if !processed.insert(entry.dedupe_key.clone()) {
+            continue;
+        }
+        totals.add(&entry.totals);
+    }
+    totals
+}
+
 pub(super) fn collect_jsonl_files(dir: &Path, files: &mut Vec<PathBuf>) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;
@@ -82,10 +98,6 @@ pub(super) fn collect_jsonl_files(dir: &Path, files: &mut Vec<PathBuf>) {
             continue;
         };
         if file_type.is_dir() {
-            // Archived sessions don't count toward usage.
-            if path.file_name().is_some_and(|name| name == "ARCHIVE") {
-                continue;
-            }
             collect_jsonl_files(&path, files);
         } else if file_type.is_file()
             && path.extension().and_then(|ext| ext.to_str()) == Some("jsonl")
