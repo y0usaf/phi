@@ -42,12 +42,15 @@ impl Rlm {
     ) -> ToolCallSink {
         let tx = tool_tx.clone();
         Arc::new(move |event: ToolCallEvent| {
-            if let ToolCallEvent::End { arguments, .. } = &event {
+            if let ToolCallEvent::End { id, arguments, .. } = &event {
                 let code = arguments
                     .get("code")
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_owned());
-                let _ = tx.send(ToolCallResult { code });
+                let _ = tx.send(ToolCallResult {
+                    id: id.clone(),
+                    code,
+                });
             }
         })
     }

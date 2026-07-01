@@ -1,6 +1,6 @@
 //! Persistent multi-turn RLM session.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use phi_ai::Usage;
@@ -46,6 +46,12 @@ pub struct RlmSession {
     /// `send`, as (assistant ```repl``` block, REPL-output user message)
     /// pairs — the model sees them as its own prior repl turns.
     pub pending_shell: Vec<ChatMessage>,
+    /// Mid-run steering queue: texts pushed here by the TUI while a `send`
+    /// is in flight are injected into live history at each iteration boundary
+    /// via the `save_point` hook. Uses `std::sync::Mutex` (not tokio's)
+    /// because `SavePointFn` is a sync `Fn` — the save-point closure is
+    /// called synchronously from inside `run_loop`.
+    steer_queue: Arc<Mutex<Vec<String>>>,
 }
 
 /// Threshold: once the in-band transcript exceeds this many message pairs,
@@ -68,8 +74,32 @@ impl RlmSession {
             transcript: Vec::new(),
             session_summary: None,
             pending_shell: Vec::new(),
+            steer_queue: Arc::new(Mutex::new(Vec::new())),
         }
     }
+
+    /// Return a shared handle to the steer queue. The TUI clones this Arc
+    /// before the session moves into its task, then calls `push` on the
+    /// locked vec whenever the user submits a message mid-run.
+    pub fn steer_queue(&self) -> Arc<Mutex<Vec<String>>> {
+        Arc::clone(&self.steer_queue)
+    }
+
+    /// Enqueue a mid-run user interjection. Safe to call from any thread
+    /// while `send` is in flight — the lock is uncontested except at each
+    /// iteration boundary when `run_loop` drains the queue.
+    ///
+    /// Limitation: steered messages are injected into the live `history`
+    /// vector inside `run_loop` and influence model behaviour, but they are
+    /// NOT recorded in the durable session transcript (which only captures
+    /// (prompt, answer) pairs). Doing so would require reaching into the
+    /// phi-session store schema from here. Accept the limitation for now.
+    pub fn steer(&self, text: String) {
+        if let Ok(mut q) = self.steer_queue.lock() {
+            q.push(text);
+        }
+    }
+
     pub fn with_runtime(mut self, runtime: Arc<AppRuntime>) -> Self {
         self.rlm = self.rlm.with_runtime(runtime);
         self
@@ -242,6 +272,27 @@ impl RlmSession {
         history.append(&mut self.pending_shell);
         let warm = !self.transcript.is_empty();
         self.rlm.register_repl_tool();
+        // Build the save-point closure that drains steered messages into
+        // live history at each iteration boundary. Each drained text becomes
+        // a distinct `Role::User` message prefixed with `[user interjection]`
+        // so the model understands it arrived mid-run rather than as part of
+        // the original prompt. The closure owns an `Arc` clone — cheap and
+        // contention-free: the TUI pushes while the engine is awaiting the
+        // LM; the drain happens synchronously between iterations.
+        let steer_q = Arc::clone(&self.steer_queue);
+        let sp: Box<crate::config::SavePointFn> = Box::new(move |_iteration| {
+            let mut q = steer_q.lock().unwrap_or_else(|e| e.into_inner());
+            if q.is_empty() {
+                return Vec::new();
+            }
+            q.drain(..)
+                .map(|text| ChatMessage {
+                    role: Role::User,
+                    content: format!("[user interjection] {text}"),
+                    ..Default::default()
+                })
+                .collect()
+        });
         let outcome = self
             .rlm
             .run_loop(
@@ -252,7 +303,7 @@ impl RlmSession {
                 self.exchanges,
                 warm,
                 cancel,
-                None,
+                Some(&*sp),
             )
             .await;
 
@@ -306,6 +357,7 @@ impl RlmSession {
                 ..Default::default()
             });
             let block = ExecutedBlock {
+                id: String::new(),
                 code: code.to_owned(),
                 result: result.clone(),
             };
@@ -381,6 +433,14 @@ impl RlmSession {
             for repl in &exchange.repls {
                 push_repl_turns(&mut history, repl, self.rlm.config.max_output_chars);
             }
+            // Recreate context_N for this exchange's prompt, mirroring
+            // live send()'s add_context(prompt). Without this, restored
+            // sessions have only context_0 (the initial payload) and the
+            // contexts counter doesn't advance, so the next live send
+            // overwrites context_1 instead of creating the next slot.
+            let ctx_snippet = context_snippet(self.contexts, &exchange.prompt);
+            let _ = env.exec(&ctx_snippet, self.rlm.config.exec_timeout).await;
+            self.contexts += 1;
             let snippet = history_snippet(self.exchanges, &history, &exchange.response);
             env.exec(&snippet, self.rlm.config.exec_timeout)
                 .await
@@ -429,6 +489,10 @@ impl RlmSession {
         self.transcript.clear();
         self.session_summary = None;
         self.pending_shell.clear();
+        // Clear any pending steers that arrived before the reset completed.
+        if let Ok(mut q) = self.steer_queue.lock() {
+            q.clear();
+        }
     }
 
     /// Compact the in-band transcript when it exceeds the threshold. The

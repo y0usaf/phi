@@ -1,6 +1,7 @@
 //! Rlm struct, lifecycle methods, and main run_loop.
 
 use std::collections::HashMap;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
 use std::sync::LazyLock;
 use std::time::Instant;
@@ -51,9 +52,34 @@ const PROSE_NUDGE_THRESHOLD: usize = 2;
 /// before exhausting `max_iterations`.
 const MAX_CONSECUTIVE_PROSE: usize = 5;
 
-/// A tool call result arriving from the streaming sink, carrying the code
-/// extracted from the tool call's arguments for eager execution.
+/// Number of additional identical-signature iterations (after the first match)
+/// that must accumulate before a corrective nudge is injected into history.
+/// The counter starts at 0 on the first match, so the nudge fires after
+/// `LOOP_NUDGE_THRESHOLD + 1` total identical iterations (e.g., value 2 means
+/// 3 identical iterations before the nudge). The signature includes stdout and
+/// stderr so that polling code whose output changes (e.g. job status checks
+/// returning new runtimes) is never flagged as looping.
+const LOOP_NUDGE_THRESHOLD: usize = 2;
+
+/// Maximum value of the additional-identical-iterations counter before the
+/// engine stops with `LimitKind::Loop`. Because the counter starts at 0 on the
+/// first match, this fires after `MAX_CONSECUTIVE_LOOP + 1` total identical
+/// iterations (e.g., value 5 means 6 identical iterations before the hard
+/// stop). The nudge fires at `LOOP_NUDGE_THRESHOLD` to give the model a chance
+/// to recover first.
+const MAX_CONSECUTIVE_LOOP: usize = 5;
+
+/// Nudge injected into history after `LOOP_NUDGE_THRESHOLD` identical
+/// iterations, asking the model to re-read its output and try something new.
+const LOOP_NUDGE: &str = "Your recent iterations executed identical code producing identical output — no progress is being made. Step back: re-read the actual output, state a new hypothesis in prose, and take a different action (different command, different file, or delegate a fresh-context look via subagent(...)).";
+
+/// A tool call result arriving from the streaming sink, carrying the provider-
+/// assigned tool call id and the code extracted from the tool call's arguments
+/// for eager execution. The id is threaded into `ExecutedBlock` so the exec
+/// loop can pair each result with the correct `tool_result` message without
+/// relying on code-string equality.
 pub struct ToolCallResult {
+    pub id: String,
     pub code: Option<String>,
 }
 
@@ -346,9 +372,25 @@ impl Rlm {
         let mut consecutive_errors = 0usize;
         let mut consecutive_prose = 0usize;
         let mut iterations = 0usize;
+        // Loop-detection state: tracks the hash of all (code, stdout, stderr)
+        // triples from the most recent iteration. Reset whenever the signature
+        // changes or an empty-blocks iteration occurs.
+        let mut prev_loop_sig: Option<u64> = None;
+        let mut consecutive_loop = 0usize;
+        // Nudge is injected at most once per contiguous stall sequence; reset
+        // when the stall breaks (prev_loop_sig changes) so a genuinely new
+        // repeated pattern can still receive a nudge.
+        let mut loop_nudge_injected = false;
 
         let iteration_limit = self.iteration_limit();
         let mut i = 0usize;
+        // Steer text queued by save_point in the previous tool-call turn. Carried
+        // forward and prepended to the next turn's user message rather than pushed
+        // as a separate Role::User object immediately after tool_result messages.
+        // Merging steer text with the next build_user_prompt (rather than injecting
+        // a separate user object) avoids a consecutive-user-message pair that could
+        // cause providers to merge or reject the interleaved tool_result + text turn.
+        let mut pending_steer: Option<String> = None;
         while iteration_limit.is_none_or(|limit| i < limit) {
             if cancel.is_cancelled() {
                 return self.cancelled_outcome(best_partial, iterations);
@@ -364,9 +406,18 @@ impl Rlm {
                 return self.limit_outcome(LimitKind::Timeout, detail, best_partial, iterations);
             }
 
+            // Prepend any steer text carried from the previous turn's save_point
+            // so the model sees it at the top of the next turn's user prompt.
+            let turn_prompt =
+                build_user_prompt(i, iteration_limit, context_count, history_count, warm);
+            let turn_prompt = if let Some(steer) = pending_steer.take() {
+                format!("{steer}\n\n{turn_prompt}")
+            } else {
+                turn_prompt
+            };
             history.push(ChatMessage {
                 role: Role::User,
-                content: build_user_prompt(i, iteration_limit, context_count, history_count, warm),
+                content: turn_prompt,
                 ..Default::default()
             });
 
@@ -438,6 +489,7 @@ impl Rlm {
             let exec = async {
                 let mut blocks = Vec::new();
                 while let Some(result) = tool_rx.recv().await {
+                    let tool_call_id = result.id;
                     if let Some(code) = result.code {
                         // ── ToolCall interception ──────────────────────────
                         // Dispatch tool_call event before execution. If any
@@ -572,6 +624,7 @@ impl Rlm {
                             duration: final_result.duration,
                         });
                         blocks.push(ExecutedBlock {
+                            id: tool_call_id,
                             code,
                             result: final_result,
                         });
@@ -613,7 +666,11 @@ impl Rlm {
             let had_error = blocks.iter().any(|b| !b.result.stderr.is_empty());
             if had_error {
                 consecutive_errors += 1;
-            } else {
+            } else if !blocks.is_empty() {
+                // Only reset on a turn with actual clean code execution; prose turns
+                // (blocks empty) are neutral and do not count as success — a model
+                // that interleaves prose between failing code turns should still
+                // accumulate toward the max_errors limit.
                 consecutive_errors = 0;
             }
             if let Some(max_errors) = self.config.max_errors
@@ -689,10 +746,72 @@ impl Rlm {
                 };
             }
 
-            let had_tool_calls = !completion.tool_calls.is_empty() && !blocks.is_empty();
+            // A turn has tool calls when the provider emitted at least one tool_use
+            // block, regardless of whether we extracted `code` from every call.
+            // The earlier check (`&& !blocks.is_empty()`) caused two bugs:
+            // (a) when some calls lacked `code`, N tool_uses landed in the assistant
+            //     message but only M < N tool_results were pushed → HTTP 400 on
+            //     providers that require a 1:1 correspondence;
+            // (b) when ALL calls lacked `code`, the entire assistant turn was silently
+            //     treated as prose and tool calls were dropped from history entirely.
+            let had_tool_calls = !completion.tool_calls.is_empty();
 
             if had_tool_calls {
                 consecutive_prose = 0;
+
+                // ── Loop detection ─────────────────────────────────────────
+                // Hash all (code, stdout, stderr) triples from this iteration.
+                // Output is included in the signature so that polling code
+                // whose output legitimately changes (e.g. job status checks)
+                // is never falsely flagged as a stall.
+                // When no blocks executed (all calls lacked `code`), skip loop
+                // detection for this turn — an empty hash would trivially match
+                // and falsely accumulate the loop counter.
+                if !blocks.is_empty() {
+                    let loop_sig = {
+                        let mut h = DefaultHasher::new();
+                        for b in &blocks {
+                            b.code.hash(&mut h);
+                            b.result.stdout.hash(&mut h);
+                            b.result.stderr.hash(&mut h);
+                        }
+                        h.finish()
+                    };
+                    if prev_loop_sig == Some(loop_sig) {
+                        consecutive_loop += 1;
+                    } else {
+                        consecutive_loop = 0;
+                        prev_loop_sig = Some(loop_sig);
+                        // New stall pattern: allow one nudge for this new sequence.
+                        loop_nudge_injected = false;
+                    }
+                    if consecutive_loop >= MAX_CONSECUTIVE_LOOP {
+                        let preview: String = blocks
+                            .first()
+                            .map(|b| {
+                                let s = b.code.trim();
+                                let chars: String = s.chars().take(120).collect();
+                                if s.chars().count() > 120 {
+                                    format!("{chars}…")
+                                } else {
+                                    chars
+                                }
+                            })
+                            .unwrap_or_default();
+                        let detail = format!(
+                            "{consecutive_loop} consecutive identical iterations (code+output unchanged); repeated code preview: {preview:?}"
+                        );
+                        if !response.trim().is_empty() {
+                            best_partial = Some(response);
+                        }
+                        return self.limit_outcome(
+                            LimitKind::Loop,
+                            detail,
+                            best_partial,
+                            iterations,
+                        );
+                    }
+                }
 
                 // Bank the assistant message with its tool calls.
                 let tool_calls: Vec<crate::lm_core::ToolCall> = completion
@@ -707,21 +826,29 @@ impl Rlm {
                 history.push(ChatMessage::assistant_with_tools(response, tool_calls));
 
                 // Feed each tool result back as a Role::Tool message.
+                // Each block carries the provider-assigned id from the sink, so
+                // we use it directly — no code-equality heuristic that would
+                // collide when two tool calls have identical code.
+                // For any tool call that did not produce an executed block (e.g.
+                // a non-`repl` tool call whose `code` argument was absent), push
+                // a synthetic error result so the provider always sees exactly one
+                // tool_result per tool_use in the preceding assistant message.
+                let executed_ids: std::collections::HashSet<&str> =
+                    blocks.iter().map(|b| b.id.as_str()).collect();
                 for block in &blocks {
-                    let tool_call_id = completion
-                        .tool_calls
-                        .iter()
-                        .zip(blocks.iter())
-                        .find_map(|(tc, b)| {
-                            if b.code == block.code {
-                                Some(tc.id.clone())
-                            } else {
-                                None
-                            }
-                        })
-                        .unwrap_or_default();
                     let output = format_execution_result(&block.result);
-                    history.push(ChatMessage::tool_result(tool_call_id, output));
+                    history.push(ChatMessage::tool_result(block.id.clone(), output));
+                }
+                for tc in &completion.tool_calls {
+                    if !executed_ids.contains(tc.id.as_str()) {
+                        history.push(ChatMessage::tool_result(
+                            tc.id.clone(),
+                            format!(
+                                "Error: tool call '{}' did not produce executable code",
+                                tc.name
+                            ),
+                        ));
+                    }
                 }
 
                 dispatch_event(
@@ -740,20 +867,36 @@ impl Rlm {
                     duration: iter_start.elapsed(),
                 });
 
-                // Save Point: flush pending writes and drain queues.
+                // Save Point: collect pending steer messages from the caller.
+                // They are deferred to the top of the next turn's user message
+                // rather than pushed immediately after tool_result messages; a
+                // separate Role::User object between the tool_results and the
+                // next assistant turn can cause provider validation errors.
                 if let Some(sp) = save_point {
                     let queued = sp(i);
                     if !queued.is_empty() {
-                        history.push(ChatMessage {
-                            role: Role::User,
-                            content: queued
-                                .iter()
-                                .map(|m| m.content.clone())
-                                .collect::<Vec<_>>()
-                                .join("\n\n"),
-                            ..Default::default()
-                        });
+                        let combined = queued
+                            .iter()
+                            .map(|m| m.content.clone())
+                            .collect::<Vec<_>>()
+                            .join("\n\n");
+                        pending_steer = Some(combined);
                     }
+                }
+
+                // After LOOP_NUDGE_THRESHOLD identical iterations, inject a
+                // corrective nudge so the model can course-correct before the
+                // hard stop at MAX_CONSECUTIVE_LOOP fires. The flag ensures at
+                // most one nudge per contiguous stall sequence even if the model
+                // alternates between two stall patterns (which each reset
+                // `consecutive_loop` and re-expose the threshold).
+                if consecutive_loop == LOOP_NUDGE_THRESHOLD && !loop_nudge_injected {
+                    loop_nudge_injected = true;
+                    history.push(ChatMessage {
+                        role: Role::User,
+                        content: LOOP_NUDGE.to_owned(),
+                        ..Default::default()
+                    });
                 }
 
                 i += 1;
@@ -797,6 +940,11 @@ impl Rlm {
 
             // Safety valve: after MAX_CONSECUTIVE_PROSE block-free turns,
             // accept the prose as the final answer.
+            // An empty-blocks (prose) turn resets loop detection: the model is
+            // not in a code-execution stall if it emitted prose at all.
+            prev_loop_sig = None;
+            consecutive_loop = 0;
+            loop_nudge_injected = false;
             consecutive_prose += 1;
             if consecutive_prose >= MAX_CONSECUTIVE_PROSE {
                 let prose = response.trim().to_owned();

@@ -80,6 +80,9 @@ pub enum LimitKind {
     Timeout,
     Tokens,
     Errors,
+    /// The engine detected that the model repeatedly executed the same code
+    /// and received identical output — no progress was being made.
+    Loop,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]

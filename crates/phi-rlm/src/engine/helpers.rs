@@ -118,6 +118,7 @@ pub fn push_repl_turns(
         }],
     ));
     let block = ExecutedBlock {
+        id: String::new(),
         code: repl.code.clone(),
         result: ReplResult {
             stdout: repl.stdout.clone(),

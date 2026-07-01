@@ -4,6 +4,10 @@ use phi_repl::ReplResult;
 
 #[derive(Clone, Debug)]
 pub struct ExecutedBlock {
+    /// The tool call id assigned by the LLM provider; used to match this
+    /// block back to the corresponding `ToolCall` in `ChatMessage::tool_result`
+    /// without relying on code-string equality (which breaks for duplicate code).
+    pub id: String,
     pub code: String,
     pub result: ReplResult,
 }
@@ -94,6 +98,7 @@ mod tests {
     #[test]
     fn formats_single_and_multi_block_iterations() {
         let blocks = vec![ExecutedBlock {
+            id: "tc_0".into(),
             code: "print(1)".into(),
             result: result("1\n", "", &[]),
         }];
@@ -104,10 +109,12 @@ mod tests {
 
         let blocks = vec![
             ExecutedBlock {
+                id: "tc_0".into(),
                 code: "print(1)".into(),
                 result: result("1\n", "", &[]),
             },
             ExecutedBlock {
+                id: "tc_1".into(),
                 code: "print(2)".into(),
                 result: result("2\n", "", &[]),
             },
@@ -121,6 +128,7 @@ mod tests {
     #[test]
     fn truncates_long_results() {
         let blocks = vec![ExecutedBlock {
+            id: "tc_0".into(),
             code: "print('a' * 100)".into(),
             result: result(&"a".repeat(100), "", &[]),
         }];
