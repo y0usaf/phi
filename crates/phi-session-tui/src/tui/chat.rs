@@ -219,7 +219,7 @@ impl Ui {
         if !self.block_active {
             return;
         }
-        let now_ms = self.anim_start.elapsed().as_millis() as u64;
+        let now_ms = self.clock.now_ms();
         let spinner = self.visual.spinner_frame(now_ms);
         let elapsed = now_ms;
         let shimmer = self.palette.shimmer_accent;

@@ -5,8 +5,9 @@
 use std::io::Write;
 
 use crossterm::event::{
-    DisableBracketedPaste, EnableBracketedPaste, KeyboardEnhancementFlags,
-    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    DisableBracketedPaste, DisableFocusChange, EnableBracketedPaste,
+    EnableFocusChange, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
+    PushKeyboardEnhancementFlags,
 };
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use unicode_segmentation::UnicodeSegmentation;
@@ -54,6 +55,7 @@ impl RawModeGuard {
         let mut out = std::io::stdout();
         let _ = enable_raw_mode();
         let _ = crossterm::execute!(out, EnableBracketedPaste);
+        let _ = crossterm::execute!(out, EnableFocusChange);
         if self.kitty {
             let _ = crossterm::execute!(
                 out,
@@ -67,6 +69,7 @@ impl RawModeGuard {
         if self.kitty {
             let _ = crossterm::execute!(out, PopKeyboardEnhancementFlags);
         }
+        let _ = crossterm::execute!(out, DisableFocusChange);
         let _ = crossterm::execute!(out, DisableBracketedPaste);
         let _ = disable_raw_mode();
     }

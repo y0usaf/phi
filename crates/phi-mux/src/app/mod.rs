@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result};
-use phi_tui::RawModeGuard;
+use phi_tui::{AnimationClock, RawModeGuard};
 use phi_tui::crossterm::event::{
     DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyEvent, KeyEventKind,
     KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
@@ -44,7 +44,6 @@ use phi_session::config::MuxConfig;
 use phi_session_tui::session_builder::SharedResources;
 use phi_session_tui::tui::{self, HostModalKind, HostModalRequest};
 
-const ANIMATION_TICK: Duration = Duration::from_millis(16);
 const NOTE_TTL: Duration = Duration::from_secs(4);
 const WHEEL_LINES: i32 = 3;
 const ARCHIVE_MAX_AGE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
@@ -159,6 +158,7 @@ pub async fn run(shared: SharedResources, mux_config: MuxConfig, cwd: PathBuf) -
         cached_scrollback_total: 0,
         sidebar_scroll: 0,
         note: None,
+        clock: AnimationClock::with_baseline_keep_alive(),
         channels: MuxChannels {
             status_tx,
             redraw_tx,
@@ -238,6 +238,11 @@ struct MuxApp {
     cached_scrollback_total: usize,
     sidebar_scroll: usize,
     note: Option<(String, StatusNoteKind, Instant)>,
+    /// Universal animation clock — single source of truth for all
+    /// animation timing (sidebar shimmer, statusbar shimmer, spinner
+    /// glyphs, gradient text). Replaces the old `ANIMATION_TICK` constant
+    /// and ad-hoc `SystemTime::now()` calls.
+    clock: AnimationClock,
     channels: MuxChannels,
     session_watcher: SessionWatcher,
     quit: bool,

@@ -200,6 +200,12 @@ impl Ui {
                 // finalized entries are re-emitted as scrollback.
                 self.transcript.reset();
             }
+            Event::FocusGained => {
+                self.clock.set_focused(true);
+            }
+            Event::FocusLost => {
+                self.clock.set_focused(false);
+            }
             _ => {}
         }
         false
@@ -463,7 +469,11 @@ impl Ui {
         let _ = self.store.begin_exchange();
         let cancel = CancellationToken::new();
         self.running = Some(cancel.clone());
-        self.anim_start = std::time::Instant::now();
+        // Add a keep-alive interest for the active run: the equalizer,
+        // thinking expressions, spinner frames, and tool header shimmer
+        // all derive their phase from clock.now_ms() while a run is in
+        // flight. The baseline keep-alive keeps the clock alive regardless.
+        self.clock.add_keep_alive();
         self.turn = 0;
         self.stream.clear();
         self.thinking.clear();
@@ -747,7 +757,7 @@ impl Ui {
             self.open_tool_args.insert(key, args.clone());
         }
         let label = tool_title(&name, &args, &self.palette);
-        let elapsed = self.anim_start.elapsed().as_millis() as u64;
+        let elapsed = self.clock.now_ms();
         if let Some((start, len)) = self.push_status(
             depth + 1,
             running_status_text_shimmer(
@@ -853,7 +863,7 @@ impl Ui {
                 len: 0,
             });
         } else {
-            let elapsed = self.anim_start.elapsed().as_millis() as u64;
+            let elapsed = self.clock.now_ms();
             if let Some((start, len)) = self.push_status(
                 depth,
                 running_status_text_shimmer(
@@ -1043,6 +1053,11 @@ impl Ui {
         self.commit_block();
         self.live_code = None;
         self.running = None;
+        // Remove the run's keep-alive interest: the equalizer/spinner no
+        // longer need dedicated ticks. The baseline keep-alive (chrome
+        // shimmer/gradient) keeps the clock alive, so animations continue
+        // smoothly even when idle.
+        self.clock.remove_keep_alive();
         self.stream.clear();
         self.thinking.clear();
         let display_text = assistant_display_text(&completion.response, &self.thinking_log);

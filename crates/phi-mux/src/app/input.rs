@@ -20,7 +20,17 @@ impl MuxApp {
                 }
                 self.handle_key(key).await;
             }
-            Event::FocusGained | Event::FocusLost => {}
+            // Focus events drive the animation clock's throttle: focused →
+            // 16ms tick (~60fps), blurred → 32ms tick (~31fps), matching
+            // claude-code's ClockProvider + useTerminalFocus model.
+            Event::FocusGained => {
+                self.clock.set_focused(true);
+                self.forward_to_session(Event::FocusGained);
+            }
+            Event::FocusLost => {
+                self.clock.set_focused(false);
+                self.forward_to_session(Event::FocusLost);
+            }
         }
     }
 

@@ -332,7 +332,6 @@ pub async fn run(setup: TuiSetup, mut io: SessionIo) -> Result<()> {
         Some(rx) => InputSource::Forwarded(rx),
         None => InputSource::Tty(EventStream::new()),
     };
-    let mut ticker = tokio::time::interval(Duration::from_millis(40));
     // Coalesce redraws to the same 40ms cadence as the spinner tick: bursts
     // of stream deltas collapse into one frame instead of repainting per
     // SSE chunk. Terminals bottleneck at ~25fps anyway.
@@ -396,7 +395,26 @@ pub async fn run(setup: TuiSetup, mut io: SessionIo) -> Result<()> {
                 ui.handle_login_msg(msg);
                 false
             }
-            _ = ticker.tick(), if ui.running.is_some() => {
+            // Clock-driven timer: the universal animation clock always ticks
+            // (baseline keep-alive = 1 for the always-visible chrome shimmer
+            // and gradient text). When a run is in flight an additional
+            // keep-alive is active, but the baseline ensures the clock never
+            // pauses — animations move continuously, not just on keystrokes.
+            // Focus-aware: 16ms when focused (~60fps wake-up, throttled to
+            // FRAME by the draw coalescer below), 32ms when blurred.
+            _ = async {
+                if ui.clock.is_ticking() {
+                    tokio::time::sleep_until(
+                        tokio::time::Instant::now()
+                            + Duration::from_millis(ui.clock.tick_interval_ms()),
+                    ).await
+                } else {
+                    // Should never happen (baseline keep-alive), but guard
+                    // against edge cases: sleep long, any real event cancels.
+                    tokio::time::sleep(Duration::from_secs(3600)).await
+                }
+            }, if ui.clock.is_ticking() => {
+                ui.clock.tick();
                 ui.refresh_open_activity_rows();
                 for msg in ui.runtime.drain_notifications() {
                     ui.pending.push(TranscriptEntry::RawLines(vec![msg]));
@@ -461,6 +479,10 @@ pub async fn run(setup: TuiSetup, mut io: SessionIo) -> Result<()> {
         }
         dirty = true;
         if last_draw.elapsed() >= FRAME {
+            // Tick the clock so now_ms() returns a fresh snapshot for
+            // this render frame. All animation functions called during
+            // ui.draw() see the same value.
+            ui.clock.tick();
             if let Err(e) = ui.draw() {
                 eprintln!("phi: render error: {e}");
             }
@@ -519,9 +541,14 @@ struct Ui {
     pub(super) term: Terminal<Box<dyn std::io::Write + Send>>,
     pub(super) editor: Editor,
     pub(super) visual: VisualContext,
-    /// When the current run's equalizer animation started (wall-clock).
-    /// Reset each time `running` transitions to `Some`.
-    pub(super) anim_start: std::time::Instant,
+    /// Universal animation clock — single source of truth for all animation
+    /// timing in the session-TUI (equalizer, thinking expressions, spinner
+    /// frames, tool header shimmer, chrome bar shimmer). All animated
+    /// surfaces derive their phase from `clock.now_ms()`.
+    /// keepAlive: add when a run starts (equalizer/spinner active), remove
+    /// when it ends — so the clock pauses and the event loop stops waking
+    /// on timer when nothing is animating.
+    pub(super) clock: phi_tui::AnimationClock,
     pub(super) palette: InlinePalette,
     /// Cancel token of the in-flight turn, if any.
     pub(super) running: Option<CancellationToken>,
@@ -681,7 +708,7 @@ impl Ui {
             term,
             editor: Editor::new(),
             visual: VisualContext::default(),
-            anim_start: std::time::Instant::now(),
+            clock: phi_tui::AnimationClock::with_baseline_keep_alive(),
             palette: InlinePalette::default_const(),
             running: None,
             login: None,

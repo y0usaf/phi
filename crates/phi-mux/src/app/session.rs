@@ -6,6 +6,13 @@ use super::*;
 /// one draw per 16ms, preventing double rendering from desynchronized clocks.
 const MIN_RENDER_INTERVAL: Duration = Duration::from_millis(16);
 
+/// Duration to sleep when the animation clock is paused (no keep-alive
+/// interests). This is a fallback wake-up so the event loop can still
+/// process background events (status updates, watcher notifications)
+/// even when no animations are running. Using a longer interval here
+/// reduces idle CPU while keeping responsiveness.
+const IDLE_POLL_INTERVAL: Duration = Duration::from_secs(1);
+
 impl MuxApp {
     pub(crate) async fn main_loop(
         &mut self,
@@ -18,8 +25,6 @@ impl MuxApp {
     ) -> Result<()> {
         use futures::StreamExt as _;
         let mut events = EventStream::new();
-        let mut ticker = tokio::time::interval(ANIMATION_TICK);
-        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         self.ensure_all_sessions().await;
         self.draw();
@@ -86,15 +91,37 @@ impl MuxApp {
                     }
                     dirty = true;
                 }
-                _ = ticker.tick() => {
+                // Clock-driven timer: when animations are active (keep-alive > 0),
+                // wake at the clock's tick interval (16ms focused, 32ms blurred).
+                // When paused (no animations), wake at a longer idle interval so
+                // background events still get processed without busy-looping.
+                // This replaces the old unconditional `ticker.tick()` — the
+                // clock is the single timer, and it only fires when something
+                // needs animating.
+                _ = async {
+                    if self.clock.is_ticking() {
+                        tokio::time::sleep_until(
+                            tokio::time::Instant::now()
+                                + Duration::from_millis(self.clock.tick_interval_ms()),
+                        ).await
+                    } else {
+                        tokio::time::sleep(IDLE_POLL_INTERVAL).await
+                    }
+                } => {
+                    if self.clock.is_ticking() {
+                        self.clock.tick();
+                    }
                     if let Some((_, _, at)) = &self.note
                         && at.elapsed() > NOTE_TTL {
                             self.note = None;
                             dirty = true;
                         }
-                    // Always redraw on tick so the statusbar shimmer stays
-                    // animated even when no session is busy.
-                    dirty = true;
+                    // Redraw on tick so animated surfaces (statusbar shimmer,
+                    // sidebar spinner, gradient text) stay in motion. The clock
+                    // only ticks when at least one keep-alive interest is active.
+                    if self.clock.is_ticking() {
+                        dirty = true;
+                    }
                 }
             }
 

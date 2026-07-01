@@ -334,7 +334,7 @@ impl Ui {
         // Equalizer thinking animation at the very bottom of the transcript,
         // just above the separator line. Shown while a run is in flight.
         if self.running.is_some() {
-            let elapsed = self.anim_start.elapsed().as_millis() as u64;
+            let elapsed = self.clock.now_ms();
             let tool_active = !self.open_tool_rows.is_empty() || !self.open_subcall_rows.is_empty();
             let glyphs = equalizer_glyphs(elapsed);
             let expression = self.visual.thinking_expression(elapsed, tool_active);
@@ -437,7 +437,7 @@ impl Ui {
             .and_then(|name| name.to_str())
             .map(String::from)
             .unwrap_or_else(|| ".".to_string());
-        let elapsed = self.anim_start.elapsed().as_millis() as u64;
+        let elapsed = self.clock.now_ms();
         let shim = self.palette.shimmer_accent;
 
         // Build each statusbar section independently and apply shimmer_ansi

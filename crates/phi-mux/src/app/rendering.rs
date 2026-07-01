@@ -20,10 +20,10 @@ impl MuxApp {
             self.renderer.invalidate();
         }
 
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
+        // Use the universal animation clock — the single source of truth
+        // for all animation timing. All render functions in the same frame
+        // see the same `now_ms`, keeping every animated surface in sync.
+        let now_ms = self.clock.now_ms();
 
         let sidebar_rows =
             build_sidebar_rows(&self.workspace.projects, self.workspace.selected_project);
