@@ -3,7 +3,7 @@ use std::io::IsTerminal;
 
 use phi_rlm::RlmEvent;
 use phi_session::config::ToolsSettings;
-use phi_session::tool_summary::{ToolCategory, categorize};
+use phi_tui::tool_category::{ToolCategory, tally};
 
 use crate::render::render_tool_panel;
 use crate::tool_view::{
@@ -255,26 +255,7 @@ fn print_tool_summary(tools: &[PendingTool], repl_count: usize, color: bool) {
         eprintln!("    {ck} {total} {noun}");
     }
 
-    // Build per-category tallies.
-    let mut tallies: [(ToolCategory, usize, usize); 5] = [
-        (ToolCategory::Reads, 0, 0),
-        (ToolCategory::Edits, 0, 0),
-        (ToolCategory::Commands, 0, 0),
-        (ToolCategory::Searches, 0, 0),
-        (ToolCategory::Other, 0, 0),
-    ];
-    for tool in tools {
-        let cat = categorize(&tool.name);
-        let idx = ToolCategory::order()
-            .iter()
-            .position(|c| *c == cat)
-            .unwrap();
-        if tool.failed {
-            tallies[idx].2 += 1;
-        } else {
-            tallies[idx].1 += 1;
-        }
-    }
+    let tallies = tally(tools.iter().map(|t| (t.name.as_str(), t.failed)));
 
     let cr = cross(color);
     for (cat, ok, failed) in tallies {

@@ -249,13 +249,6 @@ shared_fields_struct! {
         max_errors: Option<usize>,
         max_concurrent_subcalls: Option<usize>,
         prose_policy: Option<String>,
-        pub tools_tool_max_lines: Option<usize>,
-        pub tools_repl_max_lines: Option<usize>,
-        pub tools_tool_padding: Option<usize>,
-        pub tools_repl_padding: Option<usize>,
-        pub tools_user_padding: Option<usize>,
-        pub tools_gap: Option<usize>,
-        pub tools_tool_summary: Option<bool>,
     }
 }
 
@@ -327,22 +320,13 @@ impl Settings {
             tools: {
                 let cfg = config.tools.unwrap_or_default();
                 ToolsSettings {
-                    tool_max_lines: args
-                        .tools_tool_max_lines
-                        .or(cfg.tool_max_lines)
-                        .unwrap_or(5),
-                    repl_max_lines: args
-                        .tools_repl_max_lines
-                        .or(cfg.repl_max_lines)
-                        .unwrap_or(8),
-                    tool_padding: args.tools_tool_padding.or(cfg.tool_padding).unwrap_or(1),
-                    repl_padding: args.tools_repl_padding.or(cfg.repl_padding).unwrap_or(1),
-                    user_padding: args.tools_user_padding.or(cfg.user_padding).unwrap_or(1),
-                    gap: args.tools_gap.or(cfg.gap).unwrap_or(1),
-                    tool_summary: args
-                        .tools_tool_summary
-                        .or(cfg.tool_summary)
-                        .unwrap_or(false),
+                    tool_max_lines: cfg.tool_max_lines.unwrap_or(5),
+                    repl_max_lines: cfg.repl_max_lines.unwrap_or(8),
+                    tool_padding: cfg.tool_padding.unwrap_or(1),
+                    repl_padding: cfg.repl_padding.unwrap_or(1),
+                    user_padding: cfg.user_padding.unwrap_or(1),
+                    gap: cfg.gap.unwrap_or(1),
+                    tool_summary: cfg.tool_summary.unwrap_or(false),
                 }
             },
             skills: config.skills.unwrap_or_default(),
@@ -458,7 +442,7 @@ mod tests {
     fn tools_from_config() {
         let args = CliArgs::default();
         let config = eval(
-            "return { tools = { tool_max_lines = 0, repl_max_lines = 0, tool_padding = 0, repl_padding = 0, user_padding = 0, gap = 0 } }",
+            "return { tools = { tool_max_lines = 0, repl_max_lines = 0, tool_padding = 0, repl_padding = 0, user_padding = 0, gap = 0, tool_summary = true } }",
         )
         .unwrap();
         let settings = Settings::resolve(&args, config, false);
@@ -468,31 +452,7 @@ mod tests {
         assert_eq!(settings.tools.repl_padding, 0);
         assert_eq!(settings.tools.user_padding, 0);
         assert_eq!(settings.tools.gap, 0);
-    }
-
-    #[test]
-    fn tools_cli_overrides_config() {
-        let args = CliArgs {
-            tools_tool_max_lines: Some(10),
-            ..Default::default()
-        };
-        let config = eval("return { tools = { tool_max_lines = 0 } }").unwrap();
-        let settings = Settings::resolve(&args, config, false);
-        assert_eq!(settings.tools.tool_max_lines, 10);
-        assert_eq!(settings.tools.tool_padding, 1);
-        assert_eq!(settings.tools.repl_padding, 1);
-        assert_eq!(settings.tools.user_padding, 1);
-        assert_eq!(settings.tools.gap, 1);
-    }
-
-    #[test]
-    fn tools_repl_max_lines_from_config() {
-        let args = CliArgs {
-            tools_repl_max_lines: Some(3),
-            ..Default::default()
-        };
-        let settings = Settings::resolve(&args, Config::default(), false);
-        assert_eq!(settings.tools.repl_max_lines, 3);
+        assert!(settings.tools.tool_summary);
     }
 
     #[test]

@@ -16,6 +16,7 @@ pub mod style;
 pub mod symbols;
 pub mod terminal;
 pub mod theme;
+pub mod tool_category;
 
 pub use cells::{
     display_cell_width, truncate_line_in_place_to_width, truncate_line_preserving_suffix_to_width,
@@ -51,3 +52,4 @@ pub use theme::{
     Mode, Theme, ansi_index_to_rgb, apply_palette, bg_escape, bold_fg_escape, brighten,
     default_terminal_colors, fade_toward, fg_escape, generate_theme, luminance_rgb, terminal_mode,
 };
+pub use tool_category::{ToolCategory, categorize, tally};

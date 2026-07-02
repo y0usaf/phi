@@ -1,6 +1,7 @@
 mod builder;
 mod constants;
 mod metadata;
+mod overrides;
 
 #[cfg(test)]
 mod tests;
@@ -8,6 +9,7 @@ mod tests;
 pub use builder::{SystemPromptOptions, build_system_prompt};
 pub use constants::DEFAULT_ANSWER_NUDGE;
 pub(crate) use constants::{PROSE_NUDGE, STRICT_PROSE_NUDGE};
+pub use overrides::discover_prompt_overrides;
 
 // Test-only re-exports.
 #[cfg(test)]

@@ -735,7 +735,7 @@ impl Ui {
         tools: &[session::ToolCall],
         repl_count: usize,
     ) -> Vec<String> {
-        use phi_session::tool_summary::{ToolCategory, categorize};
+        use phi_tui::tool_category::{ToolCategory, tally};
 
         if repl_count == 0 && tools.is_empty() {
             return Vec::new();
@@ -743,28 +743,8 @@ impl Ui {
         let ck = format!("{}✓{RESET}", &self.palette.success_fg);
         let nr = format!("{}✗{RESET}", &self.palette.error_fg);
 
-        // Build per-category tallies.
-        let mut tallies: [(ToolCategory, usize, usize); 5] = [
-            (ToolCategory::Reads, 0, 0),
-            (ToolCategory::Edits, 0, 0),
-            (ToolCategory::Commands, 0, 0),
-            (ToolCategory::Searches, 0, 0),
-            (ToolCategory::Other, 0, 0),
-        ];
-        let mut any_failed = false;
-        for tool in tools {
-            let cat = categorize(&tool.name);
-            let idx = ToolCategory::order()
-                .iter()
-                .position(|c| *c == cat)
-                .unwrap();
-            if tool.error.is_some() {
-                tallies[idx].2 += 1;
-                any_failed = true;
-            } else {
-                tallies[idx].1 += 1;
-            }
-        }
+        let tallies = tally(tools.iter().map(|t| (t.name.as_str(), t.error.is_some())));
+        let any_failed = tallies.iter().any(|(_, _, failed)| *failed > 0);
 
         // Flat summary lines inside one neutral REPL container: the colored
         // ✓/✗ glyphs carry the state; indentation carries the nesting.

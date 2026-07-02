@@ -27,7 +27,7 @@ use phi_tui::{
     wrap_ansi_locate,
 };
 
-use phi_session::files::FileSearcher;
+use crate::files::FileSearcher;
 use phi_session::session::{self, SessionStore};
 use phi_session::transcript::{BlockSpec, Transcript};
 use phi_session::usage::load_usage_report;

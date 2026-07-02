@@ -7,5 +7,6 @@
 //! that downstream crates can use those types without pulling in tokio, mlua,
 //! or the full provider stack.
 
+pub mod files;
 pub mod session_builder;
 pub mod tui;

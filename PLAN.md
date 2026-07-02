@@ -192,15 +192,31 @@ API (`phi-ext`/`phi-lua`/`phi-event`), never bypass it.
 
 ### WS2 — Prune the surface
 
-- [ ] **2.1** Delete the seven `--tools-*` flags from `cli.rs`; move to settings
+- [x] **2.1** Delete the seven `--tools-*` flags from `cli.rs`; move to settings
       (config file), keeping CLI flags for behavior only (model, budget,
       iterations, output mode, mux, project). Extensions can add flags via
       `register_flag`.
-- [ ] **2.2** Relocate `phi-session/src/prompts.rs` (`.phi/SYSTEM.md` overrides)
+      *Landed as:* pure deletion — the `tools = {...}` table in `config.lua`
+      already covered every knob, so the flags and the seven `tools_*`
+      passthrough fields on `CliArgs` just died; `Settings::resolve` reads
+      tool display settings from config only.
+- [x] **2.2** Relocate `phi-session/src/prompts.rs` (`.phi/SYSTEM.md` overrides)
       next to the prompt builder in `phi-rlm/src/prompts/`, leaving `phi-session`
       as pure persistence (config, transcript, usage, store, tree).
-- [ ] **2.3** Audit remaining `phi-session` contents for other non-persistence
+      *Landed as:* `phi-rlm/src/prompts/overrides.rs`, re-exported as
+      `phi_rlm::discover_prompt_overrides`; the trust-gated `include_project`
+      contract is unchanged.
+- [x] **2.3** Audit remaining `phi-session` contents for other non-persistence
       logic.
+      *Found and relocated:* `files.rs` (`@`-token editor file completion —
+      TUI input logic) → `phi-session-tui/src/files.rs` (took the `ignore`
+      dep with it); `tool_summary.rs` (tool display categorization) →
+      `phi-tui/src/tool_category.rs`, whose shared `tally` also replaced the
+      duplicate tally loops in `phi-app/src/event_print.rs` and
+      `phi-session-tui/src/tui/chat.rs`. *Stays, per the blessed list:*
+      config, session store/tree, transcript, trust, usage. *Noted for
+      WS6.1:* `usage/rendering.rs` re-implements `phi-tui`'s cell-width/
+      truncation helpers — fold when auditing rendering duplication.
 
 ### WS3 — Slim the provider layer
 

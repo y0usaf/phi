@@ -245,8 +245,7 @@ fn build_rlm_config(
         format!("{CODING_PRELUDE}\n\n# Extension tools\n{ext_stubs}")
     };
 
-    let (prompt_override, append_prompt) =
-        phi_session::prompts::discover_prompt_overrides(cwd, project_trusted);
+    let (prompt_override, append_prompt) = phi_rlm::discover_prompt_overrides(cwd, project_trusted);
 
     RlmConfig {
         max_rlm_depth: settings.max_rlm_depth,
