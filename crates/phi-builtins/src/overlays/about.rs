@@ -34,7 +34,14 @@ fn render(ctx: &mut dyn DrawContext, _state: &mut OverlayState) {
     ctx.draw_box(rect, fg, bg, palette.border);
     let inner = rect.inset(2, 1);
 
-    ctx.put_text_bold(inner.col, inner.row, inner.cols, " Phi ", palette.accent, bg);
+    ctx.put_text_bold(
+        inner.col,
+        inner.row,
+        inner.cols,
+        " Phi ",
+        palette.accent,
+        bg,
+    );
 
     ctx.put_text(
         inner.col,

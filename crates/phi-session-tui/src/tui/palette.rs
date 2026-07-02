@@ -217,8 +217,16 @@ impl InlinePalette {
     /// and format the result as the inline TUI's escape strings.
     pub fn from_extension_theme(spec: &ThemeSpec, colors: &TerminalColors) -> Self {
         let probe = TerminalColorsProbe {
-            background: ExtRgb(colors.background.0, colors.background.1, colors.background.2),
-            foreground: ExtRgb(colors.foreground.0, colors.foreground.1, colors.foreground.2),
+            background: ExtRgb(
+                colors.background.0,
+                colors.background.1,
+                colors.background.2,
+            ),
+            foreground: ExtRgb(
+                colors.foreground.0,
+                colors.foreground.1,
+                colors.foreground.2,
+            ),
             palette: colors.palette.map(|opt| opt.map(|c| ExtRgb(c.0, c.1, c.2))),
         };
         let resolved = spec.resolve(Some(&probe));

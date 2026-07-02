@@ -1,22 +1,24 @@
-//! Skill discovery, mirroring pi's [Agent Skills standard](https://agentskills.io)
+//! Built-in skills extension: SKILL.md discovery + system-prompt injection,
+//! implemented through the same public extension API user extensions use
+//! (The Rule). Mirrors pi's [Agent Skills standard](https://agentskills.io)
 //! implementation.
 //!
 //! Skills are self-contained capability packages discovered from `SKILL.md`
 //! files. Each skill's frontmatter provides a `name` and `description`,
-//! injected as an `<available_skills>` block in the system prompt. The model
-//! reads the full `SKILL.md` on-demand when a task matches (progressive
-//! disclosure).
+//! injected as an `<available_skills>` block appended to the system prompt via
+//! the `BeforeAgentStart` event (`SystemPromptMod::append`). The model reads
+//! the full `SKILL.md` on-demand when a task matches (progressive disclosure).
 //!
 //! # Discovery locations
 //!
 //! Scanned by default (all may exist; missing dirs are skipped):
 //!   - `~/.config/phi/skills/`  — global user skills
-//!   - `<cwd>/.phi/skills/`     — project-level skills
+//!   - `<cwd>/.phi/skills/`     — project-level skills (trust-gated)
 //!   - Phi's own data dir       — bundled/installed skills
 //!
-//! Additional paths from [`Config::skills`](crate::config::Config::skills) are
-//! scanned after the defaults. Paths support `~` expansion and are resolved
-//! relative to `cwd`.
+//! Additional paths from the user's `config.lua` `skills` field are scanned
+//! after the defaults. Paths support `~` expansion and are resolved relative
+//! to `cwd`.
 //!
 //! # Discovery rules
 //!
@@ -40,11 +42,96 @@
 //! is required — skills without it are skipped.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
-use phi_rlm::Skill;
+use anyhow::Result;
+use phi_ext::{
+    EventHandlerRegistration, EventKind, EventReturn, Extension, ExtensionHost, ExtensionManifest,
+};
 
 const MAX_NAME_LENGTH: usize = 64;
 const MAX_DESCRIPTION_LENGTH: usize = 1024;
+
+/// A skill discovered via SKILL.md frontmatter.
+#[derive(Clone, Debug, Default)]
+pub struct Skill {
+    pub name: String,
+    pub description: String,
+    pub path: Option<String>,
+}
+
+/// The built-in skills extension. Discovers skills at registration time (once
+/// per session build, before any TUI takes the terminal) and appends the
+/// `<available_skills>` block to the system prompt on every `BeforeAgentStart`
+/// — `filter_system_prompt` starts from the original prompt each turn, so the
+/// block never accumulates.
+pub struct SkillsExtension {
+    cwd: PathBuf,
+    /// Extra dirs/files from the user's `config.lua` `skills` field.
+    extra_paths: Vec<String>,
+    /// Whether project-local `.phi/skills/` may load (project trust).
+    include_project: bool,
+}
+
+impl SkillsExtension {
+    pub fn new(cwd: &Path, extra_paths: Vec<String>, include_project: bool) -> Self {
+        Self {
+            cwd: cwd.to_path_buf(),
+            extra_paths,
+            include_project,
+        }
+    }
+}
+
+impl Extension for SkillsExtension {
+    fn manifest(&self) -> ExtensionManifest {
+        ExtensionManifest {
+            id: "phi:skills".to_string(),
+            name: "Phi Skills".to_string(),
+            version: "0.1.0".to_string(),
+            description: "SKILL.md discovery and <available_skills> system-prompt injection"
+                .to_string(),
+        }
+    }
+
+    fn register(&self, host: &mut dyn ExtensionHost) -> Result<()> {
+        let skills = discover_skills(&self.cwd, &self.extra_paths, self.include_project);
+        let block = (!skills.is_empty()).then(|| available_skills_block(&skills));
+        host.subscribe(EventHandlerRegistration {
+            event: EventKind::BeforeAgentStart,
+            label: "phi:skills".to_owned(),
+            handler: Arc::new(move |_event| {
+                Ok(block.clone().map(|append| EventReturn::SystemPromptMod {
+                    append: Some(append),
+                    prepend: None,
+                    replace: None,
+                }))
+            }),
+        })?;
+        Ok(())
+    }
+}
+
+/// Render the `<available_skills>` system-prompt block.
+pub fn available_skills_block(skills: &[Skill]) -> String {
+    let entries: Vec<String> = skills
+        .iter()
+        .map(|s| {
+            let location = s.path.as_deref().unwrap_or("");
+            format!(
+                "  <skill>\n    <name>{}</name>\n    <description>{}</description>\n    <location>{}</location>\n  </skill>",
+                s.name, s.description, location
+            )
+        })
+        .collect();
+    format!(
+        "The following skills provide specialized instructions for specific tasks.\n\
+         Read the full skill file when the task matches its description.\n\
+         When a skill file references a relative path, resolve it against the skill directory.\n\n\
+         <available_skills>\n{}\n</available_skills>",
+        entries.join("\n")
+    )
+}
 
 /// Discover skills from default locations and user-configured paths.
 ///
@@ -346,6 +433,7 @@ fn expand_path(raw: &str, cwd: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use phi_ext::RuntimeBuilder;
     use std::fs;
     use tempfile::tempdir;
 
@@ -372,6 +460,22 @@ mod tests {
         assert_eq!(skills.len(), 1);
         assert_eq!(skills[0].name, "my-skill");
         assert_eq!(skills[0].description, "Does cool things.");
+    }
+
+    #[test]
+    fn untrusted_project_skills_are_skipped() {
+        let dir = tempdir().unwrap();
+        let skills_dir = dir.path().join(".phi").join("skills");
+        let my_skill = skills_dir.join("my-skill");
+        fs::create_dir_all(&my_skill).unwrap();
+        fs::write(
+            my_skill.join("SKILL.md"),
+            "---\nname: my-skill\ndescription: Does cool things.\n---\n",
+        )
+        .unwrap();
+
+        let skills = discover_skills(dir.path(), &[], false);
+        assert!(skills.is_empty());
     }
 
     #[test]
@@ -507,5 +611,74 @@ mod tests {
             result,
             dir.path().join("relative/path").display().to_string()
         );
+    }
+
+    #[test]
+    fn available_skills_block_renders_entries() {
+        let block = available_skills_block(&[Skill {
+            name: "cargo-test".to_owned(),
+            description: "Run cargo tests.".to_owned(),
+            path: Some("skills/cargo-test/SKILL.md".to_owned()),
+        }]);
+        assert!(block.contains("<available_skills>"));
+        assert!(block.contains("<name>cargo-test</name>"));
+        assert!(block.contains("<description>Run cargo tests.</description>"));
+        assert!(block.contains("<location>skills/cargo-test/SKILL.md</location>"));
+        assert!(block.contains("</available_skills>"));
+        assert!(block.contains("The following skills provide specialized instructions"));
+    }
+
+    /// End-to-end through the extension API: the block lands in the system
+    /// prompt via `BeforeAgentStart` → `SystemPromptMod::append`, and repeated
+    /// filtering never accumulates (each turn starts from the original).
+    #[tokio::test]
+    async fn skills_extension_appends_block_via_before_agent_start() {
+        let dir = tempdir().unwrap();
+        let my_skill = dir.path().join(".phi").join("skills").join("my-skill");
+        fs::create_dir_all(&my_skill).unwrap();
+        fs::write(
+            my_skill.join("SKILL.md"),
+            "---\nname: my-skill\ndescription: Does cool things.\n---\n",
+        )
+        .unwrap();
+
+        let rt = RuntimeBuilder::new()
+            .with_cwd(dir.path())
+            .register_extension(SkillsExtension::new(dir.path(), Vec::new(), true))
+            .build()
+            .unwrap();
+
+        let base = "BASE PROMPT".to_owned();
+        let filtered = rt
+            .filter_system_prompt("user prompt", base.clone())
+            .await
+            .unwrap();
+        assert!(filtered.starts_with("BASE PROMPT"));
+        assert!(filtered.contains("<available_skills>"));
+        assert!(filtered.contains("<name>my-skill</name>"));
+
+        // Second turn: same size, no accumulation.
+        let again = rt
+            .filter_system_prompt("user prompt", base.clone())
+            .await
+            .unwrap();
+        assert_eq!(filtered, again);
+    }
+
+    /// No skills → the handler stays silent and the prompt is untouched.
+    #[tokio::test]
+    async fn skills_extension_is_silent_without_skills() {
+        let dir = tempdir().unwrap();
+        let rt = RuntimeBuilder::new()
+            .with_cwd(dir.path())
+            .register_extension(SkillsExtension::new(dir.path(), Vec::new(), true))
+            .build()
+            .unwrap();
+
+        let filtered = rt
+            .filter_system_prompt("user prompt", "BASE".to_owned())
+            .await
+            .unwrap();
+        assert_eq!(filtered, "BASE");
     }
 }

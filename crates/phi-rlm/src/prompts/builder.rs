@@ -53,15 +53,6 @@ pub struct ContextFile {
     pub content: String,
 }
 
-/// A skill discovered via SKILL.md frontmatter, injected as an
-/// `<available_skills>` block in the system prompt.
-#[derive(Clone, Debug, Default)]
-pub struct Skill {
-    pub name: String,
-    pub description: String,
-    pub path: Option<String>,
-}
-
 /// Pi-style composable system-prompt options. Each field overrides a default
 /// section; `build_system_prompt` composes them in a fixed order.
 ///
@@ -92,8 +83,6 @@ pub struct SystemPromptOptions<'a> {
     pub turn_cap: Option<usize>,
     /// Project-context files (AGENTS.md / CLAUDE.md) -> `<project_context>`.
     pub context_files: Vec<ContextFile>,
-    /// Skills -> `<available_skills>`.
-    pub skills: Vec<Skill>,
     /// `# Environment` block (cwd, is-git, platform, shell, OS version).
     /// Caller-supplied data, like `cwd`; no const fallback. Emitted before
     /// `cwd`.
@@ -109,7 +98,7 @@ pub struct SystemPromptOptions<'a> {
 ///
 /// identity → core_tools → custom_tools → mechanics →
 /// extra_guidelines → orchestrator → turn_scarcity → project_context →
-/// available_skills → env_info → cwd → append
+/// env_info → cwd → append
 ///
 /// Sections with a `DEFAULT_*` const fall back to it (on unless
 /// overridden/empty); `env_info` is caller-supplied data with no fallback.
@@ -170,25 +159,6 @@ pub fn build_system_prompt(opts: &SystemPromptOptions) -> String {
         sections.push(format!(
             "<project_context>\n{}\n</project_context>",
             blocks.join("\n")
-        ));
-    }
-
-    // available_skills
-    if !opts.skills.is_empty() {
-        let entries: Vec<String> = opts
-            .skills
-            .iter()
-            .map(|s| {
-                let location = s.path.as_deref().unwrap_or("");
-                format!(
-                    "  <skill>\n    <name>{}</name>\n    <description>{}</description>\n    <location>{}</location>\n  </skill>",
-                    s.name, s.description, location
-                )
-            })
-            .collect();
-        sections.push(format!(
-            "The following skills provide specialized instructions for specific tasks.\n             Read the full skill file when the task matches its description.\n             When a skill file references a relative path, resolve it against the skill directory.\n\n             <available_skills>\n{}\n</available_skills>",
-            entries.join("\n")
         ));
     }
 

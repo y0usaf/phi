@@ -9,6 +9,7 @@ phi-ext.workspace = true
 phi-session.workspace = true
 phi-tui.workspace = true
 anyhow.workspace = true
+directories.workspace = true
 
 [dev-dependencies]
 async-trait.workspace = true

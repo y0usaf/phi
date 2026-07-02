@@ -170,9 +170,21 @@ API (`phi-ext`/`phi-lua`/`phi-event`), never bypass it.
             `send_message`-style producer. Needs a design decision on how
             extension renderers receive palette/styling (grow
             `OverlayPalette`? `StyledText` return?) — don't rush it.
-- [ ] **1.4 Skills.** Relocate `phi-session/src/skills.rs` into a builtin
+- [x] **1.4 Skills.** Relocate `phi-session/src/skills.rs` into a builtin
       extension (discovery of `SKILL.md` dirs, injection into the system prompt
       via the `before_agent_start`-equivalent event). Skills are not RLM-core.
+      *Landed as:* `phi-builtins/src/skills.rs` — `SkillsExtension` discovers
+      at `register()` time (same pre-raw-mode timing as before) and injects the
+      `<available_skills>` block via `BeforeAgentStart` →
+      `SystemPromptMod::append`; no API gap surfaced. `phi-rlm` lost `Skill`,
+      `RlmConfig::skills`, and the builder's `available_skills` section (the
+      block now lands at the end of the prompt instead of before `env_info`);
+      `phi-session` is skills-free. Side effect that closed a real gap:
+      one-shot mode now builds the same extension runtime as the interactive
+      modes (`session_builder::build_runtime` made shared) — previously it
+      loaded no extensions at all, so Lua event handlers now apply to
+      `phi -p` runs too. Trust gating unchanged (`include_project` flag,
+      resolved by the host before construction).
 - [ ] **1.5 Acceptance:** `phi-session-tui` contains zero hardcoded command
       strings; `phi-mux` contains zero hardwired overlay feature logic;
       deleting `phi-builtins` from the build leaves a bare-but-functional

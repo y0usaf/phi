@@ -94,25 +94,6 @@ fn system_prompt_includes_project_context() {
 }
 
 #[test]
-fn system_prompt_includes_skills() {
-    let opts = SystemPromptOptions {
-        skills: vec![Skill {
-            name: "cargo-test".to_owned(),
-            description: "Run cargo tests".to_owned(),
-            path: Some("skills/cargo-test/SKILL.md".to_owned()),
-        }],
-        ..Default::default()
-    };
-    let prompt = build_system_prompt(&opts);
-    assert!(prompt.contains("<available_skills>"));
-    assert!(prompt.contains("cargo-test"));
-    assert!(prompt.contains("Run cargo tests"));
-    assert!(prompt.contains("skills/cargo-test/SKILL.md"));
-    assert!(prompt.contains("</available_skills>"));
-    assert!(prompt.contains("The following skills provide specialized instructions"));
-}
-
-#[test]
 fn system_prompt_includes_cwd() {
     let opts = SystemPromptOptions {
         cwd: Some("/home/user/project"),

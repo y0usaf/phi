@@ -149,10 +149,12 @@ async fn resolve_models(
 
 /// Discover and load Lua extensions and config.lua files, then build and boot
 /// the AppRuntime with all extensions registered. Project-local `.phi/` Lua
-/// loads only when the project is trusted.
-async fn build_runtime(
+/// loads only when the project is trusted. Shared with one-shot mode
+/// (`phi-app`), so every mode resolves extensions the same way.
+pub async fn build_runtime(
     cwd: &Path,
     registry: &Registry,
+    settings: &Settings,
     project_trusted: bool,
 ) -> Result<Arc<phi_ext::AppRuntime>> {
     let ext_paths = phi_lua::discover_extensions(cwd, project_trusted);
@@ -174,6 +176,11 @@ async fn build_runtime(
     rt_builder = rt_builder.register_extension(phi_builtins::DefaultVisualExtension);
     rt_builder =
         rt_builder.register_extension(phi_builtins::BuiltinCommandsExtension::new(model_names));
+    rt_builder = rt_builder.register_extension(phi_builtins::SkillsExtension::new(
+        cwd,
+        settings.skills.clone(),
+        project_trusted,
+    ));
     for ext in config_exts {
         rt_builder = rt_builder.register_boxed_extension(ext);
     }
@@ -240,7 +247,6 @@ fn build_rlm_config(
 
     let (prompt_override, append_prompt) =
         phi_session::prompts::discover_prompt_overrides(cwd, project_trusted);
-    let skills = phi_session::skills::discover_skills(cwd, &settings.skills, project_trusted);
 
     RlmConfig {
         max_rlm_depth: settings.max_rlm_depth,
@@ -258,7 +264,6 @@ fn build_rlm_config(
              Use the pre-defined helper functions to explore and modify the project.",
             cwd.display()
         )),
-        skills,
         ..RlmConfig::default()
     }
 }
@@ -310,7 +315,7 @@ pub async fn build_session(
     // other: overlap the auth/model latency with Lua discovery and boot.
     let (models, runtime) = tokio::try_join!(
         resolve_models(&settings, registry, storage),
-        build_runtime(cwd, registry, trust.trusted),
+        build_runtime(cwd, registry, &settings, trust.trusted),
     )?;
     let config = build_rlm_config(cwd, &settings, &runtime, trust.trusted);
     let (root, sub) = build_providers(registry, storage, &models, settings.max_tokens);

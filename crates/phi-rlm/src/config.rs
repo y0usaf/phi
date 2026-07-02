@@ -70,9 +70,6 @@ pub struct RlmConfig {
     pub append_system_prompt: Option<String>,
     /// Host-registered REPL function names, injected as driver shims.
     pub host_fns: Vec<String>,
-    /// Discovered skills, injected as an `<available_skills>` block in the
-    /// system prompt.
-    pub skills: Vec<crate::prompts::Skill>,
     /// How prose-only turns are handled (lenient default, strict = tool-only).
     pub prose_policy: ProsePolicy,
 }
@@ -98,7 +95,6 @@ impl Default for RlmConfig {
             cwd: None,
             append_system_prompt: None,
             host_fns: Vec::new(),
-            skills: Vec::new(),
             prose_policy: ProsePolicy::default(),
         }
     }

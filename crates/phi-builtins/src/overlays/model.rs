@@ -149,12 +149,14 @@ pub(super) fn spec() -> OverlaySpec {
             Box::new(ModelOverlayState::new(payload)) as OverlayState
         }),
         Arc::new(render),
-        Arc::new(|state: &mut OverlayState, key: &OverlayKey, cols, rows| {
-            match state.downcast_mut::<ModelOverlayState>() {
+        Arc::new(
+            |state: &mut OverlayState, key: &OverlayKey, cols, rows| match state
+                .downcast_mut::<ModelOverlayState>()
+            {
                 Some(model) => model.handle_key(key, cols, rows),
                 None => OverlayOutcome::Close,
-            }
-        }),
+            },
+        ),
     )
     .with_scroll(Arc::new(|state: &mut OverlayState, delta, _cols, _rows| {
         if let Some(model) = state.downcast_mut::<ModelOverlayState>() {
@@ -184,7 +186,12 @@ fn render(ctx: &mut dyn DrawContext, state: &mut OverlayState) {
     let palette = ctx.palette();
     let size = ctx.size();
     let rect = model_overlay_rect(size.cols, size.rows);
-    ctx.draw_box(rect, palette.fg, palette.surface_raised, palette.statusbar_bg);
+    ctx.draw_box(
+        rect,
+        palette.fg,
+        palette.surface_raised,
+        palette.statusbar_bg,
+    );
     if rect.cols <= 2 || rect.rows <= 2 {
         return;
     }
@@ -202,7 +209,9 @@ fn render(ctx: &mut dyn DrawContext, state: &mut OverlayState) {
         " SWITCH SUB MODEL "
     };
     let info = format!(" {}/{} ", model.filtered.len(), model.models.len());
-    render_dialog_title_line(ctx, inner.row, inner.col, inner.cols, title, &info, &palette);
+    render_dialog_title_line(
+        ctx, inner.row, inner.col, inner.cols, title, &info, &palette,
+    );
 
     let query_row = inner.row + 2;
     let list_row = inner.row + 4;

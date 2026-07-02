@@ -32,6 +32,6 @@ pub use engine::{
     HarnessError, HarnessPhase, PhiHarness, RestoredExchange, RestoredRepl, RestoredSubcall, Rlm,
 };
 
-pub use prompts::{DEFAULT_ANSWER_NUDGE, Skill, SystemPromptOptions, build_system_prompt};
+pub use prompts::{DEFAULT_ANSWER_NUDGE, SystemPromptOptions, build_system_prompt};
 pub use provider::ProviderLm;
 pub use session::RlmSession;

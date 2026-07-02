@@ -23,7 +23,10 @@ struct HelpOverlayState {
 impl HelpOverlayState {
     fn handle_key(&mut self, key: &OverlayKey, cols: u16, rows: u16) -> OverlayOutcome {
         if key.modifiers.control {
-            if matches!(key.code, OverlayKeyCode::Char('c') | OverlayKeyCode::Char('g')) {
+            if matches!(
+                key.code,
+                OverlayKeyCode::Char('c') | OverlayKeyCode::Char('g')
+            ) {
                 return OverlayOutcome::Close;
             }
             return OverlayOutcome::None;
@@ -113,7 +116,12 @@ fn render(ctx: &mut dyn DrawContext, state: &mut OverlayState) {
     let palette = ctx.palette();
     let size = ctx.size();
     let rect = help_overlay_rect(size.cols, size.rows);
-    ctx.draw_box(rect, palette.fg, palette.surface_raised, palette.statusbar_bg);
+    ctx.draw_box(
+        rect,
+        palette.fg,
+        palette.surface_raised,
+        palette.statusbar_bg,
+    );
     if rect.cols <= 2 || rect.rows <= 2 {
         return;
     }
@@ -140,7 +148,9 @@ fn render(ctx: &mut dyn DrawContext, state: &mut OverlayState) {
     if list_rows == 0 {
         return;
     }
-    help.scroll = help.scroll.min(help.entries.len().saturating_sub(list_rows));
+    help.scroll = help
+        .scroll
+        .min(help.entries.len().saturating_sub(list_rows));
     let text_width = (inner.cols - 1).max(0);
     let entries = help.entries.iter().skip(help.scroll).take(list_rows);
     for (row_offset, entry) in entries.enumerate() {

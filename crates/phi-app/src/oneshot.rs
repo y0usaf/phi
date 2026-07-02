@@ -60,7 +60,9 @@ pub async fn run(
     if let Some(notice) = &trust.notice {
         eprintln!("phi: {notice}");
     }
-    let skills = phi_session::skills::discover_skills(&cwd, &settings.skills, trust.trusted);
+    // Same extension runtime as the interactive modes (builtins + Lua), so
+    // skills injection and event handlers apply to one-shot runs too.
+    let runtime = session_builder::build_runtime(&cwd, &registry, &settings, trust.trusted).await?;
 
     let config = RlmConfig {
         max_rlm_depth: settings.max_rlm_depth,
@@ -75,7 +77,6 @@ pub async fn run(
              Use the pre-defined helper functions to explore and modify the project.",
             cwd.display()
         )),
-        skills,
         ..RlmConfig::default()
     };
 
@@ -111,6 +112,7 @@ pub async fn run(
         storage.clone(),
         sub_model_thinking,
     );
+    rlm = rlm.with_runtime(runtime);
     let mut printer = None;
     if !args.quiet {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();

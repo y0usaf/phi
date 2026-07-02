@@ -93,12 +93,14 @@ pub(super) fn spec() -> OverlaySpec {
         "Usage totals across all sessions",
         Arc::new(|_payload| Box::new(UsageOverlayState::load()) as OverlayState),
         Arc::new(render),
-        Arc::new(|state: &mut OverlayState, key: &OverlayKey, cols, rows| {
-            match state.downcast_mut::<UsageOverlayState>() {
+        Arc::new(
+            |state: &mut OverlayState, key: &OverlayKey, cols, rows| match state
+                .downcast_mut::<UsageOverlayState>()
+            {
                 Some(usage) => usage.handle_key(key, cols, rows),
                 None => OverlayOutcome::Close,
-            }
-        }),
+            },
+        ),
     )
     .with_scroll(Arc::new(|state: &mut OverlayState, delta, cols, rows| {
         if let Some(usage) = state.downcast_mut::<UsageOverlayState>() {
@@ -128,7 +130,12 @@ fn render(ctx: &mut dyn DrawContext, state: &mut OverlayState) {
     let palette = ctx.palette();
     let size = ctx.size();
     let rect = usage_overlay_rect(size.cols, size.rows);
-    ctx.draw_box(rect, palette.fg, palette.surface_raised, palette.statusbar_bg);
+    ctx.draw_box(
+        rect,
+        palette.fg,
+        palette.surface_raised,
+        palette.statusbar_bg,
+    );
     if rect.cols <= 2 || rect.rows <= 2 {
         return;
     }
@@ -241,9 +248,7 @@ fn render(ctx: &mut dyn DrawContext, state: &mut OverlayState) {
 #[cfg(test)]
 mod tests {
     use super::super::test_host::registered_overlays;
-    use phi_ext::{
-        OVERLAY_USAGE, OverlayKey, OverlayKeyCode, OverlayKeyModifiers, OverlayOutcome,
-    };
+    use phi_ext::{OVERLAY_USAGE, OverlayKey, OverlayKeyCode, OverlayKeyModifiers, OverlayOutcome};
 
     #[test]
     fn usage_overlay_closes_on_esc_and_q() {

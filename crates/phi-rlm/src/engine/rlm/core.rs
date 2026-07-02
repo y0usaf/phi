@@ -357,7 +357,6 @@ impl Rlm {
             orchestrator: self.config.orchestrator,
             strict_tools: self.config.prose_policy == ProsePolicy::Strict,
             turn_cap: self.iteration_limit(),
-            skills: self.config.skills.clone(),
             ..Default::default()
         }
     }

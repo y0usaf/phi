@@ -5,7 +5,7 @@ mod metadata;
 #[cfg(test)]
 mod tests;
 
-pub use builder::{Skill, SystemPromptOptions, build_system_prompt};
+pub use builder::{SystemPromptOptions, build_system_prompt};
 pub use constants::DEFAULT_ANSWER_NUDGE;
 pub(crate) use constants::{PROSE_NUDGE, STRICT_PROSE_NUDGE};
 
