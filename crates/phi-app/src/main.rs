@@ -139,6 +139,9 @@ async fn run(args: Args, storage: Arc<AuthStorage>, registry: Arc<Registry>) -> 
                 projects: args.project.clone(),
                 storage,
                 registry,
+                // Mux sessions are built while its TUI owns the terminal —
+                // no stdin prompt possible; undecided projects get a notice.
+                trust_prompt: false,
             };
             return mux::app::run(shared, mux_config, cwd).await;
         }
@@ -150,6 +153,8 @@ async fn run(args: Args, storage: Arc<AuthStorage>, registry: Arc<Registry>) -> 
             projects: args.project.clone(),
             storage,
             registry,
+            // Standalone TUI builds its session before raw mode: safe to ask.
+            trust_prompt: true,
         };
         let setup = session_builder::build_session(&cwd, &shared, None).await?;
         return tui::run(setup, tui::SessionIo::standalone(cwd)).await;

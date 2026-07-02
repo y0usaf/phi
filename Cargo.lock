@@ -1689,6 +1689,7 @@ dependencies = [
  "async-trait",
  "phi-ext",
  "phi-repl",
+ "phi-session",
  "phi-tui",
  "tempfile",
  "tokio",

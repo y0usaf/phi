@@ -1,6 +1,9 @@
 use std::path::{Path, PathBuf};
 
-pub fn discover_extensions(cwd: &Path) -> Vec<PathBuf> {
+/// Discover Lua extension files. Project-local `.phi/extensions/` is only
+/// scanned when `include_project` is true — callers gate it on project trust
+/// so a cloned repo's Lua never loads unprompted.
+pub fn discover_extensions(cwd: &Path, include_project: bool) -> Vec<PathBuf> {
     let mut results = Vec::new();
 
     // 1. Global config dir: <config>/phi/extensions/*.lua
@@ -11,8 +14,10 @@ pub fn discover_extensions(cwd: &Path) -> Vec<PathBuf> {
     }
 
     // 2. Local cwd dir: <cwd>/.phi/extensions/*.lua
-    let local_ext_dir = cwd.join(".phi/extensions");
-    collect_lua_files(&local_ext_dir, &mut results);
+    if include_project {
+        let local_ext_dir = cwd.join(".phi/extensions");
+        collect_lua_files(&local_ext_dir, &mut results);
+    }
 
     results
 }

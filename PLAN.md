@@ -106,24 +106,70 @@ Goal: `phi-builtins` becomes the proof that the extension API is sufficient.
 Each migration that can't be expressed through the API is an API gap — fix the
 API (`phi-ext`/`phi-lua`/`phi-event`), never bypass it.
 
-- [ ] **1.1 Unify the command registry.** One registry for slash commands; the
+- [x] **1.1 Unify the command registry.** One registry for slash commands; the
       TUI resolves commands only through it. Built-ins register at startup via
       the same path as `phi.register_command`. Migrate incrementally:
-      - [ ] Trivial: `/help`, `/usage`, `/exit`, `/quit`
-      - [ ] Session ops: `/new`, `/resume`, `/fork`, `/tree`
-      - [ ] Model ops: `/model`, `/submodel`, `/mo`
-      - [ ] Auth: `/login`, `/logout`
-      - [ ] `/zzz` and any stragglers
+      - [x] Trivial: `/help`, `/usage`, `/exit`, `/quit`
+      - [x] Session ops: `/new`, `/resume`, `/fork`, `/tree`
+      - [x] Model ops: `/model`, `/submodel` (`/mo` was only ever a fuzzy
+            completion query, not a command)
+      - [x] Auth: `/login`, `/logout`
+      - [x] Stragglers: `/trust` (new, WS4.1); `/zzz` was never a command
       Expected API gaps to surface: commands need to open overlays/pickers,
       read usage totals, mutate session state, trigger auth flows. Grow the
       command `ctx` to cover these (pi's `ctx` is the reference:
       `ref/pi/packages/coding-agent/docs/extensions.md`).
-- [ ] **1.2 Overlays.** Move mux usage/model/help overlays to builtin extensions
+      *How the gap was closed:* `CommandSpec` grew `args_hint` +
+      `arg_completions`; `CommandOutput` grew `actions: Vec<UiAction>`
+      (quit, new-session, open-picker, switch-model, login/logout, help,
+      trust) — handlers return declarative actions, the TUI interprets them
+      in one `apply_action`. Built-ins live in
+      `phi-builtins/src/commands.rs`; the TUI has zero hardcoded command
+      strings and completion/help are registry-driven.
+- [x] **1.2 Overlays.** Move mux usage/model/help overlays to builtin extensions
       via `register_overlay`. Same drill: gaps in the overlay API get fixed in
       `phi-ext`, not worked around.
+      *How the gap was closed:* `OverlaySpec.init_state` now takes an optional
+      `OverlayPayload` (typed per overlay: `ModelPickerPayload`, `HelpPayload`);
+      `toggle_key` became optional (programmatic-open-only overlays);
+      `handle_scroll` added for wheel support; `DrawContext` grew `palette()`
+      (`OverlayPalette` + `brighten`) so extension chrome matches the host
+      theme; `OverlayResponder` (fires `Ok(None)` on drop) carries the model
+      picker's reply so a dismissed/replaced picker never strands the
+      requesting session. The mux opens overlays by name
+      (`open_extension_overlay`/`toggle_extension_overlay`,
+      `phi_ext::OVERLAY_USAGE`/`OVERLAY_MODEL`/`OVERLAY_HELP`) from `:usage`,
+      `:help`, `AppAction::Help`, and `HostModalRequest`; usage/model/help
+      live in `phi-builtins/src/overlays/`, and a build without them degrades
+      to status notes / error replies. The archive viewer (with its
+      `Restore(PathBuf)` host action) is the only overlay still hardwired.
 - [ ] **1.3 Themes / spinners / renderers.** Default theme, spinner frames, and
       any special-cased message renderers become `register_theme` /
       `register_spinner` / `register_message_renderer` calls in `phi-builtins`.
+      - [x] Registration side: `DefaultVisualExtension`
+            (`phi-builtins/src/visual.rs`) registers the default theme
+            (resolver over `generate_theme`), spinner, thinking expressions,
+            and text effects; spinner frames now reference
+            `phi_tui::SPINNER_FRAMES` instead of a hand-copied array.
+      - [x] Consumption side unified: the inline session TUI derives its
+            palette from `runtime.first_theme()` (previously only the mux
+            did); the role-name→`Theme` overlay table moved to
+            `phi_tui::apply_palette` (one copy, both frontends convert
+            `ExtRgb` at the edge); the mux sidebar spinner goes through
+            `VisualContext` instead of calling `phi_tui::spinner_frame_at`
+            directly.
+      - [ ] Message renderers: `register_message_renderer` is wired end-to-end
+            in the API (`MessageRendererSpec`, Lua bridge, registry) but dead —
+            zero non-test consumers and no way for an extension to inject a
+            custom-typed message. Two real API additions needed: (a) per-tool
+            render hooks so `tool_display.rs`'s hardcoded match on
+            `bash`/`read_file`/`write_file`/`edit_file`/`grep`/`find`/`ls`/
+            `repl` becomes registry-driven (pi reference: `registerTool`'s
+            `renderCall`/`renderResult`); (b) a `Custom` transcript-entry
+            variant dispatched through `get_message_renderer`, plus a
+            `send_message`-style producer. Needs a design decision on how
+            extension renderers receive palette/styling (grow
+            `OverlayPalette`? `StyledText` return?) — don't rush it.
 - [ ] **1.4 Skills.** Relocate `phi-session/src/skills.rs` into a builtin
       extension (discovery of `SKILL.md` dirs, injection into the system prompt
       via the `before_agent_start`-equivalent event). Skills are not RLM-core.
@@ -158,11 +204,18 @@ API (`phi-ext`/`phi-lua`/`phi-event`), never bypass it.
 
 ### WS4 — Core robustness invariants (minimal ≠ flimsy)
 
-- [ ] **4.1 Project trust (do early).** Ship a builtin trust extension: first
+- [x] **4.1 Project trust (do early).** Ship a builtin trust extension: first
       time Phi runs in a directory containing `.phi/` extensions/skills/prompt
       overrides, prompt the user; persist the decision. Until trusted, load
       nothing project-local. (pi reference: `project-trust.ts` in pi core;
       Phi hook: `check_project_trust`, `crates/phi-ext/src/runtime.rs:290`.)
+      *Landed as:* `phi_session::trust` (persisted `TrustStore` +
+      `has_project_content`), gating in `discover_extensions` /
+      `config_extension_paths` / `discover_skills` /
+      `discover_prompt_overrides` (`include_project` flag),
+      `resolve_project_trust` in `session_builder` (stdin prompt in
+      standalone TUI, untrusted-with-notice in mux/one-shot), and a
+      `/trust [revoke]` builtin command via `UiAction::TrustProject`.
 - [ ] **4.2 Read-before-edit enforcement.** `edit_file`/`write_file` in the
       prelude refuse to touch a file the session hasn't read (or that changed
       on disk since the read — mtime/size already tracked by `file_ops.py`'s

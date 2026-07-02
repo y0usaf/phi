@@ -54,7 +54,13 @@ pub async fn run(
         }
     }
 
-    let skills = phi_session::skills::discover_skills(&cwd, &settings.skills);
+    // One-shot mode never prompts for project trust; an undecided project
+    // simply runs without its .phi/ content.
+    let trust = session_builder::resolve_project_trust(&cwd, false);
+    if let Some(notice) = &trust.notice {
+        eprintln!("phi: {notice}");
+    }
+    let skills = phi_session::skills::discover_skills(&cwd, &settings.skills, trust.trusted);
 
     let config = RlmConfig {
         max_rlm_depth: settings.max_rlm_depth,

@@ -400,5 +400,5 @@ phi.register_overlay("my-overlay", {
     let overlay = rt.get_overlay("my-overlay").unwrap();
     assert_eq!(overlay.name, "my-overlay");
     assert_eq!(overlay.description, "My custom overlay");
-    assert_eq!(overlay.toggle_key, "m");
+    assert_eq!(overlay.toggle_key.as_deref(), Some("m"));
 }

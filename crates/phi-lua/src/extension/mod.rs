@@ -80,11 +80,12 @@ impl phi_ext::Extension for LuaExtension {
             .collect();
 
         let phi_commands_table: mlua::Table = globals.get("_phi_commands")?;
-        let mut commands: Vec<(String, String)> = Vec::new();
+        let mut commands: Vec<(String, String, String)> = Vec::new();
         for name in &command_names {
             let cmd_table: mlua::Table = phi_commands_table.get(name.as_str())?;
             let description: String = cmd_table.get("description").unwrap_or_default();
-            commands.push((name.clone(), description));
+            let args_hint: String = cmd_table.get("args_hint").unwrap_or_default();
+            commands.push((name.clone(), description, args_hint));
         }
 
         // ── Read registered tools ────────────────────────────────────────────
@@ -359,12 +360,13 @@ impl phi_ext::Extension for LuaExtension {
         }
 
         // ── Register commands ──────────────────────────────────────────────
-        for (cmd_name, description) in commands {
+        for (cmd_name, description, args_hint) in commands {
             let tx3 = Arc::clone(&tx);
             let name3 = cmd_name.clone();
             host.register_command(CommandSpec {
                 name: cmd_name,
                 description,
+                args_hint,
                 handler: Arc::new(move |inv: CommandInvocation| {
                     let (rtx, rrx) = std::sync::mpsc::sync_channel(1);
                     tx3.send(LuaMsg::InvokeCommand {
@@ -376,8 +378,12 @@ impl phi_ext::Extension for LuaExtension {
                     let msg_opt = rrx
                         .recv_timeout(Duration::from_secs(10))
                         .map_err(|e| anyhow::anyhow!("lua recv: {e}"))??;
-                    Ok(CommandOutput { message: msg_opt })
+                    Ok(CommandOutput {
+                        message: msg_opt,
+                        actions: Vec::new(),
+                    })
                 }),
+                arg_completions: None,
             })?;
         }
 
@@ -476,8 +482,9 @@ impl phi_ext::Extension for LuaExtension {
             let tx_overlay = Arc::clone(&tx);
             let overlay_name = name.clone();
 
-            let init_state: Arc<dyn Fn() -> Box<dyn std::any::Any + Send + Sync> + Send + Sync> =
-                Arc::new(|| Box::new(Vec::<String>::new()) as Box<dyn std::any::Any + Send + Sync>);
+            let init_state: phi_ext::OverlayInitFn = Arc::new(|_payload| {
+                Box::new(Vec::<String>::new()) as Box<dyn std::any::Any + Send + Sync>
+            });
 
             let render: Arc<
                 dyn Fn(&mut dyn phi_ext::DrawContext, &mut Box<dyn std::any::Any + Send + Sync>)
@@ -577,14 +584,10 @@ impl phi_ext::Extension for LuaExtension {
                 },
             );
 
-            host.register_overlay(OverlaySpec::new(
-                name,
-                description,
-                toggle_key,
-                init_state,
-                render,
-                handle_key,
-            ))?;
+            host.register_overlay(
+                OverlaySpec::new(name, description, init_state, render, handle_key)
+                    .with_toggle_key(toggle_key),
+            )?;
         }
 
         Ok(())
