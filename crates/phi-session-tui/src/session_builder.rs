@@ -23,6 +23,78 @@ pub struct SharedResources {
     pub projects: Vec<String>,
     pub storage: Arc<AuthStorage>,
     pub registry: Arc<Registry>,
+    /// Whether an undecided project-trust question may be asked on stdin.
+    /// Only the standalone TUI (which builds its session before entering raw
+    /// mode) can prompt; the mux and one-shot modes fall back to
+    /// untrusted-with-notice.
+    pub trust_prompt: bool,
+}
+
+/// Resolved project-trust state for one session build.
+pub struct ProjectTrust {
+    pub trusted: bool,
+    /// User-facing notice to render in the session greeting.
+    pub notice: Option<String>,
+}
+
+/// Resolve whether `cwd`'s project-local `.phi/` content (extensions,
+/// config.lua, skills, prompt overrides) may load. First run in a project
+/// with such content prompts (when allowed) and persists the answer; until
+/// trusted, nothing project-local loads.
+pub fn resolve_project_trust(cwd: &Path, allow_prompt: bool) -> ProjectTrust {
+    use phi_session::trust::{TrustStore, has_project_content};
+    if !has_project_content(cwd) {
+        return ProjectTrust {
+            trusted: true,
+            notice: None,
+        };
+    }
+    let mut store = TrustStore::load_default();
+    match store.decision(cwd) {
+        Some(true) => ProjectTrust {
+            trusted: true,
+            notice: None,
+        },
+        Some(false) => ProjectTrust {
+            trusted: false,
+            notice: Some(
+                "project .phi/ extensions are untrusted — /trust to enable them".to_owned(),
+            ),
+        },
+        None if allow_prompt => {
+            let trusted = prompt_project_trust(cwd);
+            let _ = store.set(cwd, trusted);
+            ProjectTrust {
+                trusted,
+                notice: (!trusted).then(|| {
+                    "project .phi/ extensions not loaded — /trust to enable them".to_owned()
+                }),
+            }
+        }
+        None => ProjectTrust {
+            trusted: false,
+            notice: Some(
+                "first run here: project .phi/ extensions not loaded — /trust to enable them"
+                    .to_owned(),
+            ),
+        },
+    }
+}
+
+/// One-line stdin prompt, asked before the TUI takes the terminal.
+fn prompt_project_trust(cwd: &Path) -> bool {
+    use std::io::Write as _;
+    eprintln!(
+        "This project ({}) contains .phi/ extensions, config, skills, or prompt overrides.",
+        cwd.display()
+    );
+    eprint!("Loading them runs code with your full permissions. Load them? [y/N] ");
+    let _ = std::io::stderr().flush();
+    let mut line = String::new();
+    if std::io::stdin().read_line(&mut line).is_err() {
+        return false;
+    }
+    matches!(line.trim(), "y" | "Y" | "yes" | "Yes")
 }
 
 /// Build a ready-to-run interactive session rooted at `cwd`. Each call loads
@@ -76,18 +148,32 @@ async fn resolve_models(
 }
 
 /// Discover and load Lua extensions and config.lua files, then build and boot
-/// the AppRuntime with all extensions registered.
-async fn build_runtime(cwd: &Path) -> Result<Arc<phi_ext::AppRuntime>> {
-    let ext_paths = phi_lua::discover_extensions(cwd);
+/// the AppRuntime with all extensions registered. Project-local `.phi/` Lua
+/// loads only when the project is trusted.
+async fn build_runtime(
+    cwd: &Path,
+    registry: &Registry,
+    project_trusted: bool,
+) -> Result<Arc<phi_ext::AppRuntime>> {
+    let ext_paths = phi_lua::discover_extensions(cwd, project_trusted);
     let lua_exts = phi_lua::load_extensions(&ext_paths);
 
-    let config_ext_paths = phi_lua::config_extension_paths(cwd);
+    let config_ext_paths = phi_lua::config_extension_paths(cwd, project_trusted);
     let config_exts = phi_lua::load_extensions(&config_ext_paths);
 
+    let model_names: Vec<String> = registry
+        .supported_models()
+        .map(|m| format!("{}/{}", m.provider, m.id))
+        .collect();
+
     let mut rt_builder = RuntimeBuilder::new().with_cwd(cwd);
-    // Register the built-in default visual extension so the default
-    // spinner, thinking expressions, and theme are always available.
+    // Built-ins register through the same extension API user extensions use:
+    // the default visual set (spinner, thinking expressions, theme) and the
+    // default slash commands. Registering built-ins first means a user
+    // extension that reuses a built-in name fails loudly at build time.
     rt_builder = rt_builder.register_extension(phi_builtins::DefaultVisualExtension);
+    rt_builder =
+        rt_builder.register_extension(phi_builtins::BuiltinCommandsExtension::new(model_names));
     for ext in config_exts {
         rt_builder = rt_builder.register_boxed_extension(ext);
     }
@@ -139,7 +225,12 @@ fn prose_policy(settings: &Settings) -> phi_rlm::ProsePolicy {
 }
 
 /// Build RlmConfig from resolved settings, prompt overrides, and environment info.
-fn build_rlm_config(cwd: &Path, settings: &Settings, runtime: &phi_ext::AppRuntime) -> RlmConfig {
+fn build_rlm_config(
+    cwd: &Path,
+    settings: &Settings,
+    runtime: &phi_ext::AppRuntime,
+    project_trusted: bool,
+) -> RlmConfig {
     let ext_stubs = runtime.extension_prelude_stubs();
     let setup_code = if ext_stubs.is_empty() {
         CODING_PRELUDE.to_owned()
@@ -147,8 +238,9 @@ fn build_rlm_config(cwd: &Path, settings: &Settings, runtime: &phi_ext::AppRunti
         format!("{CODING_PRELUDE}\n\n# Extension tools\n{ext_stubs}")
     };
 
-    let (prompt_override, append_prompt) = phi_session::prompts::discover_prompt_overrides(cwd);
-    let skills = phi_session::skills::discover_skills(cwd, &settings.skills);
+    let (prompt_override, append_prompt) =
+        phi_session::prompts::discover_prompt_overrides(cwd, project_trusted);
+    let skills = phi_session::skills::discover_skills(cwd, &settings.skills, project_trusted);
 
     RlmConfig {
         max_rlm_depth: settings.max_rlm_depth,
@@ -205,16 +297,22 @@ pub async fn build_session(
         projects: _,
         storage,
         registry,
+        trust_prompt,
     } = shared;
     let settings = Settings::resolve(cli_args, Config::load(cwd)?, true);
+
+    // Trust gates everything project-local below (extensions, config.lua,
+    // skills, prompt overrides); resolve it first, prompting only when the
+    // terminal is still ours.
+    let trust = resolve_project_trust(cwd, *trust_prompt);
 
     // Model/auth resolution and the extension runtime don't depend on each
     // other: overlap the auth/model latency with Lua discovery and boot.
     let (models, runtime) = tokio::try_join!(
         resolve_models(&settings, registry, storage),
-        build_runtime(cwd),
+        build_runtime(cwd, registry, trust.trusted),
     )?;
-    let config = build_rlm_config(cwd, &settings, &runtime);
+    let config = build_rlm_config(cwd, &settings, &runtime, trust.trusted);
     let (root, sub) = build_providers(registry, storage, &models, settings.max_tokens);
 
     // Wire the extension runtime into the providers so provider
@@ -249,6 +347,7 @@ pub async fn build_session(
         payload,
         events: rx,
         missing_credentials: models.missing_credentials,
+        notices: trust.notice.into_iter().collect(),
         runtime,
         ui: UiSetup {
             max_iterations: settings.max_iterations,

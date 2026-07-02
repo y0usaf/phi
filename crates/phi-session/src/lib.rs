@@ -12,4 +12,5 @@ pub mod session;
 pub mod skills;
 pub mod tool_summary;
 pub mod transcript;
+pub mod trust;
 pub mod usage;

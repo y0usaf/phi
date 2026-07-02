@@ -56,8 +56,9 @@ const MAX_DESCRIPTION_LENGTH: usize = 1024;
 /// `extra_paths` are additional dirs/files from the user's `config.lua`:
 /// `skills = { "~/.claude/skills", ".forge/skills" }`. They are scanned after
 /// the defaults. `~` is expanded to the home directory; relative paths are
-/// resolved against `cwd`.
-pub fn discover_skills(cwd: &Path, extra_paths: &[String]) -> Vec<Skill> {
+/// resolved against `cwd`. Project-local `.phi/skills/` is only scanned when
+/// `include_project` is true — callers gate it on project trust.
+pub fn discover_skills(cwd: &Path, extra_paths: &[String], include_project: bool) -> Vec<Skill> {
     let mut skills = Vec::new();
     let mut seen_names: std::collections::HashSet<String> = std::collections::HashSet::new();
 
@@ -72,7 +73,9 @@ pub fn discover_skills(cwd: &Path, extra_paths: &[String]) -> Vec<Skill> {
         }
 
         // Project: <cwd>/.phi/skills/
-        dirs.push(cwd.join(".phi").join("skills"));
+        if include_project {
+            dirs.push(cwd.join(".phi").join("skills"));
+        }
 
         // Phi's own data dir (wherever Phi is stored).
         if let Some(proj_dirs) = directories::ProjectDirs::from("", "", "phi") {
@@ -349,7 +352,7 @@ mod tests {
     #[test]
     fn no_skills_dir_returns_empty() {
         let dir = tempdir().unwrap();
-        let skills = discover_skills(dir.path(), &[]);
+        let skills = discover_skills(dir.path(), &[], true);
         assert!(skills.is_empty());
     }
 
@@ -365,7 +368,7 @@ mod tests {
         )
         .unwrap();
 
-        let skills = discover_skills(dir.path(), &[]);
+        let skills = discover_skills(dir.path(), &[], true);
         assert_eq!(skills.len(), 1);
         assert_eq!(skills[0].name, "my-skill");
         assert_eq!(skills[0].description, "Does cool things.");
@@ -383,7 +386,7 @@ mod tests {
         )
         .unwrap();
 
-        let skills = discover_skills(dir.path(), &[]);
+        let skills = discover_skills(dir.path(), &[], true);
         assert_eq!(skills.len(), 1);
         assert_eq!(skills[0].name, "pdf-tools");
         assert_eq!(skills[0].description, "PDF extraction.");
@@ -397,7 +400,7 @@ mod tests {
         fs::create_dir_all(&bad).unwrap();
         fs::write(bad.join("SKILL.md"), "---\nname: bad-skill\n---\n").unwrap();
 
-        let skills = discover_skills(dir.path(), &[]);
+        let skills = discover_skills(dir.path(), &[], true);
         assert!(skills.is_empty());
     }
 
@@ -420,7 +423,7 @@ mod tests {
         )
         .unwrap();
 
-        let skills = discover_skills(dir.path(), &[]);
+        let skills = discover_skills(dir.path(), &[], true);
         assert_eq!(skills.len(), 1);
         assert_eq!(skills[0].description, "First calendar.");
     }
@@ -437,7 +440,7 @@ mod tests {
         )
         .unwrap();
 
-        let skills = discover_skills(dir.path(), &[extra.display().to_string()]);
+        let skills = discover_skills(dir.path(), &[extra.display().to_string()], true);
         assert_eq!(skills.len(), 1);
         assert_eq!(skills[0].name, "my-tool");
     }
@@ -452,7 +455,7 @@ mod tests {
         )
         .unwrap();
 
-        let skills = discover_skills(dir.path(), &[extra.display().to_string()]);
+        let skills = discover_skills(dir.path(), &[extra.display().to_string()], true);
         assert_eq!(skills.len(), 1);
         assert_eq!(skills[0].name, "standalone");
     }
@@ -483,7 +486,7 @@ mod tests {
         )
         .unwrap();
 
-        let skills = discover_skills(dir.path(), &[]);
+        let skills = discover_skills(dir.path(), &[], true);
         assert_eq!(skills.len(), 1);
         assert_eq!(skills[0].name, "deep-skill");
     }
