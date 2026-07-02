@@ -1,5 +1,7 @@
 use super::*;
 
+use phi_ext::{PickerKind, UiAction};
+
 pub(super) fn python_quote(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('"');
@@ -269,184 +271,176 @@ impl Ui {
 
     pub(super) fn submit(&mut self, text: &str, cmd_tx: &mpsc::UnboundedSender<Cmd>) -> bool {
         let trimmed = text.trim();
-        match trimmed {
-            "/quit" | "/exit" => return true,
-            "/help" => {
-                for spec in COMMANDS {
-                    let usage = format!("/{} {}", spec.name, spec.args);
-                    self.pending
-                        .push(TranscriptEntry::RawLines(vec![self.note(&format!(
-                            "{:<20}{}",
-                            usage.trim_end(),
-                            spec.desc
-                        ))]));
-                }
-                // Also list extension-registered commands.
-                for (name, desc) in self.runtime.list_extension_commands() {
-                    let usage = format!("/{}", name);
-                    self.pending.push(TranscriptEntry::RawLines(vec![
-                        self.note(&format!("{:<20}{}", usage, desc)),
-                    ]));
-                }
-                self.pending.push(TranscriptEntry::RawLines(vec![self.note(
-                    &"!cmd                run bash(cmd) in the REPL; the model sees it next turn",
-                )]));
-                self.pending.push(TranscriptEntry::RawLines(vec![
-                    self.note(&"!!cmd               run bash(cmd) without showing the model"),
-                ]));
-                self.pending.push(TranscriptEntry::RawLines(vec![
-                    self.note(&"keys: enter send (mode-dependent mid-run) · shift+enter newline · tab complete/cycle send mode · up/down history"),
-                ]));
-                self.pending.push(TranscriptEntry::RawLines(vec![
-                    self.note(&"      ctrl-z undo · ctrl-y redo · ctrl-r yank · ctrl-p cycle model · ctrl-l models · shift+tab thinking level"),
-                ]));
-                self.pending.push(TranscriptEntry::RawLines(vec![
-                    self.note(&"      ctrl-t show/hide thinking · ctrl-o expand tool output · ctrl-g $EDITOR · ctrl-q suspend · ctrl-x cycle send mode"),
-                ]));
-                self.pending.push(TranscriptEntry::RawLines(vec![
-                    self.note(&"      esc cancel · ctrl-c ctrl-c quit"),
-                ]));
-                self.pending.push(TranscriptEntry::RawLines(vec![
-                    self.note(&"      esc esc session tree (empty editor)"),
-                ]));
-            }
-            "/new" => {
-                let _ = cmd_tx.send(Cmd::Reset);
-                self.clear_transcript();
-                let _ = self.term.clear_all();
-                match SessionStore::new(&self.cwd) {
-                    Ok(store) => self.store = store,
-                    Err(e) => self
-                        .pending
-                        .push(TranscriptEntry::RawLines(vec![self.err(&e)])),
-                }
-                self.pending.push(TranscriptEntry::RawLines(vec![
-                    self.note(&"[session reset]"),
-                ]));
-            }
-            "/resume" => self.open_resume_selector(),
-            "/tree" => self.open_tree_selector(),
-            "/fork" => self.open_fork_selector(),
-            "/usage" => {
-                if !self.request_host_usage_modal() {
-                    self.open_usage_selector();
-                }
-            }
-            _ if trimmed == "/model" || trimmed.starts_with("/model ") => {
-                let query = trimmed.strip_prefix("/model").unwrap().trim();
-                if query.is_empty() {
-                    if !self.request_host_model_modal(true) {
-                        self.open_model_selector(true);
+        if trimmed.starts_with('!') && trimmed.len() > 1 {
+            // Shell escapes dispatch according to the send mode when the
+            // agent is running, same as plain prompts.
+            self.dispatch_mid_run(trimmed, cmd_tx, |ui, text, tx| {
+                ui.send_shell(text, tx);
+            });
+            return false;
+        }
+        if trimmed.starts_with('/') {
+            // Every slash command resolves through the extension command
+            // registry — built-ins (registered by `phi-builtins`) and user
+            // extensions share one path.
+            let (cmd_name, args) = match trimmed.split_once(' ') {
+                Some((name, rest)) => (name, rest),
+                None => (trimmed, ""),
+            };
+            // Strip leading slashes so the command is looked up by the
+            // bare name it was registered with (e.g. `//pomodoro` ->
+            // `pomodoro`).
+            let cmd_name = cmd_name.trim_start_matches('/');
+            let result = self.runtime.invoke_command_sync(cmd_name, args);
+            match result {
+                Ok(Some(output)) => {
+                    if let Some(msg) = output.message {
+                        self.ensure_pending_gap();
+                        self.pending.push(TranscriptEntry::RawLines(vec![msg]));
                     }
-                } else {
-                    self.switch_model(query, true);
-                }
-            }
-            _ if trimmed == "/submodel" || trimmed.starts_with("/submodel ") => {
-                let query = trimmed.strip_prefix("/submodel").unwrap().trim();
-                if query.is_empty() {
-                    if !self.request_host_model_modal(false) {
-                        self.open_model_selector(false);
-                    }
-                } else {
-                    self.switch_model(query, false);
-                }
-            }
-            _ if trimmed == "/login" || trimmed.starts_with("/login ") => {
-                let provider = trimmed.strip_prefix("/login").unwrap().trim().to_owned();
-                self.start_login(&provider);
-            }
-            _ if trimmed == "/logout" || trimmed.starts_with("/logout ") => {
-                let provider = trimmed.strip_prefix("/logout").unwrap().trim();
-                let provider = if provider.is_empty() {
-                    self.root_lm.model().provider
-                } else {
-                    provider.to_owned()
-                };
-                match self.storage.logout(&provider) {
-                    Ok(()) => self.pending.push(TranscriptEntry::RawLines(vec![
-                        self.note(&format!("[logged out of {provider}]")),
-                    ])),
-                    Err(e) => self
-                        .pending
-                        .push(TranscriptEntry::RawLines(vec![self.err(&e)])),
-                }
-            }
-            _ if trimmed.starts_with('!') && trimmed.len() > 1 => {
-                // Shell escapes dispatch according to the send mode when the
-                // agent is running, same as plain prompts.
-                self.dispatch_mid_run(trimmed, cmd_tx, |ui, text, tx| {
-                    ui.send_shell(text, tx);
-                });
-            }
-            // Extension slash commands: dispatch to the registered handler
-            // via the runtime (e.g. /recall, /capture, /explore from
-            // builtin.memory). Anything that isn't a built-in or shell
-            // escape and starts with '/' lands here.
-            _ if trimmed.starts_with('/') => {
-                let (cmd_name, args) = match trimmed.split_once(' ') {
-                    Some((name, rest)) => (name, rest),
-                    None => (trimmed, ""),
-                };
-                // Strip leading slashes so the command is looked up by the
-                // bare name it was registered with (e.g. `//pomodoro` ->
-                // `pomodoro`).  Extension commands are registered without a
-                // leading slash; re-adding one here caused every extension
-                // command to be reported as "unknown command".
-                let cmd_name = cmd_name.trim_start_matches('/');
-                let args = args.to_owned();
-                let runtime = Arc::clone(&self.runtime);
-                // Bound the command handler so a blocked extension command can
-                // only stall the TUI for a bounded window (it still stalls —
-                // `block_in_place` parks this worker — but recovers instead of
-                // hanging forever). The full fix (spawn + a select! arm) is
-                // deferred; `invoke_command` itself is also bounded by the
-                // dispatch timeout, so this is belt-and-suspenders.
-                let result = tokio::task::block_in_place(|| {
-                    let rt = runtime;
-                    let cn = cmd_name.to_owned();
-                    let ar = args.clone();
-                    tokio::runtime::Handle::current().block_on(async move {
-                        tokio::time::timeout(Duration::from_secs(10), rt.invoke_command(&cn, &ar))
-                            .await
-                    })
-                });
-                match result {
-                    Ok(Ok(Some(output))) => {
-                        if let Some(msg) = output.message {
-                            self.ensure_pending_gap();
-                            self.pending.push(TranscriptEntry::RawLines(vec![msg]));
+                    for action in output.actions {
+                        if self.apply_action(action, cmd_tx) {
+                            return true;
                         }
                     }
-                    Ok(Ok(None)) => {
-                        self.pending.push(TranscriptEntry::RawLines(vec![
-                            self.warn(&format!("unknown command: {cmd_name}")),
-                        ]));
-                    }
-                    Ok(Err(e)) => {
-                        self.pending
-                            .push(TranscriptEntry::RawLines(vec![self.err(&e)]));
-                    }
-                    Err(_elapsed) => {
-                        self.pending.push(TranscriptEntry::RawLines(vec![
-                            self.err(&format!("command '{cmd_name}' timed out")),
-                        ]));
-                    }
+                }
+                Ok(None) => {
+                    self.pending.push(TranscriptEntry::RawLines(vec![
+                        self.warn(&format!("unknown command: {cmd_name}")),
+                    ]));
+                }
+                Err(e) => {
+                    self.pending
+                        .push(TranscriptEntry::RawLines(vec![self.err(&e)]));
                 }
             }
-            prompt => {
-                // When a run is in flight, plain prompts steer into the
-                // in-flight turn via the save-point queue rather than waiting
-                // until the turn completes. Shell escapes (handled above) and
-                // other special inputs keep their existing queued behaviour.
-                if self.running.is_some() {
-                    self.steer_mid_run(prompt);
-                } else {
-                    self.send_prompt(prompt, cmd_tx);
-                }
-            }
+            return false;
+        }
+        // When a run is in flight, plain prompts steer into the in-flight
+        // turn via the save-point queue rather than waiting until the turn
+        // completes. Shell escapes (handled above) and other special inputs
+        // keep their existing queued behaviour.
+        if self.running.is_some() {
+            self.steer_mid_run(trimmed);
+        } else {
+            self.send_prompt(trimmed, cmd_tx);
         }
         false
+    }
+
+    /// Interpret a declarative `UiAction` returned by a command handler.
+    /// Returns true when the action quits the TUI. This is the host side of
+    /// the command API contract: every capability a command can ask for is
+    /// implemented once here, never as a per-command string match.
+    pub(super) fn apply_action(
+        &mut self,
+        action: UiAction,
+        cmd_tx: &mpsc::UnboundedSender<Cmd>,
+    ) -> bool {
+        match action {
+            UiAction::Quit => return true,
+            UiAction::ShowHelp => self.show_help(),
+            UiAction::NewSession => self.reset_session(cmd_tx),
+            UiAction::OpenPicker(kind) => match kind {
+                PickerKind::Resume => self.open_resume_selector(),
+                PickerKind::Fork => self.open_fork_selector(),
+                PickerKind::Tree => self.open_tree_selector(),
+                PickerKind::Usage => {
+                    if !self.request_host_usage_modal() {
+                        self.open_usage_selector();
+                    }
+                }
+                PickerKind::Model { root } => {
+                    if !self.request_host_model_modal(root) {
+                        self.open_model_selector(root);
+                    }
+                }
+            },
+            UiAction::SwitchModel { root, query } => self.switch_model(&query, root),
+            UiAction::StartLogin { provider } => self.start_login(&provider),
+            UiAction::Logout { provider } => self.logout(&provider),
+            UiAction::TrustProject { trusted } => self.set_project_trust(trusted),
+        }
+        false
+    }
+
+    fn set_project_trust(&mut self, trusted: bool) {
+        let mut store = phi_session::trust::TrustStore::load_default();
+        match store.set(&self.cwd, trusted) {
+            Ok(()) if trusted => self.pending.push(TranscriptEntry::RawLines(vec![self.note(
+                &"[project trusted — .phi/ extensions load on the next session (/new or restart)]",
+            )])),
+            Ok(()) => self.pending.push(TranscriptEntry::RawLines(vec![self.note(
+                &"[project trust revoked — .phi/ extensions stay unloaded from the next session]",
+            )])),
+            Err(e) => self
+                .pending
+                .push(TranscriptEntry::RawLines(vec![self.err(&e)])),
+        }
+    }
+
+    fn show_help(&mut self) {
+        for cmd in self.runtime.list_commands() {
+            let usage = format!("/{} {}", cmd.name, cmd.args_hint);
+            self.pending
+                .push(TranscriptEntry::RawLines(vec![self.note(&format!(
+                    "{:<20}{}",
+                    usage.trim_end(),
+                    cmd.description
+                ))]));
+        }
+        self.pending.push(TranscriptEntry::RawLines(vec![self.note(
+            &"!cmd                run bash(cmd) in the REPL; the model sees it next turn",
+        )]));
+        self.pending.push(TranscriptEntry::RawLines(vec![
+            self.note(&"!!cmd               run bash(cmd) without showing the model"),
+        ]));
+        self.pending.push(TranscriptEntry::RawLines(vec![
+            self.note(&"keys: enter send (mode-dependent mid-run) · shift+enter newline · tab complete/cycle send mode · up/down history"),
+        ]));
+        self.pending.push(TranscriptEntry::RawLines(vec![
+            self.note(&"      ctrl-z undo · ctrl-y redo · ctrl-r yank · ctrl-p cycle model · ctrl-l models · shift+tab thinking level"),
+        ]));
+        self.pending.push(TranscriptEntry::RawLines(vec![
+            self.note(&"      ctrl-t show/hide thinking · ctrl-o expand tool output · ctrl-g $EDITOR · ctrl-q suspend · ctrl-x cycle send mode"),
+        ]));
+        self.pending.push(TranscriptEntry::RawLines(vec![
+            self.note(&"      esc cancel · ctrl-c ctrl-c quit"),
+        ]));
+        self.pending.push(TranscriptEntry::RawLines(vec![
+            self.note(&"      esc esc session tree (empty editor)"),
+        ]));
+    }
+
+    fn reset_session(&mut self, cmd_tx: &mpsc::UnboundedSender<Cmd>) {
+        let _ = cmd_tx.send(Cmd::Reset);
+        self.clear_transcript();
+        let _ = self.term.clear_all();
+        match SessionStore::new(&self.cwd) {
+            Ok(store) => self.store = store,
+            Err(e) => self
+                .pending
+                .push(TranscriptEntry::RawLines(vec![self.err(&e)])),
+        }
+        self.pending.push(TranscriptEntry::RawLines(vec![
+            self.note(&"[session reset]"),
+        ]));
+    }
+
+    fn logout(&mut self, provider: &str) {
+        let provider = if provider.is_empty() {
+            self.root_lm.model().provider
+        } else {
+            provider.to_owned()
+        };
+        match self.storage.logout(&provider) {
+            Ok(()) => self.pending.push(TranscriptEntry::RawLines(vec![
+                self.note(&format!("[logged out of {provider}]")),
+            ])),
+            Err(e) => self
+                .pending
+                .push(TranscriptEntry::RawLines(vec![self.err(&e)])),
+        }
     }
 
     pub(super) fn send_shell(&mut self, escape: &str, cmd_tx: &mpsc::UnboundedSender<Cmd>) {

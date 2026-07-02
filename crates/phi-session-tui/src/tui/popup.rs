@@ -2,70 +2,6 @@
 
 use super::*;
 
-pub(crate) struct CommandSpec {
-    pub(crate) name: &'static str,
-    pub(crate) args: &'static str,
-    pub(crate) desc: &'static str,
-}
-
-pub(crate) const COMMANDS: &[CommandSpec] = &[
-    CommandSpec {
-        name: "login",
-        args: "[provider]",
-        desc: "authenticate via OAuth (anthropic | openai)",
-    },
-    CommandSpec {
-        name: "logout",
-        args: "[provider]",
-        desc: "remove stored credentials",
-    },
-    CommandSpec {
-        name: "model",
-        args: "[model]",
-        desc: "switch the root model (no arg: open the selector)",
-    },
-    CommandSpec {
-        name: "submodel",
-        args: "[model]",
-        desc: "switch the sub model used by llm_query",
-    },
-    CommandSpec {
-        name: "resume",
-        args: "",
-        desc: "pick a past session for this directory to resume",
-    },
-    CommandSpec {
-        name: "tree",
-        args: "",
-        desc: "navigate the session tree (also esc esc)",
-    },
-    CommandSpec {
-        name: "fork",
-        args: "",
-        desc: "fork a new session from a prior user message",
-    },
-    CommandSpec {
-        name: "new",
-        args: "",
-        desc: "reset the session (fresh REPL, history cleared)",
-    },
-    CommandSpec {
-        name: "usage",
-        args: "",
-        desc: "show usage totals",
-    },
-    CommandSpec {
-        name: "help",
-        args: "",
-        desc: "show commands and keys",
-    },
-    CommandSpec {
-        name: "quit",
-        args: "",
-        desc: "exit (also ctrl-d on an empty line)",
-    },
-];
-
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(crate) enum PopupKind {
     /// Completing a command name; enter applies and submits.
@@ -163,39 +99,25 @@ pub(crate) fn render_popup(popup: &Popup, p: &InlinePalette) -> Vec<String> {
 
 /// Suggestions for the text before the cursor, pi-style: `/prefix` fuzzy
 /// filters command names; `/command arg-prefix` filters that command's
-/// arguments.
+/// arguments. Both phases are registry-driven: `commands` is the runtime's
+/// command listing and `arg_candidates` queries a command's declared
+/// completion source.
 pub(crate) fn complete(
     before: &str,
-    model_names: &[String],
-    ext_cmds: &[(String, String)],
+    commands: &[phi_ext::CommandInfo],
+    arg_candidates: impl Fn(&str) -> Option<Vec<String>>,
 ) -> Option<Popup> {
     let rest = before.strip_prefix('/')?;
     let Some((command, arg)) = rest.split_once(' ') else {
-        let mut items: Vec<Suggestion> =
-            fuzzy_filter(COMMANDS.iter().collect(), rest, |c| c.name.to_owned())
+        let items: Vec<Suggestion> =
+            fuzzy_filter(commands.iter().collect(), rest, |c| c.name.clone())
                 .into_iter()
                 .map(|c| Suggestion {
-                    value: c.name.to_owned(),
-                    label: format!("/{} {}", c.name, c.args).trim_end().to_owned(),
-                    desc: c.desc.to_owned(),
+                    value: c.name.clone(),
+                    label: format!("/{} {}", c.name, c.args_hint).trim_end().to_owned(),
+                    desc: c.description.clone(),
                 })
                 .collect();
-        // Include extension commands in completion
-        let ext_items: Vec<Suggestion> = ext_cmds
-            .iter()
-            .filter(|(name, _)| {
-                rest.is_empty()
-                    || name
-                        .to_ascii_lowercase()
-                        .contains(&rest.to_ascii_lowercase())
-            })
-            .map(|(name, desc)| Suggestion {
-                value: name.clone(),
-                label: format!("/{name}"),
-                desc: desc.clone(),
-            })
-            .collect();
-        items.extend(ext_items);
         return (!items.is_empty()).then(|| Popup {
             items,
             selected: 0,
@@ -206,16 +128,12 @@ pub(crate) fn complete(
     if arg.contains(' ') {
         return None;
     }
-    let candidates: Vec<&str> = match command {
-        "login" | "logout" => vec!["anthropic", "openai"],
-        "model" | "submodel" => model_names.iter().map(String::as_str).collect(),
-        _ => return None,
-    };
-    let items: Vec<Suggestion> = fuzzy_filter(candidates, arg, |c| (*c).to_owned())
+    let candidates = arg_candidates(command)?;
+    let items: Vec<Suggestion> = fuzzy_filter(candidates, arg, |c| c.clone())
         .into_iter()
         .map(|c| Suggestion {
-            value: c.to_owned(),
-            label: c.to_owned(),
+            value: c.clone(),
+            label: c,
             desc: String::new(),
         })
         .collect();

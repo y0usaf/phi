@@ -116,6 +116,8 @@ pub struct TuiSetup {
     pub events: mpsc::UnboundedReceiver<RlmEvent>,
     /// Providers that had no credentials at startup.
     pub missing_credentials: Vec<String>,
+    /// Startup notices rendered in the greeting (e.g. project trust).
+    pub notices: Vec<String>,
     pub runtime: Arc<AppRuntime>,
     pub ui: UiSetup,
 }
@@ -267,6 +269,7 @@ pub async fn run(setup: TuiSetup, mut io: SessionIo) -> Result<()> {
         payload,
         mut events,
         missing_credentials,
+        notices,
         runtime,
         ui: ui_setup,
     } = setup;
@@ -369,7 +372,14 @@ pub async fn run(setup: TuiSetup, mut io: SessionIo) -> Result<()> {
         None
     };
     if let Some(colors) = colors {
-        ui.palette = InlinePalette::from_terminal_colors(&colors);
+        // Prefer an extension-registered theme (the built-in default theme is
+        // itself an extension), mirroring the mux's palette path. Without one
+        // (e.g. a build stripped of phi-builtins), derive straight from the
+        // terminal colors.
+        ui.palette = match ui.runtime.first_theme() {
+            Some(spec) => InlinePalette::from_extension_theme(spec, &colors),
+            None => InlinePalette::from_terminal_colors(&colors),
+        };
     }
     // Resume when the session has any message entries, regardless of the
     // leaf pointer. A session navigated to root (leaf None) still has
@@ -403,7 +413,7 @@ pub async fn run(setup: TuiSetup, mut io: SessionIo) -> Result<()> {
     }
 
     if !restoring {
-        ui.greet(&missing_credentials);
+        ui.greet(&missing_credentials, &notices);
     }
     if let Err(e) = ui.draw() {
         eprintln!("phi: render error: {e}");
@@ -896,7 +906,7 @@ impl Ui {
         }
     }
 
-    fn greet(&mut self, missing_credentials: &[String]) {
+    fn greet(&mut self, missing_credentials: &[String], notices: &[String]) {
         // Brand moment: the wordmark carries the one gradient in the UI
         // (accent_2 → accent), everything else on the line recedes.
         let wordmark = gradient_text("phi", self.palette.accent_2, self.palette.spinner_accent);
@@ -911,6 +921,10 @@ impl Ui {
                 &self.palette.warning_fg,
                 tert = &self.palette.text_tertiary
             )]));
+        }
+        for notice in notices {
+            let line = self.warn(&notice);
+            self.pending.push(TranscriptEntry::RawLines(vec![line]));
         }
     }
 
@@ -961,9 +975,14 @@ mod tests {
         // ~/.local/share/phi/sessions data dir (mirrors `store_in` and
         // phi-mux's `write_session`).
         store.set_test_path(cwd.join(format!("{}.jsonl", store.id())));
+        let model_names: Vec<String> = registry
+            .supported_models()
+            .map(|m| format!("{}/{}", m.provider, m.id))
+            .collect();
         let runtime = Arc::new(
             phi_ext::RuntimeBuilder::new()
                 .with_cwd(&cwd)
+                .register_extension(phi_builtins::BuiltinCommandsExtension::new(model_names))
                 .build()
                 .unwrap(),
         );
@@ -2230,31 +2249,47 @@ match1
         );
     }
 
+    /// A command registry populated the same way production is: the built-in
+    /// commands extension registered through the public API.
+    fn command_runtime() -> phi_ext::AppRuntime {
+        phi_ext::RuntimeBuilder::new()
+            .with_cwd(std::path::Path::new("."))
+            .register_extension(phi_builtins::BuiltinCommandsExtension::new(models()))
+            .build()
+            .unwrap()
+    }
+
     #[test]
     fn slash_lists_all_commands() {
-        let popup = complete("/", &models(), &[]).unwrap();
-        assert_eq!(popup.items.len(), COMMANDS.len());
+        let rt = command_runtime();
+        let cmds = rt.list_commands();
+        let popup = complete("/", &cmds, |c| rt.complete_command_arg(c)).unwrap();
+        assert_eq!(popup.items.len(), cmds.len());
         assert!(popup.kind == PopupKind::Command);
         assert_eq!(popup.prefix, "/");
     }
 
     #[test]
     fn command_prefix_filters() {
+        let rt = command_runtime();
+        let cmds = rt.list_commands();
         // Fuzzy: "/mo" matches "model" (best) and "submodel".
-        let popup = complete("/mo", &models(), &[]).unwrap();
+        let popup = complete("/mo", &cmds, |c| rt.complete_command_arg(c)).unwrap();
         assert_eq!(popup.items.len(), 2);
         assert_eq!(popup.items[0].value, "model");
         assert_eq!(popup.items[1].value, "submodel");
-        assert!(complete("/zzz", &models(), &[]).is_none());
-        assert!(complete("hello", &models(), &[]).is_none());
+        assert!(complete("/zzz", &cmds, |c| rt.complete_command_arg(c)).is_none());
+        assert!(complete("hello", &cmds, |c| rt.complete_command_arg(c)).is_none());
     }
 
     #[test]
     fn model_argument_completion() {
-        let popup = complete("/model ", &models(), &[]).unwrap();
+        let rt = command_runtime();
+        let cmds = rt.list_commands();
+        let popup = complete("/model ", &cmds, |c| rt.complete_command_arg(c)).unwrap();
         assert_eq!(popup.items.len(), 2);
         assert!(popup.kind == PopupKind::Argument);
-        let popup = complete("/model opus", &models(), &[]).unwrap();
+        let popup = complete("/model opus", &cmds, |c| rt.complete_command_arg(c)).unwrap();
         assert_eq!(popup.items.len(), 1);
         assert_eq!(popup.items[0].value, "anthropic/claude-opus-4-7");
         assert_eq!(popup.prefix, "opus");
@@ -2262,16 +2297,20 @@ match1
 
     #[test]
     fn provider_argument_completion() {
-        let popup = complete("/login a", &models(), &[]).unwrap();
+        let rt = command_runtime();
+        let cmds = rt.list_commands();
+        let popup = complete("/login a", &cmds, |c| rt.complete_command_arg(c)).unwrap();
         assert_eq!(popup.items.len(), 2); // both contain 'a'
-        let popup = complete("/login anth", &models(), &[]).unwrap();
+        let popup = complete("/login anth", &cmds, |c| rt.complete_command_arg(c)).unwrap();
         assert_eq!(popup.items[0].value, "anthropic");
     }
 
     #[test]
     fn no_argument_completion_for_other_commands() {
-        assert!(complete("/new ", &models(), &[]).is_none());
-        assert!(complete("/model two words", &models(), &[]).is_none());
+        let rt = command_runtime();
+        let cmds = rt.list_commands();
+        assert!(complete("/new ", &cmds, |c| rt.complete_command_arg(c)).is_none());
+        assert!(complete("/model two words", &cmds, |c| rt.complete_command_arg(c)).is_none());
     }
 
     // When a tool card is rendered inside a REPL block, its background

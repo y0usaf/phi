@@ -68,11 +68,9 @@ impl Ui {
         }
         let before = self.editor.before_cursor().to_owned();
         if self.editor.cursor_row() == 0
-            && let Some(popup) = complete(
-                &before,
-                &self.model_names,
-                &self.runtime.list_extension_commands(),
-            )
+            && let Some(popup) = complete(&before, &self.runtime.list_commands(), |cmd| {
+                self.runtime.complete_command_arg(cmd)
+            })
         {
             self.popup = Some(popup);
             return;
