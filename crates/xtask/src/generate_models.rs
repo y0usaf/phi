@@ -1,11 +1,15 @@
-mod ai_gateway;
 mod common;
 mod models_dev;
 
-use std::collections::BTreeMap;
 use std::path::Path;
 
 use anyhow::Result;
+use phi_ai::types::{Api, Model};
+
+/// First-party providers whose models Phi embeds — the ones Phi has native
+/// auth flows for. Everything else arrives via `register_provider` or a
+/// catalog extension (PLAN.md WS3.2).
+const EMBEDDED_PROVIDERS: &[&str] = &["anthropic", "openai"];
 
 pub fn run() -> Result<()> {
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -14,41 +18,36 @@ pub fn run() -> Result<()> {
     let providers = models_dev::fetch_providers(&runtime)?;
 
     let mut models = Vec::new();
-    let mut skipped = Vec::new();
     for provider in providers.values() {
+        if !EMBEDDED_PROVIDERS.contains(&provider.id.as_str()) {
+            continue;
+        }
         match models_dev::classify(provider) {
             Some((api, base_url)) => models.extend(models_dev::convert(provider, api, &base_url)),
-            None => skipped.push(provider.id.clone()),
+            None => anyhow::bail!("embedded provider '{}' failed to classify", provider.id),
         }
     }
-    let ai_gateway_models = ai_gateway::fetch_ai_gateway_models(&runtime)?;
-    let extra_provider_count = usize::from(!ai_gateway_models.is_empty());
-    models.extend(ai_gateway_models);
-    models.sort_by(|a, b| (&a.provider, &a.id).cmp(&(&b.provider, &b.id)));
 
     let out_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../phi-ai/src/models.json");
+    // Cursor's native-API models aren't listed on models.dev; they're
+    // hand-maintained in models.json and preserved across regenerations.
+    if let Ok(existing) = std::fs::read_to_string(&out_path) {
+        let existing: Vec<Model> = serde_json::from_str(&existing)?;
+        models.extend(existing.into_iter().filter(|m| m.api == Api::CursorNative));
+    }
+    models.sort_by(|a, b| (&a.provider, &a.id).cmp(&(&b.provider, &b.id)));
+
     let mut json = serde_json::to_string_pretty(&models)?;
     json.push('\n');
     std::fs::write(&out_path, json)?;
 
-    let mut per_api: BTreeMap<String, usize> = BTreeMap::new();
+    let mut per_provider: std::collections::BTreeMap<&str, usize> = Default::default();
     for m in &models {
-        *per_api
-            .entry(serde_json::to_string(&m.api)?.trim_matches('"').to_owned())
-            .or_default() += 1;
+        *per_provider.entry(m.provider.as_str()).or_default() += 1;
     }
-    eprintln!(
-        "wrote {} models from {} providers to {}",
-        models.len(),
-        providers.len() - skipped.len() + extra_provider_count,
-        out_path.display()
-    );
-    for (api, count) in &per_api {
-        eprintln!("  {api}: {count}");
-    }
-    if !skipped.is_empty() {
-        eprintln!("skipped providers (no static base URL or unsupported protocol):");
-        eprintln!("  {}", skipped.join(", "));
+    eprintln!("wrote {} models to {}", models.len(), out_path.display());
+    for (provider, count) in &per_provider {
+        eprintln!("  {provider}: {count}");
     }
     Ok(())
 }
@@ -56,14 +55,6 @@ pub fn run() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::models_dev::override_for;
-
-    #[test]
-    fn override_for_known_bad_neuralwatt_glm_5_2() {
-        // models.dev advertises 1048560 for both; vLLM actually serves 200k.
-        let (ctx, max) = override_for("neuralwatt", "glm-5.2").expect("override present");
-        assert_eq!(ctx, 200_000);
-        assert_eq!(max, 65_536);
-    }
 
     #[test]
     fn override_for_unknown_returns_none() {

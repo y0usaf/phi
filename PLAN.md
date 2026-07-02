@@ -220,15 +220,34 @@ API (`phi-ext`/`phi-lua`/`phi-event`), never bypass it.
 
 ### WS3 — Slim the provider layer
 
-- [ ] **3.1** Keep the four real backends (`AnthropicMessages`, `OpenAiResponses`,
+- [x] **3.1** Keep the four real backends (`AnthropicMessages`, `OpenAiResponses`,
       `OpenAiCompletions`, `CursorNative`) in core.
-- [ ] **3.2** Shrink embedded `models.json` to models for natively supported
+      *Unchanged — verified all four stay registered in `Registry::builtin`.*
+- [x] **3.2** Shrink embedded `models.json` to models for natively supported
       backends only. Everything else arrives via `register_provider` /
       `register_model`, or via an optional catalog extension that fetches and
       caches a registry (crush's pattern is the reference: tiny embedded
       fallback, ETag refresh, never block startup —
       `ref/crush/internal/config/catwalk.go`).
-- [ ] **3.3** Retire or repurpose the `xtask` registry generator accordingly.
+      *Landed as:* embedded catalog is now the three first-party providers
+      Phi has auth flows for — anthropic (24), openai (41), cursor (11);
+      76 models, ~40KB instead of 3,597 / 1.7MB. API gap closed on the way:
+      `register_provider` was stored-but-dead (model resolution ran
+      concurrently with runtime boot), so `build_session` now boots the
+      runtime first, converts each `ProviderConfig` to registry models
+      (`Registry::extended`, `session_builder::extension_provider_models`;
+      api defaults to `openai-completions`), injects inline `api_key`s via
+      `AuthStorage::set_runtime_api_key` (runtime-only, never persisted),
+      and resolves models against the extended registry — so `--model
+      my-router/my-model` works for extension providers in every mode.
+      Known gap: `/model` completions are computed before extensions
+      register providers, so extension models resolve but don't complete.
+      The catalog extension (fetch + cache) remains optional future work.
+- [x] **3.3** Retire or repurpose the `xtask` registry generator accordingly.
+      *Repurposed:* generates only `EMBEDDED_PROVIDERS` (anthropic, openai)
+      from models.dev, preserves the hand-maintained cursor-native entries
+      across regenerations, and lost the `ai_gateway` module plus the dead
+      per-provider classify branches.
 
 ### WS4 — Core robustness invariants (minimal ≠ flimsy)
 

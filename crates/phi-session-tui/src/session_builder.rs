@@ -267,6 +267,87 @@ fn build_rlm_config(
     }
 }
 
+/// Graft extension-registered providers (`register_provider`) onto the
+/// embedded catalog: each provider's model configs become registry models,
+/// and an inline `api_key` becomes a runtime-only auth override (never
+/// persisted). Returns the extended registry plus user-facing notices for
+/// entries that couldn't be used.
+fn registry_with_extension_providers(
+    base: &Registry,
+    runtime: &phi_ext::AppRuntime,
+    storage: &AuthStorage,
+) -> (Arc<Registry>, Vec<String>) {
+    let mut extra = Vec::new();
+    let mut notices = Vec::new();
+    for name in runtime.list_providers() {
+        let Some(config) = runtime.get_provider(&name) else {
+            continue;
+        };
+        if let Some(key) = &config.api_key {
+            storage.set_runtime_api_key(&config.name, key);
+        }
+        extra.extend(extension_provider_models(config, &mut notices));
+    }
+    (Arc::new(base.extended(extra)), notices)
+}
+
+fn extension_provider_models(
+    config: &phi_ext::ProviderConfig,
+    notices: &mut Vec<String>,
+) -> Vec<Model> {
+    use phi_ai::types::{Api, Modality};
+    // The generic OpenAI-compatible protocol is the default: it's what
+    // nearly every third-party endpoint speaks.
+    let api_name = config.api.as_deref().unwrap_or("openai-completions");
+    let api: Api = match serde_json::from_value(serde_json::Value::String(api_name.to_owned())) {
+        Ok(api) => api,
+        Err(_) => {
+            notices.push(format!(
+                "extension provider '{}': unknown api '{}' — skipped",
+                config.name, api_name
+            ));
+            return Vec::new();
+        }
+    };
+    let Some(base_url) = config.base_url.as_deref() else {
+        notices.push(format!(
+            "extension provider '{}': no base_url — skipped",
+            config.name
+        ));
+        return Vec::new();
+    };
+    let base_url = base_url.trim_end_matches('/');
+    config
+        .models
+        .iter()
+        .map(|m| Model {
+            id: m.id.clone(),
+            name: m.name.clone(),
+            api,
+            provider: config.name.clone(),
+            base_url: base_url.to_owned(),
+            reasoning: m.reasoning,
+            input: vec![Modality::Text],
+            cost: Default::default(),
+            // Unset limits get conservative defaults rather than zero, which
+            // would trip the overflow logic immediately.
+            context_window: if m.context_window == 0 {
+                128_000
+            } else {
+                m.context_window
+            },
+            max_tokens: if m.max_tokens == 0 {
+                8_192
+            } else {
+                m.max_tokens
+            },
+            headers: Default::default(),
+            thinking_levels: None,
+            adaptive_thinking: false,
+        })
+        .collect()
+}
+
 /// Build root and sub ProviderLm handles from resolved models.
 fn build_providers(
     registry: &Arc<Registry>,
@@ -310,14 +391,14 @@ pub async fn build_session(
     // terminal is still ours.
     let trust = resolve_project_trust(cwd, *trust_prompt);
 
-    // Model/auth resolution and the extension runtime don't depend on each
-    // other: overlap the auth/model latency with Lua discovery and boot.
-    let (models, runtime) = tokio::try_join!(
-        resolve_models(&settings, registry, storage),
-        build_runtime(cwd, registry, &settings, trust.trusted),
-    )?;
+    // The runtime boots before model resolution so extension-registered
+    // providers (`register_provider`) can contribute models to the registry.
+    let runtime = build_runtime(cwd, registry, &settings, trust.trusted).await?;
+    let (registry, provider_notices) =
+        registry_with_extension_providers(registry, &runtime, storage);
+    let models = resolve_models(&settings, &registry, storage).await?;
     let config = build_rlm_config(cwd, &settings, &runtime, trust.trusted);
-    let (root, sub) = build_providers(registry, storage, &models, settings.max_tokens);
+    let (root, sub) = build_providers(&registry, storage, &models, settings.max_tokens);
 
     // Wire the extension runtime into the providers so provider
     // request/response interception and message streaming events fire.
@@ -351,7 +432,7 @@ pub async fn build_session(
         payload,
         events: rx,
         missing_credentials: models.missing_credentials,
-        notices: trust.notice.into_iter().collect(),
+        notices: trust.notice.into_iter().chain(provider_notices).collect(),
         runtime,
         ui: UiSetup {
             max_iterations: settings.max_iterations,
@@ -574,5 +655,70 @@ mod prompt_drift_tests {
                 "coding_tools_section() no longer documents `{expected}` — prompt/prelude drift"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod extension_provider_tests {
+    use phi_ai::types::{Api, Modality};
+    use phi_ext::{ProviderConfig, ProviderModelConfig};
+
+    use super::extension_provider_models;
+
+    fn config(api: Option<&str>, base_url: Option<&str>) -> ProviderConfig {
+        ProviderConfig {
+            name: "my-router".to_owned(),
+            base_url: base_url.map(str::to_owned),
+            api_key: Some("sk-test".to_owned()),
+            api: api.map(str::to_owned),
+            models: vec![ProviderModelConfig {
+                id: "my-model".to_owned(),
+                name: "My Model".to_owned(),
+                reasoning: true,
+                context_window: 0,
+                max_tokens: 0,
+            }],
+        }
+    }
+
+    #[test]
+    fn converts_models_defaulting_api_and_limits() {
+        let mut notices = Vec::new();
+        let models =
+            extension_provider_models(&config(None, Some("https://r.example/v1/")), &mut notices);
+        assert!(notices.is_empty());
+        assert_eq!(models.len(), 1);
+        let m = &models[0];
+        assert_eq!(m.api, Api::OpenAiCompletions);
+        assert_eq!(m.provider, "my-router");
+        assert_eq!(m.base_url, "https://r.example/v1");
+        assert!(m.reasoning);
+        assert_eq!(m.input, vec![Modality::Text]);
+        // Unset limits become conservative defaults, not zero.
+        assert_eq!(m.context_window, 128_000);
+        assert_eq!(m.max_tokens, 8_192);
+    }
+
+    #[test]
+    fn explicit_api_is_honored() {
+        let mut notices = Vec::new();
+        let models = extension_provider_models(
+            &config(Some("anthropic-messages"), Some("https://r.example")),
+            &mut notices,
+        );
+        assert_eq!(models[0].api, Api::AnthropicMessages);
+    }
+
+    #[test]
+    fn unknown_api_or_missing_base_url_skip_with_notice() {
+        let mut notices = Vec::new();
+        assert!(
+            extension_provider_models(&config(Some("nope"), Some("https://x")), &mut notices)
+                .is_empty()
+        );
+        assert!(extension_provider_models(&config(None, None), &mut notices).is_empty());
+        assert_eq!(notices.len(), 2);
+        assert!(notices[0].contains("unknown api"));
+        assert!(notices[1].contains("no base_url"));
     }
 }

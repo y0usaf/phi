@@ -10,13 +10,11 @@ const MODELS_DEV_URL: &str = "https://models.dev/api.json";
 
 /// Per-model fixes for upstream listings that disagree with the runtime
 /// server. Sourced from `limit.context`/`limit.output` is generally right,
-/// but some providers advertise limits larger than what they actually serve.
-/// Entries are `(provider_id, model_id, context_window, max_tokens)`.
-///
-/// Known bad cases as of 2026-06: neuralwatt's `/v1/models` lists
-/// `glm-5.2` with max_context_length = 1048560 but their vLLM serving
-/// endpoint enforces `max_model_len = max_total_tokens = 200000`.
-const OVERRIDES: &[(&str, &str, u64, u64)] = &[("neuralwatt", "glm-5.2", 200_000, 65_536)];
+/// but providers sometimes advertise limits larger than what they actually
+/// serve. Entries are `(provider_id, model_id, context_window, max_tokens)`.
+/// Currently empty — the last known bad case (neuralwatt's glm-5.2) left the
+/// embedded catalog when it shrank to first-party providers.
+const OVERRIDES: &[(&str, &str, u64, u64)] = &[];
 
 pub(super) fn override_for(provider: &str, model: &str) -> Option<(u64, u64)> {
     OVERRIDES
@@ -99,31 +97,14 @@ fn builtin_base_url(provider_id: &str) -> Option<&'static str> {
     Some(match provider_id {
         "anthropic" => "https://api.anthropic.com",
         "openai" => "https://api.openai.com/v1",
-        "google" => "https://generativelanguage.googleapis.com/v1beta",
-        "amazon-bedrock" => "https://bedrock-runtime.us-east-1.amazonaws.com",
-        "mistral" => "https://api.mistral.ai/v1",
-        "groq" => "https://api.groq.com/openai/v1",
-        "cerebras" => "https://api.cerebras.ai/v1",
-        "xai" => "https://api.x.ai/v1",
         _ => return None,
     })
 }
 
 pub(super) fn classify(provider: &DevProvider) -> Option<(Api, String)> {
-    let npm = provider.npm.as_deref().unwrap_or("");
-    let api = match npm {
+    let api = match provider.npm.as_deref().unwrap_or("") {
         "@ai-sdk/anthropic" => Api::AnthropicMessages,
         "@ai-sdk/openai" => Api::OpenAiResponses,
-        "@ai-sdk/google" => Api::GoogleGenerativeAi,
-        "@ai-sdk/amazon-bedrock" => Api::BedrockConverseStream,
-        "@ai-sdk/mistral" => Api::MistralConversations,
-        // Base URL depends on project/region/resource configuration; these
-        // can't be represented as a static registry entry.
-        "@ai-sdk/google-vertex" | "@ai-sdk/google-vertex/anthropic" | "@ai-sdk/azure" => {
-            return None;
-        }
-        // Bespoke wire protocols we have no Api variant for.
-        "@ai-sdk/cohere" => return None,
         // Everything else on models.dev speaks OpenAI chat completions.
         _ => Api::OpenAiCompletions,
     };

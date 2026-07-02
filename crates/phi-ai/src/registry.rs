@@ -42,6 +42,19 @@ impl Registry {
         &self.models
     }
 
+    /// A copy of this registry with `extra` models appended, sharing the same
+    /// provider implementations. This is how extension-registered providers
+    /// (`register_provider`) join the embedded catalog: the host converts
+    /// their model configs and grafts them on per session.
+    pub fn extended(&self, extra: Vec<Model>) -> Self {
+        let mut models = self.models.clone();
+        models.extend(extra);
+        Self {
+            models,
+            providers: self.providers.clone(),
+        }
+    }
+
     /// True if a provider implementation is registered for the model's API.
     pub fn is_supported(&self, model: &Model) -> bool {
         self.providers.contains_key(&model.api)
@@ -116,36 +129,63 @@ mod tests {
         assert!(registry.find("nope").is_none());
     }
 
+    fn test_model(provider: &str, id: &str, api: Api) -> Model {
+        Model {
+            id: id.to_owned(),
+            name: id.to_owned(),
+            api,
+            provider: provider.to_owned(),
+            base_url: "https://example.com".to_owned(),
+            reasoning: false,
+            input: vec![],
+            cost: Default::default(),
+            context_window: 128_000,
+            max_tokens: 8_192,
+            headers: Default::default(),
+            thinking_levels: None,
+            adaptive_thinking: false,
+        }
+    }
+
     #[test]
-    fn supported_models_filter_by_registered_provider() {
+    fn embedded_catalog_is_first_party_and_fully_supported() {
         let registry = Registry::builtin();
-        let total = registry.models().len();
-        let supported: Vec<_> = registry.supported_models().collect();
-        assert!(!supported.is_empty());
-        // Registry carries models for APIs without providers; they must be
-        // excluded from the supported view.
-        assert!(supported.len() < total);
-        assert!(supported.iter().all(|m| matches!(
-            m.api,
-            Api::AnthropicMessages
-                | Api::OpenAiResponses
-                | Api::OpenAiCompletions
-                | Api::CursorNative
-        )));
-        // Unqualified find prefers a supported model on id collisions; with
-        // OpenAiCompletions registered, the 302ai variant is supported and
-        // appears first. Use a qualified lookup to pin the Anthropic model.
-        let opus = registry.find("anthropic/claude-opus-4-7").unwrap();
-        assert_eq!(opus.provider, "anthropic");
+        // The embedded catalog carries only first-party providers Phi has
+        // auth flows for; everything else arrives via `register_provider`.
+        assert!(
+            registry
+                .models()
+                .iter()
+                .all(|m| matches!(m.provider.as_str(), "anthropic" | "openai" | "cursor"))
+        );
+        assert!(registry.models().iter().all(|m| registry.is_supported(m)));
     }
 
     #[test]
     fn openai_completions_provider_is_registered() {
+        // No embedded model uses the generic OpenAI-completions protocol,
+        // but the backend must stay registered: it's the default API for
+        // extension-registered providers.
         let registry = Registry::builtin();
-        // Any openai-completions model should now be supported.
-        let nw = registry.first_for_provider("neuralwatt").unwrap();
-        assert_eq!(nw.api, Api::OpenAiCompletions);
-        assert!(registry.is_supported(nw));
+        let model = test_model("some-router", "some-model", Api::OpenAiCompletions);
+        assert!(registry.is_supported(&model));
+    }
+
+    #[test]
+    fn extended_registry_grafts_extension_models() {
+        let registry = Registry::builtin();
+        let base_total = registry.models().len();
+        let extended = registry.extended(vec![test_model(
+            "my-router",
+            "my-model",
+            Api::OpenAiCompletions,
+        )]);
+        assert_eq!(extended.models().len(), base_total + 1);
+        let found = extended.find("my-router/my-model").unwrap();
+        assert!(extended.is_supported(found));
+        assert!(extended.find("anthropic/claude-opus-4-7").is_some());
+        // The base registry is untouched.
+        assert!(registry.find("my-router/my-model").is_none());
     }
 
     #[test]
