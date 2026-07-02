@@ -206,6 +206,17 @@ pub(crate) async fn print_events(
                 }
                 eprintln!("{} answer submitted", check(color))
             }
+            RlmEvent::Compaction {
+                tokens_before,
+                error,
+                ..
+            } => match error {
+                Some(error) => eprintln!("  {} compaction failed: {error}", cross(color)),
+                None => eprintln!(
+                    "{} context compacted (~{tokens_before} tokens folded into a summary)",
+                    check(color)
+                ),
+            },
             RlmEvent::RunStart { .. }
             | RlmEvent::RunEnd { .. }
             | RlmEvent::IterationEnd { .. }

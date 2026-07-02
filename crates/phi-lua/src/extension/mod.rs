@@ -189,23 +189,19 @@ impl phi_ext::Extension for LuaExtension {
             let api_key: Option<String> = prov_table.get("api_key").ok();
             let api: Option<String> = prov_table.get("api").ok();
 
+            // Model tables deserialize straight into `ProviderModelConfig`,
+            // so Lua extensions get every field the config schema has (cost,
+            // thinking_levels, headers, ...) without hand-mirrored reads.
             let mut models: Vec<ProviderModelConfig> = Vec::new();
             let models_table: Option<mlua::Table> = prov_table.get("models").ok();
             if let Some(mt) = models_table {
-                for pair in mt.pairs::<mlua::Value, mlua::Table>() {
+                use mlua::LuaSerdeExt as _;
+                for pair in mt.pairs::<mlua::Value, mlua::Value>() {
                     let (_, m) = pair?;
-                    let id: String = m.get("id").unwrap_or_default();
-                    let mname: String = m.get("name").unwrap_or_default();
-                    let reasoning: bool = m.get("reasoning").unwrap_or(false);
-                    let context_window: u64 = m.get("context_window").unwrap_or(0);
-                    let max_tokens: u64 = m.get("max_tokens").unwrap_or(0);
-                    models.push(ProviderModelConfig {
-                        id,
-                        name: mname,
-                        reasoning,
-                        context_window,
-                        max_tokens,
-                    });
+                    let model: ProviderModelConfig = lua.from_value(m).map_err(|e| {
+                        mlua::Error::runtime(format!("provider '{name}': bad model config: {e}"))
+                    })?;
+                    models.push(model);
                 }
             }
 

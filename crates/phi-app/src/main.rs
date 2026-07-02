@@ -88,6 +88,21 @@ async fn async_main() -> Result<()> {
     let registry = Arc::new(Registry::builtin());
 
     if let Some(pattern) = &args.list_models {
+        // The listing covers the embedded first-party models plus the
+        // bundled catalog — the same set a session resolves against before
+        // any user extension registers additional providers.
+        let mut notices = Vec::new();
+        let mut extra = Vec::new();
+        for config in phi_builtins::catalog::provider_configs() {
+            extra.extend(session_builder::extension_provider_models(
+                config,
+                &mut notices,
+            ));
+        }
+        for notice in &notices {
+            eprintln!("phi: {notice}");
+        }
+        let registry = registry.extended(extra);
         for model in registry.supported_models() {
             let qualified = format!("{}/{}", model.provider, model.id);
             if pattern.is_empty() || qualified.contains(pattern.as_str()) {

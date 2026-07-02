@@ -9,6 +9,7 @@ publish = false
 anyhow.workspace = true
 futures.workspace = true
 phi-ai.workspace = true
+phi-ext.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true

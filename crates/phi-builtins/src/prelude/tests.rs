@@ -26,6 +26,39 @@ impl SubcallHandler for NoSubcalls {
 
 const EXEC_TIMEOUT: Duration = Duration::from_secs(20);
 
+/// Subcall handler for spill tests: prompts containing "big" get a >50K-char
+/// response (over the driver's SPILL_THRESHOLD), everything else stays small.
+struct SizedSubcalls;
+
+#[async_trait]
+impl SubcallHandler for SizedSubcalls {
+    async fn handle(&self, request: SubcallRequest) -> Result<SubcallResponse, String> {
+        match request {
+            SubcallRequest::Llm { prompt, .. } => {
+                Ok(SubcallResponse::Text(if prompt.contains("big") {
+                    "x".repeat(60_000)
+                } else {
+                    "small-result".to_owned()
+                }))
+            }
+            SubcallRequest::Rlm { prompt, .. } => {
+                let text = if prompt.contains("big") {
+                    "y".repeat(60_000)
+                } else {
+                    "small-result".to_owned()
+                };
+                Ok(SubcallResponse::Json(serde_json::json!({
+                    "text": text,
+                    "stop": "answer",
+                    "iterations": 1,
+                    "ok": true,
+                })))
+            }
+            _ => Err("unsupported in spill tests".to_owned()),
+        }
+    }
+}
+
 async fn started() -> (PythonRepl, Arc<NoSubcalls>) {
     let handler = Arc::new(NoSubcalls::default());
     started_with(handler, EnvSetup::default()).await
@@ -882,9 +915,7 @@ async fn raw_read_satisfies_read_before_edit() {
 
     let r = repl
         .exec(
-            &format!(
-                "read_file({path:?}, raw=True)\nprint(write_file({path:?}, 'rewritten\\n'))"
-            ),
+            &format!("read_file({path:?}, raw=True)\nprint(write_file({path:?}, 'rewritten\\n'))"),
             EXEC_TIMEOUT,
         )
         .await
@@ -1015,5 +1046,122 @@ async fn read_file_cache_fresh_bypasses_stub() {
         r.stdout
     );
 
+    repl.shutdown().await;
+}
+
+// ── WS4.3: subcall result spill ─────────────────────────────────────────────
+
+#[tokio::test]
+async fn llm_query_spills_oversized_results() {
+    let handler = Arc::new(SizedSubcalls);
+    let (mut repl, _h) = started_with(handler, EnvSetup::default()).await;
+
+    // Small results stay plain strings.
+    let r = repl
+        .exec(
+            "r = llm_query('small please')\nprint(type(r).__name__, r)",
+            EXEC_TIMEOUT,
+        )
+        .await
+        .unwrap();
+    assert_eq!(r.stdout.trim(), "str small-result", "stdout: {}", r.stdout);
+
+    // Oversized results spill: printing shows a preview + tmp path, while
+    // full programmatic access (len, slicing, full_result, the file) remains.
+    let r = repl
+        .exec(
+            "r = llm_query('big please')\nprint(len(r))\nprint(r)\nprint('---')\nprint(r.full_result == 'x' * 60000)\nprint(r[:5])\nprint(open(r.tmp_path).read() == 'x' * 60000)",
+            EXEC_TIMEOUT,
+        )
+        .await
+        .unwrap();
+    assert!(r.stdout.starts_with("60000\n"), "stdout: {}", r.stdout);
+    assert!(r.stdout.contains("[Full output: "), "stdout: {}", r.stdout);
+    assert!(r.stdout.contains("+ [59500 chars]"), "stdout: {}", r.stdout);
+    assert!(
+        r.stdout.contains("True\nxxxxx\nTrue"),
+        "stdout: {}",
+        r.stdout
+    );
+    // The preview form must be small even though the payload was 60K.
+    assert!(
+        r.stdout.len() < 2_000,
+        "stdout not spilled: {} chars",
+        r.stdout.len()
+    );
+    repl.shutdown().await;
+}
+
+#[tokio::test]
+async fn subagent_spills_oversized_text_field() {
+    let handler = Arc::new(SizedSubcalls);
+    let (mut repl, _h) = started_with(handler, EnvSetup::default()).await;
+
+    let r = repl
+        .exec(
+            "r = subagent('big please')\nprint(r['ok'], r['stop'], len(r['text']))\nprint('spilled' if 'Full output' in str(r['text']) else 'inline')\nprint(r['text'].full_result == 'y' * 60000)",
+            EXEC_TIMEOUT,
+        )
+        .await
+        .unwrap();
+    assert!(
+        r.stdout.contains("True answer 60000"),
+        "stdout: {}",
+        r.stdout
+    );
+    assert!(r.stdout.contains("spilled"), "stdout: {}", r.stdout);
+    assert!(r.stdout.contains("True\n"), "stdout: {}", r.stdout);
+
+    // A spilled result submitted as the final answer must carry the full
+    // text, not the preview-with-path.
+    let r = repl
+        .exec(
+            "answer['content'] = r['text']\nanswer['ready'] = True",
+            EXEC_TIMEOUT,
+        )
+        .await
+        .unwrap();
+    let final_answer = r.final_answer.expect("answer must be captured");
+    assert_eq!(final_answer.len(), 60_000);
+    assert!(!final_answer.contains("Full output"));
+    repl.shutdown().await;
+}
+
+// ── WS4.4: scaffold restoration ─────────────────────────────────────────────
+
+#[tokio::test]
+async fn scaffold_restores_prelude_tools_and_context_after_overwrite() {
+    let handler = Arc::new(NoSubcalls::default());
+    let setup = EnvSetup {
+        context_str: Some("the real context".to_owned()),
+        ..EnvSetup::default()
+    };
+    let (mut repl, _h) = started_with(handler, setup).await;
+
+    // Clobber prelude tools, the context alias AND context_0 itself, and
+    // mutate the shared builtins dict in place. Model-created variables must
+    // still persist across the restore.
+    let r = repl
+        .exec(
+            "read_file = None\nbash = 'broken'\ncontext = 'clobbered'\ncontext_0 = 'also clobbered'\n__builtins__['len'] = None\nmyvar = 41",
+            EXEC_TIMEOUT,
+        )
+        .await
+        .unwrap();
+    assert_eq!(r.stderr, "", "stderr: {}", r.stderr);
+
+    let r = repl
+        .exec(
+            "print(callable(read_file), callable(bash))\nprint(context)\nprint(len('abc'))\nprint(myvar + 1)",
+            EXEC_TIMEOUT,
+        )
+        .await
+        .unwrap();
+    assert_eq!(r.stderr, "", "stderr: {}", r.stderr);
+    assert_eq!(
+        r.stdout, "True True\nthe real context\n3\n42\n",
+        "stdout: {}",
+        r.stdout
+    );
     repl.shutdown().await;
 }

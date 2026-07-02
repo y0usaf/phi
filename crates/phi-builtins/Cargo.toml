@@ -10,6 +10,7 @@ phi-session.workspace = true
 phi-tui.workspace = true
 anyhow.workspace = true
 directories.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
 async-trait.workspace = true

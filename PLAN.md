@@ -365,9 +365,29 @@ API (`phi-ext`/`phi-lua`/`phi-event`), never bypass it.
       `AuthStorage::set_runtime_api_key` (runtime-only, never persisted),
       and resolves models against the extended registry — so `--model
       my-router/my-model` works for extension providers in every mode.
-      Known gap: `/model` completions are computed before extensions
-      register providers, so extension models resolve but don't complete.
-      The catalog extension (fetch + cache) remains optional future work.
+      *Amended (bundled catalog):* shipping first-party-only broke every
+      config pointing at a third-party model — "bring your own provider"
+      is not a product. `phi-builtins` now ships `CatalogExtension`
+      (`catalog.rs` + generated `catalog.json`, ~130 providers / ~3.3K
+      models, ~700KB): xtask writes every models.dev provider a Phi
+      backend can drive with plain API-key auth, and the builtin registers
+      them through the same `register_provider` API user extensions use
+      (last-write-wins, so a user extension can re-register a bundled
+      name to point it at a proxy or attach a key). Providers needing
+      account-specific endpoints or bespoke protocols (azure, vertex,
+      bedrock, cohere, ...) are skipped and reported at generation time.
+      `ProviderModelConfig` grew optional full-fidelity fields (cost,
+      thinking_levels, input modalities, headers, adaptive_thinking) so
+      the graft no longer degrades to defaults; the Lua path deserializes
+      model tables via serde, one mechanism for all fields. One-shot mode
+      now resolves models after runtime boot (it resolved against the
+      base registry before — extension providers never worked there),
+      `--list-models` and `/model` completion include the bundled
+      catalog, and `find_model` distinguishes unknown-provider from
+      unknown-model. Remaining gap: providers registered by user
+      extensions still don't `/model`-complete (they register after the
+      completion list is built). A fetch + ETag-refresh catalog extension
+      (crush's catwalk pattern) remains optional future work.
 - [x] **3.3** Retire or repurpose the `xtask` registry generator accordingly.
       *Repurposed:* generates only `EMBEDDED_PROVIDERS` (anthropic, openai)
       from models.dev, preserves the hand-maintained cursor-native entries

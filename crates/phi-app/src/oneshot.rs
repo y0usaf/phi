@@ -28,11 +28,6 @@ pub async fn run(
     let settings =
         config::Settings::resolve(&args.to_session_args(), config::Config::load(&cwd)?, false);
 
-    let root_model = session_builder::find_model(&registry, &settings.model)?;
-    let sub_model = match &settings.sub_model {
-        Some(query) => session_builder::find_model(&registry, query)?,
-        None => root_model.clone(),
-    };
     let thinking: ThinkingLevel = settings
         .thinking
         .parse()
@@ -41,6 +36,29 @@ pub async fn run(
         .sub_model_thinking
         .parse()
         .map_err(|e: String| anyhow::anyhow!(e))?;
+
+    // One-shot mode never prompts for project trust; an undecided project
+    // simply runs without its .phi/ content.
+    let trust = session_builder::resolve_project_trust(&cwd, false);
+    if let Some(notice) = &trust.notice {
+        eprintln!("phi: {notice}");
+    }
+    // Same extension runtime as the interactive modes (builtins + Lua), so
+    // skills injection, event handlers, and extension-registered providers
+    // apply to one-shot runs too. The runtime must boot before model
+    // resolution: `--model` may name a bundled-catalog or extension provider.
+    let runtime = session_builder::build_runtime(&cwd, &registry, &settings, trust.trusted).await?;
+    let (registry, provider_notices) =
+        session_builder::registry_with_extension_providers(&registry, &runtime, &storage);
+    for notice in &provider_notices {
+        eprintln!("phi: {notice}");
+    }
+
+    let root_model = session_builder::find_model(&registry, &settings.model)?;
+    let sub_model = match &settings.sub_model {
+        Some(query) => session_builder::find_model(&registry, query)?,
+        None => root_model.clone(),
+    };
 
     for provider in [&root_model.provider, &sub_model.provider] {
         if storage.resolve(provider).await?.is_none() {
@@ -53,16 +71,6 @@ pub async fn run(
             );
         }
     }
-
-    // One-shot mode never prompts for project trust; an undecided project
-    // simply runs without its .phi/ content.
-    let trust = session_builder::resolve_project_trust(&cwd, false);
-    if let Some(notice) = &trust.notice {
-        eprintln!("phi: {notice}");
-    }
-    // Same extension runtime as the interactive modes (builtins + Lua), so
-    // skills injection and event handlers apply to one-shot runs too.
-    let runtime = session_builder::build_runtime(&cwd, &registry, &settings, trust.trusted).await?;
 
     let config = RlmConfig {
         max_rlm_depth: settings.max_rlm_depth,

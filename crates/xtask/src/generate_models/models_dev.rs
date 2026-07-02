@@ -12,9 +12,7 @@ const MODELS_DEV_URL: &str = "https://models.dev/api.json";
 /// server. Sourced from `limit.context`/`limit.output` is generally right,
 /// but providers sometimes advertise limits larger than what they actually
 /// serve. Entries are `(provider_id, model_id, context_window, max_tokens)`.
-/// Currently empty — the last known bad case (neuralwatt's glm-5.2) left the
-/// embedded catalog when it shrank to first-party providers.
-const OVERRIDES: &[(&str, &str, u64, u64)] = &[];
+const OVERRIDES: &[(&str, &str, u64, u64)] = &[("neuralwatt", "glm-5.2", 200_000, 65_536)];
 
 pub(super) fn override_for(provider: &str, model: &str) -> Option<(u64, u64)> {
     OVERRIDES
@@ -91,12 +89,24 @@ struct DevCost {
     cache_write: f64,
 }
 
-/// Base URLs for first-party providers whose models.dev entry has no `api`
-/// field (the npm SDK encodes the URL instead).
+/// Base URLs for providers whose models.dev entry has no `api` field (the
+/// npm SDK encodes the URL instead). Beyond the two first-party entries,
+/// these are documented OpenAI-compatible endpoints that plain API-key auth
+/// drives — which is what qualifies a provider for the bundled catalog.
+/// Providers whose endpoint depends on account/region/project config
+/// (azure, vertex, bedrock) stay out: a static entry can't represent them.
 fn builtin_base_url(provider_id: &str) -> Option<&'static str> {
     Some(match provider_id {
         "anthropic" => "https://api.anthropic.com",
         "openai" => "https://api.openai.com/v1",
+        "google" => "https://generativelanguage.googleapis.com/v1beta/openai",
+        "mistral" => "https://api.mistral.ai/v1",
+        "groq" => "https://api.groq.com/openai/v1",
+        "cerebras" => "https://api.cerebras.ai/v1",
+        "xai" => "https://api.x.ai/v1",
+        "togetherai" => "https://api.together.xyz/v1",
+        "deepinfra" => "https://api.deepinfra.com/v1/openai",
+        "perplexity" => "https://api.perplexity.ai",
         _ => return None,
     })
 }

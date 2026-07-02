@@ -1696,6 +1696,7 @@ dependencies = [
  "phi-repl",
  "phi-session",
  "phi-tui",
+ "serde_json",
  "tempfile",
  "tokio",
 ]
@@ -3391,6 +3392,7 @@ dependencies = [
  "anyhow",
  "futures",
  "phi-ai",
+ "phi-ext",
  "reqwest",
  "serde",
  "serde_json",

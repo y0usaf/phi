@@ -38,7 +38,7 @@ pub use overlay_spec::{
     OverlayInitFn, OverlayKeyFn, OverlayOutcome, OverlayPayload, OverlayRenderFn, OverlayResponder,
     OverlayScrollFn, OverlaySpec, OverlayState,
 };
-pub use provider::{ProviderConfig, ProviderModelConfig};
+pub use provider::{ProviderConfig, ProviderModelConfig, ProviderModelCost};
 pub use runtime::{
     AppRuntime, DiscoveredResources, ForkDecision, ProjectTrustDecision, ToolInterception,
     TreeDecision, missing_named_item,
@@ -198,12 +198,24 @@ mod tests {
                 reasoning: false,
                 context_window: 200000,
                 max_tokens: 16384,
+                cost: None,
+                thinking_levels: None,
+                input: None,
+                headers: Default::default(),
+                adaptive_thinking: false,
             }],
         };
         let json = serde_json::to_value(&config).unwrap();
         assert_eq!(json["name"], "my-proxy");
         assert_eq!(json["base_url"], "https://proxy.example.com");
         assert_eq!(json["models"][0]["id"], "model-1");
+        // The fidelity fields are optional in both directions: a minimal
+        // hand-written config (no cost/thinking/modalities) round-trips.
+        let minimal: ProviderModelConfig =
+            serde_json::from_value(json!({"id": "m", "name": "M"})).unwrap();
+        assert!(minimal.cost.is_none());
+        assert!(minimal.thinking_levels.is_none());
+        assert!(minimal.headers.is_empty());
     }
 
     // --- Visual spec tests ---

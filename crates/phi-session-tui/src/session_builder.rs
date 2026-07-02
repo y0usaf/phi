@@ -163,16 +163,23 @@ pub async fn build_runtime(
     let config_ext_paths = phi_lua::config_extension_paths(cwd, project_trusted);
     let config_exts = phi_lua::load_extensions(&config_ext_paths);
 
+    // `/model` completion covers the embedded first-party models plus the
+    // bundled catalog. Providers registered by user extensions still miss
+    // completion (they register during the build below) — known WS3.2 gap.
     let model_names: Vec<String> = registry
         .supported_models()
         .map(|m| format!("{}/{}", m.provider, m.id))
+        .chain(phi_builtins::catalog::model_names())
         .collect();
 
     let mut rt_builder = RuntimeBuilder::new().with_cwd(cwd);
     // Built-ins register through the same extension API user extensions use:
-    // the default visual set (spinner, thinking expressions, theme) and the
-    // default slash commands. Registering built-ins first means a user
-    // extension that reuses a built-in name fails loudly at build time.
+    // the bundled provider catalog, the default visual set (spinner, thinking
+    // expressions, theme), and the default slash commands. The catalog goes
+    // first so a user extension re-registering a bundled provider name wins
+    // (provider registration is last-write-wins), e.g. to route it through a
+    // proxy or attach an inline api_key.
+    rt_builder = rt_builder.register_extension(phi_builtins::CatalogExtension);
     rt_builder = rt_builder.register_extension(phi_builtins::DefaultVisualExtension);
     rt_builder =
         rt_builder.register_extension(phi_builtins::BuiltinCommandsExtension::new(model_names));
@@ -272,7 +279,7 @@ fn build_rlm_config(
 /// and an inline `api_key` becomes a runtime-only auth override (never
 /// persisted). Returns the extended registry plus user-facing notices for
 /// entries that couldn't be used.
-fn registry_with_extension_providers(
+pub fn registry_with_extension_providers(
     base: &Registry,
     runtime: &phi_ext::AppRuntime,
     storage: &AuthStorage,
@@ -291,11 +298,11 @@ fn registry_with_extension_providers(
     (Arc::new(base.extended(extra)), notices)
 }
 
-fn extension_provider_models(
+pub fn extension_provider_models(
     config: &phi_ext::ProviderConfig,
     notices: &mut Vec<String>,
 ) -> Vec<Model> {
-    use phi_ai::types::{Api, Modality};
+    use phi_ai::types::{Api, CostRates, Modality};
     // The generic OpenAI-compatible protocol is the default: it's what
     // nearly every third-party endpoint speaks.
     let api_name = config.api.as_deref().unwrap_or("openai-completions");
@@ -320,30 +327,63 @@ fn extension_provider_models(
     config
         .models
         .iter()
-        .map(|m| Model {
-            id: m.id.clone(),
-            name: m.name.clone(),
-            api,
-            provider: config.name.clone(),
-            base_url: base_url.to_owned(),
-            reasoning: m.reasoning,
-            input: vec![Modality::Text],
-            cost: Default::default(),
-            // Unset limits get conservative defaults rather than zero, which
-            // would trip the overflow logic immediately.
-            context_window: if m.context_window == 0 {
-                128_000
-            } else {
-                m.context_window
-            },
-            max_tokens: if m.max_tokens == 0 {
-                8_192
-            } else {
-                m.max_tokens
-            },
-            headers: Default::default(),
-            thinking_levels: None,
-            adaptive_thinking: false,
+        .map(|m| {
+            let thinking_levels = m.thinking_levels.as_ref().and_then(|levels| {
+                let parsed: std::collections::BTreeMap<ThinkingLevel, Option<String>> = levels
+                    .iter()
+                    .filter_map(|(level, value)| match level.parse::<ThinkingLevel>() {
+                        Ok(level) => Some((level, value.clone())),
+                        Err(_) => {
+                            notices.push(format!(
+                                "extension provider '{}' model '{}': \
+                                 unknown thinking level '{level}' — ignored",
+                                config.name, m.id
+                            ));
+                            None
+                        }
+                    })
+                    .collect();
+                (!parsed.is_empty()).then_some(parsed)
+            });
+            Model {
+                id: m.id.clone(),
+                name: if m.name.is_empty() {
+                    m.id.clone()
+                } else {
+                    m.name.clone()
+                },
+                api,
+                provider: config.name.clone(),
+                base_url: base_url.to_owned(),
+                reasoning: m.reasoning,
+                input: match &m.input {
+                    Some(modalities) if modalities.iter().any(|i| i == "image") => {
+                        vec![Modality::Text, Modality::Image]
+                    }
+                    _ => vec![Modality::Text],
+                },
+                cost: m.cost.map_or_else(Default::default, |c| CostRates {
+                    input: c.input,
+                    output: c.output,
+                    cache_read: c.cache_read,
+                    cache_write: c.cache_write,
+                }),
+                // Unset limits get conservative defaults rather than zero, which
+                // would trip the overflow logic immediately.
+                context_window: if m.context_window == 0 {
+                    128_000
+                } else {
+                    m.context_window
+                },
+                max_tokens: if m.max_tokens == 0 {
+                    8_192
+                } else {
+                    m.max_tokens
+                },
+                headers: m.headers.clone().into_iter().collect(),
+                thinking_levels,
+                adaptive_thinking: m.adaptive_thinking,
+            }
         })
         .collect()
 }
@@ -447,10 +487,18 @@ pub async fn build_session(
 }
 
 pub fn find_model(registry: &Registry, query: &str) -> Result<Model> {
-    registry
-        .find(query)
-        .cloned()
-        .with_context(|| format!("unknown model '{query}' (see --list-models)"))
+    registry.find(query).cloned().with_context(|| {
+        match query.split_once('/') {
+            // An unknown provider is a different failure than an unknown
+            // model: nothing bundled or extension-registered claims the name.
+            Some((provider, _)) if registry.first_for_provider(provider).is_none() => format!(
+                "unknown model '{query}': no provider '{provider}' is bundled or \
+                 registered (an extension can add one via phi.register_provider; \
+                 see --list-models)"
+            ),
+            _ => format!("unknown model '{query}' (see --list-models)"),
+        }
+    })
 }
 
 pub fn register_supported_named_models(
@@ -677,6 +725,11 @@ mod extension_provider_tests {
                 reasoning: true,
                 context_window: 0,
                 max_tokens: 0,
+                cost: None,
+                thinking_levels: None,
+                input: None,
+                headers: Default::default(),
+                adaptive_thinking: false,
             }],
         }
     }
@@ -707,6 +760,41 @@ mod extension_provider_tests {
             &mut notices,
         );
         assert_eq!(models[0].api, Api::AnthropicMessages);
+    }
+
+    #[test]
+    fn full_fidelity_fields_survive_the_graft() {
+        use phi_ext::ProviderModelCost;
+
+        let mut cfg = config(None, Some("https://r.example"));
+        let m = &mut cfg.models[0];
+        m.cost = Some(ProviderModelCost {
+            input: 1.5,
+            output: 4.5,
+            cache_read: 0.4,
+            cache_write: 0.0,
+        });
+        m.thinking_levels = Some(
+            [
+                ("off".to_owned(), Some("none".to_owned())),
+                ("high".to_owned(), Some("high".to_owned())),
+                ("bogus".to_owned(), None),
+            ]
+            .into(),
+        );
+        m.input = Some(vec!["text".to_owned(), "image".to_owned()]);
+
+        let mut notices = Vec::new();
+        let models = extension_provider_models(&cfg, &mut notices);
+        let m = &models[0];
+        assert_eq!(m.cost.input, 1.5);
+        assert_eq!(m.cost.output, 4.5);
+        assert_eq!(m.input, vec![Modality::Text, Modality::Image]);
+        let levels = m.thinking_levels.as_ref().unwrap();
+        assert_eq!(levels.len(), 2, "bogus level dropped, valid ones kept");
+        // The dropped level is reported, not silently eaten.
+        assert_eq!(notices.len(), 1);
+        assert!(notices[0].contains("bogus"));
     }
 
     #[test]
