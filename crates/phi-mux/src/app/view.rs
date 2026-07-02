@@ -6,9 +6,10 @@
 //! overlays, terminal selection, and the transient status note. Session
 //! content itself stays canonical in the core (`Workspace` + handles).
 //!
-//! [`MuxApp`](super::MuxApp) currently holds exactly one `MuxView`, so
-//! behavior is identical to the pre-split mux; the N-view stage (input
-//! routed by sender, render per view via `send_to`) builds on this.
+//! [`MuxApp`](super::MuxApp) holds one `MuxView` per attached client, keyed
+//! by client id (a single view with id 0 in local mode). Input is routed to
+//! the sending client's view; every view renders its own frame at its own
+//! size through its own diff renderer.
 
 use std::time::Instant;
 
@@ -53,6 +54,10 @@ pub(crate) struct MuxView {
 }
 
 impl MuxView {
+    pub(crate) fn overlay_active(&self) -> bool {
+        self.archive_viewer.is_some() || self.active_extension_overlay.is_some()
+    }
+
     pub(crate) fn new(focus: Focus, size: (u16, u16)) -> Self {
         Self {
             focus,

@@ -1,6 +1,7 @@
 //! The mux main loop: owns the real terminal, multiplexes input between the
 //! sidebar, overlays, the `:` command line, and the focused embedded
 //! session, and composites every frame from the session's vt100 screen.
+use std::collections::BTreeMap;
 use std::io::Write as _;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -72,12 +73,15 @@ pub async fn run(shared: SharedResources, mux_config: MuxConfig, cwd: PathBuf) -
         .unwrap_or_else(theme::default_terminal_colors);
     let size = phi_tui::crossterm::terminal::size().unwrap_or((80, 24));
 
+    // Local mode is "core + one view": the single view is the synthetic
+    // client 0 that InputSource::Local tags its events with.
     let (mut app, receivers) = build_app(
         shared,
         &mux_config,
         &cwd,
         ws,
         terminal_colors,
+        0,
         size,
         RenderSink::Stdout,
     );
@@ -104,12 +108,14 @@ pub async fn run(shared: SharedResources, mux_config: MuxConfig, cwd: PathBuf) -
 
 /// Run the mux headless for the daemon: no tty, no raw mode — input arrives
 /// as [`RemoteEvent`]s from client connections, frames go out through the
-/// [`ClientRegistry`]. Size and terminal colors are seeded by the first
-/// client's handshake.
+/// [`ClientRegistry`]. Terminal colors are seeded by the first client's
+/// handshake (`seed_id` is that client's registry id — its `Attached` event
+/// was consumed by the caller, so its view is created here).
 pub async fn run_server(
     shared: SharedResources,
     mux_config: MuxConfig,
     cwd: PathBuf,
+    seed_id: u64,
     seed: AttachInfo,
     registry: Arc<ClientRegistry>,
     events_rx: mpsc::UnboundedReceiver<RemoteEvent>,
@@ -131,6 +137,7 @@ pub async fn run_server(
         &cwd,
         ws,
         terminal_colors,
+        seed_id,
         (seed.cols, seed.rows),
         RenderSink::Registry(registry),
     );
@@ -149,8 +156,8 @@ pub async fn run_server(
 /// daemon entry points.
 struct WorkspaceSetup {
     workspace: Workspace,
-    /// The initial view's selection (seeded from persisted state). Becomes
-    /// per-client once views split off the core (WS8.2).
+    /// The seed view's selection (from persisted state). Later-attaching
+    /// clients start from the last active view's focus instead.
     focus: Focus,
     session_watcher: SessionWatcher,
     watcher_rx: mpsc::UnboundedReceiver<usize>,
@@ -209,12 +216,14 @@ pub(crate) struct MuxReceivers {
     pub(crate) watcher_rx: mpsc::UnboundedReceiver<usize>,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_app(
     shared: SharedResources,
     mux_config: &MuxConfig,
     cwd: &std::path::Path,
     ws: WorkspaceSetup,
     terminal_colors: phi_tui::TerminalColors,
+    seed_client: u64,
     size: (u16, u16),
     sink: RenderSink,
 ) -> (MuxApp, MuxReceivers) {
@@ -252,7 +261,7 @@ fn build_app(
     let app = MuxApp {
         shared,
         workspace: ws.workspace,
-        view: MuxView::new(ws.focus, size),
+        views: BTreeMap::from([(seed_client, MuxView::new(ws.focus, size))]),
         keymap: Keymap::from_overrides(mux_config.keybinds.as_ref().unwrap_or(&Default::default())),
         sidebar_width: mux_config.sidebar_width.unwrap_or(SIDEBAR_WIDTH_DEFAULT),
         extension_overlays: visual_runtime
@@ -272,8 +281,9 @@ fn build_app(
         },
         session_watcher: ws.session_watcher,
         sink,
-        last_active_client: 0,
+        last_active_client: seed_client,
         pending_edits: Vec::new(),
+        pending_size_recompute: None,
         quit: false,
     };
     let receivers = MuxReceivers {
@@ -325,17 +335,18 @@ impl InputSource {
     }
 }
 
-/// The mux core plus (for now) a single view.
+/// The mux core plus one view per attached client.
 ///
 /// Core state — the workspace, session handles, watchers, channels,
 /// persistence, clock — is shared by every attached client. Per-client
-/// presentation state lives in [`MuxView`]; the N-view stage of WS8.2
-/// turns the single `view` field into one per attached client.
+/// presentation state lives in [`MuxView`]: each client navigates, sizes,
+/// and scrolls independently while session content stays canonical.
 struct MuxApp {
     shared: SharedResources,
     workspace: Workspace,
-    /// Per-client view state. Exactly one until views split per client.
-    view: MuxView,
+    /// Per-client view state, keyed by client id (0 = the synthetic local
+    /// client). Views are created on attach and removed on detach.
+    views: BTreeMap<u64, MuxView>,
     keymap: Keymap,
     sidebar_width: u16,
     /// Extension-registered overlay specs, cloned from the visual runtime.
@@ -372,6 +383,11 @@ struct MuxApp {
         u64,
         tokio::sync::oneshot::Sender<std::result::Result<Option<String>, String>>,
     )>,
+    /// Debounce deadline for [`MuxApp::recompute_session_sizes`]: focus
+    /// changes, attaches/detaches, and client resizes all schedule a
+    /// recompute here instead of resizing ptys inline, so flipping through
+    /// the sidebar doesn't storm sessions with resizes.
+    pending_size_recompute: Option<tokio::time::Instant>,
     quit: bool,
 }
 

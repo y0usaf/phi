@@ -1,64 +1,63 @@
 use super::*;
 
 impl MuxApp {
-    pub(crate) async fn handle_event(&mut self, event: Event) {
+    pub(crate) async fn handle_event(&mut self, vid: u64, event: Event) {
         match event {
-            Event::Resize(cols, rows) => self.handle_resize(cols, rows),
-            Event::Mouse(mouse) => self.handle_mouse(mouse),
+            Event::Resize(cols, rows) => self.handle_resize(vid, cols, rows),
+            Event::Mouse(mouse) => self.handle_mouse(vid, mouse),
             Event::Paste(text) => {
-                if self.view.command_line.is_some() {
-                    if let Some(command_line) = &mut self.view.command_line {
-                        command_line.insert_str(&text.replace(['\n', '\r'], " "));
-                    }
-                } else if !self.overlay_active() {
-                    self.forward_to_session(Event::Paste(text));
+                let Some(view) = self.views.get_mut(&vid) else {
+                    return;
+                };
+                if let Some(command_line) = &mut view.command_line {
+                    command_line.insert_str(&text.replace(['\n', '\r'], " "));
+                } else if !view.overlay_active() {
+                    self.forward_to_session(vid, Event::Paste(text));
                 }
             }
             Event::Key(key) => {
                 if key.kind == KeyEventKind::Release {
                     return;
                 }
-                self.handle_key(key).await;
+                self.handle_key(vid, key).await;
             }
             // Focus events drive the animation clock's throttle: focused →
             // 16ms tick (~60fps), blurred → 32ms tick (~31fps), matching
             // claude-code's ClockProvider + useTerminalFocus model.
             Event::FocusGained => {
                 self.clock.set_focused(true);
-                self.forward_to_session(Event::FocusGained);
+                self.forward_to_session(vid, Event::FocusGained);
             }
             Event::FocusLost => {
                 self.clock.set_focused(false);
-                self.forward_to_session(Event::FocusLost);
+                self.forward_to_session(vid, Event::FocusLost);
             }
         }
     }
 
-    pub(crate) fn handle_resize(&mut self, cols: u16, rows: u16) {
-        self.view.size = (cols, rows);
-        let pane = self.pane_size();
-        for project in &mut self.workspace.projects {
-            for session in &mut project.sessions {
-                if let Some(handle) = &session.handle {
-                    handle.resize(pane.0, pane.1);
-                }
-            }
+    pub(crate) fn handle_resize(&mut self, vid: u64, cols: u16, rows: u16) {
+        if let Some(view) = self.views.get_mut(&vid) {
+            view.size = (cols, rows);
+            view.renderer.invalidate();
         }
-        self.view.renderer.invalidate();
+        self.schedule_size_recompute();
     }
 
-    pub(crate) async fn handle_key(&mut self, key: KeyEvent) {
-        let (cols, rows) = self.view.size;
+    pub(crate) async fn handle_key(&mut self, vid: u64, key: KeyEvent) {
+        let Some(view) = self.views.get_mut(&vid) else {
+            return;
+        };
+        let (cols, rows) = view.size;
 
-        if let Some(viewer) = &mut self.view.archive_viewer {
+        if let Some(viewer) = &mut view.archive_viewer {
             match viewer.handle_key(&key, cols, rows) {
-                ArchiveOutcome::Close => self.view.archive_viewer = None,
-                ArchiveOutcome::Restore(path) => self.restore_archived(&path),
+                ArchiveOutcome::Close => view.archive_viewer = None,
+                ArchiveOutcome::Restore(path) => self.restore_archived(vid, &path),
                 ArchiveOutcome::None => {}
             }
             return;
         }
-        if let Some(active) = &mut self.view.active_extension_overlay {
+        if let Some(active) = &mut view.active_extension_overlay {
             // The overlay's toggle key closes it again.
             if let Some(stroke) = KeyStroke::from_key_event(&key) {
                 let toggled = active
@@ -67,7 +66,7 @@ impl MuxApp {
                     .as_deref()
                     .is_some_and(|t| KeyStroke::parse(t).is_ok_and(|target| target == stroke));
                 if toggled {
-                    self.view.active_extension_overlay = None;
+                    view.active_extension_overlay = None;
                     return;
                 }
             }
@@ -75,31 +74,29 @@ impl MuxApp {
             let outcome = (active.spec.handle_key)(&mut active.state, &overlay_key, cols, rows);
             match outcome {
                 phi_ext::OverlayOutcome::None => {} // consumed, no change
-                phi_ext::OverlayOutcome::Close => self.view.active_extension_overlay = None,
+                phi_ext::OverlayOutcome::Close => view.active_extension_overlay = None,
                 phi_ext::OverlayOutcome::Submit(value) => {
-                    self.set_note(format!("Overlay: {value}"), super::StatusNoteKind::Ok);
-                    self.view.active_extension_overlay = None;
+                    view.active_extension_overlay = None;
+                    self.set_note_on(vid, format!("Overlay: {value}"), super::StatusNoteKind::Ok);
                 }
             }
             return;
         }
 
-        if self.view.command_line.is_some() {
+        if view.command_line.is_some() {
             // `::` immediately after opening sends a literal ':' through.
-            let literal_colon = self
-                .view
+            let literal_colon = view
                 .command_line
                 .as_ref()
                 .is_some_and(|c| c.input.is_empty())
                 && matches!(key.code, KeyCode::Char(':'))
                 && !key.modifiers.contains(KeyModifiers::CONTROL);
             if literal_colon {
-                self.view.command_line = None;
-                self.forward_to_session(Event::Key(key));
+                view.command_line = None;
+                self.forward_to_session(vid, Event::Key(key));
                 return;
             }
-            let outcome = self
-                .view
+            let outcome = view
                 .command_line
                 .as_mut()
                 .map(|c| c.handle_key(&key))
@@ -107,11 +104,11 @@ impl MuxApp {
             match outcome {
                 CommandLineEvent::Consumed => {}
                 CommandLineEvent::Cancel => {
-                    self.view.command_line = None;
+                    view.command_line = None;
                 }
                 CommandLineEvent::Submit(input) => {
-                    self.view.command_line = None;
-                    self.run_command_input(&input).await;
+                    view.command_line = None;
+                    self.run_command_input(vid, &input).await;
                 }
             }
             return;
@@ -120,7 +117,7 @@ impl MuxApp {
         if matches!(key.code, KeyCode::Char(':'))
             && key.modifiers.difference(KeyModifiers::SHIFT).is_empty()
         {
-            self.view.command_line = Some(CommandLineState::with_input(""));
+            view.command_line = Some(CommandLineState::with_input(""));
             return;
         }
 
@@ -129,7 +126,7 @@ impl MuxApp {
         // Toggle keys are parsed as KeyStroke strings (e.g. "ctrl+?") so
         // that modifiers are honoured, unlike the old raw-char matching.
         if let Some(stroke) = KeyStroke::from_key_event(&key)
-            && self.view.active_extension_overlay.is_none()
+            && view.active_extension_overlay.is_none()
         {
             let toggled = self.extension_overlays.iter().find_map(|spec| {
                 let toggle_key = spec.toggle_key.as_deref()?;
@@ -138,31 +135,35 @@ impl MuxApp {
                     .then(|| spec.name.clone())
             });
             if let Some(name) = toggled {
-                self.open_extension_overlay(&name, None);
+                self.open_extension_overlay(vid, &name, None);
                 return;
             }
         }
 
         match KeyStroke::from_key_event(&key) {
             Some(stroke) => match self.keymap.lookup(&stroke) {
-                KeymapMatch::Triggered(action) => self.run_action(action).await,
-                KeymapMatch::NoMatch => self.forward_to_session(Event::Key(key)),
+                KeymapMatch::Triggered(action) => self.run_action(vid, action).await,
+                KeymapMatch::NoMatch => self.forward_to_session(vid, Event::Key(key)),
             },
-            None => self.forward_to_session(Event::Key(key)),
+            None => self.forward_to_session(vid, Event::Key(key)),
         }
     }
 
-    pub(crate) fn handle_mouse(&mut self, mouse: MouseEvent) {
-        let (cols, rows) = self.view.size;
-        if self.overlay_active() {
+    pub(crate) fn handle_mouse(&mut self, vid: u64, mouse: MouseEvent) {
+        let sidebar_width = self.sidebar_width;
+        let Some(view) = self.views.get_mut(&vid) else {
+            return;
+        };
+        let (cols, rows) = view.size;
+        if view.overlay_active() {
             let delta = match mouse.kind {
                 MouseEventKind::ScrollUp => -WHEEL_LINES,
                 MouseEventKind::ScrollDown => WHEEL_LINES,
                 _ => return,
             };
-            if let Some(viewer) = &mut self.view.archive_viewer {
+            if let Some(viewer) = &mut view.archive_viewer {
                 viewer.move_selection(delta);
-            } else if let Some(active) = &mut self.view.active_extension_overlay
+            } else if let Some(active) = &mut view.active_extension_overlay
                 && let Some(handle_scroll) = &active.spec.handle_scroll
             {
                 handle_scroll(&mut active.state, delta, cols, rows);
@@ -170,7 +171,7 @@ impl MuxApp {
             return;
         }
 
-        let layout = self.layout();
+        let layout = compute_cell_layout(cols, rows, sidebar_width);
         let (col, row) = (i32::from(mouse.column), i32::from(mouse.row));
         let in_terminal = layout.terminal.contains_cell(col, row);
         let in_sidebar = layout.sidebar.contains_cell(col, row);
@@ -184,33 +185,32 @@ impl MuxApp {
                 };
                 if in_sidebar {
                     let visible = layout.sidebar.rows.max(0) as usize;
-                    let row_count =
-                        build_sidebar_rows(&self.workspace.projects, &self.view.focus).len();
+                    let row_count = build_sidebar_rows(&self.workspace.projects, &view.focus).len();
                     let (next, _) = scroll_sidebar_by_rows_value(
-                        self.view.sidebar_scroll,
+                        view.sidebar_scroll,
                         delta,
                         visible,
                         row_count,
                     );
-                    self.view.sidebar_scroll = next;
+                    view.sidebar_scroll = next;
                 } else if in_terminal {
-                    self.scroll_terminal(-delta);
+                    self.scroll_terminal(vid, -delta);
                 }
             }
             MouseEventKind::Down(MouseButton::Left) if in_sidebar => {
-                self.handle_sidebar_click(&layout, mouse.row);
+                self.handle_sidebar_click(vid, &layout, mouse.row);
             }
             MouseEventKind::Down(MouseButton::Left) if in_terminal => {
                 let point = terminal_point(&layout, mouse.column, mouse.row);
-                self.view.selection.set(point);
+                view.selection.set(point);
             }
-            MouseEventKind::Drag(MouseButton::Left) if self.view.selection.is_active() => {
+            MouseEventKind::Drag(MouseButton::Left) if view.selection.is_active() => {
                 let point = terminal_point(&layout, mouse.column, mouse.row);
-                self.view.selection.update_focus(point);
+                view.selection.update_focus(point);
             }
-            MouseEventKind::Up(MouseButton::Left) if self.view.selection.is_active() => {
-                self.view.selection.end_drag();
-                self.copy_selection(false);
+            MouseEventKind::Up(MouseButton::Left) if view.selection.is_active() => {
+                view.selection.end_drag();
+                self.copy_selection(vid, false);
             }
             _ => {}
         }
@@ -218,13 +218,16 @@ impl MuxApp {
 
     /// Select the project or session under a sidebar click, mirroring the
     /// viewport (scroll + sticky header) the last frame was drawn with.
-    pub(crate) fn handle_sidebar_click(&mut self, layout: &CellLayout, row: u16) {
+    pub(crate) fn handle_sidebar_click(&mut self, vid: u64, layout: &CellLayout, row: u16) {
+        let Some(view) = self.views.get_mut(&vid) else {
+            return;
+        };
         let visible = layout.sidebar.rows.max(0) as usize;
         let visible_row = (i32::from(row) - layout.sidebar.row).max(0) as usize;
-        let rows = build_sidebar_rows(&self.workspace.projects, &self.view.focus);
-        let sticky = selected_sidebar_selection_span(self.view.focus.project, &rows)
-            .and_then(|span| sticky_sidebar_anchor_row(self.view.sidebar_scroll, visible, span));
-        let viewport = sidebar_viewport_items(&rows, self.view.sidebar_scroll, visible, sticky);
+        let rows = build_sidebar_rows(&self.workspace.projects, &view.focus);
+        let sticky = selected_sidebar_selection_span(view.focus.project, &rows)
+            .and_then(|span| sticky_sidebar_anchor_row(view.sidebar_scroll, visible, span));
+        let viewport = sidebar_viewport_items(&rows, view.sidebar_scroll, visible, sticky);
         let Some(item) = viewport.iter().find(|i| i.visible_row == visible_row) else {
             return;
         };
@@ -233,27 +236,27 @@ impl MuxApp {
         };
         match kind {
             SidebarRowKind::Project(index) => {
-                self.view.focus.project = index;
+                view.focus.project = index;
             }
             SidebarRowKind::Session {
                 project_index,
                 session_index,
             } => {
-                self.view.focus.project = project_index;
-                self.view
-                    .focus
+                view.focus.project = project_index;
+                view.focus
                     .set_selected_session(project_index, session_index);
             }
         }
-        self.on_focus_changed();
+        self.on_focus_changed(vid);
     }
 
-    pub(crate) fn scroll_terminal(&mut self, delta_up: i32) {
+    pub(crate) fn scroll_terminal(&mut self, vid: u64, delta_up: i32) {
         // Compute the new scrollback and the delta, then drop the parser guard
-        // before touching `self.view.selection` (avoids borrow-conflict with the
-        // immutable `focused_session` borrow).
+        // before touching the view's selection (avoids borrow-conflict with
+        // the immutable `focused_session` borrow). The scrollback offset
+        // lives on the shared vt100 screen, so co-viewers scroll together.
         let scrolled = {
-            let Some(handle) = self.focused_session().and_then(|s| s.handle.as_ref()) else {
+            let Some(handle) = self.focused_session(vid).and_then(|s| s.handle.as_ref()) else {
                 return;
             };
             let mut parser = driver::lock_parser(&handle.parser);
@@ -267,8 +270,11 @@ impl MuxApp {
         // highlight tracks the same content (zellij's move_up/move_down
         // pattern). `delta_up > 0` means we scrolled up (into history), so
         // visible content moved down — the selection rows shift down too.
-        if self.view.selection.is_active() && scrolled != 0 {
-            self.view.selection.shift_rows(scrolled);
+        if let Some(view) = self.views.get_mut(&vid)
+            && view.selection.is_active()
+            && scrolled != 0
+        {
+            view.selection.shift_rows(scrolled);
         }
     }
 }

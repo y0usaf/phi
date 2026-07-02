@@ -205,10 +205,22 @@ pub fn refresh_project_with_focus(
     focus: &mut Focus,
     index: usize,
 ) -> RefreshDelta {
+    refresh_project_with_focuses(ws, &mut [focus], index)
+}
+
+/// Rescan a project while preserving every attached view's selection across
+/// the rebuild: one [`Focus::mark`]/[`Focus::restore`] pair per view.
+pub fn refresh_project_with_focuses(
+    ws: &mut Workspace,
+    focuses: &mut [&mut Focus],
+    index: usize,
+) -> RefreshDelta {
     ws.stabilize_keys(index);
-    let mark = focus.mark(ws, index);
+    let marks: Vec<FocusMark> = focuses.iter().map(|focus| focus.mark(ws, index)).collect();
     let delta = ws.refresh_project(index);
-    focus.restore(ws, index, mark);
+    for (focus, mark) in focuses.iter_mut().zip(marks) {
+        focus.restore(ws, index, mark);
+    }
     delta
 }
 

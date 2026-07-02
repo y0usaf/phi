@@ -46,9 +46,12 @@ pub enum RemoteEvent {
         id: u64,
         event: Event,
     },
-    /// A client's size changed (the registry is already updated); the app
-    /// recomputes the shared canvas size.
-    Resized,
+    /// A client's terminal size changed; the app resizes that client's view.
+    Resized {
+        id: u64,
+        cols: u16,
+        rows: u16,
+    },
     EditResult {
         id: u64,
         result: Result<Option<String>, String>,
@@ -62,8 +65,6 @@ pub enum RemoteEvent {
 
 struct RemoteClient {
     tx: mpsc::UnboundedSender<ServerMsg>,
-    cols: u16,
-    rows: u16,
     cwd: PathBuf,
 }
 
@@ -73,8 +74,8 @@ struct Inner {
     next_id: u64,
 }
 
-/// Attached-client registry: the broadcast fanout and the source of truth
-/// for the shared canvas size (min across attached clients).
+/// Attached-client registry: per-client message fanout plus each client's
+/// attach cwd. Sizing lives in the app's per-client views, not here.
 #[derive(Default)]
 pub struct ClientRegistry {
     inner: Mutex<Inner>,
@@ -87,25 +88,11 @@ impl ClientRegistry {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    fn register(
-        &self,
-        cols: u16,
-        rows: u16,
-        cwd: PathBuf,
-        tx: mpsc::UnboundedSender<ServerMsg>,
-    ) -> u64 {
+    fn register(&self, cwd: PathBuf, tx: mpsc::UnboundedSender<ServerMsg>) -> u64 {
         let mut inner = self.lock();
         inner.next_id += 1;
         let id = inner.next_id;
-        inner.clients.insert(
-            id,
-            RemoteClient {
-                tx,
-                cols,
-                rows,
-                cwd,
-            },
-        );
+        inner.clients.insert(id, RemoteClient { tx, cwd });
         id
     }
 
@@ -115,29 +102,8 @@ impl ClientRegistry {
         self.lock().clients.get(&id).map(|c| c.cwd.clone())
     }
 
-    fn set_size(&self, id: u64, cols: u16, rows: u16) {
-        if let Some(client) = self.lock().clients.get_mut(&id) {
-            client.cols = cols;
-            client.rows = rows;
-        }
-    }
-
     fn remove(&self, id: u64) {
         self.lock().clients.remove(&id);
-    }
-
-    /// The shared canvas size: the smallest attached terminal in each
-    /// dimension (tmux behavior — anything larger would paint off-screen on
-    /// the smallest client). `None` with no clients attached.
-    pub fn target_size(&self) -> Option<(u16, u16)> {
-        let inner = self.lock();
-        let cols = inner.clients.values().map(|c| c.cols).min()?;
-        let rows = inner.clients.values().map(|c| c.rows).min()?;
-        Some((cols, rows))
-    }
-
-    pub fn client_count(&self) -> usize {
-        self.lock().clients.len()
     }
 
     /// Send `msg` to every attached client, pruning any whose write task
@@ -234,8 +200,17 @@ pub async fn run(shared: SharedResources, mux_config: MuxConfig, cwd: PathBuf) -
     .await;
 
     let result = match first {
-        Ok(Some((_, seed))) => {
-            crate::app::run_server(shared, mux_config, cwd, seed, registry.clone(), events_rx).await
+        Ok(Some((id, seed))) => {
+            crate::app::run_server(
+                shared,
+                mux_config,
+                cwd,
+                id,
+                seed,
+                registry.clone(),
+                events_rx,
+            )
+            .await
         }
         // Killed before anyone attached: nothing to run.
         Ok(None) => Ok(()),
@@ -310,7 +285,7 @@ async fn handle_connection(
     };
 
     let (msg_tx, mut msg_rx) = mpsc::unbounded_channel::<ServerMsg>();
-    let id = registry.register(info.cols, info.rows, info.cwd.clone(), msg_tx);
+    let id = registry.register(info.cwd.clone(), msg_tx);
     let _cleanup = RemoveOnDrop {
         registry: registry.clone(),
         events_tx: events_tx.clone(),
@@ -342,10 +317,7 @@ async fn handle_connection(
         let event = match msg {
             ClientMsg::Attach { .. } => continue, // duplicate handshake: ignore
             ClientMsg::Input(event) => RemoteEvent::Input { id, event },
-            ClientMsg::Resize { cols, rows } => {
-                registry.set_size(id, cols, rows);
-                RemoteEvent::Resized
-            }
+            ClientMsg::Resize { cols, rows } => RemoteEvent::Resized { id, cols, rows },
             ClientMsg::EditResult(result) => RemoteEvent::EditResult { id, result },
             ClientMsg::ClipboardText(text) => RemoteEvent::ClipboardText { id, text },
             ClientMsg::Kill => RemoteEvent::Kill,

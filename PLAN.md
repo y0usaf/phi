@@ -313,7 +313,7 @@ socket. Advances the Mux differentiator (core work per the table above).
       `$EDITOR` runs on the last-active client's tty; copy = OSC 52 to that
       client; paste = client-side clipboard read). `phi --kill` terminates the
       daemon; `:quit` from any client does too.
-- [ ] **8.2 Per-client views (free navigation + independent sizing).** Split
+- [x] **8.2 Per-client views (free navigation + independent sizing).** Split
       `MuxApp` into `MuxCore` (shared: workspace, session handles, watchers,
       persistence, clock) and `MuxView` (per client: focus, size, surface,
       renderer, sidebar scroll, command line, overlays, selection, note) so
@@ -339,10 +339,35 @@ socket. Advances the Mux differentiator (core work per the table above).
             selection, note, alt-screen flag, cached scrollback);
             `MuxApp` = core fields + one `view: MuxView`. The N-view
             stage turns that field into a per-client map.
-      - [ ] N views: route input by sender, render per view via `send_to`,
+      - [x] N views: route input by sender, render per view via `send_to`,
             per-session size recompute (debounced) on focus change; host
             modals / edit requests route to the view(s) focused on the
             requesting session.
+            *Landed as:* `MuxApp.views: BTreeMap<u64, MuxView>` (local mode
+            = one view under the synthetic client id 0; the daemon seeds
+            the first client's view from its consumed `Attached` handshake
+            and creates/removes views on attach/detach). Input routes to
+            the sender's view; every per-view method takes a `vid`. Each
+            view composites its own surface/renderer at its own size and
+            frames ship via `send_to(vid, Frame)` (stdout for local).
+            Sizing: `session_target_pane` = min pane among views focused
+            on a session, applied by `recompute_session_sizes` behind a
+            150ms debounce (`pending_size_recompute` select arm);
+            unviewed sessions keep their last size; no-op resizes are
+            skipped. `ClientRegistry` lost `target_size`/`set_size` —
+            `Resized` now carries `{id, cols, rows}` to the view. Routing:
+            usage modal opens on every view focused on the requesting
+            session; the model picker (single responder) and `$EDITOR`
+            round-trips go to the last-active viewer, else any viewer,
+            else an error reply; copy/paste OSC52 and clipboard reads
+            target the acting client. Multi-view focus preservation:
+            watcher/refresh paths use `refresh_project_with_focuses`
+            (mark-by-key per view → rebuild → restore per view) and draft
+            insert/remove wraps in `with_focus_preserved`; project removal
+            shifts every view's `Focus`. Notes are per-view (`set_note_on`
+            for the acting client, `set_note` broadcast for background
+            events). Known shared state: scrollback offset lives on the
+            vt100 screen, so co-viewers of one session scroll together.
 - [ ] **8.3 v1 gaps (deliberate, small follow-ups):** a later-attaching
       client's cwd doesn't join the sidebar (handshake already carries it);
       later clients don't re-theme (first client's OSC colors win — per-view
