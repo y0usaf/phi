@@ -60,7 +60,14 @@ impl MuxApp {
             }
             AppAction::CopySelection => self.copy_selection(true),
             AppAction::PasteClipboard => {
-                if let Some(text) = self.clipboard.read_text() {
+                if let Some(registry) = self.registry() {
+                    // Daemon mode: the system clipboard lives on the client's
+                    // machine. Ask the active client to read it; the text
+                    // comes back as a ClipboardText event.
+                    if !registry.send_to(self.last_active_client, ServerMsg::ClipboardRequest) {
+                        self.set_note("clipboard unavailable: no client", StatusNoteKind::Error);
+                    }
+                } else if let Some(text) = self.clipboard.read_text() {
                     self.forward_to_session(Event::Paste(text));
                 } else {
                     self.set_note("clipboard empty", StatusNoteKind::Error);
@@ -112,7 +119,10 @@ impl MuxApp {
         {
             self.active_extension_overlay = None;
         } else if !self.open_extension_overlay(name, payload) {
-            self.set_note(format!("overlay {name} not available"), StatusNoteKind::Error);
+            self.set_note(
+                format!("overlay {name} not available"),
+                StatusNoteKind::Error,
+            );
         }
     }
 
@@ -186,7 +196,10 @@ impl MuxApp {
                 let index = self.workspace.selected_project;
                 let _ = self.workspace.refresh_project(index);
                 self.workspace.normalize_visible_selection(index);
-                crate::driver::drain_pending_terminal_events();
+                // Local mode only: the daemon has no tty to drain.
+                if self.registry().is_none() {
+                    crate::driver::drain_pending_terminal_events();
+                }
                 self.ensure_focused_session().await;
                 self.set_note("session archived", StatusNoteKind::Ok);
                 self.on_focus_changed();
@@ -234,7 +247,15 @@ impl MuxApp {
         if text.trim().is_empty() {
             return;
         }
-        if let Err(note) = self.clipboard.copy_text(&text) {
+        if let Some(registry) = self.registry() {
+            // Daemon mode: OSC 52 makes the CLIENT's terminal emulator write
+            // its local clipboard — the daemon never touches a display
+            // server. Sent as an out-of-band frame (written verbatim).
+            use base64::Engine as _;
+            let encoded = base64::engine::general_purpose::STANDARD.encode(text.as_bytes());
+            let osc52 = format!("\x1b]52;c;{encoded}\x07");
+            registry.send_to(self.last_active_client, ServerMsg::Frame(osc52));
+        } else if let Err(note) = self.clipboard.copy_text(&text) {
             self.set_note(note, StatusNoteKind::Error);
         }
     }
@@ -246,6 +267,17 @@ impl MuxApp {
         }
         match parse_command(input) {
             Ok(MuxCommand::Open(path)) => {
+                // In daemon mode a relative path would resolve against the
+                // daemon's own cwd; resolve against the typing client's cwd
+                // (carried in its Attach handshake) instead.
+                let path = if path.is_relative() {
+                    self.registry()
+                        .and_then(|r| r.client_cwd(self.last_active_client))
+                        .map(|base| base.join(&path))
+                        .unwrap_or(path)
+                } else {
+                    path
+                };
                 if path.is_dir() {
                     let path = PathBuf::from(persisted::normalize_path(&path));
                     let index = self.workspace.add_project(path);
@@ -331,13 +363,38 @@ impl MuxApp {
         }
     }
 
-    pub(crate) fn handle_suspend(&mut self, guard: &RawModeGuard, request: tui::SuspendRequest) {
-        let mut stdout = std::io::stdout();
-        let _ = phi_tui::crossterm::execute!(stdout, DisableMouseCapture);
-        let result = guard.with_suspended(|| tui::external_editor(&request.text));
-        let _ = phi_tui::crossterm::execute!(stdout, EnableMouseCapture);
-        let _ = request.response_tx.send(result);
-        self.renderer.invalidate();
+    pub(crate) fn handle_suspend(&mut self, host: &HostIo<'_>, request: tui::SuspendRequest) {
+        match host {
+            HostIo::Local(guard) => {
+                let mut stdout = std::io::stdout();
+                let _ = phi_tui::crossterm::execute!(stdout, DisableMouseCapture);
+                let result = guard.with_suspended(|| tui::external_editor(&request.text));
+                let _ = phi_tui::crossterm::execute!(stdout, EnableMouseCapture);
+                let _ = request.response_tx.send(result);
+                self.renderer.invalidate();
+            }
+            // The daemon has no tty: forward to the client that most
+            // recently typed, which runs $EDITOR on its own terminal and
+            // replies with an EditResult.
+            HostIo::Remote => {
+                let id = self.last_active_client;
+                let sent = self.registry().is_some_and(|registry| {
+                    registry.send_to(
+                        id,
+                        ServerMsg::EditRequest {
+                            text: request.text.clone(),
+                        },
+                    )
+                });
+                if sent {
+                    self.pending_edits.push((id, request.response_tx));
+                } else {
+                    let _ = request
+                        .response_tx
+                        .send(Err("no attached client for external editor".to_owned()));
+                }
+            }
+        }
     }
 }
 

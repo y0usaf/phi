@@ -291,6 +291,52 @@ Build these as extensions *because* they stress the API, in this order of value:
       contract with a bounded summary field (jcode bounds completion reports to
       4K chars) — engine-side, but validated by an extension consuming it.
 
+### WS8 — Mux client/server (canonical daemon, thin clients)
+
+Goal: one canonical mux per user. A headless daemon owns all sessions and
+screen state; any number of terminals attach as thin clients over a unix
+socket. Advances the Mux differentiator (core work per the table above).
+
+- [x] **8.1 Headless daemon + thin-client attach.** `phi --mux` spawns a
+      detached `--mux-server` daemon if none is running, then attaches; every
+      terminal (including the first) is an equal client. Sessions and in-flight
+      agent turns survive any terminal closing; reattach resumes live.
+      *Landed as:* `phi-mux/src/remote/{protocol,daemon,server,client}.rs`.
+      Newline-JSON protocol on `$XDG_RUNTIME_DIR/phi/mux.sock` (0600, socat-
+      debuggable); flock singleton + provably-stale-socket reaping + ready-fd
+      spawn handshake (jcode's `socket.rs` pattern); per-connection tasks with
+      an unconditional remove-on-drop registry (zellij's route-thread
+      invariant); `MuxApp` refactored behind `InputSource`/`RenderSink`/
+      `HostIo` seams so local single-process mode (`PHI_MUX_LOCAL=1`) and the
+      daemon share one main loop. Tty concerns moved to the client (raw mode,
+      OSC color probe, panic/signal restore) or became round-trips (`ctrl+g`
+      `$EDITOR` runs on the last-active client's tty; copy = OSC 52 to that
+      client; paste = client-side clipboard read). `phi --kill` terminates the
+      daemon; `:quit` from any client does too.
+- [ ] **8.2 Per-client views (free navigation + independent sizing).** Split
+      `MuxApp` into `MuxCore` (shared: workspace, session handles, watchers,
+      persistence, clock) and `MuxView` (per client: focus, size, surface,
+      renderer, sidebar scroll, command line, overlays, selection, note) so
+      each client navigates and sizes independently while session content
+      stays canonical. Decision recorded: a session's render size clamps to
+      the **min among clients currently viewing it** (tmux grouped-session
+      behavior), not the global min — clients on different sessions get full
+      size; co-viewers get padding, never clipping (avoids compositing paths
+      that don't exist today). Focus must move out of `Workspace`
+      (`selected_project`, `project.selected`) into the view. Stage it:
+      - [ ] State split with a single view — behavior identical, local mode
+            becomes "core + one view".
+      - [ ] N views: route input by sender, render per view via `send_to`,
+            per-session size recompute (debounced) on focus change; host
+            modals / edit requests route to the view(s) focused on the
+            requesting session.
+- [ ] **8.3 v1 gaps (deliberate, small follow-ups):** a later-attaching
+      client's cwd doesn't join the sidebar (handshake already carries it);
+      later clients don't re-theme (first client's OSC colors win — per-view
+      palettes become possible after 8.2); per-invocation CLI overrides
+      (`--model`) don't reach an already-running daemon; daemon sessions
+      inherit the first spawner's environment.
+
 ---
 
 ## Non-goals (rejected explicitly — don't relitigate without a new decision)
@@ -315,8 +361,8 @@ Build these as extensions *because* they stress the API, in this order of value:
 | `crush` | MCP config shape, self-documenting config schema, model roles, registry fallback pattern | `internal/config/config.go`, `internal/config/catwalk.go` |
 | `opencode` | Additive compaction markers, permission rule semantics (last-match-wins) | `src/session/compaction.ts`, `src/permission/index.ts` |
 | `oh-my-pi` | Hashline/anchor edits (Phi has this), typed subagent contracts, what "maximal pi" looks like — a cautionary + idea mine | `README.md` |
-| `jcode` | Bounded subagent completion reports, compaction thresholds incl. payload-byte budget | `jcode-swarm-core/src/lib.rs`, `jcode-compaction-core/src/lib.rs` |
-| `zellij` | Canonical-row scrollback reflow on resize (only remaining mux lesson) | `zellij-server/src/panes/grid.rs` |
+| `jcode` | Bounded subagent completion reports, compaction thresholds incl. payload-byte budget; daemon lifecycle (flock lock, stale-socket reaping, ready-fd handshake — stolen for WS8.1) | `jcode-swarm-core/src/lib.rs`, `jcode-compaction-core/src/lib.rs`, `crates/jcode-app-core/src/server/socket.rs` |
+| `zellij` | Canonical-row scrollback reflow on resize; client/server minimal core (dumb client, per-client fanout, remove-client-on-any-exit invariant — stolen for WS8.1) | `zellij-server/src/panes/grid.rs`, `zellij-utils/src/ipc.rs`, `zellij-server/src/route.rs` |
 
 ## Verification
 

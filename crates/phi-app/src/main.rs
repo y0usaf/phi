@@ -119,6 +119,32 @@ use format::format_model_pricing;
 /// Dispatch to the appropriate execution mode: mux, TUI, or one-shot CLI.
 async fn run(args: Args, storage: Arc<AuthStorage>, registry: Arc<Registry>) -> Result<()> {
     let cwd = std::env::current_dir().context("could not determine working directory")?;
+
+    // Headless mux daemon (spawned by the first `phi --mux` client). Runs
+    // before any tty checks — the daemon has no terminal by design.
+    if args.mux_server {
+        let mux_config = config::Config::load(&cwd)?.mux.unwrap_or_default();
+        let shared = session_builder::SharedResources {
+            cli_args: args.to_session_args(),
+            projects: args.project.clone(),
+            storage,
+            registry,
+            // Daemon sessions can never prompt on stdin; undecided
+            // projects get a notice, same as the in-terminal mux.
+            trust_prompt: false,
+        };
+        return mux::remote::server::run(shared, mux_config, cwd).await;
+    }
+
+    if args.kill {
+        if mux::remote::daemon::kill_daemon()? {
+            println!("mux daemon terminated");
+        } else {
+            println!("no mux daemon running");
+        }
+        return Ok(());
+    }
+
     let prompt = args.prompt_text();
     let tty = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
     let tui_mode = prompt.is_none() && args.context.is_none() && tty;
@@ -134,16 +160,25 @@ async fn run(args: Args, storage: Arc<AuthStorage>, registry: Arc<Registry>) -> 
             if prompt.is_some() || args.context.is_some() {
                 bail!("--mux does not take a prompt or --context");
             }
-            let shared = session_builder::SharedResources {
-                cli_args: args.to_session_args(),
-                projects: args.project.clone(),
-                storage,
-                registry,
-                // Mux sessions are built while its TUI owns the terminal —
-                // no stdin prompt possible; undecided projects get a notice.
-                trust_prompt: false,
-            };
-            return mux::app::run(shared, mux_config, cwd).await;
+            // Escape hatch for debugging: run the mux single-process (the
+            // pre-daemon architecture) instead of attaching to a daemon.
+            if std::env::var("PHI_MUX_LOCAL").is_ok_and(|v| v == "1") {
+                let shared = session_builder::SharedResources {
+                    cli_args: args.to_session_args(),
+                    projects: args.project.clone(),
+                    storage,
+                    registry,
+                    trust_prompt: false,
+                };
+                return mux::app::run(shared, mux_config, cwd).await;
+            }
+            // Client/server mode: ensure the daemon is up, then attach this
+            // terminal as a thin client. Note: the daemon builds sessions
+            // from its own (config-file) settings; per-invocation CLI
+            // overrides like --model apply only to the daemon-spawning run
+            // via config, not to an already-running daemon.
+            mux::remote::daemon::ensure_running()?;
+            return mux::remote::client::run(cwd, args.project.clone()).await;
         }
     }
 

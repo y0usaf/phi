@@ -569,7 +569,12 @@ pub async fn run(setup: TuiSetup, mut io: SessionIo) -> Result<()> {
         eprintln!("phi: terminal finish error: {e}");
     }
     drop(guard);
-    phi_tui::drain_input();
+    // Standalone only: an embedded session has no tty of its own — this
+    // would drain the HOST's real stdin out from under the mux (or poll a
+    // nonexistent tty in the daemon).
+    if !io.embedded {
+        phi_tui::drain_input();
+    }
     let _ = tokio::time::timeout(Duration::from_secs(5), session_task).await;
     if !io.embedded {
         // Close with the same brand gradient the greeting opened with.

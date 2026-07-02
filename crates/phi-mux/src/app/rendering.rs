@@ -145,11 +145,28 @@ impl MuxApp {
         }
 
         let term_pane = layout.terminal;
-        let mut stdout = std::io::stdout();
-        match self
-            .renderer
-            .render(&mut stdout, &mut surface, term_pane, hardware_cursor)
-        {
+        // Render once; the sink decides where the bytes land. In daemon
+        // mode every client receives the identical frame, so one renderer
+        // (and one diff state) stays correct for all of them.
+        let render_result = match &self.sink {
+            RenderSink::Stdout => {
+                let mut stdout = std::io::stdout();
+                self.renderer
+                    .render(&mut stdout, &mut surface, term_pane, hardware_cursor)
+            }
+            RenderSink::Registry(registry) => {
+                let mut buf: Vec<u8> = Vec::with_capacity(16 * 1024);
+                self.renderer
+                    .render(&mut buf, &mut surface, term_pane, hardware_cursor)
+                    .and_then(|()| {
+                        let frame = String::from_utf8(buf)
+                            .map_err(|_| std::io::Error::other("frame was not valid UTF-8"))?;
+                        registry.broadcast(&crate::remote::protocol::ServerMsg::Frame(frame));
+                        Ok(())
+                    })
+            }
+        };
+        match render_result {
             Ok(()) => {
                 self.render_failures = 0;
                 self.renderer_invalidated = false;

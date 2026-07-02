@@ -98,6 +98,14 @@ pub struct Args {
     #[arg(long, conflicts_with = "mux")]
     pub no_mux: bool,
 
+    /// Internal: run as the detached mux daemon (spawned by `--mux`).
+    #[arg(long, hide = true)]
+    pub mux_server: bool,
+
+    /// Terminate the mux daemon (and every attached client).
+    #[arg(long)]
+    pub kill: bool,
+
     /// Additional project directory for the multiplexer (repeatable).
     #[arg(long, value_name = "DIR")]
     pub project: Vec<String>,

@@ -13,13 +13,13 @@ use std::io::Write;
 use std::time::{Duration, Instant};
 
 /// A packed sRGB triple (0..255 per channel).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Rgb(pub u8, pub u8, pub u8);
 
 /// Terminal-reported colors. `background`/`foreground` come from OSC 10/11;
 /// `palette` holds the 16 ANSI entries from OSC 4 (any entry the terminal
 /// omits stays `None` and the consumer falls back to the 256-color cube).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TerminalColors {
     pub background: Rgb,
     pub foreground: Rgb,

@@ -13,6 +13,7 @@ pub mod workspace;
 
 pub mod app;
 pub mod command_line;
+pub mod remote;
 pub mod ui;
 
 /// Statusline mode-label width ("` NOR `" etc.), shared by the command

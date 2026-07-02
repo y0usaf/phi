@@ -33,6 +33,8 @@ use crate::grid::selection::{SelectionPoint, TerminalSelection, selected_text};
 use crate::grid::theme;
 use crate::keys::{AppAction, KeyStroke, Keymap, KeymapMatch, MuxCommand, parse_command};
 use crate::persisted::{self as persisted, PersistedState};
+use crate::remote::protocol::ServerMsg;
+use crate::remote::server::{AttachInfo, ClientRegistry, RemoteEvent};
 use crate::status::SessionStatus;
 use crate::watcher::SessionWatcher;
 use crate::workspace::{self as workspace, Workspace};
@@ -53,6 +55,103 @@ mod session;
 pub async fn run(shared: SharedResources, mux_config: MuxConfig, cwd: PathBuf) -> Result<()> {
     install_panic_log_hook();
 
+    let projects = shared.projects.clone();
+    let ws = build_workspace(&cwd, &projects);
+
+    let guard = RawModeGuard::new().context("mux requires a tty")?;
+    tui::restore_terminal_on_signals();
+    let mut stdout = std::io::stdout();
+    let _ = phi_tui::crossterm::execute!(stdout, EnableMouseCapture);
+    // The mux owns the whole screen (unlike the inline single-session TUI).
+    let _ = write!(stdout, "\x1b[2J\x1b[H");
+
+    // Probe the host terminal's colors (OSC 10/11/4) once, inside raw mode.
+    let terminal_colors = phi_tui::detect_terminal_colors(Duration::from_millis(150))
+        .unwrap_or_else(theme::default_terminal_colors);
+    let size = phi_tui::crossterm::terminal::size().unwrap_or((80, 24));
+
+    let (mut app, receivers) = build_app(
+        shared,
+        &mux_config,
+        &cwd,
+        ws,
+        terminal_colors,
+        size,
+        RenderSink::Stdout,
+    );
+
+    let result = app
+        .main_loop(
+            HostIo::Local(&guard),
+            InputSource::Local(EventStream::new()),
+            receivers,
+        )
+        .await;
+
+    app.persist_now();
+    PersistedState::flush();
+    // Drop sessions before restoring the terminal so their final writes land
+    // in the in-memory parsers, not the real screen.
+    drop(app);
+    let _ = phi_tui::crossterm::execute!(stdout, DisableMouseCapture);
+    let _ = write!(stdout, "\x1b[2J\x1b[H\x1b[?25h");
+    let _ = stdout.flush();
+    drop(guard);
+    result
+}
+
+/// Run the mux headless for the daemon: no tty, no raw mode — input arrives
+/// as [`RemoteEvent`]s from client connections, frames go out through the
+/// [`ClientRegistry`]. Size and terminal colors are seeded by the first
+/// client's handshake.
+pub async fn run_server(
+    shared: SharedResources,
+    mux_config: MuxConfig,
+    cwd: PathBuf,
+    seed: AttachInfo,
+    registry: Arc<ClientRegistry>,
+    events_rx: mpsc::UnboundedReceiver<RemoteEvent>,
+) -> Result<()> {
+    install_panic_log_hook();
+
+    let mut projects = shared.projects.clone();
+    projects.push(seed.cwd.display().to_string());
+    let ws = build_workspace(&cwd, &projects);
+
+    let terminal_colors = seed
+        .terminal_colors
+        .clone()
+        .unwrap_or_else(theme::default_terminal_colors);
+
+    let (mut app, receivers) = build_app(
+        shared,
+        &mux_config,
+        &cwd,
+        ws,
+        terminal_colors,
+        (seed.cols, seed.rows),
+        RenderSink::Registry(registry),
+    );
+
+    let result = app
+        .main_loop(HostIo::Remote, InputSource::Remote(events_rx), receivers)
+        .await;
+
+    app.persist_now();
+    PersistedState::flush();
+    drop(app);
+    result
+}
+
+/// Workspace discovery + filesystem watchers, shared by the local and
+/// daemon entry points.
+struct WorkspaceSetup {
+    workspace: Workspace,
+    session_watcher: SessionWatcher,
+    watcher_rx: mpsc::UnboundedReceiver<usize>,
+}
+
+fn build_workspace(cwd: &std::path::Path, extra_projects: &[String]) -> WorkspaceSetup {
     let mut persisted = PersistedState::load_default().unwrap_or_default();
     let mut project_dirs: Vec<PathBuf> = persisted.projects.iter().map(PathBuf::from).collect();
     let push_project = |dirs: &mut Vec<PathBuf>, dir: PathBuf| {
@@ -61,8 +160,8 @@ pub async fn run(shared: SharedResources, mux_config: MuxConfig, cwd: PathBuf) -
             dirs.push(dir);
         }
     };
-    push_project(&mut project_dirs, cwd.clone());
-    for dir in &shared.projects {
+    push_project(&mut project_dirs, cwd.to_path_buf());
+    for dir in extra_projects {
         push_project(&mut project_dirs, PathBuf::from(dir));
     }
     project_dirs.retain(|dir| dir.is_dir());
@@ -87,17 +186,31 @@ pub async fn run(shared: SharedResources, mux_config: MuxConfig, cwd: PathBuf) -
         session_watcher.add_watch(i, &project.cwd);
     }
 
-    let guard = RawModeGuard::new().context("mux requires a tty")?;
-    tui::restore_terminal_on_signals();
-    let mut stdout = std::io::stdout();
-    let _ = phi_tui::crossterm::execute!(stdout, EnableMouseCapture);
-    // The mux owns the whole screen (unlike the inline single-session TUI).
-    let _ = write!(stdout, "\x1b[2J\x1b[H");
+    WorkspaceSetup {
+        workspace,
+        session_watcher,
+        watcher_rx,
+    }
+}
 
-    // Probe the host terminal's colors (OSC 10/11/4) once, inside raw mode.
-    let terminal_colors = phi_tui::detect_terminal_colors(Duration::from_millis(150))
-        .unwrap_or_else(theme::default_terminal_colors);
+/// The receiver half of every channel the main loop selects over.
+pub(crate) struct MuxReceivers {
+    pub(crate) status_rx: mpsc::UnboundedReceiver<(SessionKey, SessionStatus)>,
+    pub(crate) redraw_rx: mpsc::UnboundedReceiver<()>,
+    pub(crate) suspend_rx: mpsc::UnboundedReceiver<(SessionKey, tui::SuspendRequest)>,
+    pub(crate) host_modal_rx: mpsc::UnboundedReceiver<(SessionKey, HostModalRequest)>,
+    pub(crate) watcher_rx: mpsc::UnboundedReceiver<usize>,
+}
 
+fn build_app(
+    shared: SharedResources,
+    mux_config: &MuxConfig,
+    cwd: &std::path::Path,
+    ws: WorkspaceSetup,
+    terminal_colors: phi_tui::TerminalColors,
+    size: (u16, u16),
+    sink: RenderSink,
+) -> (MuxApp, MuxReceivers) {
     // ── Visual extension discovery ──────────────────────────────────────
     // Build a lightweight runtime that discovers and registers extensions
     // from the project's `.phi/` directory and global config. This lets
@@ -108,7 +221,7 @@ pub async fn run(shared: SharedResources, mux_config: MuxConfig, cwd: PathBuf) -
     // is created later inside `build_session`), but visual specs are static
     // data registered at `register()` time, so the same extensions will
     // register the same visual specs in both runtimes.
-    let visual_runtime = build_visual_runtime(&cwd);
+    let visual_runtime = build_visual_runtime(cwd);
 
     // Derive the mux palette: if an extension registered a theme, use it
     // (overlaid on the built-in derivation so missing roles fall back).
@@ -129,9 +242,9 @@ pub async fn run(shared: SharedResources, mux_config: MuxConfig, cwd: PathBuf) -
     let (suspend_tx, suspend_rx) = mpsc::unbounded_channel();
     let (host_modal_tx, host_modal_rx) = mpsc::unbounded_channel();
 
-    let mut app = MuxApp {
+    let app = MuxApp {
         shared,
-        workspace,
+        workspace: ws.workspace,
         keymap: Keymap::from_overrides(mux_config.keybinds.as_ref().unwrap_or(&Default::default())),
         sidebar_width: mux_config.sidebar_width.unwrap_or(SIDEBAR_WIDTH_DEFAULT),
         command_line: None,
@@ -144,7 +257,7 @@ pub async fn run(shared: SharedResources, mux_config: MuxConfig, cwd: PathBuf) -
         selection: TerminalSelection::default(),
         clipboard: MuxClipboard::default(),
         renderer: AnsiRenderer::default(),
-        size: phi_tui::crossterm::terminal::size().unwrap_or((80, 24)),
+        size,
         surface: CellSurface::default(),
         palette,
         terminal_colors,
@@ -160,33 +273,61 @@ pub async fn run(shared: SharedResources, mux_config: MuxConfig, cwd: PathBuf) -
             suspend_tx,
             host_modal_tx,
         },
-        session_watcher,
+        session_watcher: ws.session_watcher,
+        sink,
+        last_active_client: 0,
+        pending_edits: Vec::new(),
         quit: false,
         render_failures: 0,
         renderer_invalidated: false,
     };
+    let receivers = MuxReceivers {
+        status_rx,
+        redraw_rx,
+        suspend_rx,
+        host_modal_rx,
+        watcher_rx: ws.watcher_rx,
+    };
+    (app, receivers)
+}
 
-    let result = app
-        .main_loop(
-            &guard,
-            status_rx,
-            redraw_rx,
-            suspend_rx,
-            host_modal_rx,
-            watcher_rx,
-        )
-        .await;
+/// Where rendered frames go: the local tty, or the attached-client fanout.
+pub(crate) enum RenderSink {
+    Stdout,
+    Registry(Arc<ClientRegistry>),
+}
 
-    app.persist_now();
-    PersistedState::flush();
-    // Drop sessions before restoring the terminal so their final writes land
-    // in the in-memory parsers, not the real screen.
-    drop(app);
-    let _ = phi_tui::crossterm::execute!(stdout, DisableMouseCapture);
-    let _ = write!(stdout, "\x1b[2J\x1b[H\x1b[?25h");
-    let _ = stdout.flush();
-    drop(guard);
-    result
+/// Local-mode resources the main loop needs a handle to (the raw-mode
+/// guard for external-editor suspension). The daemon has none.
+pub(crate) enum HostIo<'a> {
+    Local(&'a RawModeGuard),
+    Remote,
+}
+
+/// Where input events come from: the local crossterm stream, or the fan-in
+/// channel fed by client connections. Local events are wrapped as
+/// [`RemoteEvent::Input`] from a synthetic client 0 so the main loop has a
+/// single event shape.
+pub(crate) enum InputSource {
+    Local(EventStream),
+    Remote(mpsc::UnboundedReceiver<RemoteEvent>),
+}
+
+impl InputSource {
+    /// `None` means the source is gone (stdin closed / channel dropped) and
+    /// the main loop should exit.
+    pub(crate) async fn next(&mut self) -> Option<RemoteEvent> {
+        match self {
+            InputSource::Local(events) => {
+                use futures::StreamExt as _;
+                match events.next().await {
+                    Some(Ok(event)) => Some(RemoteEvent::Input { id: 0, event }),
+                    Some(Err(_)) | None => None,
+                }
+            }
+            InputSource::Remote(rx) => rx.recv().await,
+        }
+    }
 }
 
 struct MuxApp {
@@ -237,9 +378,31 @@ struct MuxApp {
     clock: AnimationClock,
     channels: MuxChannels,
     session_watcher: SessionWatcher,
+    /// Frame destination: local stdout, or the daemon's client fanout.
+    sink: RenderSink,
+    /// The client whose input most recently drove the mux — the target for
+    /// client-side round-trips (external editor, clipboard read). Always 0
+    /// in local mode.
+    last_active_client: u64,
+    /// External-editor round-trips awaiting an `EditResult` from a client,
+    /// keyed by client id. Failed with an error if that client detaches.
+    pending_edits: Vec<(
+        u64,
+        tokio::sync::oneshot::Sender<std::result::Result<Option<String>, String>>,
+    )>,
     quit: bool,
     render_failures: u32,
     renderer_invalidated: bool,
+}
+
+impl MuxApp {
+    /// The client registry when running as a daemon, `None` in local mode.
+    pub(crate) fn registry(&self) -> Option<&Arc<ClientRegistry>> {
+        match &self.sink {
+            RenderSink::Registry(registry) => Some(registry),
+            RenderSink::Stdout => None,
+        }
+    }
 }
 
 /// An extension-registered overlay that is currently open (active).

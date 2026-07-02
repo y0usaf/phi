@@ -16,15 +16,17 @@ const IDLE_POLL_INTERVAL: Duration = Duration::from_secs(1);
 impl MuxApp {
     pub(crate) async fn main_loop(
         &mut self,
-        guard: &RawModeGuard,
-        mut status_rx: mpsc::UnboundedReceiver<(SessionKey, SessionStatus)>,
-        mut redraw_rx: mpsc::UnboundedReceiver<()>,
-        mut suspend_rx: mpsc::UnboundedReceiver<(SessionKey, tui::SuspendRequest)>,
-        mut host_modal_rx: mpsc::UnboundedReceiver<(SessionKey, HostModalRequest)>,
-        mut watcher_rx: mpsc::UnboundedReceiver<usize>,
+        host: HostIo<'_>,
+        mut input: InputSource,
+        receivers: MuxReceivers,
     ) -> Result<()> {
-        use futures::StreamExt as _;
-        let mut events = EventStream::new();
+        let MuxReceivers {
+            mut status_rx,
+            mut redraw_rx,
+            mut suspend_rx,
+            mut host_modal_rx,
+            mut watcher_rx,
+        } = receivers;
 
         self.ensure_all_sessions().await;
         self.draw();
@@ -44,14 +46,14 @@ impl MuxApp {
             // was removed, so external file changes never steal focus.
             let mut focus_changed = false;
             tokio::select! {
-                event = events.next() => {
+                event = input.next() => {
                     match event {
-                        Some(Ok(event)) => {
-                            self.handle_event(event).await;
+                        Some(event) => {
+                            self.handle_remote_event(event).await;
                             dirty = true;
                             focus_changed = true;
                         }
-                        Some(Err(_)) | None => break,
+                        None => break,
                     }
                 }
                 Some((key, status)) = status_rx.recv() => {
@@ -62,7 +64,7 @@ impl MuxApp {
                     dirty = true;
                 }
                 Some((_key, request)) = suspend_rx.recv() => {
-                    self.handle_suspend(guard, request);
+                    self.handle_suspend(&host, request);
                     dirty = true;
                 }
                 Some((key, request)) = host_modal_rx.recv() => {
@@ -197,15 +199,15 @@ impl MuxApp {
                             pending_render = false;
                         }
                     }
-                    event = events.next() => {
+                    event = input.next() => {
                         match event {
-                            Some(Ok(event)) => {
-                                self.handle_event(event).await;
+                            Some(event) => {
+                                self.handle_remote_event(event).await;
                                 self.draw();
                                 last_render_at = tokio::time::Instant::now();
                                 pending_render = false;
                             }
-                            Some(Err(_)) | None => break,
+                            None => break,
                         }
                     }
                     Some(()) = redraw_rx.recv() => {
@@ -219,6 +221,74 @@ impl MuxApp {
             }
         }
         Ok(())
+    }
+
+    /// Dispatch one event from the input source. Local terminal events
+    /// arrive as `Input` from synthetic client 0; the daemon additionally
+    /// sees attach/detach/resize and round-trip replies.
+    pub(crate) async fn handle_remote_event(&mut self, event: RemoteEvent) {
+        match event {
+            RemoteEvent::Input { id, event } => {
+                self.last_active_client = id;
+                self.handle_event(event).await;
+            }
+            RemoteEvent::Attached { .. } => {
+                self.apply_shared_size();
+                // The newcomer starts from a cleared screen: force a full
+                // repaint so its first frame is self-contained.
+                self.renderer.invalidate();
+            }
+            RemoteEvent::Detached { id } => {
+                // Fail any external-editor round-trip parked on this client
+                // so the requesting session unblocks with an error.
+                let mut i = 0;
+                while i < self.pending_edits.len() {
+                    if self.pending_edits[i].0 == id {
+                        let (_, tx) = self.pending_edits.remove(i);
+                        let _ = tx.send(Err("client detached during edit".to_owned()));
+                    } else {
+                        i += 1;
+                    }
+                }
+                self.apply_shared_size();
+            }
+            RemoteEvent::Resized => self.apply_shared_size(),
+            RemoteEvent::EditResult { id, result } => {
+                if let Some(pos) = self.pending_edits.iter().position(|(cid, _)| *cid == id) {
+                    let (_, tx) = self.pending_edits.remove(pos);
+                    let _ = tx.send(result);
+                }
+                // The editing client's screen was overwritten by $EDITOR;
+                // force a full repaint so it resynchronizes.
+                self.renderer.invalidate();
+            }
+            RemoteEvent::ClipboardText { text, .. } => match text {
+                Some(text) if !text.is_empty() => self.forward_to_session(Event::Paste(text)),
+                _ => self.set_note("clipboard empty", StatusNoteKind::Error),
+            },
+            RemoteEvent::Kill => self.quit = true,
+        }
+    }
+
+    /// Adopt the registry's shared canvas size (min across attached
+    /// clients). No-op in local mode or with no clients (the last size is
+    /// kept so background sessions keep rendering at sane dimensions).
+    fn apply_shared_size(&mut self) {
+        let Some(registry) = self.registry().cloned() else {
+            return;
+        };
+        let Some((cols, rows)) = registry.target_size() else {
+            return;
+        };
+        if (cols, rows) != self.size {
+            self.handle_resize(cols, rows);
+            if registry.client_count() > 1 {
+                self.set_note(
+                    format!("canvas {cols}x{rows} (smallest attached client)"),
+                    StatusNoteKind::Ok,
+                );
+            }
+        }
     }
 
     pub(crate) fn layout(&self) -> CellLayout {
