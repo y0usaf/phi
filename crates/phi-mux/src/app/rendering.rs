@@ -25,18 +25,16 @@ impl MuxApp {
         // see the same `now_ms`, keeping every animated surface in sync.
         let now_ms = self.clock.now_ms();
 
-        let sidebar_rows =
-            build_sidebar_rows(&self.workspace.projects, self.workspace.selected_project);
+        let sidebar_rows = build_sidebar_rows(&self.workspace.projects, &self.focus);
         let visible = layout.sidebar.rows.max(0) as usize;
         self.sidebar_scroll = ensure_sidebar_selection_visible(
             self.sidebar_scroll,
-            self.workspace.selected_project,
+            self.focus.project,
             &sidebar_rows,
             visible,
         );
-        let sticky =
-            selected_sidebar_selection_span(self.workspace.selected_project, &sidebar_rows)
-                .and_then(|span| sticky_sidebar_anchor_row(self.sidebar_scroll, visible, span));
+        let sticky = selected_sidebar_selection_span(self.focus.project, &sidebar_rows)
+            .and_then(|span| sticky_sidebar_anchor_row(self.sidebar_scroll, visible, span));
         let viewport = sidebar_viewport_items(&sidebar_rows, self.sidebar_scroll, visible, sticky);
 
         let mode = if self.command_line.is_some() {
@@ -192,7 +190,7 @@ impl MuxApp {
         let project = self
             .workspace
             .projects
-            .get(self.workspace.selected_project)
+            .get(self.focus.project)
             .map(project_sidebar_title)
             .unwrap_or_default();
         let session = self

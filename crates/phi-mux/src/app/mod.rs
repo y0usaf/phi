@@ -37,7 +37,7 @@ use crate::remote::protocol::ServerMsg;
 use crate::remote::server::{AttachInfo, ClientRegistry, RemoteEvent};
 use crate::status::SessionStatus;
 use crate::watcher::SessionWatcher;
-use crate::workspace::{self as workspace, Workspace};
+use crate::workspace::{self as workspace, Focus, Workspace};
 use phi_ext::{AppRuntime, OverlaySpec};
 use phi_session::config::MuxConfig;
 use phi_session_tui::session_builder::SharedResources;
@@ -147,6 +147,9 @@ pub async fn run_server(
 /// daemon entry points.
 struct WorkspaceSetup {
     workspace: Workspace,
+    /// The initial view's selection (seeded from persisted state). Becomes
+    /// per-client once views split off the core (WS8.2).
+    focus: Focus,
     session_watcher: SessionWatcher,
     watcher_rx: mpsc::UnboundedReceiver<usize>,
 }
@@ -169,14 +172,15 @@ fn build_workspace(cwd: &std::path::Path, extra_projects: &[String]) -> Workspac
     persisted.normalize();
     let mut workspace = Workspace::discover(project_dirs);
 
+    let mut focus = Focus::default();
     if let Some(selected) = &persisted.selected_project {
         let selected = PathBuf::from(selected);
         if let Some(i) = workspace.projects.iter().position(|p| p.cwd == selected) {
-            workspace.selected_project = i;
+            focus.project = i;
         }
     }
 
-    let _ = workspace.ensure_project_session(workspace.selected_project);
+    workspace.ensure_project_session(focus.project);
 
     // Start filesystem watchers on each project's session directory so the
     // sidebar auto-refreshes when session files change (the filesystem is
@@ -188,6 +192,7 @@ fn build_workspace(cwd: &std::path::Path, extra_projects: &[String]) -> Workspac
 
     WorkspaceSetup {
         workspace,
+        focus,
         session_watcher,
         watcher_rx,
     }
@@ -245,6 +250,7 @@ fn build_app(
     let app = MuxApp {
         shared,
         workspace: ws.workspace,
+        focus: ws.focus,
         keymap: Keymap::from_overrides(mux_config.keybinds.as_ref().unwrap_or(&Default::default())),
         sidebar_width: mux_config.sidebar_width.unwrap_or(SIDEBAR_WIDTH_DEFAULT),
         command_line: None,
@@ -333,6 +339,10 @@ impl InputSource {
 struct MuxApp {
     shared: SharedResources,
     workspace: Workspace,
+    /// This view's selection (focused project + per-project session).
+    /// View state, not workspace state: the seed of the per-client
+    /// `MuxView` split (WS8.2).
+    focus: Focus,
     keymap: Keymap,
     sidebar_width: u16,
     command_line: Option<CommandLineState>,

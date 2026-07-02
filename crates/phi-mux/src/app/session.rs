@@ -41,9 +41,10 @@ impl MuxApp {
             // `focus_changed` is only set by *user* input, never by background
             // events (watcher, status, redraw, ticker). Background session
             // updates must refresh the sidebar/screen without touching focus.
-            // `refresh_project` likewise preserves the selected session by
-            // key and falls back to the original index (not 0) if the session
-            // was removed, so external file changes never steal focus.
+            // `refresh_project_with_focus` likewise preserves the selected
+            // session by key and falls back to the original index (not 0) if
+            // the session was removed, so external file changes never steal
+            // focus.
             let mut focus_changed = false;
             tokio::select! {
                 event = input.next() => {
@@ -82,7 +83,11 @@ impl MuxApp {
                     }
                     let mut notes = Vec::new();
                     for index in changed {
-                        let delta = self.workspace.refresh_project(index);
+                        let delta = workspace::refresh_project_with_focus(
+                            &mut self.workspace,
+                            &mut self.focus,
+                            index,
+                        );
                         notes.extend(delta.archived);
                     }
                     if !notes.is_empty() {
@@ -144,7 +149,11 @@ impl MuxApp {
                 if !changed.is_empty() {
                     let mut notes = Vec::new();
                     for index in changed {
-                        let delta = self.workspace.refresh_project(index);
+                        let delta = workspace::refresh_project_with_focus(
+                            &mut self.workspace,
+                            &mut self.focus,
+                            index,
+                        );
                         notes.extend(delta.archived);
                     }
                     if !notes.is_empty() {
@@ -332,7 +341,7 @@ impl MuxApp {
             selected_project: self
                 .workspace
                 .projects
-                .get(self.workspace.selected_project)
+                .get(self.focus.project)
                 .map(|p| p.cwd.display().to_string()),
         };
         state.enqueue_save();
@@ -352,7 +361,11 @@ impl MuxApp {
         // A draft's JSONL appears with its first message; rescan to pick the
         // file up (the running handle keeps its identity).
         if let Some(project_index) = materialized_project {
-            let _ = self.workspace.refresh_project(project_index);
+            let _ = workspace::refresh_project_with_focus(
+                &mut self.workspace,
+                &mut self.focus,
+                project_index,
+            );
         }
     }
 
@@ -364,7 +377,7 @@ impl MuxApp {
 
         // Ensure every project has at least one (possibly draft) session.
         for i in 0..self.workspace.projects.len() {
-            let _ = self.workspace.ensure_project_session(i);
+            self.workspace.ensure_project_session(i);
         }
 
         // Collect sessions that still need an embedded handle.
@@ -428,13 +441,17 @@ impl MuxApp {
     /// Spawn the focused session's embedded loop if it isn't running yet.
     pub(crate) async fn ensure_focused_session(&mut self) {
         let pane = self.pane_size();
-        let project_index = self.workspace.selected_project;
-        let _ = self.workspace.ensure_project_session(project_index);
+        let project_index = self.focus.project;
+        self.workspace.ensure_project_session(project_index);
+        self.focus.clamp_session(&self.workspace, project_index);
         let Some(project) = self.workspace.projects.get(project_index) else {
             return;
         };
         let cwd = project.cwd.clone();
-        let Some(session) = project.sessions.get(project.selected) else {
+        let Some(session) = project
+            .sessions
+            .get(self.focus.selected_session(project_index))
+        else {
             return;
         };
         if session.handle.is_some() {
@@ -471,19 +488,16 @@ impl MuxApp {
     }
 
     pub(crate) fn focused_session(&self) -> Option<&workspace::MuxSession> {
-        let project = self
-            .workspace
-            .projects
-            .get(self.workspace.selected_project)?;
-        project.sessions.get(project.selected)
+        let project = self.workspace.projects.get(self.focus.project)?;
+        project
+            .sessions
+            .get(self.focus.selected_session(self.focus.project))
     }
 
     pub(crate) fn focused_session_mut(&mut self) -> Option<&mut workspace::MuxSession> {
-        let project = self
-            .workspace
-            .projects
-            .get_mut(self.workspace.selected_project)?;
-        project.sessions.get_mut(project.selected)
+        let selected = self.focus.selected_session(self.focus.project);
+        let project = self.workspace.projects.get_mut(self.focus.project)?;
+        project.sessions.get_mut(selected)
     }
 
     pub(crate) fn forward_to_session(&mut self, event: Event) {

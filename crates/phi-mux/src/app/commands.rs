@@ -11,47 +11,54 @@ impl MuxApp {
                     } else {
                         -1
                     };
-                    let current = self.workspace.selected_project as i32;
-                    self.workspace.selected_project =
-                        (current + delta).rem_euclid(count as i32) as usize;
+                    let current = self.focus.project as i32;
+                    self.focus.project = (current + delta).rem_euclid(count as i32) as usize;
                     self.on_focus_changed();
                     self.ensure_focused_session().await;
                 }
             }
             AppAction::PreviousSession | AppAction::NextSession => {
-                let project_index = self.workspace.selected_project;
+                let project_index = self.focus.project;
                 let delta: i32 = if action == AppAction::NextSession {
                     1
                 } else {
                     -1
                 };
                 if self
-                    .workspace
-                    .move_selected_visible_session(project_index, delta)
+                    .focus
+                    .move_visible(&self.workspace, project_index, delta)
                 {
                     self.on_focus_changed();
                     self.ensure_focused_session().await;
                 }
             }
             AppAction::NewSession => {
-                let project_index = self.workspace.selected_project;
-                self.workspace.new_draft(project_index);
+                let project_index = self.focus.project;
+                if let Some(draft) = self.workspace.new_draft(project_index) {
+                    self.focus.set_selected_session(project_index, draft);
+                }
                 self.on_focus_changed();
                 self.ensure_focused_session().await;
             }
             AppAction::RefreshSession => self.refresh_focused_session(),
             AppAction::RefreshAllSessions => {
                 for index in 0..self.workspace.projects.len() {
-                    let _ = self.workspace.refresh_project(index);
+                    let _ = workspace::refresh_project_with_focus(
+                        &mut self.workspace,
+                        &mut self.focus,
+                        index,
+                    );
                 }
                 self.set_note("rescanned all projects", StatusNoteKind::Ok);
             }
             AppAction::ArchiveSession => self.archive_focused_session().await,
             AppAction::RemoveProject => {
-                let index = self.workspace.selected_project;
+                let index = self.focus.project;
                 if let Some(project) = self.workspace.projects.get(index) {
                     let title = project_sidebar_title(project);
                     self.workspace.remove_project(index);
+                    self.focus
+                        .project_removed(index, self.workspace.projects.len());
                     self.sync_watchers();
                     self.set_note(format!("removed {title}"), StatusNoteKind::Ok);
                     self.on_focus_changed();
@@ -160,16 +167,23 @@ impl MuxApp {
             }
             self.set_note("session restarted", StatusNoteKind::Ok);
         } else {
-            let index = self.workspace.selected_project;
-            let _ = self.workspace.refresh_project(index);
+            let index = self.focus.project;
+            let _ =
+                workspace::refresh_project_with_focus(&mut self.workspace, &mut self.focus, index);
             self.set_note("project rescanned", StatusNoteKind::Ok);
         }
     }
 
     pub(crate) async fn archive_focused_session(&mut self) {
-        let project_index = self.workspace.selected_project;
-        if self.workspace.discard_unmaterialized_draft(project_index) {
-            self.workspace.new_draft(project_index);
+        let project_index = self.focus.project;
+        let selected = self.focus.selected_session(project_index);
+        if self
+            .workspace
+            .discard_unmaterialized_draft(project_index, selected)
+        {
+            if let Some(draft) = self.workspace.new_draft(project_index) {
+                self.focus.set_selected_session(project_index, draft);
+            }
             self.set_note("draft deleted", StatusNoteKind::Ok);
             self.on_focus_changed();
             return;
@@ -193,9 +207,13 @@ impl MuxApp {
                     session.handle = None;
                     session.store_path = None;
                 }
-                let index = self.workspace.selected_project;
-                let _ = self.workspace.refresh_project(index);
-                self.workspace.normalize_visible_selection(index);
+                let index = self.focus.project;
+                let _ = workspace::refresh_project_with_focus(
+                    &mut self.workspace,
+                    &mut self.focus,
+                    index,
+                );
+                self.focus.normalize_visible(&self.workspace, index);
                 // Local mode only: the daemon has no tty to drain.
                 if self.registry().is_none() {
                     crate::driver::drain_pending_terminal_events();
@@ -216,7 +234,11 @@ impl MuxApp {
             Ok(target) => {
                 self.archive_viewer = None;
                 for index in 0..self.workspace.projects.len() {
-                    let _ = self.workspace.refresh_project(index);
+                    let _ = workspace::refresh_project_with_focus(
+                        &mut self.workspace,
+                        &mut self.focus,
+                        index,
+                    );
                 }
                 self.set_note(format!("restored {}", target.display()), StatusNoteKind::Ok);
             }
@@ -281,8 +303,8 @@ impl MuxApp {
                 if path.is_dir() {
                     let path = PathBuf::from(persisted::normalize_path(&path));
                     let index = self.workspace.add_project(path);
-                    self.workspace.selected_project = index;
-                    let _ = self.workspace.ensure_project_session(index);
+                    self.focus.project = index;
+                    self.workspace.ensure_project_session(index);
                     self.sync_watchers();
                     self.on_focus_changed();
                 } else {

@@ -5,7 +5,7 @@
 use crate::grid::color::Color;
 use crate::grid::theme::{HEADING, MUTED, TEXT};
 use crate::status::SessionStatus;
-use crate::workspace::{MuxProject, MuxSession};
+use crate::workspace::{Focus, MuxProject, MuxSession};
 
 use super::visual_context::VisualContext;
 
@@ -257,14 +257,15 @@ pub fn project_sidebar_title(project: &MuxProject) -> String {
         .unwrap_or_else(|| project.cwd.display().to_string())
 }
 
-pub fn build_sidebar_rows(projects: &[MuxProject], selected_project: usize) -> Vec<SidebarRow> {
+pub fn build_sidebar_rows(projects: &[MuxProject], focus: &Focus) -> Vec<SidebarRow> {
     let mut rows = Vec::new();
 
     for (project_index, project) in projects.iter().enumerate() {
-        let project_selected = project_index == selected_project;
+        let project_selected = project_index == focus.project;
+        let selected_session = focus.selected_session(project_index);
         let selected_visible = project
             .sessions
-            .get(project.selected)
+            .get(selected_session)
             .is_some_and(MuxSession::is_sidebar_visible);
         let project_focused = project_selected && !selected_visible;
         let status = project_sidebar_status(project);
@@ -283,7 +284,7 @@ pub fn build_sidebar_rows(projects: &[MuxProject], selected_project: usize) -> V
             if !session.is_sidebar_visible() {
                 continue;
             }
-            let selected = project_selected && session_index == project.selected;
+            let selected = project_selected && session_index == selected_session;
             let status = session_sidebar_status(session);
             rows.push(SidebarRow {
                 kind: SidebarRowKind::Session {
@@ -386,7 +387,6 @@ mod tests {
         MuxProject {
             cwd: PathBuf::from("/tmp/project"),
             sessions,
-            selected: 0,
         }
     }
 
@@ -448,20 +448,23 @@ mod tests {
             session(SessionStatus::Thinking, "a"),
             session(SessionStatus::Crashed, "b"),
         ]);
-        let rows = build_sidebar_rows(&[p], 0);
+        let rows = build_sidebar_rows(&[p], &Focus::default());
         assert_eq!(rows[0].status, Some(SidebarStatusKind::Interrupted));
     }
 
     #[test]
     fn empty_selected_project_gets_selector_on_header() {
-        let rows = build_sidebar_rows(&[project(vec![])], 0);
+        let rows = build_sidebar_rows(&[project(vec![])], &Focus::default());
         assert!(matches!(rows[0].kind, SidebarRowKind::Project(0)));
         assert!(rows[0].selector);
     }
 
     #[test]
     fn selected_session_gets_selector_not_header() {
-        let rows = build_sidebar_rows(&[project(vec![session(SessionStatus::Idle, "hello")])], 0);
+        let rows = build_sidebar_rows(
+            &[project(vec![session(SessionStatus::Idle, "hello")])],
+            &Focus::default(),
+        );
         assert!(!rows[0].selector);
         assert!(rows[1].selector);
         assert_eq!(rows[1].text, "hello");
@@ -469,7 +472,10 @@ mod tests {
 
     #[test]
     fn hidden_unmaterialized_draft_does_not_render_session_row() {
-        let rows = build_sidebar_rows(&[project(vec![session(SessionStatus::Idle, "")])], 0);
+        let rows = build_sidebar_rows(
+            &[project(vec![session(SessionStatus::Idle, "")])],
+            &Focus::default(),
+        );
         assert_eq!(rows.len(), 1);
         assert!(matches!(rows[0].kind, SidebarRowKind::Project(0)));
         assert!(rows[0].selector);
@@ -517,7 +523,7 @@ mod tests {
                     .map(|i| session(SessionStatus::Idle, &i.to_string()))
                     .collect(),
             )],
-            0,
+            &Focus::default(),
         );
         let items = sidebar_viewport_items(&rows, 12, 5, Some(10));
         assert_eq!(items.len(), 5);

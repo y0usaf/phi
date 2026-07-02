@@ -14,14 +14,202 @@ use phi_session::session::{self, SessionStore};
 
 pub struct Workspace {
     pub projects: Vec<MuxProject>,
-    pub selected_project: usize,
     next_key: SessionKey,
 }
 
 pub struct MuxProject {
     pub cwd: PathBuf,
     pub sessions: Vec<MuxSession>,
-    pub selected: usize,
+}
+
+/// A view's selection state: which project is focused and, per project,
+/// which session. Lives in the view rather than the workspace (WS8.2) so
+/// each attached client can navigate independently while the workspace
+/// stays canonical.
+#[derive(Clone, Debug, Default)]
+pub struct Focus {
+    /// Index of the focused project in [`Workspace::projects`].
+    pub project: usize,
+    /// Selected session index per project, parallel to
+    /// [`Workspace::projects`]. Missing entries mean 0.
+    selected: Vec<usize>,
+}
+
+/// The focused session captured (by key) before a project rebuild, so the
+/// selection can be re-resolved after indices shift. See [`Focus::restore`].
+pub struct FocusMark {
+    key: Option<SessionKey>,
+    index: usize,
+}
+
+impl Focus {
+    pub fn selected_session(&self, project: usize) -> usize {
+        self.selected.get(project).copied().unwrap_or(0)
+    }
+
+    pub fn set_selected_session(&mut self, project: usize, session: usize) {
+        if self.selected.len() <= project {
+            self.selected.resize(project + 1, 0);
+        }
+        self.selected[project] = session;
+    }
+
+    /// Clamp the selected session into the project's bounds.
+    pub fn clamp_session(&mut self, ws: &Workspace, project: usize) {
+        let len = ws.projects.get(project).map_or(0, |p| p.sessions.len());
+        let selected = self.selected_session(project);
+        let clamped = selected.min(len.saturating_sub(1));
+        if clamped != selected {
+            self.set_selected_session(project, clamped);
+        }
+    }
+
+    /// Forget the removed project's selection (entries after it shift down
+    /// with the projects vec) and keep the focused project in bounds.
+    pub fn project_removed(&mut self, index: usize, remaining: usize) {
+        if index < self.selected.len() {
+            self.selected.remove(index);
+        }
+        if self.project >= remaining {
+            self.project = remaining.saturating_sub(1);
+        }
+    }
+
+    /// Capture the focused session before a project rebuild. Call
+    /// [`Workspace::stabilize_keys`] first so an unmaterialized draft has a
+    /// real key to be found by afterwards.
+    pub fn mark(&self, ws: &Workspace, project: usize) -> FocusMark {
+        let index = self.selected_session(project);
+        let key = ws
+            .projects
+            .get(project)
+            .and_then(|p| p.sessions.get(index))
+            .map(|s| s.key);
+        FocusMark { key, index }
+    }
+
+    /// Re-resolve a marked selection after a rebuild: look the session up by
+    /// key first (handles reordering from the newest-first sort). If it was
+    /// removed (archived/deleted by another process), fall back to the
+    /// original index clamped to bounds rather than jumping to index 0 — the
+    /// newest session — which would steal focus from whatever the user was
+    /// looking at.
+    pub fn restore(&mut self, ws: &Workspace, project: usize, mark: FocusMark) {
+        let Some(p) = ws.projects.get(project) else {
+            return;
+        };
+        let next = mark
+            .key
+            .and_then(|key| p.sessions.iter().position(|s| s.key == key))
+            .unwrap_or(mark.index.min(p.sessions.len().saturating_sub(1)));
+        self.set_selected_session(project, next);
+    }
+
+    /// If the selected session is hidden (an unmaterialized draft), move the
+    /// selection to the next visible session, falling back to the previous
+    /// one. Returns whether the selection changed.
+    pub fn normalize_visible(&mut self, ws: &Workspace, project_index: usize) -> bool {
+        let Some(project) = ws.projects.get(project_index) else {
+            return false;
+        };
+        if project.sessions.is_empty() {
+            self.set_selected_session(project_index, 0);
+            return false;
+        }
+        self.clamp_session(ws, project_index);
+        let current = self.selected_session(project_index);
+        if project
+            .sessions
+            .get(current)
+            .is_some_and(MuxSession::is_sidebar_visible)
+        {
+            return false;
+        }
+
+        let replacement = project
+            .sessions
+            .iter()
+            .enumerate()
+            .skip(current)
+            .find_map(|(i, session)| session.is_sidebar_visible().then_some(i))
+            .or_else(|| {
+                project
+                    .sessions
+                    .iter()
+                    .enumerate()
+                    .take(current)
+                    .rev()
+                    .find_map(|(i, session)| session.is_sidebar_visible().then_some(i))
+            });
+
+        match replacement {
+            Some(index) => {
+                let changed = index != current;
+                self.set_selected_session(project_index, index);
+                changed
+            }
+            None => false,
+        }
+    }
+
+    /// Move the selection through the project's visible sessions by `delta`,
+    /// wrapping. Returns whether the selection changed.
+    pub fn move_visible(&mut self, ws: &Workspace, project_index: usize, delta: i32) -> bool {
+        if delta == 0 {
+            return false;
+        }
+        let Some(project) = ws.projects.get(project_index) else {
+            return false;
+        };
+        let visible = project
+            .sessions
+            .iter()
+            .enumerate()
+            .filter_map(|(i, session)| session.is_sidebar_visible().then_some(i))
+            .collect::<Vec<_>>();
+        if visible.is_empty() {
+            return false;
+        }
+
+        let selected = self.selected_session(project_index);
+        let current = selected.min(project.sessions.len().saturating_sub(1));
+        let steps = delta.unsigned_abs() as usize;
+        let target_visible = match visible.iter().position(|&i| i == current) {
+            Some(current_visible) if delta > 0 => (current_visible + steps) % visible.len(),
+            Some(current_visible) => {
+                (current_visible + visible.len() - (steps % visible.len())) % visible.len()
+            }
+            None if delta > 0 => {
+                let base = visible.iter().position(|&i| i > current).unwrap_or(0);
+                (base + steps - 1) % visible.len()
+            }
+            None => {
+                let base = visible
+                    .iter()
+                    .rposition(|&i| i < current)
+                    .unwrap_or(visible.len().saturating_sub(1));
+                (base + visible.len() - ((steps - 1) % visible.len())) % visible.len()
+            }
+        };
+
+        let next = visible[target_visible];
+        let changed = next != selected;
+        self.set_selected_session(project_index, next);
+        changed
+    }
+}
+
+/// Rescan a project while preserving a view's selection across the rebuild.
+pub fn refresh_project_with_focus(
+    ws: &mut Workspace,
+    focus: &mut Focus,
+    index: usize,
+) -> RefreshDelta {
+    ws.stabilize_keys(index);
+    let mark = focus.mark(ws, index);
+    let delta = ws.refresh_project(index);
+    focus.restore(ws, index, mark);
+    delta
 }
 
 pub struct MuxSession {
@@ -62,7 +250,6 @@ impl Workspace {
     fn empty() -> Self {
         Self {
             projects: Vec::new(),
-            selected_project: 0,
             next_key: 0,
         }
     }
@@ -97,11 +284,7 @@ impl Workspace {
                 handle: None,
             })
             .collect::<Vec<_>>();
-        let mut project = MuxProject {
-            cwd,
-            sessions,
-            selected: 0,
-        };
+        let mut project = MuxProject { cwd, sessions };
         for s in &mut project.sessions {
             s.key = self.next_key;
             self.next_key += 1;
@@ -111,12 +294,29 @@ impl Workspace {
     }
 
     /// Drop a project from the workspace (files untouched); running session
-    /// tasks abort when their handles drop.
+    /// tasks abort when their handles drop. Views must follow up with
+    /// [`Focus::project_removed`] to keep their selection in bounds.
     pub fn remove_project(&mut self, index: usize) {
         if index < self.projects.len() {
             self.projects.remove(index);
-            if self.selected_project >= self.projects.len() {
-                self.selected_project = self.projects.len().saturating_sub(1);
+        }
+    }
+
+    /// Assign real keys to any key-0 (unassigned) sessions so a view can
+    /// track its selection by key across a rebuild. Without this, an
+    /// unmaterialized draft's key is 0 when captured by [`Focus::mark`],
+    /// then reassigned to a real key during the rebuild, making the
+    /// post-rebuild key lookup fail and causing the index fallback to jump
+    /// focus to the newest session — a focus steal triggered by any
+    /// external file change.
+    pub fn stabilize_keys(&mut self, index: usize) {
+        let Some(project) = self.projects.get_mut(index) else {
+            return;
+        };
+        for s in &mut project.sessions {
+            if s.key == 0 {
+                s.key = self.next_key;
+                self.next_key += 1;
             }
         }
     }
@@ -125,25 +325,14 @@ impl Workspace {
     /// and statuses for sessions that still exist.  Returns the titles of
     /// sessions whose backing files vanished since the last scan (archived or
     /// deleted by another process) so the caller can surface a status-bar note.
+    ///
+    /// The rebuild reorders sessions (newest-first sort), so callers holding
+    /// a [`Focus`] must go through [`refresh_project_with_focus`] to keep
+    /// their selection pointing at the same session.
     pub fn refresh_project(&mut self, index: usize) -> RefreshDelta {
         let Some(project) = self.projects.get_mut(index) else {
             return RefreshDelta::default();
         };
-        // Assign real keys to any key-0 (unassigned) sessions *before*
-        // capturing the selected key, so the unmaterialized draft gets a
-        // stable key that survives the rebuild below.  Without this, the
-        // draft's key is 0 when captured, then reassigned to a real key
-        // during the rebuild, making the post-rebuild key lookup fail and
-        // causing `unwrap_or(0)` to jump focus to the newest session — a
-        // focus steal triggered by any external file change.
-        for s in &mut project.sessions {
-            if s.key == 0 {
-                s.key = self.next_key;
-                self.next_key += 1;
-            }
-        }
-        let selected_key = project.sessions.get(project.selected).map(|s| s.key);
-        let selected_index = project.selected;
         let mut old = std::mem::take(&mut project.sessions);
         let mut fresh: Vec<MuxSession> = Vec::new();
         // Drafts (no file yet) stay; a draft that materialized since the
@@ -206,21 +395,13 @@ impl Workspace {
             }
         }
         project.sessions = fresh;
-        // Preserve the user's selection: look up the previously selected
-        // session by key first (handles reordering from newest-first sort).
-        // If the session was removed (archived/deleted by another process),
-        // fall back to the *original index* clamped to bounds rather than
-        // jumping to index 0 — the newest session — which would steal focus
-        // from whatever the user was looking at.
-        project.selected = selected_key
-            .and_then(|key| project.sessions.iter().position(|s| s.key == key))
-            .unwrap_or(selected_index.min(project.sessions.len().saturating_sub(1)));
         delta
     }
 
     /// New draft session at the top of the project; reuses an existing
-    /// untouched draft instead of stacking empties.
-    pub fn new_draft(&mut self, project_index: usize) -> Option<&mut MuxSession> {
+    /// untouched draft instead of stacking empties. Returns the draft's
+    /// index so the caller can point its [`Focus`] at it.
+    pub fn new_draft(&mut self, project_index: usize) -> Option<usize> {
         let key = self.next_key();
         let project = self.projects.get_mut(project_index)?;
         if let Some(i) = project
@@ -228,8 +409,7 @@ impl Workspace {
             .iter()
             .position(MuxSession::is_unmaterialized_draft)
         {
-            project.selected = i;
-            return project.sessions.get_mut(i);
+            return Some(i);
         }
         project.sessions.insert(
             0,
@@ -242,19 +422,18 @@ impl Workspace {
                 handle: None,
             },
         );
-        project.selected = 0;
-        project.sessions.first_mut()
+        Some(0)
     }
 
-    pub fn ensure_project_session(&mut self, project_index: usize) -> Option<&mut MuxSession> {
-        if self.projects.get(project_index)?.sessions.is_empty() {
-            return self.new_draft(project_index);
+    /// Ensure the project has at least one (possibly draft) session.
+    pub fn ensure_project_session(&mut self, project_index: usize) {
+        if self
+            .projects
+            .get(project_index)
+            .is_some_and(|p| p.sessions.is_empty())
+        {
+            self.new_draft(project_index);
         }
-        let project = self.projects.get_mut(project_index)?;
-        if project.selected >= project.sessions.len() {
-            project.selected = project.sessions.len().saturating_sub(1);
-        }
-        project.sessions.get_mut(project.selected)
     }
 
     pub fn visible_session_indices(&self, project_index: usize) -> Vec<usize> {
@@ -271,114 +450,20 @@ impl Workspace {
             .unwrap_or_default()
     }
 
-    pub fn normalize_visible_selection(&mut self, project_index: usize) -> bool {
+    /// Remove the session at `selected` if it is an unmaterialized draft.
+    /// The caller re-clamps its [`Focus`] afterwards.
+    pub fn discard_unmaterialized_draft(&mut self, project_index: usize, selected: usize) -> bool {
         let Some(project) = self.projects.get_mut(project_index) else {
             return false;
         };
-        if project.sessions.is_empty() {
-            project.selected = 0;
-            return false;
-        }
-        if project.selected >= project.sessions.len() {
-            project.selected = project.sessions.len().saturating_sub(1);
-        }
-        if project
+        if !project
             .sessions
-            .get(project.selected)
-            .is_some_and(MuxSession::is_sidebar_visible)
+            .get(selected)
+            .is_some_and(MuxSession::is_unmaterialized_draft)
         {
             return false;
         }
-
-        let current = project.selected;
-        let replacement = project
-            .sessions
-            .iter()
-            .enumerate()
-            .skip(current)
-            .find_map(|(i, session)| session.is_sidebar_visible().then_some(i))
-            .or_else(|| {
-                project
-                    .sessions
-                    .iter()
-                    .enumerate()
-                    .take(current)
-                    .rev()
-                    .find_map(|(i, session)| session.is_sidebar_visible().then_some(i))
-            });
-
-        match replacement {
-            Some(index) => {
-                let changed = index != project.selected;
-                project.selected = index;
-                changed
-            }
-            None => false,
-        }
-    }
-
-    pub fn move_selected_visible_session(&mut self, project_index: usize, delta: i32) -> bool {
-        if delta == 0 {
-            return false;
-        }
-        let Some(project) = self.projects.get_mut(project_index) else {
-            return false;
-        };
-        let visible = project
-            .sessions
-            .iter()
-            .enumerate()
-            .filter_map(|(i, session)| session.is_sidebar_visible().then_some(i))
-            .collect::<Vec<_>>();
-        if visible.is_empty() {
-            return false;
-        }
-
-        let current = project
-            .selected
-            .min(project.sessions.len().saturating_sub(1));
-        let steps = delta.unsigned_abs() as usize;
-        let target_visible = match visible.iter().position(|&i| i == current) {
-            Some(current_visible) if delta > 0 => (current_visible + steps) % visible.len(),
-            Some(current_visible) => {
-                (current_visible + visible.len() - (steps % visible.len())) % visible.len()
-            }
-            None if delta > 0 => {
-                let base = visible.iter().position(|&i| i > current).unwrap_or(0);
-                (base + steps - 1) % visible.len()
-            }
-            None => {
-                let base = visible
-                    .iter()
-                    .rposition(|&i| i < current)
-                    .unwrap_or(visible.len().saturating_sub(1));
-                (base + visible.len() - ((steps - 1) % visible.len())) % visible.len()
-            }
-        };
-
-        let next = visible[target_visible];
-        let changed = next != project.selected;
-        project.selected = next;
-        changed
-    }
-
-    pub fn discard_unmaterialized_draft(&mut self, project_index: usize) -> bool {
-        let Some(project) = self.projects.get_mut(project_index) else {
-            return false;
-        };
-        let Some(index) = project.sessions.get(project.selected).and_then(|session| {
-            session
-                .is_unmaterialized_draft()
-                .then_some(project.selected)
-        }) else {
-            return false;
-        };
-        project.sessions.remove(index);
-        if !project.sessions.is_empty() {
-            project.selected = project
-                .selected
-                .min(project.sessions.len().saturating_sub(1));
-        }
+        project.sessions.remove(selected);
         true
     }
 }
@@ -643,8 +728,8 @@ mod tests {
     fn discard_unmaterialized_draft_removes_selected_draft() {
         let tmp = tempfile::tempdir().unwrap();
         let mut ws = Workspace::discover(vec![tmp.path().to_path_buf()]);
-        ws.new_draft(0).unwrap();
-        assert!(ws.discard_unmaterialized_draft(0));
+        let draft = ws.new_draft(0).unwrap();
+        assert!(ws.discard_unmaterialized_draft(0, draft));
         assert!(ws.projects[0].sessions.is_empty());
     }
 
@@ -663,69 +748,72 @@ mod tests {
     fn normalize_visible_selection_prefers_next_visible_then_previous() {
         let tmp = tempfile::tempdir().unwrap();
         let mut ws = Workspace::discover(vec![tmp.path().to_path_buf()]);
+        let mut focus = Focus::default();
         ws.projects[0].sessions = vec![
             test_session(1, Some(tmp.path().join("a.jsonl")), "a"),
             test_session(2, None, ""),
             test_session(3, Some(tmp.path().join("c.jsonl")), "c"),
         ];
 
-        ws.projects[0].selected = 1;
-        assert!(ws.normalize_visible_selection(0));
-        assert_eq!(ws.projects[0].selected, 2);
+        focus.set_selected_session(0, 1);
+        assert!(focus.normalize_visible(&ws, 0));
+        assert_eq!(focus.selected_session(0), 2);
 
         ws.projects[0].sessions.push(test_session(4, None, ""));
-        ws.projects[0].selected = 3;
-        assert!(ws.normalize_visible_selection(0));
-        assert_eq!(ws.projects[0].selected, 2);
+        focus.set_selected_session(0, 3);
+        assert!(focus.normalize_visible(&ws, 0));
+        assert_eq!(focus.selected_session(0), 2);
     }
 
     #[test]
     fn move_selected_visible_session_skips_hidden_when_current_is_hidden() {
         let tmp = tempfile::tempdir().unwrap();
         let mut ws = Workspace::discover(vec![tmp.path().to_path_buf()]);
+        let mut focus = Focus::default();
         ws.projects[0].sessions = vec![
             test_session(1, Some(tmp.path().join("a.jsonl")), "a"),
             test_session(2, None, ""),
             test_session(3, Some(tmp.path().join("c.jsonl")), "c"),
         ];
 
-        ws.projects[0].selected = 1;
-        assert!(ws.move_selected_visible_session(0, 1));
-        assert_eq!(ws.projects[0].selected, 2);
+        focus.set_selected_session(0, 1);
+        assert!(focus.move_visible(&ws, 0, 1));
+        assert_eq!(focus.selected_session(0), 2);
 
-        ws.projects[0].selected = 1;
-        assert!(ws.move_selected_visible_session(0, -1));
-        assert_eq!(ws.projects[0].selected, 0);
+        focus.set_selected_session(0, 1);
+        assert!(focus.move_visible(&ws, 0, -1));
+        assert_eq!(focus.selected_session(0), 0);
     }
 
     #[test]
     fn move_selected_visible_session_wraps_across_visible_sessions_only() {
         let tmp = tempfile::tempdir().unwrap();
         let mut ws = Workspace::discover(vec![tmp.path().to_path_buf()]);
+        let mut focus = Focus::default();
         ws.projects[0].sessions = vec![
             test_session(1, Some(tmp.path().join("a.jsonl")), "a"),
             test_session(2, None, ""),
             test_session(3, Some(tmp.path().join("c.jsonl")), "c"),
         ];
 
-        ws.projects[0].selected = 2;
-        assert!(ws.move_selected_visible_session(0, 1));
-        assert_eq!(ws.projects[0].selected, 0);
+        focus.set_selected_session(0, 2);
+        assert!(focus.move_visible(&ws, 0, 1));
+        assert_eq!(focus.selected_session(0), 0);
 
-        ws.projects[0].selected = 0;
-        assert!(ws.move_selected_visible_session(0, -1));
-        assert_eq!(ws.projects[0].selected, 2);
+        focus.set_selected_session(0, 0);
+        assert!(focus.move_visible(&ws, 0, -1));
+        assert_eq!(focus.selected_session(0), 2);
     }
 
     #[test]
     fn normalize_visible_selection_is_noop_when_no_visible_sessions_exist() {
         let tmp = tempfile::tempdir().unwrap();
         let mut ws = Workspace::discover(vec![tmp.path().to_path_buf()]);
+        let mut focus = Focus::default();
         ws.projects[0].sessions = vec![test_session(1, None, "")];
-        ws.projects[0].selected = 0;
-        assert!(!ws.normalize_visible_selection(0));
-        assert_eq!(ws.projects[0].selected, 0);
-        assert!(!ws.move_selected_visible_session(0, 1));
+        assert!(!focus.normalize_visible(&ws, 0));
+        assert_eq!(focus.selected_session(0), 0);
+        assert!(!focus.move_visible(&ws, 0, 1));
     }
 
     #[test]
@@ -733,7 +821,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let mut ws = Workspace::discover(vec![tmp.path().to_path_buf()]);
         assert!(ws.projects[0].sessions.is_empty());
-        ws.ensure_project_session(0).unwrap();
+        ws.ensure_project_session(0);
         assert_eq!(ws.projects[0].sessions.len(), 1);
         assert!(ws.projects[0].sessions[0].is_draft());
         assert!(ws.projects[0].sessions[0].is_unmaterialized_draft());
@@ -752,8 +840,8 @@ mod tests {
     }
 
     /// Regression: when the user is looking at an unmaterialized draft (which
-    /// has the sentinel key 0), a background `refresh_project` (triggered by
-    /// a filesystem watcher event from another Phi instance) must NOT steal
+    /// has the sentinel key 0), a background refresh (triggered by a
+    /// filesystem watcher event from another Phi instance) must NOT steal
     /// focus by jumping to index 0 (the newest session).  The draft's key
     /// must be stabilised before the rebuild so the post-rebuild key lookup
     /// succeeds and the selection is preserved.
@@ -761,6 +849,7 @@ mod tests {
     fn refresh_project_preserves_selection_on_unmaterialized_draft() {
         let tmp = tempfile::tempdir().unwrap();
         let mut ws = Workspace::discover(vec![tmp.path().to_path_buf()]);
+        let mut focus = Focus::default();
         // A file-backed session whose file actually exists (survives refresh).
         let real_file = tmp.path().join("existing.jsonl");
         std::fs::write(&real_file, "dummy").unwrap();
@@ -776,9 +865,9 @@ mod tests {
                 handle: None,
             },
         ];
-        ws.projects[0].selected = 1; // user is on the draft
+        focus.set_selected_session(0, 1); // user is on the draft
 
-        let _ = ws.refresh_project(0);
+        let _ = refresh_project_with_focus(&mut ws, &mut focus, 0);
 
         // The draft must survive with a real (non-zero) key.
         let draft_idx = ws.projects[0]
@@ -793,20 +882,21 @@ mod tests {
         );
         // Focus must stay on the draft, not jump to the real session.
         assert_eq!(
-            ws.projects[0].selected,
+            focus.selected_session(0),
             draft_idx.unwrap(),
             "selection should stay on the draft, not steal focus to another session"
         );
     }
 
     /// Regression: when the selected session is removed (archived/deleted by
-    /// another process) during a background `refresh_project`, the selection
-    /// should fall back to the *original index* clamped to bounds, not jump to
+    /// another process) during a background refresh, the selection should
+    /// fall back to the *original index* clamped to bounds, not jump to
     /// index 0 (the newest session) — which would steal focus.
     #[test]
     fn refresh_project_fallback_uses_clamped_index_not_zero() {
         let tmp = tempfile::tempdir().unwrap();
         let mut ws = Workspace::discover(vec![tmp.path().to_path_buf()]);
+        let mut focus = Focus::default();
         // Two surviving sessions (files exist) + one that will be dropped
         // (file doesn't exist).  User is on the one that gets dropped.
         let file_a = tmp.path().join("a.jsonl");
@@ -818,17 +908,35 @@ mod tests {
             test_session(2, Some(tmp.path().join("gone.jsonl")), "gone"),
             test_session(3, Some(file_b), "b"),
         ];
-        ws.projects[0].selected = 1; // on "gone", which will be dropped
+        focus.set_selected_session(0, 1); // on "gone", which will be dropped
 
-        let _ = ws.refresh_project(0);
+        let _ = refresh_project_with_focus(&mut ws, &mut focus, 0);
 
         // "gone" was dropped (2 sessions remain: a, b).  The selected key (2)
         // is no longer found, so the fallback should use the original index
         // (1) clamped to the new length — NOT 0.
         assert_eq!(ws.projects[0].sessions.len(), 2);
         assert_eq!(
-            ws.projects[0].selected, 1,
+            focus.selected_session(0),
+            1,
             "fallback should stay at original index 1, not jump to 0"
         );
+    }
+
+    /// Removing a project shifts the per-project selections and clamps the
+    /// focused project into bounds.
+    #[test]
+    fn focus_project_removed_shifts_selections_and_clamps() {
+        let mut focus = Focus::default();
+        focus.set_selected_session(0, 3);
+        focus.set_selected_session(1, 5);
+        focus.set_selected_session(2, 7);
+        focus.project = 2;
+
+        focus.project_removed(1, 2);
+
+        assert_eq!(focus.selected_session(0), 3);
+        assert_eq!(focus.selected_session(1), 7);
+        assert_eq!(focus.project, 1, "focused project clamps into bounds");
     }
 }

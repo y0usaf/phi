@@ -54,7 +54,10 @@ pub struct DaemonLock {
 /// Try to take the exclusive daemon lock without blocking. `Ok(None)`
 /// means another live process holds it.
 pub fn try_acquire_daemon_lock() -> Result<Option<DaemonLock>> {
-    let path = lock_path();
+    try_acquire_lock_at(&lock_path())
+}
+
+fn try_acquire_lock_at(path: &Path) -> Result<Option<DaemonLock>> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -62,7 +65,7 @@ pub fn try_acquire_daemon_lock() -> Result<Option<DaemonLock>> {
         .create(true)
         .truncate(false)
         .write(true)
-        .open(&path)
+        .open(path)
         .with_context(|| format!("open daemon lock {}", path.display()))?;
     let ret = unsafe {
         use std::os::fd::AsRawFd as _;
@@ -237,19 +240,19 @@ mod tests {
 
     #[test]
     fn lock_is_exclusive_and_released_on_drop() {
-        // Uses the real lock path; fine for a single-user dev machine and
-        // mirrors how the daemon actually behaves.
-        let first = try_acquire_daemon_lock().unwrap();
-        if first.is_none() {
-            // A live daemon on this machine legitimately holds the lock;
-            // nothing further to assert.
-            return;
-        }
+        // A tempdir lock path: exercises the flock semantics without
+        // touching the real runtime dir, which is unwritable in the Nix
+        // build sandbox (and may be held by a live daemon on a dev machine).
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("mux.lock");
+        let first = try_acquire_lock_at(&path)
+            .unwrap()
+            .expect("first acquire must succeed on a fresh path");
         assert!(
-            try_acquire_daemon_lock().unwrap().is_none(),
+            try_acquire_lock_at(&path).unwrap().is_none(),
             "second acquire must fail while the first guard is held"
         );
         drop(first);
-        assert!(try_acquire_daemon_lock().unwrap().is_some());
+        assert!(try_acquire_lock_at(&path).unwrap().is_some());
     }
 }

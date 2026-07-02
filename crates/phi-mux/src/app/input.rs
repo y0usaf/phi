@@ -182,11 +182,7 @@ impl MuxApp {
                 };
                 if in_sidebar {
                     let visible = layout.sidebar.rows.max(0) as usize;
-                    let row_count = build_sidebar_rows(
-                        &self.workspace.projects,
-                        self.workspace.selected_project,
-                    )
-                    .len();
+                    let row_count = build_sidebar_rows(&self.workspace.projects, &self.focus).len();
                     let (next, _) = scroll_sidebar_by_rows_value(
                         self.sidebar_scroll,
                         delta,
@@ -222,8 +218,8 @@ impl MuxApp {
     pub(crate) fn handle_sidebar_click(&mut self, layout: &CellLayout, row: u16) {
         let visible = layout.sidebar.rows.max(0) as usize;
         let visible_row = (i32::from(row) - layout.sidebar.row).max(0) as usize;
-        let rows = build_sidebar_rows(&self.workspace.projects, self.workspace.selected_project);
-        let sticky = selected_sidebar_selection_span(self.workspace.selected_project, &rows)
+        let rows = build_sidebar_rows(&self.workspace.projects, &self.focus);
+        let sticky = selected_sidebar_selection_span(self.focus.project, &rows)
             .and_then(|span| sticky_sidebar_anchor_row(self.sidebar_scroll, visible, span));
         let viewport = sidebar_viewport_items(&rows, self.sidebar_scroll, visible, sticky);
         let Some(item) = viewport.iter().find(|i| i.visible_row == visible_row) else {
@@ -234,16 +230,15 @@ impl MuxApp {
         };
         match kind {
             SidebarRowKind::Project(index) => {
-                self.workspace.selected_project = index;
+                self.focus.project = index;
             }
             SidebarRowKind::Session {
                 project_index,
                 session_index,
             } => {
-                self.workspace.selected_project = project_index;
-                if let Some(project) = self.workspace.projects.get_mut(project_index) {
-                    project.selected = session_index;
-                }
+                self.focus.project = project_index;
+                self.focus
+                    .set_selected_session(project_index, session_index);
             }
         }
         self.on_focus_changed();

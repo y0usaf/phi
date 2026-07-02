@@ -326,6 +326,15 @@ socket. Advances the Mux differentiator (core work per the table above).
       (`selected_project`, `project.selected`) into the view. Stage it:
       - [ ] State split with a single view — behavior identical, local mode
             becomes "core + one view".
+            *Focus extraction landed:* selection now lives in
+            `workspace::Focus` (view state held by `MuxApp`), not
+            `Workspace`; rescans preserve a view's selection via
+            `refresh_project_with_focus` (mark-by-key → rebuild → restore),
+            `build_sidebar_rows` takes `&Focus`, and the focus-steal
+            regression tests drive the new API. Remaining for this stage:
+            move the rest of the per-view state (size, surface, renderer,
+            sidebar scroll, command line, overlays, selection, note) into a
+            `MuxView` struct.
       - [ ] N views: route input by sender, render per view via `send_to`,
             per-session size recompute (debounced) on focus change; host
             modals / edit requests route to the view(s) focused on the
