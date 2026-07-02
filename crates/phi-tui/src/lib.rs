@@ -48,6 +48,6 @@ pub use terminal::{
     strip_ansi, visible_width, wrap_ansi, wrap_ansi_locate,
 };
 pub use theme::{
-    Mode, Theme, ansi_index_to_rgb, bg_escape, bold_fg_escape, brighten, default_terminal_colors,
-    fade_toward, fg_escape, generate_theme, luminance_rgb, terminal_mode,
+    Mode, Theme, ansi_index_to_rgb, apply_palette, bg_escape, bold_fg_escape, brighten,
+    default_terminal_colors, fade_toward, fg_escape, generate_theme, luminance_rgb, terminal_mode,
 };

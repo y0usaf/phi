@@ -3,9 +3,12 @@
 //! All ANSI→role mapping lives in `phi_tui::generate_theme`.  This module just
 //! formats the `Theme`'s `Rgb` fields as ANSI escape strings for the inline TUI.
 
+use std::collections::BTreeMap;
+
+use phi_ext::{Rgb as ExtRgb, TerminalColorsProbe, ThemeSpec};
 use phi_tui::theme::Theme;
 use phi_tui::{MarkdownPalette, Rgb, TerminalColors};
-use phi_tui::{bg_escape, bold_fg_escape, fg_escape, generate_theme};
+use phi_tui::{apply_palette, bg_escape, bold_fg_escape, fg_escape, generate_theme};
 
 pub struct InlinePalette {
     /// Warm gold for tool verbs.
@@ -205,6 +208,27 @@ impl InlinePalette {
     /// + `from_theme` so there is a single ANSI→role mapping.
     pub fn from_terminal_colors(colors: &TerminalColors) -> Self {
         Self::from_theme(&generate_theme(colors))
+    }
+
+    /// Derive from an extension-registered [`ThemeSpec`], mirroring the mux's
+    /// `ScenePalette::from_extension_theme`: resolve the spec against the
+    /// terminal's reported colours, overlay the resolved roles onto the base
+    /// `generate_theme` derivation (so partial palettes fall back per-role),
+    /// and format the result as the inline TUI's escape strings.
+    pub fn from_extension_theme(spec: &ThemeSpec, colors: &TerminalColors) -> Self {
+        let probe = TerminalColorsProbe {
+            background: ExtRgb(colors.background.0, colors.background.1, colors.background.2),
+            foreground: ExtRgb(colors.foreground.0, colors.foreground.1, colors.foreground.2),
+            palette: colors.palette.map(|opt| opt.map(|c| ExtRgb(c.0, c.1, c.2))),
+        };
+        let resolved = spec.resolve(Some(&probe));
+        let mut theme = generate_theme(colors);
+        let palette: BTreeMap<String, Rgb> = resolved
+            .iter()
+            .map(|(name, c)| (name.clone(), Rgb(c.0, c.1, c.2)))
+            .collect();
+        apply_palette(&mut theme, &palette);
+        Self::from_theme(&theme)
     }
 }
 
