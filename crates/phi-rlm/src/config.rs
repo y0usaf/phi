@@ -239,6 +239,18 @@ pub enum RlmEvent {
         depth: usize,
         content: String,
     },
+    /// In-loop context compaction fired (or failed). On success `summary`
+    /// carries the text that replaced the compacted span — frontends persist
+    /// it as an additive session-log marker. On failure `error` is set and
+    /// the engine's circuit breaker advances.
+    Compaction {
+        depth: usize,
+        iteration: usize,
+        /// Estimated context tokens that triggered the compaction.
+        tokens_before: u64,
+        summary: Option<String>,
+        error: Option<String>,
+    },
     /// Chat message sent from REPL code via `message(...)` — display-only,
     /// does not end the turn or the run.
     Message {

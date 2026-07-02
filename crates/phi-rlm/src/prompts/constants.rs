@@ -8,6 +8,7 @@ pub(crate) const DEFAULT_REPL_TOOLS: &str = r#"Available in the REPL:
 - `llm_query(prompt: str, model: str | None = None) -> str`: a single sub-LLM completion. Use for extraction, summarization, or Q&A over a chunk of text. Sub-LLM context window ≈ 500K chars.
 - `llm_query_batched(prompts: list[str], model=None) -> list[str]`: concurrently call several LLM calls in parallel over a list of prompts; same order out as in.
 - `subagent(prompt, model=None, preamble=None)` / `subagent_batched(prompts, model=None, preamble=None)`: recursive RLM sub-calls. Returns a dict `{'text': str, 'stop': str, 'iterations': int, 'ok': bool}`. **Always check `r['ok']` before treating `r['text']` as completed work** — `ok=False` means the child was turn-starved (`stop='default_answer'`), hit a limit, or failed. `stop` values: `'answer'` (clean finish), `'default_answer'` (turns exhausted), `'fallback'` (depth limit reached — ran as a plain one-shot completion without a REPL), `'prose'`, `'failed'`, `'cancelled'`, or `'limit_budget'`/`'limit_timeout'`/`'limit_tokens'`/`'limit_errors'`/`'limit_loop'`. Pass `preamble` as a compact brief of what you already know — files mapped, errors seen, decisions made — so the child does not rediscover it. To run a subagent in the background and keep working: `jid = bg("r = subagent('...')")`, then retrieve with `job_output(jid)` once the job finishes. **Warning:** a `subagent` call issued from a background job (`bg(...)`) will deadlock if no concurrent foreground exec is pumping the host channel — use `bg(subagent(...))` only when you know a foreground exec will run concurrently (e.g. the next iteration of your own loop); otherwise call `subagent` directly. Use `subagent` as your default delegation path for non-trivial subtasks; reserve `llm_query` for clearly one-shot extraction or summarization.
+- Subcall results over ~50K chars are spilled: the full text is written to a tmp file and printing the value shows a 500-char preview plus the path. The full text stays programmatically available — `r['text'].full_result`, slicing (`r['text'][:2000]`), `in` checks, and `.split()`/`.find()` etc. all operate on the complete content. Never try to `print` a spilled result whole; slice it or pass it to `llm_query`.
 - `SHOW_VARS() -> str`: list every variable currently in the REPL.
 - `bg(code: str) -> int`: run code as a background job sharing the REPL namespace; returns its job id immediately. `jobs() -> str` lists jobs; `job_status(id) -> str` and `job_output(id) -> str` poll one. If a `repl` tool call runs past its time limit it is NOT killed: it keeps running as a background job, and you get its output so far plus the job id to poll.
 - `message(text: str)`: send a chat message to the user immediately, without ending the run. Use it for progress updates or intermediate findings; markdown supported. Display-only — it does not end the turn and the user cannot reply to it mid-run.
@@ -38,6 +39,46 @@ pub(crate) const PROSE_NUDGE: &str = "Your previous turn(s) contained no tool ca
 /// tool-only contract — every user-visible message flows through
 /// `message(...)` and the run only ends via the `answer` dict.
 pub(crate) const STRICT_TOOL_ONLY_ADDENDUM: &str = "Tool-only session: every turn MUST include at least one `repl` tool call. Plain prose turns are ignored — they are never accepted as a final answer. To communicate with the user mid-run, call `message(\"...\")` inside the REPL (it renders immediately in the chat; markdown supported). To finish, set `answer['content']` to your final answer and `answer['ready'] = True`. The final answer in `answer['content']` is what the user sees as your reply, so write it as a complete, user-facing response.";
+
+/// Sent as a user message (appended to the live history) to produce the
+/// compaction summary. Structured-section format adapted from claude-code's
+/// compact prompt, trimmed to what an RLM trajectory actually contains; the
+/// REPL-variable section is the RLM-specific addition (state lives in the
+/// env, not the transcript, so naming variables is what makes the summary
+/// resumable).
+pub(crate) const COMPACTION_SUMMARY_PROMPT: &str = "Your conversation history is about to be compacted to free context. Write a summary of the session so far that you (with no other memory) can resume work from. Structure it with exactly these sections:
+
+1. Task & intent: what the user asked for, in their terms; any explicit constraints they stated.
+2. Key technical concepts: frameworks, formats, conventions in play.
+3. Files and resources: each file read or modified, with a phrase on why it matters.
+4. Errors and corrections: errors hit, how they were resolved, and any user corrections — preserve user corrections verbatim.
+5. Intermediate results: concrete values, counts, paths, and REPL variable names computed so far — preserve these exactly.
+6. Completed work: what is done and verified.
+7. Pending work: what remains, in priority order.
+8. Next step: the single immediate next action.
+
+Be concise but lossless on values, paths, and variable names. Respond with ONLY the summary text — no tool calls, no preamble.";
+
+/// User message that follows the compaction summary in the rebuilt history.
+/// `{n}` = how many times this run has compacted; `{archive}` = the REPL
+/// variable holding the compacted message span verbatim.
+pub(crate) fn compaction_continue_message(
+    count: usize,
+    archive_var: &str,
+    interjections: &[String],
+) -> String {
+    let mut msg = format!(
+        "[Context compacted — {count} time(s) this run. The conversation above was replaced by the summary. Do NOT repeat completed work. Your REPL environment is untouched: every variable still exists (SHOW_VARS() to re-check), and the compacted conversation span was archived verbatim into the REPL variable `{archive_var}` (a list of {{'role', 'content'}} dicts) — search or slice it in Python if you need details the summary dropped; never print it whole. Continue from the summary.]"
+    );
+    if !interjections.is_empty() {
+        msg.push_str("\n\nUser interjections from the compacted span (verbatim, still binding):");
+        for text in interjections {
+            msg.push_str("\n- ");
+            msg.push_str(text);
+        }
+    }
+    msg
+}
 
 /// Strict-policy variant of `PROSE_NUDGE`: prose is never accepted as a final
 /// answer, so the model must route everything through the `repl` tool —

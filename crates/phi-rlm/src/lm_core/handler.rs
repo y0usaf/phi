@@ -45,6 +45,11 @@ impl LmHandler {
         self.root.name()
     }
 
+    /// Context window of the root model, when known (drives compaction).
+    pub fn root_context_window(&self) -> Option<u64> {
+        self.root.context_window()
+    }
+
     pub fn usage(&self) -> Usage {
         self.usage.lock().unwrap_or_else(|e| e.into_inner()).total
     }

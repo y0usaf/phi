@@ -448,23 +448,58 @@ API (`phi-ext`/`phi-lua`/`phi-event`), never bypass it.
 
 ### WS5 — Context compaction (core, part of the loop)
 
-- [ ] **5.1** In-loop auto-compaction in `phi-rlm`: trigger at a threshold of
+- [x] **5.1** In-loop auto-compaction in `phi-rlm`: trigger at a threshold of
       the model's context window *minus reserved headroom for the summary
       itself* (upstream rlm: 0.85 of window, `ref/rlm/rlm/core/rlm.py:600-642`;
       claude-code reserves ~13K + max-output tokens).
-- [ ] **5.2** Structured summary preserving: original intent, key technical
+      *Landed as:* `engine/rlm/compaction.rs` — `maybe_compact` runs at the
+      end of every `run_loop` iteration. Trigger: last completion's
+      `input + cache_read + cache_write + output` ≥ `0.85 · window −
+      20K headroom`. The window comes from a new
+      `LanguageModel::context_window()` trait method (default `None` =
+      compaction off; `ProviderLm` reads it from the registry `Model`).
+      API gap closed on the way: the trait previously exposed no model
+      metadata at all.
+- [x] **5.2** Structured summary preserving: original intent, key technical
       concepts, files touched (with why), errors + user corrections, pending
       work, current state; keep recent N messages and all user messages
       verbatim. (Reference: claude-code `services/compact/prompt.ts` 8-section
       format.)
-- [ ] **5.3** Compaction as an *additive marker* in the session JSONL — spliced
+      *Landed as:* `COMPACTION_SUMMARY_PROMPT` (8 sections, incl. an
+      RLM-specific "REPL variable names" section — env state is what makes
+      an RLM summary resumable). Rebuilt history = system prompt + initial
+      user prompt + summary + continue message + the most recent complete
+      iteration verbatim (cut at a `Role::User` boundary so tool_use/
+      tool_result pairs can't be orphaned). `[user interjection]` messages
+      from the compacted span are preserved verbatim in the continue
+      message. VCC-inspired addition (view over a lossless log): the
+      compacted span is archived verbatim into the REPL as
+      `compacted_{exchange}_{n}` before the in-band history is rebuilt, so
+      the model can search/slice what the summary dropped — compaction
+      demotes context to a cheaper view instead of deleting it.
+      `SessionBeforeCompact` can veto or customize instructions;
+      `SessionCompact` fires after.
+- [x] **5.3** Compaction as an *additive marker* in the session JSONL — spliced
       into context on reconstruction, never destructive (opencode pattern;
       Phi's tree store already supports this shape). Wire the existing
       `SessionBeforeCompact`/`SessionCompact` events so extensions can observe
       or veto.
-- [ ] **5.4** Circuit breaker: stop auto-compacting after 3 consecutive
+      *Landed as:* new `Line::Compaction(CompactionEntry)` record
+      (append-only; unknown-type-tolerant readers in older builds skip it);
+      engine emits `RlmEvent::Compaction`, the session TUI persists it via
+      `append_compaction`. On reconstruction, `branch_restore` attaches
+      summaries to their exchange (`RestoredExchange::compactions`) and
+      `restore_session` splices them into the archived `history_N`.
+      Message/repl records are never rewritten; the file-level `compact()`
+      rewrite preserves the markers.
+- [x] **5.4** Circuit breaker: stop auto-compacting after 3 consecutive
       failures (claude-code added this after telemetry showed runaway retry
       loops burning API quota).
+      *Landed as:* `CompactionState.consecutive_failures` in `run_loop`;
+      a failed or empty summary call advances it, success resets it, and at
+      `MAX_COMPACTION_FAILURES (3)` compaction disarms for the rest of the
+      run (history left untouched; the run proceeds until provider limits).
+      Covered by `compaction_breaker_disarms_after_repeated_failures`.
 
 ### WS6 — TUI consolidation (investigative)
 

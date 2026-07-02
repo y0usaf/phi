@@ -100,6 +100,10 @@ pub struct RestoredExchange {
     pub prompt: String,
     pub repls: Vec<RestoredRepl>,
     pub response: String,
+    /// Summaries from in-loop compactions recorded during this turn,
+    /// spliced back into the restored `history_N` so the archived
+    /// trajectory carries the same continuity markers the model saw live.
+    pub compactions: Vec<String>,
 }
 
 /// Append a restored execution as the same (assistant tool call, tool result)

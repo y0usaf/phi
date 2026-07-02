@@ -433,6 +433,20 @@ impl RlmSession {
             for repl in &exchange.repls {
                 push_repl_turns(&mut history, repl, self.rlm.config.max_output_chars);
             }
+            // Splice in-loop compaction summaries recorded during the turn
+            // (additive marker, WS5.3): the archived history_N carries the
+            // same continuity marker the model saw live. Exact position
+            // among the repls isn't persisted; appending after them keeps
+            // the summary adjacent to the turn it describes.
+            for summary in &exchange.compactions {
+                history.push(ChatMessage {
+                    role: Role::User,
+                    content: format!(
+                        "[context was compacted during this turn; summary:]\n{summary}"
+                    ),
+                    ..Default::default()
+                });
+            }
             // Recreate context_N for this exchange's prompt, mirroring
             // live send()'s add_context(prompt). Without this, restored
             // sessions have only context_0 (the initial payload) and the

@@ -387,6 +387,8 @@ impl Rlm {
         // when the stall breaks (prev_loop_sig changes) so a genuinely new
         // repeated pattern can still receive a nudge.
         let mut loop_nudge_injected = false;
+        // In-loop compaction state (successful count + failure breaker).
+        let mut compaction = super::compaction::CompactionState::default();
 
         let iteration_limit = self.iteration_limit();
         let mut i = 0usize;
@@ -841,8 +843,18 @@ impl Rlm {
                 // tool_result per tool_use in the preceding assistant message.
                 let executed_ids: std::collections::HashSet<&str> =
                     blocks.iter().map(|b| b.id.as_str()).collect();
+                // Aggregate truncation budget: each result is already capped
+                // per-stream by the driver, but a turn with many repl calls
+                // must not inject N full-size results into history at once.
+                let mut aggregate_budget = self
+                    .config
+                    .max_output_chars
+                    .saturating_mul(crate::llm_parse::AGGREGATE_OUTPUT_FACTOR);
                 for block in &blocks {
-                    let output = format_execution_result(&block.result);
+                    let output = crate::llm_parse::clamp_aggregate(
+                        format_execution_result(&block.result),
+                        &mut aggregate_budget,
+                    );
                     history.push(ChatMessage::tool_result(block.id.clone(), output));
                 }
                 for tc in &completion.tool_calls {
@@ -904,6 +916,20 @@ impl Rlm {
                         ..Default::default()
                     });
                 }
+
+                // In-loop compaction: fold history into a summary when the
+                // last completion's usage shows the context window filling.
+                self.maybe_compact(
+                    env,
+                    handler,
+                    history,
+                    &completion.usage,
+                    &mut compaction,
+                    i,
+                    history_count,
+                    cancel,
+                )
+                .await;
 
                 i += 1;
                 continue;
@@ -1040,6 +1066,19 @@ impl Rlm {
                     ..Default::default()
                 });
             }
+            // Prose turns still grow history; compact here too so a long
+            // prose-heavy run can't overflow between code turns.
+            self.maybe_compact(
+                env,
+                handler,
+                history,
+                &completion.usage,
+                &mut compaction,
+                i,
+                history_count,
+                cancel,
+            )
+            .await;
             i += 1;
         }
 

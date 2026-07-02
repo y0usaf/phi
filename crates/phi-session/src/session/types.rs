@@ -139,6 +139,29 @@ pub struct SubcallRecord {
     pub usage: Option<SessionUsage>,
 }
 
+/// Additive in-loop compaction marker (opencode pattern): appended when the
+/// engine folds live history into a summary mid-turn. Never replaces or
+/// rewrites message/repl records — the log stays lossless; the marker lets
+/// reconstruction splice the summary into replayed context and lets viewers
+/// see where compaction happened. Older phi builds skip unknown record
+/// types on load, so this is backward-tolerated.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct CompactionEntry {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<String>,
+    /// Engine iteration (within the turn) at which compaction fired.
+    #[serde(default)]
+    pub iteration: usize,
+    /// Estimated context tokens that triggered it.
+    #[serde(default)]
+    pub tokens_before: u64,
+    /// The summary that replaced the compacted span.
+    pub summary: String,
+}
+
 /// Result of spilling large output to a tmp file (pi-style spillover).
 /// The `tail` is what goes in the durable JSONL log; `full_output_path`
 /// is the route back to the complete data.
@@ -213,6 +236,7 @@ pub(super) enum Line {
     Leaf(LeafRecord),
     ExchangeStart(ExchangeStart),
     ExchangeEnd(ExchangeEnd),
+    Compaction(CompactionEntry),
 }
 
 /// One interactive phi session: an append-only JSONL file whose entries
@@ -222,6 +246,9 @@ pub struct SessionStore {
     pub(super) header: Header,
     pub(super) entries: Vec<Entry>,
     pub(super) repls: Vec<ReplEntry>,
+    /// In-loop compaction markers, in append order. Rare (a handful per
+    /// session at most), so looked up by linear scan — no child index.
+    pub(super) compactions: Vec<CompactionEntry>,
     /// Tip of the active branch; new entries attach here.
     pub(super) leaf: Option<String>,
     /// Whether the file (header) has been written yet.
@@ -260,6 +287,8 @@ pub struct BranchExchange<'a> {
     pub response: Option<&'a Entry>,
     pub pre_shell: Vec<&'a ReplEntry>,
     pub repls: Vec<&'a ReplEntry>,
+    /// In-loop compaction markers recorded during this turn.
+    pub compactions: Vec<&'a CompactionEntry>,
 }
 
 pub(super) fn new_id() -> String {

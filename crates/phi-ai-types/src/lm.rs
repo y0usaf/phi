@@ -169,4 +169,10 @@ pub trait LanguageModel: Send + Sync {
     fn set_tools(&self, _tools: Vec<ToolDefinition>) {
         // Default: no-op. Overridden by ProviderLm.
     }
+
+    /// The model's context window in tokens, when known. Drives in-loop
+    /// compaction: `None` (the default) disables the threshold check.
+    fn context_window(&self) -> Option<u64> {
+        None
+    }
 }

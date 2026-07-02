@@ -56,6 +56,7 @@ impl SessionStore {
                         response: None,
                         pre_shell: std::mem::take(&mut shell_buf),
                         repls: Vec::new(),
+                        compactions: self.child_compactions(&entry.id),
                     };
                     exchange.repls.extend(attached);
                     open = Some(exchange);
@@ -63,6 +64,9 @@ impl SessionStore {
                 Role::Assistant => {
                     if let Some(mut exchange) = open.take() {
                         exchange.response = Some(entry);
+                        exchange
+                            .compactions
+                            .extend(self.child_compactions(&entry.id));
                         for repl in attached {
                             match repl.kind {
                                 ReplKind::Agent => exchange.repls.push(repl),
@@ -132,6 +136,11 @@ impl SessionStore {
                     prompt: exchange.prompt.text.clone(),
                     repls: exchange.repls.into_iter().map(restored).collect(),
                     response,
+                    compactions: exchange
+                        .compactions
+                        .into_iter()
+                        .map(|c| c.summary.clone())
+                        .collect(),
                 })
             })
             .flatten()

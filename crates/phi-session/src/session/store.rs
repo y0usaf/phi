@@ -8,8 +8,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context as _, Result};
 
 use super::types::{
-    ExchangeEnd, ExchangeStart, ExchangeStatus, Header, LeafRecord, Line, ReplEntry, ReplRecord,
-    Role, SESSION_VERSION, SessionStore, SpillResult, new_id, now_timestamp,
+    CompactionEntry, ExchangeEnd, ExchangeStart, ExchangeStatus, Header, LeafRecord, Line,
+    ReplEntry, ReplRecord, Role, SESSION_VERSION, SessionStore, SpillResult, new_id, now_timestamp,
 };
 
 /// Per-cwd session directory, mirroring pi: `sessions/--{cwd with
@@ -50,6 +50,7 @@ impl SessionStore {
             },
             entries: Vec::new(),
             repls: Vec::new(),
+            compactions: Vec::new(),
             leaf: None,
             persisted: false,
             open_exchange: None,
@@ -71,6 +72,7 @@ impl SessionStore {
         let mut header = None;
         let mut entries = Vec::new();
         let mut repls = Vec::new();
+        let mut compactions = Vec::new();
         // Effective leaf, determined pi-style: the last durable line in
         // file order wins. A Message entry sets the leaf to its own id
         // (every appended entry becomes the branch tip); a Leaf record
@@ -97,6 +99,7 @@ impl SessionStore {
                         entries.push(entry);
                     }
                     Line::Repl(repl) => repls.push(repl),
+                    Line::Compaction(entry) => compactions.push(entry),
                     Line::Leaf(record) => leaf = record.id,
                     Line::ExchangeStart(start) => open_exchange = Some(start.id),
                     Line::ExchangeEnd(end) if open_exchange.as_deref() == Some(end.id.as_str()) => {
@@ -151,6 +154,7 @@ impl SessionStore {
             header,
             entries,
             repls,
+            compactions,
             leaf,
             persisted: true,
             open_exchange: None,
@@ -258,6 +262,37 @@ impl SessionStore {
         }
         self.repls.push(entry);
         Ok(id)
+    }
+
+    /// Append an in-loop compaction marker on the active branch. Additive
+    /// only: message/repl records are never rewritten — the marker records
+    /// that the engine folded live history into `summary` mid-turn, and
+    /// reconstruction splices the summary into replayed context.
+    pub fn append_compaction(
+        &mut self,
+        iteration: usize,
+        tokens_before: u64,
+        summary: &str,
+    ) -> Result<String> {
+        let entry = CompactionEntry {
+            id: new_id(),
+            parent_id: self.leaf.clone(),
+            timestamp: Some(now_timestamp()),
+            iteration,
+            tokens_before,
+            summary: summary.to_owned(),
+        };
+        let id = self.write_line(&Line::Compaction(entry.clone()))?;
+        self.compactions.push(entry);
+        Ok(id)
+    }
+
+    /// Compaction markers attached to `parent_id`, in append order.
+    pub fn child_compactions(&self, parent_id: &str) -> Vec<&CompactionEntry> {
+        self.compactions
+            .iter()
+            .filter(|c| c.parent_id.as_deref() == Some(parent_id))
+            .collect()
     }
 
     /// Spill large tool output to a tmp file (pi-style spillover).
@@ -380,6 +415,7 @@ impl SessionStore {
             Line::Message(entry) => entry.id.clone(),
             Line::Session(header) => header.id.clone(),
             Line::Repl(entry) => entry.id.clone(),
+            Line::Compaction(entry) => entry.id.clone(),
             Line::Leaf(record) => record.id.clone().unwrap_or_default(),
             Line::ExchangeStart(start) => start.id.clone(),
             Line::ExchangeEnd(end) => end.id.clone(),
@@ -411,6 +447,7 @@ impl SessionStore {
         let live_lines = 1 // header
             + self.entries.len()
             + self.repls.len()
+            + self.compactions.len()
             + usize::from(needs_leaf)
             + usize::from(self.interrupted_exchange.is_some())
             + usize::from(self.open_exchange.is_some());
@@ -443,6 +480,13 @@ impl SessionStore {
                     file,
                     "{}",
                     serde_json::to_string(&Line::Repl(repl.clone()))?
+                )?;
+            }
+            for compaction in &self.compactions {
+                writeln!(
+                    file,
+                    "{}",
+                    serde_json::to_string(&Line::Compaction(compaction.clone()))?
                 )?;
             }
             // Chronological precedence on reload: the interrupted marker
@@ -515,6 +559,7 @@ impl SessionStore {
             },
             entries: Vec::new(),
             repls: Vec::new(),
+            compactions: Vec::new(),
             leaf: kept.last().map(|e| e.id.clone()),
             persisted: false,
             open_exchange: None,

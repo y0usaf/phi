@@ -12,8 +12,8 @@ mod types;
 pub use discovery::age;
 pub use store::{flatten_cwd, sessions_dir, sessions_root};
 pub use types::{
-    BranchExchange, BranchItem, Entry, ExchangeEnd, ExchangeStart, ExchangeStatus, ReplEntry,
-    ReplKind, ReplRecord, Role, SessionMeta, SessionStore, SessionUsage, SpillResult,
+    BranchExchange, BranchItem, CompactionEntry, Entry, ExchangeEnd, ExchangeStart, ExchangeStatus,
+    ReplEntry, ReplKind, ReplRecord, Role, SessionMeta, SessionStore, SessionUsage, SpillResult,
     SubcallRecord, ToolCall,
 };
 
@@ -758,6 +758,57 @@ mod tests {
         assert_eq!(exchanges[0].repls.len(), 1);
         assert_eq!(exchanges[0].repls[0].prose, "Let me fix the test.");
         assert_eq!(exchanges[0].repls[0].code, "print(1)");
+    }
+
+    #[test]
+    fn compaction_markers_roundtrip_and_attach_to_their_exchange() {
+        // In-loop compaction markers are additive records: append → reload
+        // → branch_restore must carry the summary on the right exchange,
+        // with every message/repl record untouched.
+        let tmp = tempfile::tempdir().unwrap();
+        let mut store = store_in(tmp.path());
+        store.append(Role::User, "q1").unwrap();
+        store.append(Role::Assistant, "a1").unwrap();
+        store.append(Role::User, "q2").unwrap();
+        store
+            .append_compaction(7, 170_000, "summary of the long turn")
+            .unwrap();
+        store.append(Role::Assistant, "a2").unwrap();
+
+        let loaded = SessionStore::load(store.path()).unwrap();
+        let (exchanges, _) = loaded.branch_restore();
+        assert_eq!(exchanges.len(), 2);
+        assert!(exchanges[0].compactions.is_empty());
+        assert_eq!(
+            exchanges[1].compactions,
+            vec!["summary of the long turn".to_owned()]
+        );
+        // The lossless log survives intact around the marker.
+        assert_eq!(exchanges[1].prompt, "q2");
+        assert_eq!(exchanges[1].response, "a2");
+    }
+
+    #[test]
+    fn compact_rewrite_preserves_compaction_markers() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut store = store_in(tmp.path());
+        let q1 = store.append(Role::User, "q1").unwrap();
+        store.append(Role::Assistant, "a1").unwrap();
+        store
+            .append_compaction(3, 150_000, "mid-turn summary")
+            .unwrap();
+        // Pile up dead leaf records so the file-level compact runs.
+        let a1 = store.entries[1].id.clone();
+        for _ in 0..40 {
+            store.set_leaf(Some(q1.clone())).unwrap();
+            store.set_leaf(Some(a1.clone())).unwrap();
+        }
+        assert!(store.compact().unwrap());
+        let reloaded = SessionStore::load(store.path()).unwrap();
+        assert_eq!(reloaded.compactions.len(), 1);
+        assert_eq!(reloaded.compactions[0].summary, "mid-turn summary");
+        assert_eq!(reloaded.compactions[0].iteration, 3);
+        assert_eq!(reloaded.compactions[0].tokens_before, 150_000);
     }
 
     #[test]

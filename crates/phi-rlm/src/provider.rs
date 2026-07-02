@@ -183,6 +183,11 @@ impl LanguageModel for ProviderLm {
         ProviderLm::set_tools(self, tools);
     }
 
+    fn context_window(&self) -> Option<u64> {
+        let window = self.model.read().unwrap().context_window;
+        (window > 0).then_some(window)
+    }
+
     async fn complete_streaming(
         &self,
         prompt: &[ChatMessage],

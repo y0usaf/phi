@@ -658,7 +658,39 @@ impl Ui {
                 iterations,
                 duration,
             } if depth > 0 => self.handle_run_end(depth, stop, iterations, duration),
+            RlmEvent::Compaction {
+                depth: 0,
+                iteration,
+                tokens_before,
+                summary,
+                error,
+            } => self.handle_compaction(iteration, tokens_before, summary, error),
             _ => {}
+        }
+    }
+
+    /// In-loop compaction fired (or failed). On success, persist the summary
+    /// as an additive marker in the session JSONL — the message/repl log is
+    /// never rewritten; reconstruction splices the summary back into the
+    /// turn's archived history.
+    fn handle_compaction(
+        &mut self,
+        iteration: usize,
+        tokens_before: u64,
+        summary: Option<String>,
+        error: Option<String>,
+    ) {
+        match (summary, error) {
+            (Some(summary), _) => {
+                let _ = self
+                    .store
+                    .append_compaction(iteration, tokens_before, &summary);
+                self.status = "context compacted".to_owned();
+            }
+            (None, Some(_)) => {
+                self.status = "compaction failed".to_owned();
+            }
+            (None, None) => {}
         }
     }
 

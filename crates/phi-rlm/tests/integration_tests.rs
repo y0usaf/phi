@@ -17,6 +17,11 @@ struct ScriptedLm {
     prompts: Mutex<Vec<Vec<ChatMessage>>>,
     default: String,
     usage_per_call: Usage,
+    /// Per-call usage overrides, popped in call order; falls back to
+    /// `usage_per_call` when exhausted. Lets compaction tests model the
+    /// input-token drop that follows a successful compaction.
+    usage_sequence: Mutex<VecDeque<Usage>>,
+    context_window: Option<u64>,
 }
 
 impl ScriptedLm {
@@ -27,6 +32,8 @@ impl ScriptedLm {
             prompts: Mutex::new(Vec::new()),
             default: String::new(),
             usage_per_call: Usage::default(),
+            usage_sequence: Mutex::new(VecDeque::new()),
+            context_window: None,
         }
     }
 
@@ -38,6 +45,24 @@ impl ScriptedLm {
     fn with_usage(mut self, usage: Usage) -> Self {
         self.usage_per_call = usage;
         self
+    }
+
+    fn with_context_window(mut self, window: u64) -> Self {
+        self.context_window = Some(window);
+        self
+    }
+
+    fn with_usages(self, usages: &[Usage]) -> Self {
+        *self.usage_sequence.lock().unwrap() = usages.iter().copied().collect();
+        self
+    }
+
+    fn next_usage(&self) -> Usage {
+        self.usage_sequence
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .pop_front()
+            .unwrap_or(self.usage_per_call)
     }
 
     fn recorded_prompts(&self) -> Vec<Vec<ChatMessage>> {
@@ -52,6 +77,10 @@ impl ScriptedLm {
 impl LanguageModel for ScriptedLm {
     fn name(&self) -> String {
         self.name.clone()
+    }
+
+    fn context_window(&self) -> Option<u64> {
+        self.context_window
     }
 
     async fn complete(
@@ -74,7 +103,7 @@ impl LanguageModel for ScriptedLm {
             text,
             tool_calls,
             stop_reason,
-            usage: self.usage_per_call,
+            usage: self.next_usage(),
         })
     }
 
@@ -118,7 +147,7 @@ impl LanguageModel for ScriptedLm {
             text,
             tool_calls,
             stop_reason,
-            usage: self.usage_per_call,
+            usage: self.next_usage(),
         })
     }
 }
@@ -1499,6 +1528,7 @@ answer['ready'] = True
             subcalls: vec![],
         }],
         response: "the answer is 42".to_owned(),
+        compactions: vec![],
     }];
     session.restore_session(&exchanges, &[]).await.unwrap();
 
@@ -1559,6 +1589,7 @@ answer['ready'] = True
             subcalls: vec![],
         }],
         response: String::new(),
+        compactions: vec![],
     }];
     session.restore_session(&exchanges, &[]).await.unwrap();
 
@@ -1675,4 +1706,206 @@ async fn strict_policy_system_prompt_declares_tool_only() {
     let lenient = rlm(RlmConfig::default(), quiet_sub(), quiet_sub());
     let lenient_prompt = build_system_prompt(&lenient.system_prompt_options());
     assert!(!lenient_prompt.contains("Tool-only session"));
+}
+
+// ── In-loop context compaction (WS5) ────────────────────────────────────────
+
+/// Usage large enough to cross the compaction threshold for a 100K window:
+/// limit = 0.85 · 100_000 − 20_000 headroom = 65_000.
+fn overflow_usage() -> Usage {
+    Usage {
+        input: 90_000,
+        ..Usage::default()
+    }
+}
+
+/// Usage safely below the compaction threshold.
+fn small_usage() -> Usage {
+    Usage {
+        input: 10_000,
+        ..Usage::default()
+    }
+}
+
+#[tokio::test]
+async fn compaction_folds_history_and_archives_span() {
+    // Every root call reports 90K input tokens against a 100K window, so the
+    // threshold is crossed from iteration 0. Iteration 0 has no compactable
+    // span yet (only the preserved head + the current iteration); after
+    // iteration 1 the engine must compact: consume one scripted response as
+    // the summary, rebuild history around it, and archive the compacted span
+    // into the REPL as `compacted_0_0`.
+    let root = Arc::new(
+        ScriptedLm::new(
+            "root-model",
+            &[
+                "Step one.\n```repl\nx = 41\n```",
+                "Step two.\n```repl\ny = x + 1\n```",
+                "COMPACTION SUMMARY: computed x=41, y=42; next, submit y.",
+                "Checking the archive.\n```repl\nprint(compacted_0_0[0]['role'], len(compacted_0_0))\n```",
+                "Submitting.\n```repl\nanswer['content'] = str(y)\nanswer['ready'] = True\n```",
+            ],
+        )
+        // Call order: turn 0 (bail: no compactable span yet), turn 1
+        // (triggers compaction), the summary call, then post-compaction
+        // turns whose input has dropped back below the threshold.
+        .with_usages(&[
+            overflow_usage(),
+            overflow_usage(),
+            small_usage(),
+            small_usage(),
+            small_usage(),
+        ])
+        .with_context_window(100_000),
+    );
+    let engine = rlm(RlmConfig::default(), root.clone(), quiet_sub());
+    let result = engine
+        .completion(
+            ContextPayload::Str("ctx".into()),
+            Some("Compute the number."),
+            &CancellationToken::new(),
+        )
+        .await;
+    assert_eq!(result.stop, StopCause::Answer, "{:?}", result.error);
+    assert_eq!(result.response, "42", "REPL vars must survive compaction");
+
+    let prompts = root.recorded_prompts();
+    // Calls: turn 0, turn 1, summary, turn 2, turn 3 (answer).
+    assert_eq!(prompts.len(), 5);
+
+    // The summary request carries the structured-section prompt.
+    let summary_request = &prompts[2];
+    assert!(
+        summary_request
+            .last()
+            .unwrap()
+            .content
+            .contains("Task & intent"),
+        "summary call must use the structured compaction prompt"
+    );
+
+    // The first post-compaction turn sees the rebuilt history: summary +
+    // continue message present, the compacted span's content gone.
+    let post = &prompts[3];
+    assert!(
+        post.iter()
+            .any(|m| m.role == Role::Assistant && m.content.contains("COMPACTION SUMMARY")),
+        "rebuilt history must carry the summary as an assistant message"
+    );
+    assert!(
+        post.iter().any(|m| m.role == Role::User
+            && m.content.contains("[Context compacted")
+            && m.content.contains("compacted_0_0")),
+        "rebuilt history must carry the continue message naming the archive variable"
+    );
+    assert!(
+        !post.iter().any(|m| m.content.contains("Step one.")),
+        "the compacted span must be gone from the in-band history"
+    );
+    // The preserved head (system + initial prompt) survives verbatim.
+    assert_eq!(post[0].role, Role::System);
+    assert!(post[1].content.contains("Compute the number."));
+
+    // The archive variable is a real, populated REPL list: printing its
+    // first role produced output visible in the next turn's tool result.
+    let last = prompts.last().unwrap();
+    assert!(
+        last.iter()
+            .any(|m| m.role == Role::Tool && m.content.contains("user")),
+        "compacted_0_0 must exist in the REPL and hold message dicts"
+    );
+}
+
+#[tokio::test]
+async fn compaction_breaker_disarms_after_repeated_failures() {
+    // The summary call yields prose-free empty text (a bare tool call), which
+    // counts as a compaction failure. After MAX_COMPACTION_FAILURES (3)
+    // failures the breaker disarms: no further summary calls are attempted
+    // and the run proceeds to completion untouched.
+    let root = Arc::new(
+        ScriptedLm::new(
+            "root-model",
+            &[
+                "Step one.\n```repl\na = 1\n```",
+                "Step two.\n```repl\nb = 2\n```",
+                // Summary attempt 1: empty text (a tool call, no prose).
+                "```repl\nprint('not a summary')\n```",
+                "Step three.\n```repl\nc = 3\n```",
+                // Summary attempt 2.
+                "```repl\nprint('still not a summary')\n```",
+                "Step four.\n```repl\nd = 4\n```",
+                // Summary attempt 3 — breaker trips after this one.
+                "```repl\nprint('nope')\n```",
+                "Step five.\n```repl\ne = 5\n```",
+                "Submitting.\n```repl\nanswer['content'] = 'done'\nanswer['ready'] = True\n```",
+            ],
+        )
+        // Failed compactions never shrink the history, so every loop turn
+        // keeps reporting overflow; only the summary calls themselves are
+        // small. Call order: t0, t1, s1, t2, s2, t3, s3, t4, t5.
+        .with_usages(&[
+            overflow_usage(),
+            overflow_usage(),
+            small_usage(),
+            overflow_usage(),
+            small_usage(),
+            overflow_usage(),
+            small_usage(),
+            overflow_usage(),
+            overflow_usage(),
+        ])
+        .with_context_window(100_000),
+    );
+    let engine = rlm(RlmConfig::default(), root.clone(), quiet_sub());
+    let result = engine
+        .completion(
+            ContextPayload::Str("ctx".into()),
+            Some("Count."),
+            &CancellationToken::new(),
+        )
+        .await;
+    assert_eq!(result.stop, StopCause::Answer, "{:?}", result.error);
+
+    let prompts = root.recorded_prompts();
+    // 6 loop turns + exactly 3 summary attempts: had the breaker not
+    // tripped, turns after the third failure would keep consuming summary
+    // responses and the script would desynchronize.
+    assert_eq!(prompts.len(), 9);
+    // History was never rebuilt: the final turn still contains turn 0.
+    assert!(
+        prompts
+            .last()
+            .unwrap()
+            .iter()
+            .any(|m| m.content.contains("Step one.")),
+        "failed compaction must leave history untouched"
+    );
+}
+
+#[tokio::test]
+async fn compaction_disabled_without_context_window() {
+    // No context_window on the model → the threshold check is off: the
+    // scripted flow runs with no summary call consumed even at huge usage.
+    let root = Arc::new(
+        ScriptedLm::new(
+            "root-model",
+            &[
+                "Step one.\n```repl\nx = 1\n```",
+                "Step two.\n```repl\nx += 1\n```",
+                "Submitting.\n```repl\nanswer['content'] = str(x)\nanswer['ready'] = True\n```",
+            ],
+        )
+        .with_usage(overflow_usage()),
+    );
+    let engine = rlm(RlmConfig::default(), root.clone(), quiet_sub());
+    let result = engine
+        .completion(
+            ContextPayload::Str("ctx".into()),
+            Some("Count."),
+            &CancellationToken::new(),
+        )
+        .await;
+    assert_eq!(result.stop, StopCause::Answer, "{:?}", result.error);
+    assert_eq!(result.response, "2");
+    assert_eq!(root.recorded_prompts().len(), 3, "no summary call expected");
 }
