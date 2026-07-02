@@ -35,6 +35,38 @@ pub fn format_execution_result(result: &ReplResult) -> String {
     }
 }
 
+/// Aggregate per-iteration output budget, as a multiple of the per-result
+/// cap (`max_output_chars`): one iteration can carry several `repl` tool
+/// calls, each individually capped by the driver, so without an aggregate
+/// cap a wide batch could inject N×20K chars into history in one turn.
+/// (Reference: claude-code `toolLimits` keeps the same ~4-5× ratio between
+/// its per-result and aggregate-per-message caps.)
+pub const AGGREGATE_OUTPUT_FACTOR: usize = 5;
+
+/// Charge `output` against the iteration's remaining aggregate budget,
+/// truncating once it runs out. Results after exhaustion are elided to a
+/// one-line marker so the model knows output was dropped (never silently).
+pub fn clamp_aggregate(output: String, remaining: &mut usize) -> String {
+    let total = output.chars().count();
+    if total <= *remaining {
+        *remaining -= total;
+        return output;
+    }
+    let kept = *remaining;
+    *remaining = 0;
+    if kept == 0 {
+        return "[output elided: aggregate per-iteration output budget exhausted — re-run this step alone or print less]".to_owned();
+    }
+    let mut out: String = output.chars().take(kept).collect();
+    use std::fmt::Write;
+    let _ = write!(
+        out,
+        "... + [{} chars dropped: aggregate per-iteration output budget exhausted]",
+        total - kept
+    );
+    out
+}
+
 fn truncate_chars(text: String, max_chars: usize) -> String {
     let total = text.chars().count();
     if total <= max_chars {
@@ -123,6 +155,22 @@ mod tests {
         assert!(formatted.starts_with("REPL output (block 1):\n"));
         assert!(formatted.contains("\n\nREPL output (block 2):\n"));
         assert!(format_iteration(&[], 20_000).is_none());
+    }
+
+    #[test]
+    fn clamp_aggregate_charges_and_truncates() {
+        let mut remaining = 10usize;
+        // Fits: charged in full.
+        assert_eq!(clamp_aggregate("abcde".to_owned(), &mut remaining), "abcde");
+        assert_eq!(remaining, 5);
+        // Overflows: truncated to what's left, budget zeroed.
+        let out = clamp_aggregate("0123456789".to_owned(), &mut remaining);
+        assert!(out.starts_with("01234"), "{out}");
+        assert!(out.contains("chars dropped"), "{out}");
+        assert_eq!(remaining, 0);
+        // Exhausted: elided to the marker only.
+        let out = clamp_aggregate("more output".to_owned(), &mut remaining);
+        assert!(out.starts_with("[output elided"), "{out}");
     }
 
     #[test]

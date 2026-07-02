@@ -147,6 +147,80 @@ class _AnswerDict(dict):
                 pass
 
 
+# When a subcall result exceeds this many chars, the full text is written to
+# a tmp file and printing the value shows a preview + the path instead of the
+# whole thing. REPL stdout enters the model's conversation history (and is
+# truncated at max_output_chars), so dumping a huge subagent result there
+# both blows context and loses the tail. Ported from upstream rlm's
+# SubagentResult (ref/rlm/rlm/environments/local_repl.py).
+SPILL_THRESHOLD = 50_000
+
+
+class SubagentResult:
+    """String-like wrapper for large subcall results.
+
+    Below SPILL_THRESHOLD the raw ``str`` is returned instead of this class,
+    so a wrapper only ever exists for spilled results. ``str(result)`` (and
+    thus ``print``) yields a short preview plus the tmp-file path; the full
+    text stays available as ``result.full_result``, by slicing, or by reading
+    the file. Non-dunder string methods delegate to the full text.
+    """
+
+    __slots__ = ("full_result", "tmp_path", "_char_count")
+
+    def __init__(self, response, tmp_dir):
+        self.full_result = response
+        self._char_count = len(response)
+        fd, self.tmp_path = tempfile.mkstemp(
+            prefix="phi-subagent-", suffix=".log", dir=tmp_dir
+        )
+        with os.fdopen(fd, "w") as f:
+            f.write(response)
+
+    def __getattr__(self, name):
+        if name.startswith("_") or name == "full_result":
+            raise AttributeError(name)
+        return getattr(self.full_result, name)
+
+    def __str__(self):
+        preview = self.full_result[:500]
+        return (
+            "%s\n... + [%d chars]\n[Full output: %s — access via .full_result, "
+            "slicing, or read_file]" % (preview, self._char_count - 500, self.tmp_path)
+        )
+
+    def __repr__(self):
+        return "SubagentResult(%d chars -> %s)" % (self._char_count, self.tmp_path)
+
+    def __len__(self):
+        return self._char_count
+
+    def __getitem__(self, key):
+        return self.full_result[key]
+
+    def __iter__(self):
+        return iter(self.full_result)
+
+    def __contains__(self, item):
+        return item in self.full_result
+
+    def __eq__(self, other):
+        if isinstance(other, SubagentResult):
+            return self.full_result == other.full_result
+        return self.full_result == other
+
+    def __hash__(self):
+        return hash(self.full_result)
+
+    def __add__(self, other):
+        if isinstance(other, SubagentResult):
+            return self.full_result + other.full_result
+        return self.full_result + other
+
+    def __radd__(self, other):
+        return other + self.full_result
+
+
 
 
 
@@ -183,6 +257,13 @@ class Env:
         self._load_context(setup)
         if setup.get("setup_code"):
             self.execute(setup["setup_code"])
+        # Scaffold snapshot: everything the host installed (context vars plus
+        # every prelude-defined tool, which lands in locals via the setup_code
+        # exec above). `_restore_scaffold` reasserts these bindings after every
+        # exec so model code can't corrupt the environment by rebinding
+        # `read_file`, `context`, etc. `answer` is excluded — it has its own
+        # re-wrap logic that must not resurrect stale content.
+        self._scaffold = {k: v for k, v in self.locals.items() if k != "answer"}
 
     def _load_context(self, setup):
         context_str = setup.get("context_str")
@@ -201,7 +282,12 @@ class Env:
             self.locals["context"] = self.locals["context_0"]
 
     def _capture_answer(self, content):
-        self.final_answer = str(content)
+        # A spilled subcall result assigned to answer['content'] must submit
+        # the full text, not the preview-with-path that str() would give.
+        if isinstance(content, SubagentResult):
+            self.final_answer = content.full_result
+        else:
+            self.final_answer = str(content)
 
     def _show_vars(self):
         available = {
@@ -213,11 +299,17 @@ class Env:
             return "No variables created yet. Use ```repl``` blocks to create variables."
         return "Available variables: %s" % available
 
+    def _spill(self, text):
+        """Wrap oversized subcall text so printing it can't flood stdout."""
+        if isinstance(text, str) and len(text) > SPILL_THRESHOLD:
+            return SubagentResult(text, self.temp_dir)
+        return text
+
     def _llm_query(self, prompt, model=None):
         frame = _subcall({"kind": "llm", "prompt": str(prompt), "model": model})
         if frame.get("error") is not None:
             return "Error: %s" % frame["error"]
-        return frame.get("text", "")
+        return self._spill(frame.get("text", ""))
 
     def _subagent(self, prompt, model=None, preamble=None):
         payload = {"kind": "rlm", "prompt": str(prompt), "model": model}
@@ -226,8 +318,12 @@ class Env:
         frame = _subcall(payload)
         if frame.get("error") is not None:
             return {"text": "Error: %s" % frame["error"], "stop": "failed", "iterations": 0, "ok": False}
-        # The host returns a dict via frame["value"]; return it verbatim.
-        return frame.get("value", frame.get("text", ""))
+        # The host returns a dict via frame["value"]; return it verbatim,
+        # spilling an oversized 'text' field to a tmp file.
+        value = frame.get("value", frame.get("text", ""))
+        if isinstance(value, dict):
+            value["text"] = self._spill(value.get("text", ""))
+        return value
 
     def _batched(self, fn, prompts, model, **kwargs):
         prompts = list(prompts)
@@ -246,7 +342,23 @@ class Env:
         return self._batched(self._subagent, prompts, model, preamble=preamble)
 
     def _restore_scaffold(self):
-        """Undo model overwrites of scaffold names so the next cell still works."""
+        """Undo model overwrites of scaffold names so the next cell still works.
+
+        The function scaffold in ``self.globals`` (llm_query, subagent, host
+        fns, ...) is copy-protected by construction — each exec runs against a
+        fresh ``dict(self.globals)`` and the copy-back loop skips global names.
+        What model code CAN corrupt persistently: prelude tools and context
+        vars (they live in ``self.locals``), the ``answer`` dict, and the
+        shared ``__builtins__`` dict (mutated in place). All three are
+        restored here after every exec (upstream: ``_restore_scaffold``,
+        ref/rlm/rlm/environments/local_repl.py).
+        """
+        # __builtins__ is shared by reference into every exec's namespace
+        # copy, so in-place mutation would otherwise persist.
+        self.globals["__builtins__"] = dict(_SAFE_BUILTINS)
+        for name, value in getattr(self, "_scaffold", {}).items():
+            if self.locals.get(name) is not value:
+                self.locals[name] = value
         current = self.locals.get("answer")
         if not isinstance(current, _AnswerDict):
             replacement = _AnswerDict(self._capture_answer)
@@ -265,7 +377,9 @@ class Env:
             for k, v in self.locals.items()
             if not k.startswith("_")
             and k != "answer"
-            and isinstance(v, (str, int, float, bool, list, dict, tuple, set))
+            and isinstance(
+                v, (str, int, float, bool, list, dict, tuple, set, SubagentResult)
+            )
         ]
 
     def _truncate(self, text):

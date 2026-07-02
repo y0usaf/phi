@@ -403,23 +403,48 @@ API (`phi-ext`/`phi-lua`/`phi-event`), never bypass it.
       errors: never-read → "call read_file(path) first, then retry"; stale →
       "re-read with read_file(path, fresh=True), rebase the change, then
       retry". `read_file(raw=True)` now records a snapshot so raw reads count.
-- [ ] **4.3 Subcall result spill.** Port upstream rlm's `SubagentResult`
+- [x] **4.3 Subcall result spill.** Port upstream rlm's `SubagentResult`
       spill-to-tmp-file: subagent/`llm_query` results over ~50K chars get
       written to a tmp file; the REPL value carries a preview + path + full
       programmatic access. Phi currently caps REPL *stdout* (20K,
       `phi-rlm/src/prompts/constants.rs`) but embeds full child text in the
       subcall response (`phi-rlm/src/engine/subcalls.rs:242`). This is a
       regression vs upstream (`ref/rlm/rlm/environments/local_repl.py:62-189`).
-- [ ] **4.4 Scaffold restoration.** Verify (and if absent, implement) that
+      *Landed as:* `SubagentResult` in `phi-repl/src/router.py`
+      (`SPILL_THRESHOLD = 50_000`): `llm_query` returns it for oversized
+      text, `subagent` wraps the dict's `'text'` field. `str()`/`print`
+      yields a 500-char preview + tmp path; `.full_result`, slicing, and
+      delegated str methods keep full programmatic access (`__getattr__`
+      delegation instead of upstream's hand-listed methods).
+      `answer['content'] = r['text']` submits the full text, not the
+      preview (`_capture_answer` unwraps). Spill behavior documented in
+      `DEFAULT_REPL_TOOLS`. Below-threshold results stay plain `str`.
+- [x] **4.4 Scaffold restoration.** Verify (and if absent, implement) that
       `router.py` force-restores reserved names (`llm_query`, `subagent`,
       `answer`, `context`, `bash`, …) after every exec so model code can't
       corrupt the environment (upstream: `_restore_scaffold`,
       `ref/rlm/rlm/environments/local_repl.py:664-696`).
-- [ ] **4.5 Aggregate truncation budget.** In addition to per-result caps, cap
+      *Verified + closed the real gaps:* the function scaffold in
+      `Env.globals` (llm_query, subagent, host fns, …) was already
+      copy-protected by construction (each exec runs on `dict(globals)` and
+      copy-back skips global names). The persistent holes were (a) prelude
+      tools + context vars, which live in `locals` via `setup_code` and were
+      freely overwritable, and (b) the `__builtins__` dict, shared by
+      reference and mutable in place. Fix: a `_scaffold` snapshot of locals
+      taken after prelude setup, reasserted (plus a fresh `__builtins__`
+      copy) in `_restore_scaffold` after every exec; `answer` keeps its
+      dedicated re-wrap logic.
+- [x] **4.5 Aggregate truncation budget.** In addition to per-result caps, cap
       the *aggregate* tool/REPL output injected per iteration, so wide subagent
       batches can't blow the context. (Reference: claude-code
       `constants/toolLimits.ts` — 50K chars/result, 100K tokens/result, 200K
       chars aggregate per message.)
+      *Landed as:* `clamp_aggregate` in `phi-rlm/src/llm_parse.rs`, applied
+      in `run_loop` where tool results are banked into history. Budget =
+      `max_output_chars × AGGREGATE_OUTPUT_FACTOR (5)` per iteration
+      (mirrors claude-code's ~4-5× per-result:aggregate ratio). Overflow is
+      truncated with an explicit `chars dropped` marker; fully elided
+      results say so — never silent. UI events keep the full output.
 
 ### WS5 — Context compaction (core, part of the loop)
 
