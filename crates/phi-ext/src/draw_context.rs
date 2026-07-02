@@ -64,6 +64,44 @@ impl Default for OverlayKeyCode {
     }
 }
 
+/// The host's resolved colour roles, exposed to overlays so extension
+/// chrome matches the surrounding TUI instead of hardcoding colours.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OverlayPalette {
+    pub fg: Rgb,
+    pub bg: Rgb,
+    pub muted: Rgb,
+    pub border: Rgb,
+    pub accent: Rgb,
+    pub accent_2: Rgb,
+    pub surface_raised: Rgb,
+    pub statusbar_bg: Rgb,
+}
+
+impl Default for OverlayPalette {
+    fn default() -> Self {
+        Self {
+            fg: Rgb(220, 220, 220),
+            bg: Rgb(30, 30, 30),
+            muted: Rgb(120, 120, 120),
+            border: Rgb(100, 100, 100),
+            accent: Rgb(100, 200, 255),
+            accent_2: Rgb(180, 160, 255),
+            surface_raised: Rgb(45, 45, 45),
+            statusbar_bg: Rgb(20, 20, 20),
+        }
+    }
+}
+
+/// Brighten a colour by adding `amount` to each channel (saturating).
+pub fn brighten(c: Rgb, amount: u8) -> Rgb {
+    Rgb(
+        c.0.saturating_add(amount),
+        c.1.saturating_add(amount),
+        c.2.saturating_add(amount),
+    )
+}
+
 /// A rectangular region on the drawing surface.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct DrawRect {
@@ -102,6 +140,12 @@ impl DrawRect {
 pub trait DrawContext {
     /// Current surface dimensions.
     fn size(&self) -> DrawSize;
+
+    /// The host's resolved colour palette. The default is a dark fallback
+    /// for hosts that don't supply one.
+    fn palette(&self) -> OverlayPalette {
+        OverlayPalette::default()
+    }
 
     /// Write text at `(col, row)` with a maximum of `max_cols` cells.
     /// Text is left-aligned and clipped to `max_cols`.

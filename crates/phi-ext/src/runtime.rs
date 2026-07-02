@@ -994,6 +994,43 @@ impl AppRuntime {
             .collect()
     }
 
+    /// Registry listing for completion popups and help output.
+    pub fn list_commands(&self) -> Vec<crate::CommandInfo> {
+        self.commands
+            .values()
+            .map(|c| crate::CommandInfo {
+                name: c.name.clone(),
+                args_hint: c.args_hint.clone(),
+                description: c.description.clone(),
+            })
+            .collect()
+    }
+
+    /// First-argument completion candidates for a registered command, if the
+    /// command declared a completion source.
+    pub fn complete_command_arg(&self, name: &str) -> Option<Vec<String>> {
+        self.commands
+            .get(name)?
+            .arg_completions
+            .as_ref()
+            .map(|f| f())
+    }
+
+    /// Invoke a command handler synchronously on the calling thread. The TUI
+    /// uses this from its input path: handlers are expected to be quick (they
+    /// return declarative `UiAction`s rather than doing UI work) and slow
+    /// bridges (Lua) bound their own channel waits.
+    pub fn invoke_command_sync(&self, name: &str, raw_args: &str) -> Result<Option<CommandOutput>> {
+        let Some(cmd) = self.commands.get(name) else {
+            return Ok(None);
+        };
+        (cmd.handler)(CommandInvocation {
+            raw_args: raw_args.to_owned(),
+        })
+        .map(Some)
+        .map_err(|e| anyhow!("command '{name}': {e}"))
+    }
+
     pub async fn invoke_command(
         &self,
         name: &str,

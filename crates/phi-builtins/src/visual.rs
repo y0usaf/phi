@@ -44,21 +44,16 @@ impl Extension for DefaultVisualExtension {
 
     fn register(&self, host: &mut dyn ExtensionHost) -> Result<()> {
         // -- Default spinner (braille dots) --
+        // The frames and interval are `phi-tui`'s built-in constants: the
+        // extension registration is the same animation, just routed through
+        // the registry so it can be replaced like any third-party spinner.
         host.register_spinner(SpinnerSpec::new(
             "phi:default",
-            vec![
-                "\u{280B}".to_string(),
-                "\u{2819}".to_string(),
-                "\u{2839}".to_string(),
-                "\u{2838}".to_string(),
-                "\u{283C}".to_string(),
-                "\u{2834}".to_string(),
-                "\u{2826}".to_string(),
-                "\u{2827}".to_string(),
-                "\u{2807}".to_string(),
-                "\u{280F}".to_string(),
-            ],
-            80,
+            phi_tui::SPINNER_FRAMES
+                .iter()
+                .map(|f| (*f).to_string())
+                .collect(),
+            phi_tui::SPINNER_FRAME_MS,
         ))?;
 
         // -- Default thinking expressions --

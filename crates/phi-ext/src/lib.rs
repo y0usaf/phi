@@ -18,9 +18,13 @@ pub mod traits;
 pub mod visual;
 
 pub use builder::RuntimeBuilder;
-pub use command::{CommandHandler, CommandInvocation, CommandOutput, CommandSpec};
+pub use command::{
+    ArgCompletionFn, CommandHandler, CommandInfo, CommandInvocation, CommandOutput, CommandSpec,
+    PickerKind, UiAction,
+};
 pub use draw_context::{
     DrawContext, DrawRect, DrawSize, OverlayKey, OverlayKeyCode, OverlayKeyModifiers,
+    OverlayPalette, brighten,
 };
 pub use event::{
     EventHandler, EventHandlerRegistration, EventKind, EventPayload, EventReturn, InputActionKind,
@@ -29,7 +33,11 @@ pub use event::{
 pub use flag::{FlagSpec, FlagType};
 pub use manifest::ExtensionManifest;
 pub use message_renderer::MessageRendererSpec;
-pub use overlay_spec::{OverlayOutcome, OverlaySpec};
+pub use overlay_spec::{
+    HelpEntry, HelpPayload, ModelPickerPayload, OVERLAY_HELP, OVERLAY_MODEL, OVERLAY_USAGE,
+    OverlayInitFn, OverlayKeyFn, OverlayOutcome, OverlayPayload, OverlayRenderFn, OverlayResponder,
+    OverlayScrollFn, OverlaySpec, OverlayState,
+};
 pub use provider::{ProviderConfig, ProviderModelConfig};
 pub use runtime::{
     AppRuntime, DiscoveredResources, ForkDecision, ProjectTrustDecision, ToolInterception,
@@ -126,7 +134,9 @@ mod tests {
         let spec = CommandSpec {
             name: "test-cmd".to_string(),
             description: "A test command".to_string(),
-            handler: std::sync::Arc::new(|_inv| Ok(CommandOutput { message: None })),
+            args_hint: String::new(),
+            handler: std::sync::Arc::new(|_inv| Ok(CommandOutput::default())),
+            arg_completions: None,
         };
         let json = serde_json::to_value(&spec).unwrap();
         assert_eq!(json["name"], "test-cmd");
@@ -259,8 +269,7 @@ mod tests {
         let overlay = OverlaySpec::new(
             "test-overlay",
             "Test overlay",
-            "t",
-            Arc::new(|| Box::new(0i32) as Box<dyn Any + Send + Sync>),
+            Arc::new(|_payload| Box::new(0i32) as Box<dyn Any + Send + Sync>),
             Arc::new(
                 |_ctx: &mut dyn crate::DrawContext, _state: &mut Box<dyn Any + Send + Sync>| {},
             ),
@@ -270,11 +279,12 @@ mod tests {
                  _c: u16,
                  _r: u16| { crate::OverlayOutcome::None },
             ),
-        );
+        )
+        .with_toggle_key("t");
 
         assert_eq!(overlay.name, "test-overlay");
         assert_eq!(overlay.description, "Test overlay");
-        assert_eq!(overlay.toggle_key, "t");
+        assert_eq!(overlay.toggle_key.as_deref(), Some("t"));
     }
 
     #[test]
@@ -295,14 +305,16 @@ mod tests {
                 }
             }
             fn register(&self, host: &mut dyn ExtensionHost) -> anyhow::Result<()> {
-                host.register_overlay(OverlaySpec::new(
-                    "my-overlay",
-                    "desc",
-                    "o",
-                    Arc::new(|| Box::new(()) as Box<dyn Any + Send + Sync>),
-                    Arc::new(|_, _| {}),
-                    Arc::new(|_, _, _, _| crate::OverlayOutcome::None),
-                ))?;
+                host.register_overlay(
+                    OverlaySpec::new(
+                        "my-overlay",
+                        "desc",
+                        Arc::new(|_payload| Box::new(()) as Box<dyn Any + Send + Sync>),
+                        Arc::new(|_, _| {}),
+                        Arc::new(|_, _, _, _| crate::OverlayOutcome::None),
+                    )
+                    .with_toggle_key("o"),
+                )?;
                 Ok(())
             }
         }
@@ -314,6 +326,6 @@ mod tests {
         let snap = rt.snapshot();
         assert_eq!(snap.overlays.len(), 1);
         assert_eq!(snap.overlays[0].name, "my-overlay");
-        assert_eq!(snap.overlays[0].toggle_key, "o");
+        assert_eq!(snap.overlays[0].toggle_key.as_deref(), Some("o"));
     }
 }

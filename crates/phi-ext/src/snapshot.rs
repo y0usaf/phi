@@ -29,6 +29,7 @@ pub struct ToolSummary {
 #[derive(Clone, Debug, Serialize)]
 pub struct CommandSummary {
     pub name: String,
+    pub args_hint: String,
     pub description: String,
 }
 
@@ -83,7 +84,7 @@ pub struct TextEffectSummary {
 pub struct OverlaySummary {
     pub name: String,
     pub description: String,
-    pub toggle_key: String,
+    pub toggle_key: Option<String>,
 }
 
 pub(crate) fn tool_summary(tool: &ToolSpec) -> ToolSummary {
@@ -96,6 +97,7 @@ pub(crate) fn tool_summary(tool: &ToolSpec) -> ToolSummary {
 pub(crate) fn command_summary(command: &CommandSpec) -> CommandSummary {
     CommandSummary {
         name: command.name.clone(),
+        args_hint: command.args_hint.clone(),
         description: command.description.clone(),
     }
 }
