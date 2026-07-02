@@ -45,6 +45,10 @@ def read_file(path, offset=0, limit=2000, raw=False, fresh=False):
     lines = _hashline_lines(full_text)
     if raw:
         chunk = lines[offset : offset + limit]
+        # Raw reads count as reads for the read-before-edit guard.
+        _hashline_record_snapshot(
+            path, full_text, range(int(offset) + 1, int(offset) + len(chunk) + 1)
+        )
         text = "\n".join(chunk)
         if offset + limit < len(lines):
             text += "\n[truncated: file has %d lines, showing %d-%d]" % (
@@ -78,8 +82,41 @@ _READ_FILE_CACHE_LIMIT = 64
 _read_file_cache = {}
 
 
+def _edit_precondition(path):
+    """Read-before-edit guard shared by write_file and edit_file (old/new mode).
+
+    Returns an error string when `path` exists but its current on-disk content
+    was never seen by this session (no matching hashline snapshot), else None.
+    Matching is by content hash, so mtime churn without a content change does
+    not trip the guard, and the session's own writes count as reads.
+    """
+    abspath = _os.path.abspath(path)
+    if not _os.path.exists(abspath):
+        return None
+    with open(abspath, errors="replace") as f:
+        raw_text = f.read()
+    _bom, text = _hashline_strip_bom(raw_text)
+    live_tag = _hashline_compute_tag(_hashline_normalize_to_lf(text))
+    history = _hashline_snapshots.get(_hashline_canonical_path(path))
+    if not history:
+        return (
+            "Error: %s exists but has not been read in this session; "
+            "call read_file(%r) first, then retry." % (path, path)
+        )
+    if any(snapshot["tag"] == live_tag for snapshot in history):
+        return None
+    return (
+        "Error: %s changed on disk since it was last read; re-read it with "
+        "read_file(%r, fresh=True), rebase the change on the current content, "
+        "then retry." % (path, path)
+    )
+
+
 @_tool
 def write_file(path, content):
+    err = _edit_precondition(path)
+    if err is not None:
+        return err
     parent = _os.path.dirname(_os.path.abspath(path))
     if parent:
         _os.makedirs(parent, exist_ok=True)
@@ -142,6 +179,9 @@ def edit_file(path=None, old=None, new=None, replace_all=False, patch=None):
             return "\n\n".join(rendered)
         except Exception as e:
             return "Error: %s" % e
+    err = _edit_precondition(path)
+    if err is not None:
+        return err
     with open(path, errors="replace") as f:
         content = f.read()
     count = content.count(old)

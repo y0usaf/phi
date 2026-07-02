@@ -100,7 +100,7 @@ async fn write_file_overwrite_returns_diff() {
 
     let r = repl
         .exec(
-            &format!("print(write_file({path:?}, 'alpha\\ngamma\\n'))"),
+            &format!("read_file({path:?})\nprint(write_file({path:?}, 'alpha\\ngamma\\n'))"),
             EXEC_TIMEOUT,
         )
         .await
@@ -770,6 +770,127 @@ print(edit_file(patch=patch))"#
         "should detect noop: {}",
         r.stdout
     );
+    repl.shutdown().await;
+}
+
+// ── read-before-edit guard tests ─────────────────────────────────────────────
+
+#[tokio::test]
+async fn write_file_refuses_overwriting_unread_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("unread.txt");
+    let path = path.to_str().unwrap();
+    std::fs::write(path, "precious\n").unwrap();
+    let (mut repl, _events) = started().await;
+
+    let r = repl
+        .exec(
+            &format!("print(write_file({path:?}, 'clobbered\\n'))"),
+            EXEC_TIMEOUT,
+        )
+        .await
+        .unwrap();
+    assert!(
+        r.stdout.contains("has not been read in this session"),
+        "stdout: {}",
+        r.stdout
+    );
+    assert!(r.stdout.contains("read_file"), "stdout: {}", r.stdout);
+    assert_eq!(std::fs::read_to_string(path).unwrap(), "precious\n");
+    repl.shutdown().await;
+}
+
+#[tokio::test]
+async fn edit_file_refuses_unread_and_stale_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("guarded.txt");
+    let path = path.to_str().unwrap();
+    std::fs::write(path, "alpha\nbeta\n").unwrap();
+    let (mut repl, _events) = started().await;
+
+    // Never read: refused with the read-first message.
+    let r = repl
+        .exec(
+            &format!("print(edit_file({path:?}, 'alpha', 'ALPHA'))"),
+            EXEC_TIMEOUT,
+        )
+        .await
+        .unwrap();
+    assert!(
+        r.stdout.contains("has not been read in this session"),
+        "stdout: {}",
+        r.stdout
+    );
+
+    // Read, then modified externally: refused with the stale message.
+    let r = repl
+        .exec(
+            &format!(
+                r#"read_file({path:?})
+import builtins
+with builtins.open({path:?}, 'w') as f:
+    f.write('alpha\nCHANGED\n')
+print(edit_file({path:?}, 'alpha', 'ALPHA'))"#
+            ),
+            EXEC_TIMEOUT,
+        )
+        .await
+        .unwrap();
+    assert!(
+        r.stdout.contains("changed on disk since it was last read"),
+        "stdout: {}",
+        r.stdout
+    );
+    assert!(r.stdout.contains("fresh=True"), "stdout: {}", r.stdout);
+    assert_eq!(std::fs::read_to_string(path).unwrap(), "alpha\nCHANGED\n");
+    repl.shutdown().await;
+}
+
+#[tokio::test]
+async fn edit_guard_ignores_mtime_touch_with_identical_content() {
+    // Rewriting the same bytes advances mtime but must not trip the guard
+    // (content-hash matching, not mtime comparison).
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("touched.txt");
+    let path = path.to_str().unwrap();
+    std::fs::write(path, "alpha\nbeta\n").unwrap();
+    let (mut repl, _events) = started().await;
+
+    repl.exec(&format!("read_file({path:?})"), EXEC_TIMEOUT)
+        .await
+        .unwrap();
+    std::fs::write(path, "alpha\nbeta\n").unwrap();
+
+    let r = repl
+        .exec(
+            &format!("print(edit_file({path:?}, 'beta', 'gamma'))"),
+            EXEC_TIMEOUT,
+        )
+        .await
+        .unwrap();
+    assert!(r.stdout.contains("Replaced 1"), "stdout: {}", r.stdout);
+    repl.shutdown().await;
+}
+
+#[tokio::test]
+async fn raw_read_satisfies_read_before_edit() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("raw.txt");
+    let path = path.to_str().unwrap();
+    std::fs::write(path, "alpha\nbeta\n").unwrap();
+    let (mut repl, _events) = started().await;
+
+    let r = repl
+        .exec(
+            &format!(
+                "read_file({path:?}, raw=True)\nprint(write_file({path:?}, 'rewritten\\n'))"
+            ),
+            EXEC_TIMEOUT,
+        )
+        .await
+        .unwrap();
+    assert!(r.stdout.contains("Wrote"), "stdout: {}", r.stdout);
+    assert_eq!(std::fs::read_to_string(path).unwrap(), "rewritten\n");
     repl.shutdown().await;
 }
 

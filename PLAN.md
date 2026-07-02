@@ -263,12 +263,21 @@ API (`phi-ext`/`phi-lua`/`phi-event`), never bypass it.
       `resolve_project_trust` in `session_builder` (stdin prompt in
       standalone TUI, untrusted-with-notice in mux/one-shot), and a
       `/trust [revoke]` builtin command via `UiAction::TrustProject`.
-- [ ] **4.2 Read-before-edit enforcement.** `edit_file`/`write_file` in the
+- [x] **4.2 Read-before-edit enforcement.** `edit_file`/`write_file` in the
       prelude refuse to touch a file the session hasn't read (or that changed
       on disk since the read — mtime/size already tracked by `file_ops.py`'s
       cache). Distinct, actionable error messages that teach the model the
       recovery path. (Reference: claude-code `FileEditTool`, error codes 6/7,
       including the "mtime advanced but content identical" false-positive guard.)
+      *Landed as:* `_edit_precondition` in `file_ops.py`, gating `write_file`
+      (existing files only) and `edit_file`'s old/new mode; the patch mode was
+      already gated by hashline snapshot tags. The guard matches by content
+      hash against the hashline snapshot store rather than the read cache's
+      mtime/size, so the "mtime advanced but content identical" guard falls
+      out for free, and the session's own writes count as reads. Two distinct
+      errors: never-read → "call read_file(path) first, then retry"; stale →
+      "re-read with read_file(path, fresh=True), rebase the change, then
+      retry". `read_file(raw=True)` now records a snapshot so raw reads count.
 - [ ] **4.3 Subcall result spill.** Port upstream rlm's `SubagentResult`
       spill-to-tmp-file: subagent/`llm_query` results over ~50K chars get
       written to a tmp file; the REPL value carries a preview + path + full
