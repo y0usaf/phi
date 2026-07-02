@@ -30,6 +30,39 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_appends_never_glue_records() {
+        // Two handles appending to the same log (the multi-process race
+        // that historically glued `{..}{..}` onto one line): every record
+        // must land whole on its own line.
+        let tmp = tempfile::tempdir().unwrap();
+        let mut store = store_in(tmp.path());
+        store.append(Role::User, "seed").unwrap();
+        let path = store.path().to_owned();
+
+        let mut second = SessionStore::load(&path).unwrap();
+        let writer = std::thread::spawn(move || {
+            for i in 0..200 {
+                second.append(Role::Assistant, &format!("b{i}")).unwrap();
+            }
+        });
+        for i in 0..200 {
+            store.append(Role::User, &format!("a{i}")).unwrap();
+        }
+        writer.join().unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        let mut messages = 0;
+        for line in content.lines().filter(|l| !l.trim().is_empty()) {
+            let value: serde_json::Value = serde_json::from_str(line)
+                .expect("every appended record must land whole on its own line");
+            if value["type"] == "message" {
+                messages += 1;
+            }
+        }
+        assert_eq!(messages, 401);
+    }
+
+    #[test]
     fn append_load_roundtrip_preserves_branch() {
         let tmp = tempfile::tempdir().unwrap();
         let mut store = store_in(tmp.path());
@@ -757,7 +790,11 @@ mod tests {
 
         let (exchanges, pending) = store.branch_restore();
         assert!(pending.is_empty());
-        assert_eq!(exchanges.len(), 2, "interrupted exchange must not be dropped");
+        assert_eq!(
+            exchanges.len(),
+            2,
+            "interrupted exchange must not be dropped"
+        );
         assert_eq!(exchanges[0].prompt, "q1");
         assert_eq!(exchanges[0].response, "a1");
         // The interrupted exchange: prompt preserved, repls preserved,

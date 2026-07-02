@@ -6,8 +6,10 @@ use serde_json::Value;
 use std::fs;
 
 fn message(timestamp: &str, model: &str, input: u64, output: u64, cost: f64) -> String {
+    // Id derived from the arguments: identical fixture lines share an id
+    // (and dedupe as copies of one message), distinct ones don't.
     format!(
-        r#"{{"type":"message","id":"x","parent_id":null,"timestamp":"{timestamp}","role":"assistant","text":"hi","usage":{{"input":{input},"output":{output},"cache_read":10,"cache_write":20,"cost_total":{cost},"model":"{model}"}}}}"#
+        r#"{{"type":"message","id":"{timestamp}-{model}-{input}","parent_id":null,"timestamp":"{timestamp}","role":"assistant","text":"hi","usage":{{"input":{input},"output":{output},"cache_read":10,"cache_write":20,"cost_total":{cost},"model":"{model}"}}}}"#
     )
 }
 
@@ -22,6 +24,8 @@ fn usage_entry_parses_phi_session_shape() {
     ))
     .unwrap();
     let entry = usage_entries_from_json(&value, &jiff::tz::TimeZone::UTC)
+        .unwrap()
+        .entries
         .pop()
         .unwrap();
     assert_eq!(entry.date, "2026-01-01");
@@ -38,12 +42,12 @@ fn usage_entry_rejects_user_and_usage_less_entries() {
             r#"{"type":"message","id":"x","timestamp":"2026-01-01T00:00:01Z","role":"user","text":"hi"}"#,
         )
         .unwrap();
-    assert!(usage_entries_from_json(&user, &jiff::tz::TimeZone::UTC).is_empty());
+    assert!(usage_entries_from_json(&user, &jiff::tz::TimeZone::UTC).is_none());
     let no_usage: Value = serde_json::from_str(
             r#"{"type":"message","id":"x","timestamp":"2026-01-01T00:00:01Z","role":"assistant","text":"hi"}"#,
         )
         .unwrap();
-    assert!(usage_entries_from_json(&no_usage, &jiff::tz::TimeZone::UTC).is_empty());
+    assert!(usage_entries_from_json(&no_usage, &jiff::tz::TimeZone::UTC).is_none());
 }
 
 #[test]
@@ -53,7 +57,9 @@ fn usage_entries_expand_per_model_breakdowns() {
         )
         .unwrap();
 
-    let entries = usage_entries_from_json(&value, &jiff::tz::TimeZone::UTC);
+    let entries = usage_entries_from_json(&value, &jiff::tz::TimeZone::UTC)
+        .unwrap()
+        .entries;
 
     assert_eq!(entries.len(), 2);
     assert_eq!(entries[0].model, "anthropic/claude-sonnet-4");
@@ -138,6 +144,117 @@ fn report_aggregates_by_day_and_model_including_archive_skipping_duplicates() {
         report.days[0].model_breakdowns[0].model_name,
         "claude-sonnet-4"
     );
+}
+
+#[test]
+fn undated_entries_still_count_toward_totals() {
+    // Lines written before the timestamp field existed carry real
+    // tokens/cost; they must land in the "(undated)" bucket, not vanish.
+    let value: Value = serde_json::from_str(
+            r#"{"type":"message","id":"x","role":"assistant","text":"hi","usage":{"input":100,"output":50,"cache_read":10,"cache_write":20,"cost_total":0.05,"model":"model-a"}}"#,
+        )
+        .unwrap();
+
+    let entries = usage_entries_from_json(&value, &jiff::tz::TimeZone::UTC)
+        .unwrap()
+        .entries;
+
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].date, super::loading::UNDATED_LABEL);
+    assert_eq!(entries[0].totals.input_tokens, 100);
+}
+
+#[test]
+fn undated_day_sorts_after_real_dates_in_report() {
+    let tmp = tempfile::tempdir().unwrap();
+    let project = tmp.path().join("--tmp-project--");
+    fs::create_dir_all(&project).unwrap();
+    let lines = [
+        r#"{"type":"message","id":"old","role":"assistant","text":"hi","usage":{"input":1,"output":2,"cache_read":0,"cache_write":0,"cost_total":0.01,"model":"model-a"}}"#.to_owned(),
+        message("2026-01-03T12:00:00Z", "model-a", 100, 50, 0.05),
+    ];
+    fs::write(project.join("a.jsonl"), lines.join("\n")).unwrap();
+
+    let report = load_usage_report_from_path(tmp.path());
+
+    assert_eq!(report.entries, 2);
+    assert_eq!(report.totals.input_tokens, 101);
+    assert_eq!(report.days.len(), 2);
+    assert_eq!(report.days[0].date, "2026-01-03");
+    assert_eq!(report.days[1].date, super::loading::UNDATED_LABEL);
+}
+
+#[test]
+fn partial_breakdown_falls_back_to_combined_total() {
+    // One malformed element in usage_by_model must not silently drop that
+    // model's tokens — the whole breakdown is distrusted and the combined
+    // usage total used instead.
+    let value: Value = serde_json::from_str(
+            r#"{"type":"message","id":"x","timestamp":"2026-01-01T00:00:01Z","role":"assistant","text":"hi","usage":{"input":107,"output":58,"cache_read":1,"cache_write":2,"cost_total":0.06,"model":"__total__"},"usage_by_model":[{"input":100,"output":50,"cache_read":1,"cache_write":2,"cost_total":0.05,"model":"model-a"},{"output":8,"cost_total":0.01,"model":"model-b"}]}"#,
+        )
+        .unwrap();
+
+    let entries = usage_entries_from_json(&value, &jiff::tz::TimeZone::UTC)
+        .unwrap()
+        .entries;
+
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].model, "__total__");
+    assert_eq!(entries[0].totals.input_tokens, 107);
+    assert_eq!(entries[0].totals.output_tokens, 58);
+}
+
+#[test]
+fn glued_records_on_one_line_are_both_counted() {
+    // A historical multi-process append race produced lines holding two
+    // complete JSON objects back-to-back; both must still be parsed.
+    let tmp = tempfile::tempdir().unwrap();
+    let project = tmp.path().join("--tmp-project--");
+    fs::create_dir_all(&project).unwrap();
+    let glued = format!(
+        "{}{}",
+        message("2026-01-03T12:00:00Z", "model-a", 100, 50, 0.05),
+        r#"{"type":"exchange_end","id":"e1","status":"completed"}"#
+    );
+    let lines = [
+        glued,
+        message("2026-01-04T12:00:00Z", "model-b", 7, 8, 0.01),
+    ];
+    fs::write(project.join("a.jsonl"), lines.join("\n")).unwrap();
+
+    let report = load_usage_report_from_path(tmp.path());
+
+    assert_eq!(report.entries, 2);
+    assert_eq!(report.totals.input_tokens, 107);
+}
+
+#[test]
+fn same_message_id_counts_once_even_when_representations_differ() {
+    // A fork/archive copy of the same turn must dedupe against the
+    // original even if one copy's usage_by_model fully parses while the
+    // other falls back to the combined total (e.g. a corrupted element) —
+    // the dedupe key is the message id, not the parsed representation.
+    let tmp = tempfile::tempdir().unwrap();
+    let project = tmp.path().join("--tmp-project--");
+    fs::create_dir_all(&project).unwrap();
+    fs::write(
+        project.join("a.jsonl"),
+        r#"{"type":"message","id":"dup","timestamp":"2026-01-03T12:00:00Z","role":"assistant","text":"hi","usage":{"input":150,"output":58,"cache_read":0,"cache_write":0,"cost_total":0.06,"model":"__total__"},"usage_by_model":[{"input":100,"output":50,"cache_read":0,"cache_write":0,"cost_total":0.05,"model":"model-a"},{"input":50,"output":8,"cache_read":0,"cache_write":0,"cost_total":0.01,"model":"model-b"}]}"#,
+    )
+    .unwrap();
+    let archive = tmp.path().join("ARCHIVE");
+    fs::create_dir_all(&archive).unwrap();
+    fs::write(
+        archive.join("copy.jsonl"),
+        r#"{"type":"message","id":"dup","timestamp":"2026-01-03T12:00:00Z","role":"assistant","text":"hi","usage":{"input":150,"output":58,"cache_read":0,"cache_write":0,"cost_total":0.06,"model":"__total__"},"usage_by_model":[{"input":100,"output":50,"cache_read":0,"cache_write":0,"cost_total":0.05,"model":"model-a"},{"output":8,"cost_total":0.01,"model":"model-b"}]}"#,
+    )
+    .unwrap();
+
+    let report = load_usage_report_from_path(tmp.path());
+
+    assert_eq!(report.skipped_duplicates, 1);
+    assert_eq!(report.totals.input_tokens, 150);
+    assert_eq!(report.totals.output_tokens, 58);
 }
 
 #[test]

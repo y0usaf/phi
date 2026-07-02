@@ -348,11 +348,9 @@ impl SessionStore {
                 .create_new(true)
                 .write(true)
                 .open(&self.path)?;
-            writeln!(
-                file,
-                "{}",
-                serde_json::to_string(&Line::Session(self.header.clone()))?
-            )?;
+            let mut header_buf = serde_json::to_string(&Line::Session(self.header.clone()))?;
+            header_buf.push('\n');
+            file.write_all(header_buf.as_bytes())?;
             file.sync_data()?;
             if let Ok(dir_handle) = std::fs::File::open(dir) {
                 let _ = dir_handle.sync_data();
@@ -473,6 +471,14 @@ impl SessionStore {
                 )?;
             }
             file.sync_data()?;
+        }
+        // The compacted file is built from this process's in-memory
+        // snapshot; if another process appended to the log since the size
+        // check above, renaming over it would silently drop those records.
+        // Abort instead — compaction is an optimization, losing data isn't.
+        if std::fs::metadata(&self.path)?.len() != bytes.len() as u64 {
+            let _ = std::fs::remove_file(&tmp_path);
+            return Ok(false);
         }
         std::fs::rename(&tmp_path, &self.path)?;
         if let Ok(dir_handle) = std::fs::File::open(dir) {

@@ -62,7 +62,17 @@ pub(super) struct UsageEntry {
     pub(super) date: String,
     pub(super) model: String,
     pub(super) totals: UsageTotals,
+}
+
+/// All usage rows from one assistant message, deduplicated as a unit.
+/// Keying the dedupe on the message (not on each per-model row) keeps a
+/// duplicated message — e.g. a forked or archived copy — counted exactly
+/// once even if the two copies parse into different representations
+/// (full `usage_by_model` breakdown vs the combined `usage` fallback).
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct MessageUsage {
     pub(super) dedupe_key: String,
+    pub(super) entries: Vec<UsageEntry>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -74,7 +84,7 @@ pub(super) struct FileCacheKey {
 #[derive(Clone)]
 pub(super) struct CachedUsageEntries {
     pub(super) key: FileCacheKey,
-    pub(super) entries: Arc<[UsageEntry]>,
+    pub(super) entries: Arc<[MessageUsage]>,
 }
 
 /// Instance-scoped usage loader that replaces the former global

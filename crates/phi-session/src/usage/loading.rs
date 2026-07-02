@@ -38,21 +38,23 @@ pub fn load_usage_report_from_path(root: &Path) -> UsageReport {
     let mut by_day = BTreeMap::<String, DayAccumulator>::new();
 
     for file in files {
-        for entry in loader.usage_entries_from_file(&file).iter() {
-            if !processed.insert(entry.dedupe_key.clone()) {
+        for message in loader.usage_entries_from_file(&file).iter() {
+            if !processed.insert(message.dedupe_key.clone()) {
                 report.skipped_duplicates = report.skipped_duplicates.saturating_add(1);
                 continue;
             }
 
-            report.entries = report.entries.saturating_add(1);
-            report.totals.add(&entry.totals);
+            for entry in &message.entries {
+                report.entries = report.entries.saturating_add(1);
+                report.totals.add(&entry.totals);
 
-            let day = by_day.entry(entry.date.clone()).or_default();
-            day.totals.add(&entry.totals);
-            day.models
-                .entry(entry.model.clone())
-                .or_default()
-                .add(&entry.totals);
+                let day = by_day.entry(entry.date.clone()).or_default();
+                day.totals.add(&entry.totals);
+                day.models
+                    .entry(entry.model.clone())
+                    .or_default()
+                    .add(&entry.totals);
+            }
         }
     }
 
@@ -78,11 +80,13 @@ pub fn load_usage_report_from_path(root: &Path) -> UsageReport {
 pub fn session_usage_totals(path: &Path) -> UsageTotals {
     let mut processed = HashSet::new();
     let mut totals = UsageTotals::default();
-    for entry in parse_usage_entries_from_file(path) {
-        if !processed.insert(entry.dedupe_key.clone()) {
+    for message in parse_usage_entries_from_file(path) {
+        if !processed.insert(message.dedupe_key.clone()) {
             continue;
         }
-        totals.add(&entry.totals);
+        for entry in &message.entries {
+            totals.add(&entry.totals);
+        }
     }
     totals
 }
@@ -116,7 +120,7 @@ pub(super) fn file_cache_key(path: &Path) -> Option<FileCacheKey> {
 }
 
 impl UsageLoader {
-    pub(super) fn usage_entries_from_file(&mut self, path: &Path) -> Arc<[UsageEntry]> {
+    pub(super) fn usage_entries_from_file(&mut self, path: &Path) -> Arc<[MessageUsage]> {
         let cache_key = file_cache_key(path);
         if let Some(cache_key) = cache_key.as_ref()
             && let Some(cached) = self
@@ -128,7 +132,7 @@ impl UsageLoader {
             return cached.entries;
         }
 
-        let entries: Arc<[UsageEntry]> = parse_usage_entries_from_file(path).into();
+        let entries: Arc<[MessageUsage]> = parse_usage_entries_from_file(path).into();
         if let Some(cache_key) = cache_key {
             self.cache.insert(
                 path.to_path_buf(),
@@ -142,12 +146,12 @@ impl UsageLoader {
     }
 }
 
-pub(super) fn parse_usage_entries_from_file(path: &Path) -> Vec<UsageEntry> {
+pub(super) fn parse_usage_entries_from_file(path: &Path) -> Vec<MessageUsage> {
     let Ok(file) = fs::File::open(path) else {
         return Vec::new();
     };
     let reader = BufReader::new(file);
-    let mut entries = Vec::new();
+    let mut messages = Vec::new();
 
     for line in reader.lines().map_while(Result::ok) {
         let line = line.trim();
@@ -159,25 +163,25 @@ pub(super) fn parse_usage_entries_from_file(path: &Path) -> Vec<UsageEntry> {
         // line is still counted, stopping at the first malformed one.
         let mut values = serde_json::Deserializer::from_str(line).into_iter::<Value>();
         while let Some(Ok(value)) = values.next() {
-            entries.extend(usage_entries_from_json(
+            messages.extend(usage_entries_from_json(
                 &value,
                 &jiff::tz::TimeZone::system(),
             ));
         }
     }
 
-    entries
+    messages
 }
 
 pub(crate) fn usage_entries_from_json(
     value: &Value,
     time_zone: &jiff::tz::TimeZone,
-) -> Vec<UsageEntry> {
+) -> Option<MessageUsage> {
     if value.get("type").and_then(Value::as_str) != Some("message") {
-        return Vec::new();
+        return None;
     }
     if value.get("role").and_then(Value::as_str) != Some("assistant") {
-        return Vec::new();
+        return None;
     }
 
     let timestamp = value
@@ -193,27 +197,54 @@ pub(crate) fn usage_entries_from_json(
         None => UNDATED_LABEL.to_owned(),
     };
 
-    let source_id = value.get("id").and_then(Value::as_str);
-
     let raw_breakdowns = value.get("usage_by_model").and_then(Value::as_array);
     let usage_by_model = raw_breakdowns
         .into_iter()
         .flatten()
-        .filter_map(|usage| usage_entry_from_json_usage(timestamp, &date, source_id, usage))
+        .filter_map(|usage| usage_entry_from_json_usage(timestamp, &date, usage))
         .collect::<Vec<_>>();
 
     // Use the breakdown only when every element parsed: a partial parse
     // would silently under-count the turn, so fall back to the combined
     // `usage` total instead.
-    if raw_breakdowns.is_some_and(|raw| !raw.is_empty() && raw.len() == usage_by_model.len()) {
-        return usage_by_model;
+    let entries =
+        if raw_breakdowns.is_some_and(|raw| !raw.is_empty() && raw.len() == usage_by_model.len()) {
+            usage_by_model
+        } else {
+            value
+                .get("usage")
+                .and_then(|usage| usage_entry_from_json_usage(timestamp, &date, usage))
+                .into_iter()
+                .collect()
+        };
+    if entries.is_empty() {
+        return None;
     }
 
-    value
-        .get("usage")
-        .and_then(|usage| usage_entry_from_json_usage(timestamp, &date, source_id, usage))
-        .into_iter()
-        .collect()
+    // Message-level dedupe key: the message id when present (duplicate ids
+    // across files are fork/archive copies of the same turn, whatever
+    // representation each copy parses into), else a content fingerprint of
+    // the first row.
+    let dedupe_key = match value.get("id").and_then(Value::as_str) {
+        Some(id) => id.to_owned(),
+        None => {
+            let first = &entries[0];
+            format!(
+                "{}\0{}\0{}\0{}\0{}\0{}",
+                first.timestamp_ms,
+                first.model,
+                first.totals.input_tokens,
+                first.totals.output_tokens,
+                first.totals.cache_creation_tokens,
+                first.totals.cache_read_tokens
+            )
+        }
+    };
+
+    Some(MessageUsage {
+        dedupe_key,
+        entries,
+    })
 }
 
 /// Day-bucket label for entries whose line predates the timestamp field.
@@ -222,7 +253,6 @@ pub const UNDATED_LABEL: &str = "(undated)";
 pub(super) fn usage_entry_from_json_usage(
     timestamp: Option<jiff::Timestamp>,
     date: &str,
-    source_id: Option<&str>,
     usage: &Value,
 ) -> Option<UsageEntry> {
     let input_tokens = number_as_u64(usage.get("input")?)?;
@@ -242,16 +272,8 @@ pub(super) fn usage_entry_from_json_usage(
         .unwrap_or("unknown")
         .to_owned();
 
-    let timestamp_ms = timestamp.map(|ts| ts.as_millisecond()).unwrap_or(0);
-    let dedupe_key = match source_id {
-        Some(id) => format!("{id}\0{model}"),
-        None => format!(
-            "{timestamp_ms}\0{model}\0{input_tokens}\0{output_tokens}\0{cache_creation_tokens}\0{cache_read_tokens}"
-        ),
-    };
-
     Some(UsageEntry {
-        timestamp_ms,
+        timestamp_ms: timestamp.map(|ts| ts.as_millisecond()).unwrap_or(0),
         date: date.to_owned(),
         model,
         totals: UsageTotals {
@@ -261,7 +283,6 @@ pub(super) fn usage_entry_from_json_usage(
             cache_read_tokens,
             total_cost,
         },
-        dedupe_key,
     })
 }
 
