@@ -51,7 +51,7 @@ loop — upstream rlm and pi both keep it in core) and **tool-prelude invariants
   permissions; containerization is the user's sandbox. The `ToolCall`
   interception event lets an extension implement approvals. Exception: project
   trust (WS4.1) — that gates *extension loading* and must work in core.
-- **MCP** — build as an extension (WS5.1); it's the stress test for `register_tool`.
+- **MCP** — build as an extension (WS7.1); it's the stress test for `register_tool`.
 - **LSP, memory systems, hooks-as-config, share/export** — extension territory.
 - **A 3,597-entry model catalog** — see WS3.2.
 
@@ -80,6 +80,64 @@ visual defaults + the Python prelude) while everything else is hardwired:
   `trusted: true` with no handler — a cloned repo's `.phi/` Lua loads unprompted.
   This is below even pi's bar (pi gates project-local extensions behind trust).
 - Hygiene: `crates/phi-builtins/src/prelude/__pycache__/*.pyc` are tracked in git.
+
+### Second audit (2026-07-02) — what the dogfood pass missed
+
+WS1's migrations are real, but they proved the **Rust** extension API, not the
+one users actually get (Lua). The line was drawn correctly; it's enforced
+asymmetrically. Findings, worst first:
+
+- **Lua is a second-class extension surface.** The Lua bridge hardcodes
+  `actions: Vec::new()` for command output
+  (`crates/phi-lua/src/extension/mod.rs:381-384`), so a Lua command can never
+  return a `UiAction` (quit, open picker, switch model, login…). Lua overlays
+  get a fixed "bordered box of text lines" renderer, a fixed Esc/Enter/q key
+  handler not driven by Lua at all, no `handle_scroll`, no payloads, no
+  `OverlayResponder`. **Not one of the builtin commands or overlays migrated
+  in WS1.1/1.2 could be reimplemented as a user extension today.** The Rule's
+  corollary ("the API's test suite is `phi-builtins`") is currently testing an
+  API users can't reach. (→ WS1.6)
+- **The mux `:command` line is the disease WS1.1 cured, unaddressed**: a
+  closed enum + literal string matches (`open`, `archive`, `cleanup`, `usage`,
+  `refresh`, `quit`, `help`, nav aliases — `crates/phi-mux/src/keys/mod.rs:10-51`,
+  dispatched from `app/commands.rs:329-385`), no registry. (→ WS1.7)
+- **Three copies of the hardcoded per-tool-name render table**, not the one
+  WS1.3 names: `phi-session-tui/src/tui/tool_display.rs:139-238`,
+  `phi-app/src/tool_view.rs` (independently written, own bash special-casing),
+  `phi-tui/src/tool_category.rs` (coarse categorizer). Core thereby knows the
+  names of tools that only exist because `phi-builtins/prelude/*.py` defines
+  them. (→ WS1.3, scope corrected)
+- **"Bare core must boot" is unverifiable and false at the Cargo level**:
+  `phi-app`, `phi-session-tui`, and `phi-mux` all hard-depend on
+  `phi-builtins` (plain deps, no feature gate), and the repo has no CI.
+  Deleting the crate is a compile error, not graceful degradation — though
+  the runtime *behavior* mostly degrades correctly (overlay fallbacks,
+  unknown-command errors). (→ WS1.5, made mechanical)
+- **Two plumbed-but-dead APIs falsely signal coverage**:
+  `register_message_renderer` (zero non-test consumers — already known,
+  WS1.3) and `register_shortcut` (`list_shortcuts()` is never called by
+  either frontend, while `phi-session-tui` hardcodes all 18 of its shortcut
+  key checks with no keymap abstraction at all). Wire consumption or delete
+  until needed. (→ WS1.3, WS6.3)
+- **Feature vocabulary baked into the "generic" crate**: `UiAction`
+  (`SwitchModel`/`StartLogin`/`TrustProject`), `PickerKind`,
+  `OVERLAY_USAGE/MODEL/HELP` constants, `ModelPickerPayload`/`HelpPayload` —
+  all in `phi-ext` (`command.rs:46-74`, `overlay_spec.rs:49-51,164-190`).
+  Meanwhile `HostModalKind` (`phi-session-tui/src/tui/mod.rs:144-152`)
+  duplicates the open-overlay-by-name path as a private two-variant side
+  channel between the TUI and mux that no extension can participate in.
+  Every new capability currently costs a phi-ext enum variant plus a match
+  arm in each host. (→ WS1.8, decision needed before WS7)
+- Minor: `Config.skills` (`crates/phi-session/src/config.rs:78-81`) stayed in
+  the persistence crate's config schema after WS1.4 moved the feature to
+  builtins — there's no primitive yet for extension-owned config sections.
+
+What the audit confirmed is *right* (no churn needed): trust gating lives in
+core with only the `/trust` convenience command in builtins (correct
+direction); the prelude-as-core-inside-the-builtins-crate packaging is
+deliberate and consistent with the core table; registration itself is
+genuinely uniform (`Extension`/`ExtensionHost`/`RegistryHost` treat builtins
+and Lua identically — the inequality is in the bridge, not the trait).
 
 ---
 
@@ -126,6 +184,10 @@ API (`phi-ext`/`phi-lua`/`phi-event`), never bypass it.
       in one `apply_action`. Built-ins live in
       `phi-builtins/src/commands.rs`; the TUI has zero hardcoded command
       strings and completion/help are registry-driven.
+      *Caveat (2026-07-02 audit):* this proved the Rust API only. The Lua
+      bridge discards `actions` entirely, so none of these commands is
+      expressible as a user extension — see WS1.6. Stays checked because the
+      migration described here is done; the parity gap is tracked separately.
 - [x] **1.2 Overlays.** Move mux usage/model/help overlays to builtin extensions
       via `register_overlay`. Same drill: gaps in the overlay API get fixed in
       `phi-ext`, not worked around.
@@ -143,6 +205,11 @@ API (`phi-ext`/`phi-lua`/`phi-event`), never bypass it.
       live in `phi-builtins/src/overlays/`, and a build without them degrades
       to status notes / error replies. The archive viewer (with its
       `Restore(PathBuf)` host action) is the only overlay still hardwired.
+      *Caveat (2026-07-02 audit):* Rust-API-only, same as 1.1 — Lua overlays
+      are reduced to a fixed text-box renderer with close-only keys, no
+      payloads, no responder (WS1.6). And `HostModalKind` grew alongside this
+      work as a private TUI↔mux side channel that bypasses the by-name
+      overlay path it duplicates (WS1.8).
 - [ ] **1.3 Themes / spinners / renderers.** Default theme, spinner frames, and
       any special-cased message renderers become `register_theme` /
       `register_spinner` / `register_message_renderer` calls in `phi-builtins`.
@@ -162,10 +229,17 @@ API (`phi-ext`/`phi-lua`/`phi-event`), never bypass it.
             in the API (`MessageRendererSpec`, Lua bridge, registry) but dead —
             zero non-test consumers and no way for an extension to inject a
             custom-typed message. Two real API additions needed: (a) per-tool
-            render hooks so `tool_display.rs`'s hardcoded match on
+            render hooks so the hardcoded match on
             `bash`/`read_file`/`write_file`/`edit_file`/`grep`/`find`/`ls`/
             `repl` becomes registry-driven (pi reference: `registerTool`'s
-            `renderCall`/`renderResult`); (b) a `Custom` transcript-entry
+            `renderCall`/`renderResult`). *Scope corrected by the 2026-07-02
+            audit: there are **three** independent copies of this table, not
+            one — `phi-session-tui/src/tui/tool_display.rs:139-238`,
+            `phi-app/src/tool_view.rs` (one-shot/ndjson renderer, own
+            bash→"Shell"/"Command" special-casing), and
+            `phi-tui/src/tool_category.rs` (summary-card categorizer). All
+            three must consume the same registry or the hook is cosmetic.*
+            (b) a `Custom` transcript-entry
             variant dispatched through `get_message_renderer`, plus a
             `send_message`-style producer. Needs a design decision on how
             extension renderers receive palette/styling (grow
@@ -185,10 +259,61 @@ API (`phi-ext`/`phi-lua`/`phi-event`), never bypass it.
       loaded no extensions at all, so Lua event handlers now apply to
       `phi -p` runs too. Trust gating unchanged (`include_project` flag,
       resolved by the host before construction).
-- [ ] **1.5 Acceptance:** `phi-session-tui` contains zero hardcoded command
-      strings; `phi-mux` contains zero hardwired overlay feature logic;
-      deleting `phi-builtins` from the build leaves a bare-but-functional
-      harness (engine + REPL + plain TUI + mux shell).
+      *Leftover (2026-07-02 audit):* `Config.skills` still lives in
+      `phi-session`'s config schema (`config.rs:78-81`), consumed only by the
+      builtin. Symptom of a missing primitive: extension-owned config
+      sections. Fold into whatever WS1.8 decides, or accept and document.
+- [ ] **1.5 Acceptance (made mechanical, 2026-07-02):** `phi-session-tui`
+      contains zero hardcoded command strings (✓ done); `phi-mux` contains
+      zero hardwired overlay feature logic (✗ archive viewer, `:command`
+      parser — WS1.7); deleting `phi-builtins` from the build leaves a
+      bare-but-functional harness (engine + REPL + plain TUI + mux shell).
+      *Audit finding:* the last clause is currently false at the Cargo level —
+      all three app crates hard-depend on `phi-builtins` with no feature
+      gate, and there is no CI, so the doctrine ("bare core must boot") is
+      prose, not a property. Do this before more migration work:
+      - [ ] Gate builtin *extension registration* behind a cargo feature
+            (default-on). The prelude splice stays unconditional —
+            `phi-builtins/prelude` is core per the table above; if the
+            feature split gets awkward, extract the prelude to its own
+            module/crate rather than gating it.
+      - [ ] Add a builtins-less build to the flake checks so the acceptance
+            criterion is CI-enforced, not re-audited by hand.
+- [ ] **1.6 Lua parity for commands and overlays.** The Lua bridge exposes
+      only a narrow slice of what builtins use: commands can't return
+      `UiAction`s (`phi-lua/src/extension/mod.rs:381-384` hardcodes
+      `actions: Vec::new()`); overlays get a fixed text-box renderer, a fixed
+      Esc/Enter/q handler (Lua has no `handle_key` hook at all), no
+      `handle_scroll`, no payloads, no `OverlayResponder`; Lua-registered
+      shortcuts are no-op stubs ("handled at the TUI layer"). Themes,
+      spinners, tools, providers, message renderers, and the full event
+      surface *are* faithfully bridged — the gap is concentrated in exactly
+      the two capabilities WS1.1/1.2 leaned on. Without this, the third
+      differentiator ("greater extension surface") is only true for people
+      writing Rust in this repo, and the Rule's corollary tests the wrong
+      API. Dogfood test, same method as WS1.1: port one builtin command that
+      returns `UiAction`s and one builtin overlay to Lua; every failure is
+      the work list.
+- [ ] **1.7 Mux `:command` registry.** The mux colon-command line is a closed
+      enum + literal string matches (`phi-mux/src/keys/mod.rs:10-51`) — the
+      exact pattern WS1.1 removed from the inline TUI, missed by the original
+      inventory. Route it through the same `CommandSpec` registry (namespace
+      or context-tag mux-level commands vs session-level ones). The archive
+      viewer overlay (`ui/overlays/archive.rs`, `Restore(PathBuf)` host
+      action, own hardcoded keyset) migrates to `register_overlay` as part of
+      this — it needs whatever host-action mechanism WS1.8 lands.
+- [ ] **1.8 Decide the `UiAction` vocabulary stance (before WS7).** Every
+      host effect is a feature-named variant in `phi-ext` (`SwitchModel`,
+      `StartLogin`, `TrustProject`, `PickerKind::…`) interpreted by a match
+      arm in each host — extensions cannot define new host effects, and
+      `HostModalKind` grew as a parallel private channel for the same job.
+      Decision to make deliberately, not by drift: keep the closed enum for
+      genuinely host-owned effects (quit, new-session — declarative actions
+      match the snapshot-in/actions-out doctrine), but add a generic
+      `UiAction::OpenOverlay { name, payload }` escape hatch that subsumes
+      `ShowHelp`, most of `PickerKind`, and `HostModalKind` entirely. WS7.1
+      (MCP) and WS7.2 (approvals) will hit this immediately; settling it
+      first avoids two more rounds of enum growth.
 
 ### WS2 — Prune the surface
 
@@ -331,6 +456,17 @@ finer-grained than zellij's). But:
 - [ ] **6.3** Adopt pi's keybinding discipline: no hardcoded key checks; every
       shortcut is a named, remappable binding (pi forbids this in AGENTS.md —
       copy that rule into ours once bindings are data-driven).
+      *Status (2026-07-02 audit):* `phi-mux` is partway there — navigation
+      actions route through `Keymap::lookup` with Lua `mux.keybinds`
+      overrides, and extension-overlay toggle keys are data-driven; still
+      hardcoded: the literal `':'` that opens the command line and the
+      archive viewer's entire vim-ish keyset. `phi-session-tui` is unstarted:
+      18 literal `KeyCode` checks (esc/ctrl-c/ctrl-l/ctrl-t/ctrl-g/tab/…),
+      no keymap abstraction at all. Related dead API: `register_shortcut` is
+      fully plumbed but `list_shortcuts()` is never called by either
+      frontend — consuming it here is the natural fix (or delete it until
+      this workstream needs it; a registered-but-unconsumed API falsely
+      signals coverage).
 
 ### WS7 — Prove the API: reference extensions (after WS1)
 
@@ -472,8 +608,12 @@ Definition of done for the plan overall:
 
 1. The Rule is in `AGENTS.md` and `phi-builtins` is the largest consumer of the
    extension API.
-2. A bare build without `phi-builtins` still runs (engine + REPL + shells).
+2. A bare build without `phi-builtins` still runs (engine + REPL + shells) —
+   enforced by a flake check (WS1.5), not by prose.
 3. Project-local extensions load only after explicit trust.
 4. The prelude enforces read-before-edit and spills oversized subcall results.
 5. Long sessions auto-compact without losing user messages.
 6. MCP works — as an extension nobody had to modify core for.
+7. A user Lua extension can reimplement a builtin command (including its
+   `UiAction`s) and a builtin overlay without touching core (WS1.6) — the
+   extension API the Rule dogfoods is the one users actually get.
