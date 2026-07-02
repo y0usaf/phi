@@ -123,7 +123,10 @@ impl SessionStore {
                 if !has_content {
                     return None;
                 }
-                let response = exchange.response.map(|e| e.text.clone()).unwrap_or_default();
+                let response = exchange
+                    .response
+                    .map(|e| e.text.clone())
+                    .unwrap_or_default();
                 Some(phi_rlm::RestoredExchange {
                     pre_shell: exchange.pre_shell.into_iter().map(restored).collect(),
                     prompt: exchange.prompt.text.clone(),

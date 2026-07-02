@@ -154,13 +154,16 @@ pub(super) fn parse_usage_entries_from_file(path: &Path) -> Vec<UsageEntry> {
         if line.is_empty() || !line.starts_with('{') {
             continue;
         }
-        let Ok(value) = serde_json::from_str::<Value>(line) else {
-            continue;
-        };
-        entries.extend(usage_entries_from_json(
-            &value,
-            &jiff::tz::TimeZone::system(),
-        ));
+        // A multi-process append race can glue two records onto one line
+        // (`{..}{..}`); stream-deserialize so every whole object on the
+        // line is still counted, stopping at the first malformed one.
+        let mut values = serde_json::Deserializer::from_str(line).into_iter::<Value>();
+        while let Some(Ok(value)) = values.next() {
+            entries.extend(usage_entries_from_json(
+                &value,
+                &jiff::tz::TimeZone::system(),
+            ));
+        }
     }
 
     entries
@@ -177,26 +180,32 @@ pub(crate) fn usage_entries_from_json(
         return Vec::new();
     }
 
-    let Some(timestamp) = value
+    let timestamp = value
         .get("timestamp")
         .and_then(Value::as_str)
-        .and_then(|raw| raw.parse::<jiff::Timestamp>().ok())
-    else {
-        return Vec::new();
+        .and_then(|raw| raw.parse::<jiff::Timestamp>().ok());
+    // Entries from files that predate the timestamp field still carry real
+    // tokens/cost; bucket them under a sentinel date instead of dropping
+    // them so totals stay complete. The sentinel sorts after `YYYY-MM-DD`
+    // dates in the descending day report.
+    let date = match timestamp {
+        Some(timestamp) => timestamp.to_zoned(time_zone.clone()).date().to_string(),
+        None => UNDATED_LABEL.to_owned(),
     };
-    let date = timestamp.to_zoned(time_zone.clone()).date().to_string();
 
     let source_id = value.get("id").and_then(Value::as_str);
 
-    let usage_by_model = value
-        .get("usage_by_model")
-        .and_then(Value::as_array)
+    let raw_breakdowns = value.get("usage_by_model").and_then(Value::as_array);
+    let usage_by_model = raw_breakdowns
         .into_iter()
         .flatten()
         .filter_map(|usage| usage_entry_from_json_usage(timestamp, &date, source_id, usage))
         .collect::<Vec<_>>();
 
-    if !usage_by_model.is_empty() {
+    // Use the breakdown only when every element parsed: a partial parse
+    // would silently under-count the turn, so fall back to the combined
+    // `usage` total instead.
+    if raw_breakdowns.is_some_and(|raw| !raw.is_empty() && raw.len() == usage_by_model.len()) {
         return usage_by_model;
     }
 
@@ -207,8 +216,11 @@ pub(crate) fn usage_entries_from_json(
         .collect()
 }
 
+/// Day-bucket label for entries whose line predates the timestamp field.
+pub const UNDATED_LABEL: &str = "(undated)";
+
 pub(super) fn usage_entry_from_json_usage(
-    timestamp: jiff::Timestamp,
+    timestamp: Option<jiff::Timestamp>,
     date: &str,
     source_id: Option<&str>,
     usage: &Value,
@@ -230,21 +242,16 @@ pub(super) fn usage_entry_from_json_usage(
         .unwrap_or("unknown")
         .to_owned();
 
+    let timestamp_ms = timestamp.map(|ts| ts.as_millisecond()).unwrap_or(0);
     let dedupe_key = match source_id {
         Some(id) => format!("{id}\0{model}"),
         None => format!(
-            "{}\0{}\0{}\0{}\0{}\0{}",
-            timestamp.as_millisecond(),
-            model,
-            input_tokens,
-            output_tokens,
-            cache_creation_tokens,
-            cache_read_tokens
+            "{timestamp_ms}\0{model}\0{input_tokens}\0{output_tokens}\0{cache_creation_tokens}\0{cache_read_tokens}"
         ),
     };
 
     Some(UsageEntry {
-        timestamp_ms: timestamp.as_millisecond(),
+        timestamp_ms,
         date: date.to_owned(),
         model,
         totals: UsageTotals {

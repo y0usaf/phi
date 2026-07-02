@@ -84,20 +84,26 @@ impl SessionStore {
                 continue;
             }
             // Skip malformed lines (pi-style) so one bad write doesn't lose
-            // the whole session.
-            match serde_json::from_str::<Line>(line) {
-                Ok(Line::Session(h)) if header.is_none() => header = Some(h),
-                Ok(Line::Message(entry)) => {
-                    leaf = Some(entry.id.clone());
-                    entries.push(entry);
+            // the whole session. Stream-deserialize each line: a historical
+            // multi-process append race glued two records onto one line
+            // (`{..}{..}`), and both must still load; parsing stops at the
+            // first malformed record on the line.
+            let mut records = serde_json::Deserializer::from_str(line).into_iter::<Line>();
+            while let Some(Ok(record)) = records.next() {
+                match record {
+                    Line::Session(h) if header.is_none() => header = Some(h),
+                    Line::Message(entry) => {
+                        leaf = Some(entry.id.clone());
+                        entries.push(entry);
+                    }
+                    Line::Repl(repl) => repls.push(repl),
+                    Line::Leaf(record) => leaf = record.id,
+                    Line::ExchangeStart(start) => open_exchange = Some(start.id),
+                    Line::ExchangeEnd(end) if open_exchange.as_deref() == Some(end.id.as_str()) => {
+                        open_exchange = None;
+                    }
+                    _ => {}
                 }
-                Ok(Line::Repl(repl)) => repls.push(repl),
-                Ok(Line::Leaf(record)) => leaf = record.id,
-                Ok(Line::ExchangeStart(start)) => open_exchange = Some(start.id),
-                Ok(Line::ExchangeEnd(end)) if open_exchange.as_deref() == Some(end.id.as_str()) => {
-                    open_exchange = None;
-                }
-                _ => {}
             }
         }
         let header = header
@@ -354,7 +360,14 @@ impl SessionStore {
             self.persisted = true;
         }
         let mut file = std::fs::OpenOptions::new().append(true).open(&self.path)?;
-        writeln!(file, "{}", serde_json::to_string(line)?)?;
+        // One buffer, one write: `writeln!` issues separate syscalls for
+        // the JSON and the trailing newline, and two processes appending
+        // to the same session file can interleave between them, gluing
+        // two records onto one line. A single O_APPEND write keeps each
+        // record atomic on its own line.
+        let mut buf = serde_json::to_string(line)?;
+        buf.push('\n');
+        file.write_all(buf.as_bytes())?;
         // Tiered durability: turn boundaries and branch navigation are the
         // milestones a resume depends on, so `ExchangeEnd` and `Leaf` fsync
         // — and an fsync flushes every earlier line of the turn with them.
