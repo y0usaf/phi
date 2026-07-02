@@ -1503,7 +1503,10 @@ answer['ready'] = True
     session.restore_session(&exchanges, &[]).await.unwrap();
 
     // After restore, contexts should be 2 (context_0 = payload, context_1 = restored prompt)
-    assert_eq!(session.contexts, 2, "contexts counter must advance past restored exchanges");
+    assert_eq!(
+        session.contexts, 2,
+        "contexts counter must advance past restored exchanges"
+    );
 
     // The next live send should see context_1 (restored prompt) and
     // create context_2 (the new prompt), not overwrite context_1.
@@ -1517,8 +1520,10 @@ answer['ready'] = True
         .iter()
         .map(|m| m.content.clone())
         .collect::<Vec<_>>()
-        .join("
-");
+        .join(
+            "
+",
+        );
     assert!(
         joined.contains("3 contexts available"),
         "should advertise 3 contexts after restore + new send, got: {joined}"
@@ -1558,7 +1563,10 @@ answer['ready'] = True
     session.restore_session(&exchanges, &[]).await.unwrap();
 
     // The exchange counter must have advanced despite no response.
-    assert_eq!(session.exchanges, 1, "interrupted exchange must still be restored as history_0");
+    assert_eq!(
+        session.exchanges, 1,
+        "interrupted exchange must still be restored as history_0"
+    );
 
     // history_0 should exist and contain the user prompt as the first message.
     let result = session.send("check history", &cancel).await;
@@ -1570,4 +1578,101 @@ answer['ready'] = True
     );
 
     session.shutdown().await;
+}
+
+#[tokio::test]
+async fn strict_policy_ignores_task_complete_token() {
+    // Under ProsePolicy::Strict, the <task_complete output="..."/> token is
+    // ignored: the model must submit via the answer dict. The prose turn is
+    // banked and a strict nudge is injected; the model then complies.
+    let root = Arc::new(ScriptedLm::new(
+        "root-model",
+        &[
+            "Done. <task_complete output=\"not accepted\"/>",
+            "Done again. <task_complete output=\"still not accepted\"/>",
+            "```repl\nanswer['content'] = 'via answer dict'\nanswer['ready'] = True\n```",
+        ],
+    ));
+    let config = RlmConfig {
+        prose_policy: ProsePolicy::Strict,
+        ..RlmConfig::default()
+    };
+    let engine = rlm(config, root.clone(), quiet_sub());
+    let result = engine
+        .completion(
+            ContextPayload::Str("ctx".into()),
+            Some("What is the answer?"),
+            &CancellationToken::new(),
+        )
+        .await;
+    assert_eq!(result.stop, StopCause::Answer, "{:?}", result.error);
+    assert_eq!(result.response, "via answer dict");
+    assert_eq!(result.iterations, 3);
+}
+
+#[tokio::test]
+async fn strict_policy_prose_valve_disabled() {
+    // Under ProsePolicy::Strict, MAX_CONSECUTIVE_PROSE (5) consecutive prose
+    // turns do NOT end the run as StopCause::Prose. The strict nudge is
+    // re-injected each prose turn from the threshold on, and the model can
+    // still recover and answer through the answer dict.
+    let root = Arc::new(ScriptedLm::new(
+        "root-model",
+        &[
+            "Thinking.",
+            "Still thinking.",
+            "Almost there.",
+            "Getting closer.",
+            "The answer is 42.",
+            "Really, it is 42.",
+            "```repl\nanswer['content'] = '42'\nanswer['ready'] = True\n```",
+        ],
+    ));
+    let config = RlmConfig {
+        prose_policy: ProsePolicy::Strict,
+        ..RlmConfig::default()
+    };
+    let engine = rlm(config, root.clone(), quiet_sub());
+    let result = engine
+        .completion(
+            ContextPayload::Str("ctx".into()),
+            Some("What is the magic number?"),
+            &CancellationToken::new(),
+        )
+        .await;
+    assert_eq!(result.stop, StopCause::Answer, "{:?}", result.error);
+    assert_eq!(result.response, "42");
+    assert_eq!(result.iterations, 7);
+
+    let prompts = root.recorded_prompts();
+    // The strict nudge appears from the threshold (2 prose turns) onward and
+    // repeats on every subsequent prose turn.
+    let last = prompts.last().unwrap();
+    let nudges = last
+        .iter()
+        .filter(|m| m.role == Role::User && m.content.contains("never accepted as a final answer"))
+        .count();
+    assert!(
+        nudges >= 2,
+        "strict nudge should repeat on every prose turn past the threshold, found {nudges}"
+    );
+}
+
+#[tokio::test]
+async fn strict_policy_system_prompt_declares_tool_only() {
+    let engine = rlm(
+        RlmConfig {
+            prose_policy: ProsePolicy::Strict,
+            ..RlmConfig::default()
+        },
+        quiet_sub(),
+        quiet_sub(),
+    );
+    let prompt = build_system_prompt(&engine.system_prompt_options());
+    assert!(prompt.contains("Tool-only session"));
+    assert!(prompt.contains("message("));
+
+    let lenient = rlm(RlmConfig::default(), quiet_sub(), quiet_sub());
+    let lenient_prompt = build_system_prompt(&lenient.system_prompt_options());
+    assert!(!lenient_prompt.contains("Tool-only session"));
 }

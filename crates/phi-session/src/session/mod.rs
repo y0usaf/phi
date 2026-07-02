@@ -227,6 +227,7 @@ mod tests {
                     error: None,
                     duration_secs: 0.2,
                     depth: 0,
+                    usage: None,
                 }],
             })
             .unwrap();
@@ -295,6 +296,7 @@ mod tests {
                     error: None,
                     duration_secs: 0.3,
                     depth: 1,
+                    usage: None,
                 }],
             })
             .unwrap();
@@ -370,6 +372,7 @@ mod tests {
                     error: None,
                     duration_secs: 0.2,
                     depth: 1,
+                    usage: None,
                 }],
             })
             .unwrap();

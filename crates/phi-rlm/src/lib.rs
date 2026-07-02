@@ -27,7 +27,7 @@ pub(crate) mod provider;
 pub(crate) mod session;
 
 // Flat re-exports for the public API.
-pub use config::{LimitKind, RlmCompletion, RlmConfig, RlmEvent, StopCause};
+pub use config::{LimitKind, ProsePolicy, RlmCompletion, RlmConfig, RlmEvent, StopCause};
 pub use engine::{
     HarnessError, HarnessPhase, PhiHarness, RestoredExchange, RestoredRepl, RestoredSubcall, Rlm,
 };

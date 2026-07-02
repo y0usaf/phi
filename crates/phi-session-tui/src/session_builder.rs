@@ -133,6 +133,11 @@ async fn build_runtime(cwd: &Path) -> Result<Arc<phi_ext::AppRuntime>> {
     Ok(runtime)
 }
 
+/// Parse the settings-level prose policy string, falling back to lenient.
+fn prose_policy(settings: &Settings) -> phi_rlm::ProsePolicy {
+    settings.prose_policy.parse().unwrap_or_default()
+}
+
 /// Build RlmConfig from resolved settings, prompt overrides, and environment info.
 fn build_rlm_config(cwd: &Path, settings: &Settings, runtime: &phi_ext::AppRuntime) -> RlmConfig {
     let ext_stubs = runtime.extension_prelude_stubs();
@@ -149,6 +154,7 @@ fn build_rlm_config(cwd: &Path, settings: &Settings, runtime: &phi_ext::AppRunti
         max_rlm_depth: settings.max_rlm_depth,
         max_iterations: settings.max_iterations,
         max_concurrent_subcalls: settings.max_concurrent_subcalls,
+        prose_policy: prose_policy(settings),
         custom_system_prompt: prompt_override,
         append_system_prompt: append_prompt,
         setup_code: Some(setup_code),

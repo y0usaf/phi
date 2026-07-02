@@ -96,6 +96,12 @@ def _tool_event(phase, name, call_id, fields=None):
     _send(frame)
 
 
+def _message(text):
+    """Send a chat message to the user immediately, without ending the run.
+    Fire-and-forget: the host renders it as an assistant message."""
+    _send({"type": "message", "text": str(text)})
+
+
 def _make_host_fn(name):
     def shim(*args, **kwargs):
         try:
@@ -168,6 +174,7 @@ class Env:
             "job_status": self._job_status,
             "job_output": self._job_output,
             "__phi_tool_event__": _tool_event,
+            "message": _message,
             "_subcall": _subcall,
         }
         self.locals = {"answer": _AnswerDict(self._capture_answer)}

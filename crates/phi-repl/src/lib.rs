@@ -141,6 +141,10 @@ pub trait SubcallHandler: Send + Sync {
 
     /// Observe in-env tool activity. Default: ignored.
     fn notify_tool(&self, _event: ToolEvent) {}
+
+    /// Observe a chat message sent from REPL code via `message(...)`.
+    /// Fire-and-forget, display-only. Default: ignored.
+    fn notify_message(&self, _text: String) {}
 }
 
 #[async_trait]

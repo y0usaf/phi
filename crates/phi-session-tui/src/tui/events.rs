@@ -613,6 +613,7 @@ impl Ui {
                 depth: 0, delta, ..
             } => self.handle_root_thinking_delta(delta),
             RlmEvent::RootText { depth: 0, text, .. } => self.handle_root_text(text),
+            RlmEvent::Message { depth: 0, text } => self.handle_message(text),
             RlmEvent::CodeExecStart { depth, code, .. } => self.handle_code_exec_start(depth, code),
             RlmEvent::CodeExecEnd {
                 depth,
@@ -647,7 +648,16 @@ impl Ui {
                 result,
                 duration,
                 error,
-            } => self.handle_subcall_end(depth, model, result_preview, result, duration, error),
+                usage,
+            } => self.handle_subcall_end(
+                depth,
+                model,
+                result_preview,
+                result,
+                duration,
+                error,
+                usage,
+            ),
             RlmEvent::RunEnd {
                 depth,
                 stop,
@@ -748,6 +758,15 @@ impl Ui {
         self.push_prose(&source);
         self.stream.clear();
         self.streamed = false;
+    }
+
+    /// Chat message sent from REPL code via `message(...)`: render it as an
+    /// assistant prose card immediately, mid-run, without ending the turn.
+    fn handle_message(&mut self, text: String) {
+        if text.trim().is_empty() {
+            return;
+        }
+        self.push_prose(&text);
     }
 
     fn handle_code_exec_start(&mut self, depth: usize, code: String) {
@@ -1006,6 +1025,7 @@ impl Ui {
         result: Option<String>,
         duration: Duration,
         error: Option<String>,
+        usage: Option<phi_ai::Usage>,
     ) {
         let open = self
             .open_subcall_rows
@@ -1025,6 +1045,14 @@ impl Ui {
                 error: error.clone(),
                 duration_secs: duration.as_secs_f64(),
                 depth,
+                usage: usage.map(|usage| session::SessionUsage {
+                    input: usage.input,
+                    output: usage.output,
+                    cache_read: usage.cache_read,
+                    cache_write: usage.cache_write,
+                    cost_total: usage.cost.total,
+                    model: model.clone(),
+                }),
             });
         }
         // Reuse the label formatted once at `SubcallStart` (stored on

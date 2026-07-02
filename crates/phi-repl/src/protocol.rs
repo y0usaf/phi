@@ -45,6 +45,10 @@ pub(crate) enum DriverFrame {
         content: String,
         ready: bool,
     },
+    /// Fire-and-forget chat message from REPL code via `message(...)`.
+    Message {
+        text: String,
+    },
     /// Fire-and-forget notification that a prelude tool started/finished.
     ToolEvent {
         phase: String,

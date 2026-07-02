@@ -76,7 +76,7 @@ impl EngineSubcalls {
             .handler
             .complete_sub(&prompt, model.as_deref(), &cancel)
             .await;
-        let (outcome, error, result_preview, full_result) = match result {
+        let (outcome, error, result_preview, full_result, usage) = match result {
             Ok(completion) => {
                 let preview = truncate_preview(&completion.text, 240);
                 let full = Some(completion.text.clone());
@@ -85,11 +85,13 @@ impl EngineSubcalls {
                     None,
                     Some(preview),
                     full,
+                    Some(completion.usage),
                 )
             }
             Err(e) => (
                 Err(format!("{kind} query failed - {e}")),
                 Some(e),
+                None,
                 None,
                 None,
             ),
@@ -101,6 +103,7 @@ impl EngineSubcalls {
             result: full_result,
             duration: start.elapsed(),
             error,
+            usage,
         });
         outcome
     }
@@ -233,6 +236,7 @@ impl EngineSubcalls {
             result: full_result,
             duration: start.elapsed(),
             error: completion.error.clone(),
+            usage: Some(completion.usage),
         });
         // Build the structured result dict visible to REPL code. 'ok' is true
         // only when the child stopped cleanly; 'stop' uses the flat string form
@@ -250,6 +254,13 @@ impl EngineSubcalls {
 
 #[async_trait]
 impl SubcallHandler for EngineSubcalls {
+    fn notify_message(&self, text: String) {
+        self.rlm.events.emit(RlmEvent::Message {
+            depth: self.rlm.depth,
+            text,
+        });
+    }
+
     fn notify_tool(&self, event: ToolEvent) {
         let depth = self.rlm.depth;
         match event {

@@ -221,6 +221,9 @@ impl PythonRepl {
                                 };
                                 handler.notify_tool(event);
                             }
+                            DriverFrame::Message { text } => {
+                                handler.notify_message(text);
+                            }
                             DriverFrame::ExecResult { id, .. }
                             | DriverFrame::AnswerState { id, .. } => {
                                 let mut p = pending_for_reader.lock().await;

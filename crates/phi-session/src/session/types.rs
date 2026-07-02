@@ -128,6 +128,15 @@ pub struct SubcallRecord {
     pub duration_secs: f64,
     #[serde(default)]
     pub depth: usize,
+    /// Tokens/cost this subcall consumed (`model` inside mirrors the
+    /// subcall's model). For `subagent` calls it covers the child's whole
+    /// subtree, so deeper records in the same array are already included
+    /// in their ancestors' usage — don't sum across depths. These records
+    /// are attribution detail only: the turn's totals live on the
+    /// assistant `Entry` and already include every subcall, so usage
+    /// reporting must not count these a second time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<SessionUsage>,
 }
 
 /// Result of spilling large output to a tmp file (pi-style spillover).

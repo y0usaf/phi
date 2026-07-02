@@ -14,6 +14,34 @@ use crate::lm_core::UsageBreakdown;
 
 pub(crate) type SavePointFn = dyn Fn(usize) -> Vec<ChatMessage> + Send + Sync;
 
+/// How the engine treats prose-only (block-free) turns.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ProsePolicy {
+    /// Prose turns are tolerated: `<task_complete output="..."/>` is honored
+    /// and the `MAX_CONSECUTIVE_PROSE` valve accepts prose as a final answer.
+    #[default]
+    Lenient,
+    /// Tool-only mode: `<task_complete>` is ignored and prose never becomes
+    /// the final answer via the normal valve. The model must submit through
+    /// `answer['ready'] = True` and can talk to the user via `message(...)`.
+    /// A high last-resort ceiling (`MAX_CONSECUTIVE_PROSE_STRICT`) still
+    /// exists so an uncapped root loop cannot spin forever on pure prose.
+    Strict,
+}
+
+impl std::str::FromStr for ProsePolicy {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "lenient" => Ok(Self::Lenient),
+            "strict" => Ok(Self::Strict),
+            other => Err(format!(
+                "unknown prose policy '{other}' (expected lenient|strict)"
+            )),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct RlmConfig {
     pub max_rlm_depth: usize,
@@ -45,6 +73,8 @@ pub struct RlmConfig {
     /// Discovered skills, injected as an `<available_skills>` block in the
     /// system prompt.
     pub skills: Vec<crate::prompts::Skill>,
+    /// How prose-only turns are handled (lenient default, strict = tool-only).
+    pub prose_policy: ProsePolicy,
 }
 
 impl Default for RlmConfig {
@@ -69,6 +99,7 @@ impl Default for RlmConfig {
             append_system_prompt: None,
             host_fns: Vec::new(),
             skills: Vec::new(),
+            prose_policy: ProsePolicy::default(),
         }
     }
 }
@@ -200,10 +231,23 @@ pub enum RlmEvent {
         #[serde(serialize_with = "duration_secs")]
         duration: Duration,
         error: Option<String>,
+        /// Tokens/cost consumed by this subcall. For `subagent` calls this
+        /// covers the child's entire subtree, so deeper `SubcallEnd` events
+        /// are already included in their ancestors' usage — sum only one
+        /// depth level when aggregating. `None` when the call failed before
+        /// usage was known.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        usage: Option<Usage>,
     },
     AnswerSubmitted {
         depth: usize,
         content: String,
+    },
+    /// Chat message sent from REPL code via `message(...)` — display-only,
+    /// does not end the turn or the run.
+    Message {
+        depth: usize,
+        text: String,
     },
     LimitHit {
         depth: usize,

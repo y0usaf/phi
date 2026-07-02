@@ -2108,6 +2108,7 @@ match1
             result: Some("world".to_owned()),
             duration: Duration::from_millis(200),
             error: None,
+            usage: None,
         });
         ui.handle_rlm_event(RlmEvent::ToolStart {
             depth: 1,

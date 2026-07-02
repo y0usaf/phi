@@ -195,6 +195,9 @@ pub(crate) async fn print_events(
                     }
                 }
             }
+            RlmEvent::Message { text, .. } => {
+                eprintln!("{text}");
+            }
             RlmEvent::AnswerSubmitted { .. } => {
                 if tools.tool_summary && (!pending_tools.is_empty() || repl_count > 0) {
                     print_tool_summary(&pending_tools, repl_count, color);
