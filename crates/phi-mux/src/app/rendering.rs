@@ -3,7 +3,7 @@ use crate::ui::draw_context_impl::MuxDrawContext;
 
 impl MuxApp {
     pub(crate) fn draw(&mut self) {
-        let (cols, rows) = self.size;
+        let (cols, rows) = self.view.size;
         let layout = self.layout();
         let palette = self.palette;
 
@@ -11,13 +11,13 @@ impl MuxApp {
         // dimension change) so the interner survives and dirty tracking is
         // relative to the previous frame. `mem::take` sidesteps the partial
         // borrows of `self` below; the surface is put back at the end.
-        let mut surface = std::mem::take(&mut self.surface);
+        let mut surface = std::mem::take(&mut self.view.surface);
         let want_cols = i32::from(cols);
         let want_rows = i32::from(rows);
         if surface.cols != want_cols || surface.rows != want_rows {
             surface.resize(want_cols, want_rows, palette.fg, palette.bg);
             // New dimensions: previous pane row hashes no longer line up.
-            self.renderer.invalidate();
+            self.view.renderer.invalidate();
         }
 
         // Use the universal animation clock — the single source of truth
@@ -25,25 +25,26 @@ impl MuxApp {
         // see the same `now_ms`, keeping every animated surface in sync.
         let now_ms = self.clock.now_ms();
 
-        let sidebar_rows = build_sidebar_rows(&self.workspace.projects, &self.focus);
+        let sidebar_rows = build_sidebar_rows(&self.workspace.projects, &self.view.focus);
         let visible = layout.sidebar.rows.max(0) as usize;
-        self.sidebar_scroll = ensure_sidebar_selection_visible(
-            self.sidebar_scroll,
-            self.focus.project,
+        self.view.sidebar_scroll = ensure_sidebar_selection_visible(
+            self.view.sidebar_scroll,
+            self.view.focus.project,
             &sidebar_rows,
             visible,
         );
-        let sticky = selected_sidebar_selection_span(self.focus.project, &sidebar_rows)
-            .and_then(|span| sticky_sidebar_anchor_row(self.sidebar_scroll, visible, span));
-        let viewport = sidebar_viewport_items(&sidebar_rows, self.sidebar_scroll, visible, sticky);
+        let sticky = selected_sidebar_selection_span(self.view.focus.project, &sidebar_rows)
+            .and_then(|span| sticky_sidebar_anchor_row(self.view.sidebar_scroll, visible, span));
+        let viewport =
+            sidebar_viewport_items(&sidebar_rows, self.view.sidebar_scroll, visible, sticky);
 
-        let mode = if self.command_line.is_some() {
+        let mode = if self.view.command_line.is_some() {
             MuxMode::Command
         } else {
             MuxMode::Normal
         };
         let chrome = self.chrome();
-        let selection = self.selection.normalized();
+        let selection = self.view.selection.normalized();
 
         let focused_parser = self
             .focused_session()
@@ -74,19 +75,19 @@ impl MuxApp {
         // when it changes so the scrollbar stays accurate without recomputing
         // on every frame if the value hasn't changed.
         let scrollback_total = snapshot.as_ref().map(|s| s.scrollback_total).unwrap_or(0);
-        if scrollback_total > self.cached_scrollback_total {
-            self.cached_scrollback_total = scrollback_total;
+        if scrollback_total > self.view.cached_scrollback_total {
+            self.view.cached_scrollback_total = scrollback_total;
         }
-        let scrollback_total = self.cached_scrollback_total.max(scrollback_total);
+        let scrollback_total = self.view.cached_scrollback_total.max(scrollback_total);
 
         // Alt-screen transition hook (Priority 4): entering/leaving the
         // alternate screen replaces the whole pane, so drop scroll history and
         // force a full repaint to avoid scrolling primary content into history.
         let alt_active = snapshot.as_ref().is_some_and(|s| s.alternate_screen());
-        if alt_active != self.alt_screen_active {
-            self.alt_screen_active = alt_active;
+        if alt_active != self.view.alt_screen_active {
+            self.view.alt_screen_active = alt_active;
             surface.invalidate();
-            self.renderer.invalidate();
+            self.view.renderer.invalidate();
         }
 
         let visual =
@@ -111,7 +112,7 @@ impl MuxApp {
             row: pos.row,
         });
 
-        if let Some(command_line) = &self.command_line {
+        if let Some(command_line) = &self.view.command_line {
             let start_col = command_line_start_col(&layout, i32::from(cols));
             let max_cols = (i32::from(cols) - start_col - 1).max(1);
             let (text, cursor_col) = command_line.visible_text_and_cursor_col(max_cols as usize);
@@ -129,10 +130,10 @@ impl MuxApp {
             });
         }
 
-        if let Some(viewer) = &mut self.archive_viewer {
+        if let Some(viewer) = &mut self.view.archive_viewer {
             render_archive_viewer(&mut surface, viewer, &palette);
             hardware_cursor = None;
-        } else if let Some(active) = &mut self.active_extension_overlay {
+        } else if let Some(active) = &mut self.view.active_extension_overlay {
             let overlay_palette = crate::ui::draw_context_impl::overlay_palette(
                 &palette,
                 self.terminal_colors.background,
@@ -149,12 +150,14 @@ impl MuxApp {
         let render_result = match &self.sink {
             RenderSink::Stdout => {
                 let mut stdout = std::io::stdout();
-                self.renderer
+                self.view
+                    .renderer
                     .render(&mut stdout, &mut surface, term_pane, hardware_cursor)
             }
             RenderSink::Registry(registry) => {
                 let mut buf: Vec<u8> = Vec::with_capacity(16 * 1024);
-                self.renderer
+                self.view
+                    .renderer
                     .render(&mut buf, &mut surface, term_pane, hardware_cursor)
                     .and_then(|()| {
                         let frame = String::from_utf8(buf)
@@ -166,38 +169,38 @@ impl MuxApp {
         };
         match render_result {
             Ok(()) => {
-                self.render_failures = 0;
-                self.renderer_invalidated = false;
+                self.view.render_failures = 0;
+                self.view.renderer_invalidated = false;
             }
             Err(e) => {
-                self.render_failures += 1;
-                if self.render_failures <= 3 {
+                self.view.render_failures += 1;
+                if self.view.render_failures <= 3 {
                     self.set_note(format!("render error: {e}"), StatusNoteKind::Error);
                 }
-                if self.render_failures >= 10 && !self.renderer_invalidated {
+                if self.view.render_failures >= 10 && !self.view.renderer_invalidated {
                     // Persistent render failure — stdout is dead. Invalidate
                     // the renderer so the next attempt is a full repaint
                     // rather than a diff against stale state.
-                    self.renderer.invalidate();
-                    self.renderer_invalidated = true;
+                    self.view.renderer.invalidate();
+                    self.view.renderer_invalidated = true;
                 }
             }
         }
-        self.surface = surface;
+        self.view.surface = surface;
     }
 
     pub(crate) fn chrome(&self) -> Chrome {
         let project = self
             .workspace
             .projects
-            .get(self.focus.project)
+            .get(self.view.focus.project)
             .map(project_sidebar_title)
             .unwrap_or_default();
         let session = self
             .focused_session()
             .map(session_sidebar_title)
             .unwrap_or_default();
-        match &self.note {
+        match &self.view.note {
             Some((text, kind, _)) => Chrome {
                 project,
                 session,

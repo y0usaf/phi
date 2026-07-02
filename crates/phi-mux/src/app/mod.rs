@@ -26,10 +26,9 @@ use super::ui::sidebar::{
 };
 use crate::clipboard::MuxClipboard;
 use crate::driver::{self as driver, MuxChannels, SessionKey};
-use crate::grid::ansi::{AnsiRenderer, HardwareCursor};
-use crate::grid::cell_surface::CellSurface;
+use crate::grid::ansi::HardwareCursor;
 use crate::grid::layout::{CellLayout, SIDEBAR_WIDTH_DEFAULT, compute_cell_layout};
-use crate::grid::selection::{SelectionPoint, TerminalSelection, selected_text};
+use crate::grid::selection::{SelectionPoint, selected_text};
 use crate::grid::theme;
 use crate::keys::{AppAction, KeyStroke, Keymap, KeymapMatch, MuxCommand, parse_command};
 use crate::persisted::{self as persisted, PersistedState};
@@ -51,6 +50,9 @@ mod commands;
 mod input;
 mod rendering;
 mod session;
+mod view;
+
+use view::MuxView;
 
 pub async fn run(shared: SharedResources, mux_config: MuxConfig, cwd: PathBuf) -> Result<()> {
     install_panic_log_hook();
@@ -250,28 +252,17 @@ fn build_app(
     let app = MuxApp {
         shared,
         workspace: ws.workspace,
-        focus: ws.focus,
+        view: MuxView::new(ws.focus, size),
         keymap: Keymap::from_overrides(mux_config.keybinds.as_ref().unwrap_or(&Default::default())),
         sidebar_width: mux_config.sidebar_width.unwrap_or(SIDEBAR_WIDTH_DEFAULT),
-        command_line: None,
-        archive_viewer: None,
         extension_overlays: visual_runtime
             .as_ref()
             .map(|rt| rt.all_overlays().cloned().collect())
             .unwrap_or_default(),
-        active_extension_overlay: None,
-        selection: TerminalSelection::default(),
         clipboard: MuxClipboard::default(),
-        renderer: AnsiRenderer::default(),
-        size,
-        surface: CellSurface::default(),
         palette,
         terminal_colors,
         visual_runtime,
-        alt_screen_active: false,
-        cached_scrollback_total: 0,
-        sidebar_scroll: 0,
-        note: None,
         clock: AnimationClock::with_baseline_keep_alive(),
         channels: MuxChannels {
             status_tx,
@@ -284,8 +275,6 @@ fn build_app(
         last_active_client: 0,
         pending_edits: Vec::new(),
         quit: false,
-        render_failures: 0,
-        renderer_invalidated: false,
     };
     let receivers = MuxReceivers {
         status_rx,
@@ -336,29 +325,22 @@ impl InputSource {
     }
 }
 
+/// The mux core plus (for now) a single view.
+///
+/// Core state — the workspace, session handles, watchers, channels,
+/// persistence, clock — is shared by every attached client. Per-client
+/// presentation state lives in [`MuxView`]; the N-view stage of WS8.2
+/// turns the single `view` field into one per attached client.
 struct MuxApp {
     shared: SharedResources,
     workspace: Workspace,
-    /// This view's selection (focused project + per-project session).
-    /// View state, not workspace state: the seed of the per-client
-    /// `MuxView` split (WS8.2).
-    focus: Focus,
+    /// Per-client view state. Exactly one until views split per client.
+    view: MuxView,
     keymap: Keymap,
     sidebar_width: u16,
-    command_line: Option<CommandLineState>,
-    archive_viewer: Option<ArchiveViewerState>,
     /// Extension-registered overlay specs, cloned from the visual runtime.
     extension_overlays: Vec<OverlaySpec>,
-    /// The currently open extension overlay (if any).
-    active_extension_overlay: Option<ActiveExtensionOverlay>,
-    selection: TerminalSelection,
     clipboard: MuxClipboard,
-    renderer: AnsiRenderer,
-    size: (u16, u16),
-    /// Persistent compositing surface, reused across frames so the
-    /// `StringInterner` isn't rebuilt and text re-interned every frame, and
-    /// so dirty tracking is relative to the previous frame's content.
-    surface: CellSurface,
     /// Resolved mux palette. Derived from the host terminal's OSC colors at
     /// startup; falls back to the built-in Charmtone palette.
     palette: ScenePalette,
@@ -371,16 +353,6 @@ struct MuxApp {
     /// (themes, spinners, thinking expressions, text effects) so the TUI
     /// rendering code can query them during the draw loop.
     visual_runtime: Option<Arc<AppRuntime>>,
-    /// Whether the focused session's screen was in the alternate screen last
-    /// frame; a transition drops scroll history and forces a full repaint.
-    alt_screen_active: bool,
-    /// Cached total scrollback lines for the focused session. Recomputed only
-    /// when a scrollback-affecting event occurs (session switch, new content),
-    /// not every frame — avoiding the set_scrollback(MAX)/restore dance that
-    /// mutates shared vt100 state on every render.
-    cached_scrollback_total: usize,
-    sidebar_scroll: usize,
-    note: Option<(String, StatusNoteKind, Instant)>,
     /// Universal animation clock — single source of truth for all
     /// animation timing (sidebar shimmer, statusbar shimmer, spinner
     /// glyphs, gradient text). Replaces the old `ANIMATION_TICK` constant
@@ -401,8 +373,6 @@ struct MuxApp {
         tokio::sync::oneshot::Sender<std::result::Result<Option<String>, String>>,
     )>,
     quit: bool,
-    render_failures: u32,
-    renderer_invalidated: bool,
 }
 
 impl MuxApp {

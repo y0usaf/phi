@@ -85,7 +85,7 @@ impl MuxApp {
                     for index in changed {
                         let delta = workspace::refresh_project_with_focus(
                             &mut self.workspace,
-                            &mut self.focus,
+                            &mut self.view.focus,
                             index,
                         );
                         notes.extend(delta.archived);
@@ -118,9 +118,9 @@ impl MuxApp {
                     if self.clock.is_ticking() {
                         self.clock.tick();
                     }
-                    if let Some((_, _, at)) = &self.note
+                    if let Some((_, _, at)) = &self.view.note
                         && at.elapsed() > NOTE_TTL {
-                            self.note = None;
+                            self.view.note = None;
                             dirty = true;
                         }
                     // Redraw on tick so animated surfaces (statusbar shimmer,
@@ -151,7 +151,7 @@ impl MuxApp {
                     for index in changed {
                         let delta = workspace::refresh_project_with_focus(
                             &mut self.workspace,
-                            &mut self.focus,
+                            &mut self.view.focus,
                             index,
                         );
                         notes.extend(delta.archived);
@@ -245,7 +245,7 @@ impl MuxApp {
                 self.apply_shared_size();
                 // The newcomer starts from a cleared screen: force a full
                 // repaint so its first frame is self-contained.
-                self.renderer.invalidate();
+                self.view.renderer.invalidate();
             }
             RemoteEvent::Detached { id } => {
                 // Fail any external-editor round-trip parked on this client
@@ -269,7 +269,7 @@ impl MuxApp {
                 }
                 // The editing client's screen was overwritten by $EDITOR;
                 // force a full repaint so it resynchronizes.
-                self.renderer.invalidate();
+                self.view.renderer.invalidate();
             }
             RemoteEvent::ClipboardText { text, .. } => match text {
                 Some(text) if !text.is_empty() => self.forward_to_session(Event::Paste(text)),
@@ -289,7 +289,7 @@ impl MuxApp {
         let Some((cols, rows)) = registry.target_size() else {
             return;
         };
-        if (cols, rows) != self.size {
+        if (cols, rows) != self.view.size {
             self.handle_resize(cols, rows);
             if registry.client_count() > 1 {
                 self.set_note(
@@ -301,7 +301,7 @@ impl MuxApp {
     }
 
     pub(crate) fn layout(&self) -> CellLayout {
-        compute_cell_layout(self.size.0, self.size.1, self.sidebar_width)
+        compute_cell_layout(self.view.size.0, self.view.size.1, self.sidebar_width)
     }
 
     pub(crate) fn pane_size(&self) -> (u16, u16) {
@@ -310,11 +310,11 @@ impl MuxApp {
     }
 
     pub(crate) fn set_note(&mut self, text: impl Into<String>, kind: StatusNoteKind) {
-        self.note = Some((text.into(), kind, Instant::now()));
+        self.view.note = Some((text.into(), kind, Instant::now()));
     }
 
     pub(crate) fn overlay_active(&self) -> bool {
-        self.archive_viewer.is_some() || self.active_extension_overlay.is_some()
+        self.view.archive_viewer.is_some() || self.view.active_extension_overlay.is_some()
     }
 
     /// Sync filesystem watchers to match the current workspace projects.
@@ -341,7 +341,7 @@ impl MuxApp {
             selected_project: self
                 .workspace
                 .projects
-                .get(self.focus.project)
+                .get(self.view.focus.project)
                 .map(|p| p.cwd.display().to_string()),
         };
         state.enqueue_save();
@@ -363,7 +363,7 @@ impl MuxApp {
         if let Some(project_index) = materialized_project {
             let _ = workspace::refresh_project_with_focus(
                 &mut self.workspace,
-                &mut self.focus,
+                &mut self.view.focus,
                 project_index,
             );
         }
@@ -441,16 +441,18 @@ impl MuxApp {
     /// Spawn the focused session's embedded loop if it isn't running yet.
     pub(crate) async fn ensure_focused_session(&mut self) {
         let pane = self.pane_size();
-        let project_index = self.focus.project;
+        let project_index = self.view.focus.project;
         self.workspace.ensure_project_session(project_index);
-        self.focus.clamp_session(&self.workspace, project_index);
+        self.view
+            .focus
+            .clamp_session(&self.workspace, project_index);
         let Some(project) = self.workspace.projects.get(project_index) else {
             return;
         };
         let cwd = project.cwd.clone();
         let Some(session) = project
             .sessions
-            .get(self.focus.selected_session(project_index))
+            .get(self.view.focus.selected_session(project_index))
         else {
             return;
         };
@@ -488,15 +490,15 @@ impl MuxApp {
     }
 
     pub(crate) fn focused_session(&self) -> Option<&workspace::MuxSession> {
-        let project = self.workspace.projects.get(self.focus.project)?;
+        let project = self.workspace.projects.get(self.view.focus.project)?;
         project
             .sessions
-            .get(self.focus.selected_session(self.focus.project))
+            .get(self.view.focus.selected_session(self.view.focus.project))
     }
 
     pub(crate) fn focused_session_mut(&mut self) -> Option<&mut workspace::MuxSession> {
-        let selected = self.focus.selected_session(self.focus.project);
-        let project = self.workspace.projects.get_mut(self.focus.project)?;
+        let selected = self.view.focus.selected_session(self.view.focus.project);
+        let project = self.workspace.projects.get_mut(self.view.focus.project)?;
         project.sessions.get_mut(selected)
     }
 
@@ -514,19 +516,19 @@ impl MuxApp {
     }
 
     pub(crate) fn on_focus_changed(&mut self) {
-        self.selection.clear();
+        self.view.selection.clear();
         if let Some(handle) = self.focused_session().and_then(|s| s.handle.as_ref()) {
             driver::lock_parser(&handle.parser)
                 .screen_mut()
                 .set_scrollback(0);
         }
-        self.cached_scrollback_total = 0;
+        self.view.cached_scrollback_total = 0;
         // The new focused session's content is unrelated to the previous
         // frame's row hashes; drop them so scroll detection can't mistake the
         // session switch for a scroll, and force a clean repaint.
-        self.renderer.invalidate();
-        self.surface.invalidate();
-        self.alt_screen_active = false;
+        self.view.renderer.invalidate();
+        self.view.surface.invalidate();
+        self.view.alt_screen_active = false;
         self.persist_now();
     }
 }

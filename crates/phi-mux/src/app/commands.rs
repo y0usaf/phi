@@ -11,20 +11,21 @@ impl MuxApp {
                     } else {
                         -1
                     };
-                    let current = self.focus.project as i32;
-                    self.focus.project = (current + delta).rem_euclid(count as i32) as usize;
+                    let current = self.view.focus.project as i32;
+                    self.view.focus.project = (current + delta).rem_euclid(count as i32) as usize;
                     self.on_focus_changed();
                     self.ensure_focused_session().await;
                 }
             }
             AppAction::PreviousSession | AppAction::NextSession => {
-                let project_index = self.focus.project;
+                let project_index = self.view.focus.project;
                 let delta: i32 = if action == AppAction::NextSession {
                     1
                 } else {
                     -1
                 };
                 if self
+                    .view
                     .focus
                     .move_visible(&self.workspace, project_index, delta)
                 {
@@ -33,9 +34,9 @@ impl MuxApp {
                 }
             }
             AppAction::NewSession => {
-                let project_index = self.focus.project;
+                let project_index = self.view.focus.project;
                 if let Some(draft) = self.workspace.new_draft(project_index) {
-                    self.focus.set_selected_session(project_index, draft);
+                    self.view.focus.set_selected_session(project_index, draft);
                 }
                 self.on_focus_changed();
                 self.ensure_focused_session().await;
@@ -45,7 +46,7 @@ impl MuxApp {
                 for index in 0..self.workspace.projects.len() {
                     let _ = workspace::refresh_project_with_focus(
                         &mut self.workspace,
-                        &mut self.focus,
+                        &mut self.view.focus,
                         index,
                     );
                 }
@@ -53,11 +54,12 @@ impl MuxApp {
             }
             AppAction::ArchiveSession => self.archive_focused_session().await,
             AppAction::RemoveProject => {
-                let index = self.focus.project;
+                let index = self.view.focus.project;
                 if let Some(project) = self.workspace.projects.get(index) {
                     let title = project_sidebar_title(project);
                     self.workspace.remove_project(index);
-                    self.focus
+                    self.view
+                        .focus
                         .project_removed(index, self.workspace.projects.len());
                     self.sync_watchers();
                     self.set_note(format!("removed {title}"), StatusNoteKind::Ok);
@@ -103,7 +105,7 @@ impl MuxApp {
             return false;
         };
         let state = (spec.init_state)(payload);
-        self.active_extension_overlay = Some(ActiveExtensionOverlay {
+        self.view.active_extension_overlay = Some(ActiveExtensionOverlay {
             name: spec.name.clone(),
             spec,
             state,
@@ -120,11 +122,12 @@ impl MuxApp {
         payload: Option<phi_ext::OverlayPayload>,
     ) {
         if self
+            .view
             .active_extension_overlay
             .as_ref()
             .is_some_and(|active| active.name == name)
         {
-            self.active_extension_overlay = None;
+            self.view.active_extension_overlay = None;
         } else if !self.open_extension_overlay(name, payload) {
             self.set_note(
                 format!("overlay {name} not available"),
@@ -167,22 +170,25 @@ impl MuxApp {
             }
             self.set_note("session restarted", StatusNoteKind::Ok);
         } else {
-            let index = self.focus.project;
-            let _ =
-                workspace::refresh_project_with_focus(&mut self.workspace, &mut self.focus, index);
+            let index = self.view.focus.project;
+            let _ = workspace::refresh_project_with_focus(
+                &mut self.workspace,
+                &mut self.view.focus,
+                index,
+            );
             self.set_note("project rescanned", StatusNoteKind::Ok);
         }
     }
 
     pub(crate) async fn archive_focused_session(&mut self) {
-        let project_index = self.focus.project;
-        let selected = self.focus.selected_session(project_index);
+        let project_index = self.view.focus.project;
+        let selected = self.view.focus.selected_session(project_index);
         if self
             .workspace
             .discard_unmaterialized_draft(project_index, selected)
         {
             if let Some(draft) = self.workspace.new_draft(project_index) {
-                self.focus.set_selected_session(project_index, draft);
+                self.view.focus.set_selected_session(project_index, draft);
             }
             self.set_note("draft deleted", StatusNoteKind::Ok);
             self.on_focus_changed();
@@ -202,18 +208,18 @@ impl MuxApp {
         };
         match workspace::archive_session(&path) {
             Ok(_) => {
-                self.selection.clear();
+                self.view.selection.clear();
                 if let Some(session) = self.focused_session_mut() {
                     session.handle = None;
                     session.store_path = None;
                 }
-                let index = self.focus.project;
+                let index = self.view.focus.project;
                 let _ = workspace::refresh_project_with_focus(
                     &mut self.workspace,
-                    &mut self.focus,
+                    &mut self.view.focus,
                     index,
                 );
-                self.focus.normalize_visible(&self.workspace, index);
+                self.view.focus.normalize_visible(&self.workspace, index);
                 // Local mode only: the daemon has no tty to drain.
                 if self.registry().is_none() {
                     crate::driver::drain_pending_terminal_events();
@@ -232,11 +238,11 @@ impl MuxApp {
     pub(crate) fn restore_archived(&mut self, archived: &std::path::Path) {
         match workspace::restore_session(archived) {
             Ok(target) => {
-                self.archive_viewer = None;
+                self.view.archive_viewer = None;
                 for index in 0..self.workspace.projects.len() {
                     let _ = workspace::refresh_project_with_focus(
                         &mut self.workspace,
-                        &mut self.focus,
+                        &mut self.view.focus,
                         index,
                     );
                 }
@@ -245,7 +251,7 @@ impl MuxApp {
             Err(_error) => {
                 // Restore I/O is copy+delete fallback — the archived file is
                 // still safely in place. Reload the viewer silently.
-                if let Some(viewer) = &mut self.archive_viewer {
+                if let Some(viewer) = &mut self.view.archive_viewer {
                     viewer.reload_sessions();
                 }
             }
@@ -253,7 +259,7 @@ impl MuxApp {
     }
 
     pub(crate) fn copy_selection(&mut self, note_on_empty: bool) {
-        let Some(range) = self.selection.normalized() else {
+        let Some(range) = self.view.selection.normalized() else {
             if note_on_empty {
                 self.set_note("nothing selected", StatusNoteKind::Error);
             }
@@ -303,7 +309,7 @@ impl MuxApp {
                 if path.is_dir() {
                     let path = PathBuf::from(persisted::normalize_path(&path));
                     let index = self.workspace.add_project(path);
-                    self.focus.project = index;
+                    self.view.focus.project = index;
                     self.workspace.ensure_project_session(index);
                     self.sync_watchers();
                     self.on_focus_changed();
@@ -314,7 +320,7 @@ impl MuxApp {
                     );
                 }
             }
-            Ok(MuxCommand::Archive) => self.archive_viewer = Some(ArchiveViewerState::load()),
+            Ok(MuxCommand::Archive) => self.view.archive_viewer = Some(ArchiveViewerState::load()),
             Ok(MuxCommand::Cleanup) => match workspace::cleanup_archive(ARCHIVE_MAX_AGE) {
                 Ok(count) => {
                     self.set_note(format!("{count} archives removed"), StatusNoteKind::Ok);
@@ -393,7 +399,7 @@ impl MuxApp {
                 let result = guard.with_suspended(|| tui::external_editor(&request.text));
                 let _ = phi_tui::crossterm::execute!(stdout, EnableMouseCapture);
                 let _ = request.response_tx.send(result);
-                self.renderer.invalidate();
+                self.view.renderer.invalidate();
             }
             // The daemon has no tty: forward to the client that most
             // recently typed, which runs $EDITOR on its own terminal and
