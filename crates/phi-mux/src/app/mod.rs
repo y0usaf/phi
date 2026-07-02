@@ -16,9 +16,6 @@ use tokio::sync::mpsc;
 
 use super::command_line::{CommandLineEvent, CommandLineState, command_line_start_col};
 use super::ui::overlays::archive::{ArchiveOutcome, ArchiveViewerState, render_archive_viewer};
-use super::ui::overlays::help::{HelpOverlayState, render_help_overlay};
-use super::ui::overlays::model::{ModelOverlayOutcome, ModelOverlayState, render_model_overlay};
-use super::ui::overlays::usage::{UsageOverlayState, render_usage_overlay};
 use super::ui::palette::ScenePalette;
 use super::ui::scene::{Chrome, MuxMode, StatusNoteKind, render_scene, statusline_status};
 use super::ui::screen_snapshot::ScreenSnapshot;
@@ -138,9 +135,6 @@ pub async fn run(shared: SharedResources, mux_config: MuxConfig, cwd: PathBuf) -
         keymap: Keymap::from_overrides(mux_config.keybinds.as_ref().unwrap_or(&Default::default())),
         sidebar_width: mux_config.sidebar_width.unwrap_or(SIDEBAR_WIDTH_DEFAULT),
         command_line: None,
-        help_overlay: None,
-        usage_overlay: None,
-        model_overlay: None,
         archive_viewer: None,
         extension_overlays: visual_runtime
             .as_ref()
@@ -201,9 +195,6 @@ struct MuxApp {
     keymap: Keymap,
     sidebar_width: u16,
     command_line: Option<CommandLineState>,
-    help_overlay: Option<HelpOverlayState>,
-    usage_overlay: Option<UsageOverlayState>,
-    model_overlay: Option<ModelOverlayState>,
     archive_viewer: Option<ArchiveViewerState>,
     /// Extension-registered overlay specs, cloned from the visual runtime.
     extension_overlays: Vec<OverlaySpec>,
@@ -255,11 +246,10 @@ struct MuxApp {
 ///
 /// Holds a reference to the overlay spec (for render + handle_key closures)
 /// and the type-erased state created by the spec's `init_state` factory.
-#[allow(dead_code)]
 pub(crate) struct ActiveExtensionOverlay {
     pub(crate) name: String,
     pub(crate) spec: OverlaySpec,
-    pub(crate) state: std::boxed::Box<dyn std::any::Any + Send + Sync>,
+    pub(crate) state: phi_ext::OverlayState,
 }
 
 /// Panic hook: restore the terminal to cooked mode first (the unwind may
@@ -297,10 +287,15 @@ fn install_panic_log_hook() {
 /// fails, it returns `None` and the mux falls back to its built-in visual
 /// defaults.
 fn build_visual_runtime(cwd: &std::path::Path) -> Option<Arc<AppRuntime>> {
-    let ext_paths = phi_lua::discover_extensions(cwd);
+    // Project-local Lua only loads from an explicitly trusted project; the
+    // mux never prompts, so an undecided project stays gated until the user
+    // runs /trust inside a session.
+    let trusted = !phi_session::trust::has_project_content(cwd)
+        || phi_session::trust::TrustStore::load_default().decision(cwd) == Some(true);
+    let ext_paths = phi_lua::discover_extensions(cwd, trusted);
     let lua_exts = phi_lua::load_extensions(&ext_paths);
 
-    let config_ext_paths = phi_lua::config_extension_paths(cwd);
+    let config_ext_paths = phi_lua::config_extension_paths(cwd, trusted);
     let config_exts = phi_lua::load_extensions(&config_ext_paths);
 
     let mut rt_builder = phi_ext::RuntimeBuilder::new().with_cwd(cwd);

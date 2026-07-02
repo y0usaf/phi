@@ -235,11 +235,7 @@ impl MuxApp {
     }
 
     pub(crate) fn overlay_active(&self) -> bool {
-        self.help_overlay.is_some()
-            || self.usage_overlay.is_some()
-            || self.model_overlay.is_some()
-            || self.archive_viewer.is_some()
-            || self.active_extension_overlay.is_some()
+        self.archive_viewer.is_some() || self.active_extension_overlay.is_some()
     }
 
     /// Sync filesystem watchers to match the current workspace projects.

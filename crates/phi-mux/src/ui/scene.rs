@@ -186,14 +186,8 @@ pub fn render_sidebar(
 
             SidebarRowKind::Session { .. } => {
                 let status = row.status.map(|status| {
-                    let glyph = match status {
-                        SidebarStatusKind::Active => visual.spinner_frame(now_ms),
-                        SidebarStatusKind::Interrupted | SidebarStatusKind::Notification => {
-                            sidebar_status_glyph(status, now_ms).to_string()
-                        }
-                    };
                     (
-                        glyph,
+                        sidebar_status_glyph(status, now_ms, visual),
                         animated_sidebar_status_color(status, palette, now_ms, item.visible_row),
                     )
                 });

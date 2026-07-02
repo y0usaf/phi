@@ -58,28 +58,19 @@ impl MuxApp {
             }
             return;
         }
-        if let Some(model) = &mut self.model_overlay {
-            match model.handle_key(&key, cols, rows) {
-                ModelOverlayOutcome::None => {}
-                ModelOverlayOutcome::Close => self.finish_model_overlay(None),
-                ModelOverlayOutcome::Submit(value) => self.finish_model_overlay(Some(value)),
-            }
-            return;
-        }
-        if let Some(usage) = &mut self.usage_overlay {
-            if usage.handle_key(&key, cols, rows) {
-                self.usage_overlay = None;
-            }
-            return;
-        }
-        if let Some(help) = &mut self.help_overlay {
-            let keymap = self.keymap.clone();
-            if help.handle_key(&key, &keymap, cols, rows) {
-                self.help_overlay = None;
-            }
-            return;
-        }
         if let Some(active) = &mut self.active_extension_overlay {
+            // The overlay's toggle key closes it again.
+            if let Some(stroke) = KeyStroke::from_key_event(&key) {
+                let toggled = active
+                    .spec
+                    .toggle_key
+                    .as_deref()
+                    .is_some_and(|t| KeyStroke::parse(t).is_ok_and(|target| target == stroke));
+                if toggled {
+                    self.active_extension_overlay = None;
+                    return;
+                }
+            }
             let overlay_key = crate::ui::draw_context_impl::key_event_to_overlay_key(&key);
             let outcome = (active.spec.handle_key)(&mut active.state, &overlay_key, cols, rows);
             match outcome {
@@ -135,18 +126,18 @@ impl MuxApp {
         //
         // Toggle keys are parsed as KeyStroke strings (e.g. "ctrl+?") so
         // that modifiers are honoured, unlike the old raw-char matching.
-        if let Some(stroke) = KeyStroke::from_key_event(&key) {
-            if self.active_extension_overlay.is_none() {
-                for spec in &self.extension_overlays {
-                    if KeyStroke::parse(&spec.toggle_key).is_ok_and(|target| target == stroke) {
-                        let name = spec.name.clone();
-                        let state = (spec.init_state)();
-                        let spec = spec.clone();
-                        self.active_extension_overlay =
-                            Some(super::ActiveExtensionOverlay { name, spec, state });
-                        return;
-                    }
-                }
+        if let Some(stroke) = KeyStroke::from_key_event(&key)
+            && self.active_extension_overlay.is_none()
+        {
+            let toggled = self.extension_overlays.iter().find_map(|spec| {
+                let toggle_key = spec.toggle_key.as_deref()?;
+                KeyStroke::parse(toggle_key)
+                    .is_ok_and(|target| target == stroke)
+                    .then(|| spec.name.clone())
+            });
+            if let Some(name) = toggled {
+                self.open_extension_overlay(&name, None);
+                return;
             }
         }
 
@@ -169,13 +160,10 @@ impl MuxApp {
             };
             if let Some(viewer) = &mut self.archive_viewer {
                 viewer.move_selection(delta);
-            } else if let Some(model) = &mut self.model_overlay {
-                model.move_selection(delta);
-            } else if let Some(usage) = &mut self.usage_overlay {
-                usage.scroll_by(delta, cols, rows);
-            } else if let Some(help) = &mut self.help_overlay {
-                let keymap = self.keymap.clone();
-                help.scroll_by(delta, &keymap, cols, rows);
+            } else if let Some(active) = &mut self.active_extension_overlay
+                && let Some(handle_scroll) = &active.spec.handle_scroll
+            {
+                handle_scroll(&mut active.state, delta, cols, rows);
             }
             return;
         }

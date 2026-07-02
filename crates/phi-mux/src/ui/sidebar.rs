@@ -7,14 +7,13 @@ use crate::grid::theme::{HEADING, MUTED, TEXT};
 use crate::status::SessionStatus;
 use crate::workspace::{MuxProject, MuxSession};
 
+use super::visual_context::VisualContext;
+
 /// Re-export the shared shimmer frame duration from `phi-tui` so the
 /// mux sidebar, statusbar, and scene all reference the same constant.
 /// Previously this was a separate `const SIDEBAR_ANIMATION_FRAME_MS = 40`
 /// that had to be kept in sync manually with `phi-tui`'s copy.
 pub use phi_tui::SHIMMER_FRAME_MS as SIDEBAR_ANIMATION_FRAME_MS;
-pub use phi_tui::{
-    SPINNER_FRAME_MS as SIDEBAR_SPINNER_FRAME_MS, SPINNER_FRAMES as SIDEBAR_SPINNER_FRAMES,
-};
 pub const SIDEBAR_NOTIFICATION_GLYPH: &str = "⣿";
 
 const DRAFT_SESSION_LABEL: &str = "new session";
@@ -202,11 +201,15 @@ pub fn session_sidebar_status(session: &MuxSession) -> Option<SidebarStatusKind>
     }
 }
 
-pub fn sidebar_status_glyph(status: SidebarStatusKind, now_ms: u64) -> &'static str {
+pub fn sidebar_status_glyph(
+    status: SidebarStatusKind,
+    now_ms: u64,
+    visual: &VisualContext,
+) -> String {
     match status {
-        SidebarStatusKind::Active => phi_tui::spinner_frame_at(now_ms),
+        SidebarStatusKind::Active => visual.spinner_frame(now_ms),
         SidebarStatusKind::Interrupted | SidebarStatusKind::Notification => {
-            SIDEBAR_NOTIFICATION_GLYPH
+            SIDEBAR_NOTIFICATION_GLYPH.to_string()
         }
     }
 }
@@ -405,14 +408,37 @@ mod tests {
 
     #[test]
     fn spinner_glyph_wraps_after_last_frame() {
-        let now_ms = SIDEBAR_SPINNER_FRAME_MS * SIDEBAR_SPINNER_FRAMES.len() as u64;
+        // With no extension spinner registered, `VisualContext` falls back to
+        // the built-in phi-tui frames.
+        let visual = VisualContext::default();
+        let now_ms = phi_tui::SPINNER_FRAME_MS * phi_tui::SPINNER_FRAMES.len() as u64;
         assert_eq!(
-            sidebar_status_glyph(SidebarStatusKind::Active, now_ms),
-            SIDEBAR_SPINNER_FRAMES[0]
+            sidebar_status_glyph(SidebarStatusKind::Active, now_ms, &visual),
+            phi_tui::SPINNER_FRAMES[0]
         );
         assert_eq!(
-            sidebar_status_glyph(SidebarStatusKind::Notification, now_ms),
+            sidebar_status_glyph(SidebarStatusKind::Notification, now_ms, &visual),
             SIDEBAR_NOTIFICATION_GLYPH
+        );
+    }
+
+    #[test]
+    fn spinner_glyph_uses_extension_spinner_when_registered() {
+        let visual = VisualContext {
+            spinner: Some(phi_ext::SpinnerSpec::new(
+                "test",
+                vec!["a".to_string(), "b".to_string()],
+                100,
+            )),
+            ..VisualContext::default()
+        };
+        assert_eq!(
+            sidebar_status_glyph(SidebarStatusKind::Active, 0, &visual),
+            "a"
+        );
+        assert_eq!(
+            sidebar_status_glyph(SidebarStatusKind::Active, 100, &visual),
+            "b"
         );
     }
 

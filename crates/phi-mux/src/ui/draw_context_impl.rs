@@ -7,11 +7,34 @@
 use crate::grid::cell_surface::{CellSurface, draw_box, render_cell_scrollbar};
 use crate::grid::color::Color;
 use crate::grid::layout::CellRect;
-use phi_ext::{DrawContext, DrawRect, DrawSize, Rgb};
+use crate::ui::palette::ScenePalette;
+use phi_ext::{DrawContext, DrawRect, DrawSize, OverlayPalette, Rgb};
 
 /// Convert an `phi_ext::Rgb` to the grid's `Color`.
 fn rgb_to_color(rgb: Rgb) -> Color {
     Color::rgb(rgb.0, rgb.1, rgb.2)
+}
+
+/// Convert a grid `Color` to an `phi_ext::Rgb`.
+fn color_to_rgb(color: Color) -> Rgb {
+    let (r, g, b) = color.rgb_components();
+    Rgb(r, g, b)
+}
+
+/// Build the `OverlayPalette` extensions see from the mux's resolved scene
+/// palette. The scene's background is TRANSPARENT (terminal default), which
+/// `Rgb` can't express — substitute the terminal's OSC-reported background.
+pub fn overlay_palette(palette: &ScenePalette, terminal_bg: phi_tui::Rgb) -> OverlayPalette {
+    OverlayPalette {
+        fg: color_to_rgb(palette.fg),
+        bg: Rgb(terminal_bg.0, terminal_bg.1, terminal_bg.2),
+        muted: color_to_rgb(palette.muted),
+        border: color_to_rgb(palette.border),
+        accent: color_to_rgb(palette.accent),
+        accent_2: color_to_rgb(palette.accent_2),
+        surface_raised: color_to_rgb(palette.surface_raised),
+        statusbar_bg: color_to_rgb(palette.statusbar_bg),
+    }
 }
 
 /// A scoped drawing context backed by a `CellSurface`.
@@ -21,11 +44,12 @@ fn rgb_to_color(rgb: Rgb) -> Color {
 /// explicit colours.
 pub struct MuxDrawContext<'a> {
     surface: &'a mut CellSurface,
+    palette: OverlayPalette,
 }
 
 impl<'a> MuxDrawContext<'a> {
-    pub fn new(surface: &'a mut CellSurface) -> Self {
-        Self { surface }
+    pub fn new(surface: &'a mut CellSurface, palette: OverlayPalette) -> Self {
+        Self { surface, palette }
     }
 }
 
@@ -35,6 +59,10 @@ impl<'a> DrawContext for MuxDrawContext<'a> {
             cols: self.surface.cols,
             rows: self.surface.rows,
         }
+    }
+
+    fn palette(&self) -> OverlayPalette {
+        self.palette
     }
 
     fn put_text(&mut self, col: i32, row: i32, max_cols: i32, text: &str, fg: Rgb, bg: Rgb) {

@@ -134,18 +134,12 @@ impl MuxApp {
         if let Some(viewer) = &mut self.archive_viewer {
             render_archive_viewer(&mut surface, viewer, &palette);
             hardware_cursor = None;
-        } else if let Some(model) = &mut self.model_overlay {
-            render_model_overlay(&mut surface, model, &palette);
-            hardware_cursor = None;
-        } else if let Some(usage) = &mut self.usage_overlay {
-            render_usage_overlay(&mut surface, usage, &palette);
-            hardware_cursor = None;
-        } else if let Some(help) = &mut self.help_overlay {
-            let keymap = self.keymap.clone();
-            render_help_overlay(&mut surface, help, &keymap, &palette);
-            hardware_cursor = None;
         } else if let Some(active) = &mut self.active_extension_overlay {
-            let mut ctx = MuxDrawContext::new(&mut surface);
+            let overlay_palette = crate::ui::draw_context_impl::overlay_palette(
+                &palette,
+                self.terminal_colors.background,
+            );
+            let mut ctx = MuxDrawContext::new(&mut surface, overlay_palette);
             (active.spec.render)(&mut ctx, &mut active.state);
             hardware_cursor = None;
         }

@@ -66,14 +66,66 @@ impl MuxApp {
                     self.set_note("clipboard empty", StatusNoteKind::Error);
                 }
             }
-            AppAction::Help => {
-                if self.help_overlay.is_some() {
-                    self.help_overlay = None;
-                } else {
-                    self.help_overlay = Some(HelpOverlayState::default());
-                }
-            }
+            AppAction::Help => self.toggle_help_overlay(),
             AppAction::Quit => self.quit = true,
+        }
+    }
+
+    /// Open an extension-registered overlay by name, with an optional
+    /// payload for its `init_state`. Replaces any currently active overlay
+    /// (whose state is dropped — pending responders fire their default).
+    /// Returns `false` when no overlay is registered under `name`.
+    pub(crate) fn open_extension_overlay(
+        &mut self,
+        name: &str,
+        payload: Option<phi_ext::OverlayPayload>,
+    ) -> bool {
+        let Some(spec) = self
+            .extension_overlays
+            .iter()
+            .find(|spec| spec.name == name)
+            .cloned()
+        else {
+            return false;
+        };
+        let state = (spec.init_state)(payload);
+        self.active_extension_overlay = Some(ActiveExtensionOverlay {
+            name: spec.name.clone(),
+            spec,
+            state,
+        });
+        true
+    }
+
+    /// Toggle an overlay by name: close it if it's the active one, open it
+    /// otherwise. Posts a status note when the overlay isn't registered
+    /// (e.g. a build without `phi-builtins`).
+    pub(crate) fn toggle_extension_overlay(
+        &mut self,
+        name: &str,
+        payload: Option<phi_ext::OverlayPayload>,
+    ) {
+        if self
+            .active_extension_overlay
+            .as_ref()
+            .is_some_and(|active| active.name == name)
+        {
+            self.active_extension_overlay = None;
+        } else if !self.open_extension_overlay(name, payload) {
+            self.set_note(format!("overlay {name} not available"), StatusNoteKind::Error);
+        }
+    }
+
+    pub(crate) fn toggle_help_overlay(&mut self) {
+        let payload = phi_ext::HelpPayload {
+            entries: help_entries(&self.keymap),
+        };
+        self.toggle_extension_overlay(phi_ext::OVERLAY_HELP, Some(Box::new(payload)));
+    }
+
+    pub(crate) fn open_usage_overlay(&mut self) {
+        if !self.open_extension_overlay(phi_ext::OVERLAY_USAGE, None) {
+            self.set_note("usage overlay not available", StatusNoteKind::Error);
         }
     }
 
@@ -215,12 +267,12 @@ impl MuxApp {
                 }
                 Err(error) => self.set_note(format!("cleanup: {error:#}"), StatusNoteKind::Error),
             },
-            Ok(MuxCommand::Usage) => self.usage_overlay = Some(UsageOverlayState::load()),
+            Ok(MuxCommand::Usage) => self.open_usage_overlay(),
             Ok(MuxCommand::Refresh) => self.run_action(AppAction::RefreshSession).await,
             Ok(MuxCommand::Reload) => self.run_action(AppAction::RefreshAllSessions).await,
             Ok(MuxCommand::Quit) => self.quit = true,
             Ok(MuxCommand::Action(action)) => self.run_action(action).await,
-            Ok(MuxCommand::Help) => self.help_overlay = Some(HelpOverlayState::default()),
+            Ok(MuxCommand::Help) => self.toggle_help_overlay(),
             Err(note) => self.set_note(note, StatusNoteKind::Error),
         }
     }
@@ -228,7 +280,7 @@ impl MuxApp {
     pub(crate) fn handle_host_modal_request(&mut self, key: SessionKey, request: HostModalRequest) {
         match request.kind {
             HostModalKind::Usage => {
-                self.usage_overlay = Some(UsageOverlayState::load());
+                self.open_usage_overlay();
                 let _ = request.response_tx.send(Ok(None));
             }
             HostModalKind::Model { root, current } => {
@@ -241,10 +293,15 @@ impl MuxApp {
                     ));
                     return;
                 }
-                if let Some(mut existing) = self.model_overlay.take()
-                    && let Some(tx) = existing.response_tx.take()
+                if !self
+                    .extension_overlays
+                    .iter()
+                    .any(|spec| spec.name == phi_ext::OVERLAY_MODEL)
                 {
-                    let _ = tx.send(Ok(None));
+                    let _ = request
+                        .response_tx
+                        .send(Err("model picker overlay not available".to_owned()));
+                    return;
                 }
                 let models = self
                     .shared
@@ -258,22 +315,19 @@ impl MuxApp {
                         .send(Err("no supported models available".to_owned()));
                     return;
                 }
-                self.model_overlay = Some(ModelOverlayState::new(
-                    key,
+                // Opening replaces any active overlay; a superseded picker's
+                // responder fires Ok(None) when its state drops.
+                let response_tx = request.response_tx;
+                let payload = phi_ext::ModelPickerPayload {
                     root,
                     current,
                     models,
-                    request.response_tx,
-                ));
+                    responder: phi_ext::OverlayResponder::new(move |result| {
+                        let _ = response_tx.send(result);
+                    }),
+                };
+                self.open_extension_overlay(phi_ext::OVERLAY_MODEL, Some(Box::new(payload)));
             }
-        }
-    }
-
-    pub(crate) fn finish_model_overlay(&mut self, selected: Option<String>) {
-        if let Some(mut model) = self.model_overlay.take()
-            && let Some(tx) = model.response_tx.take()
-        {
-            let _ = tx.send(Ok(selected));
         }
     }
 
@@ -284,5 +338,89 @@ impl MuxApp {
         let _ = phi_tui::crossterm::execute!(stdout, EnableMouseCapture);
         let _ = request.response_tx.send(result);
         self.renderer.invalidate();
+    }
+}
+
+/// Build the help overlay's content from the live keymap. The content is
+/// host data (mux commands + current keybindings); the overlay itself is
+/// registered by `phi-builtins` and renders whatever entries it's handed.
+fn help_entries(keymap: &Keymap) -> Vec<phi_ext::HelpEntry> {
+    use phi_ext::HelpEntry;
+    fn item(keys: &str, description: &str) -> HelpEntry {
+        HelpEntry::Item {
+            keys: keys.to_owned(),
+            description: description.to_owned(),
+        }
+    }
+
+    let mut entries = vec![
+        HelpEntry::Heading("Global".to_owned()),
+        item("ctrl+g / :help", "toggle this help"),
+        item(":open <dir>", "open project"),
+        item(":archive", "browse archived sessions"),
+        item(":usage", "show usage totals"),
+        item(":refresh / :reload", "refresh current / all sessions"),
+        item(":up / :down", "previous / next session"),
+        item(":left / :right", "previous / next project"),
+        item(":quit / ctrl+q", "quit"),
+        HelpEntry::Blank,
+        HelpEntry::Heading("Navigation & actions".to_owned()),
+    ];
+
+    for action in [
+        AppAction::PreviousProject,
+        AppAction::NextProject,
+        AppAction::PreviousSession,
+        AppAction::NextSession,
+        AppAction::NewSession,
+        AppAction::RefreshSession,
+        AppAction::RefreshAllSessions,
+        AppAction::ArchiveSession,
+        AppAction::RemoveProject,
+        AppAction::CopySelection,
+        AppAction::PasteClipboard,
+    ] {
+        let bindings = keymap.bindings_for(action).join(" / ");
+        if !bindings.is_empty() {
+            entries.push(item(&bindings, action_help_text(action)));
+        }
+    }
+
+    entries.extend([
+        HelpEntry::Blank,
+        HelpEntry::Heading("Terminal".to_owned()),
+        item("mouse drag", "select text"),
+        item("wheel / scroll keys", "scroll terminal"),
+        item("::", "send literal ':' to terminal"),
+        HelpEntry::Blank,
+        HelpEntry::Heading("Command line".to_owned()),
+        item("ctrl+a/e", "start / end"),
+        item("ctrl+w/u", "delete word / clear"),
+        item("backspace", "delete; empty input closes"),
+        HelpEntry::Blank,
+        HelpEntry::Heading("Help / archive dialogs".to_owned()),
+        item("↑/↓ j/k wheel", "scroll / select"),
+        item("pgup/pgdn", "page up / down"),
+        item("home/end g/G", "jump top / bottom"),
+        item("esc q ctrl+c", "close"),
+    ]);
+    entries
+}
+
+fn action_help_text(action: AppAction) -> &'static str {
+    match action {
+        AppAction::PreviousProject => "previous project",
+        AppAction::NextProject => "next project",
+        AppAction::PreviousSession => "previous session",
+        AppAction::NextSession => "next session",
+        AppAction::NewSession => "new session",
+        AppAction::RefreshSession => "refresh session",
+        AppAction::RefreshAllSessions => "refresh all sessions",
+        AppAction::ArchiveSession => "archive selected session",
+        AppAction::RemoveProject => "remove project from sidebar",
+        AppAction::CopySelection => "copy terminal selection",
+        AppAction::PasteClipboard => "paste clipboard",
+        AppAction::Help => "toggle help",
+        AppAction::Quit => "quit",
     }
 }
