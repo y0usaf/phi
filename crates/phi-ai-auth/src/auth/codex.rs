@@ -10,7 +10,9 @@ use tokio_util::sync::CancellationToken;
 use crate::auth::callback_server::CallbackServer;
 use crate::auth::device_code::{PollOutcome, poll_device_code};
 use crate::auth::pkce::{Pkce, random_state};
-use crate::auth::{AuthError, LoginCallbacks, OAuthCredentials, parse_authorization_input};
+use crate::auth::{
+    AuthError, LoginCallbacks, OAuthCredentials, open_browser, parse_authorization_input,
+};
 use phi_ai_types::now_ms;
 
 const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
@@ -52,7 +54,7 @@ pub async fn login_browser(
         &url,
         "A browser window should open. Complete login to finish.",
     );
-    let _ = webbrowser::open(&url);
+    let _ = open_browser(&url);
 
     let code = tokio::select! {
         code = server.wait(cancel) => match code {

@@ -19,4 +19,4 @@ pub use error::AuthError;
 pub use login::{login, refresh};
 pub use storage::AuthStorage;
 pub use types::{AuthCredential, OAuthCredentials, OAuthProviderId};
-pub(crate) use util::parse_authorization_input;
+pub(crate) use util::{open_browser, parse_authorization_input};

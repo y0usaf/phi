@@ -1,5 +1,38 @@
 //! Authorization-input parsing helpers.
 
+/// Best-effort: open `url` in the default browser via the platform opener.
+/// Login flows always print the URL too, so failure here is non-fatal.
+pub(crate) fn open_browser(url: &str) -> std::io::Result<()> {
+    use std::process::{Command, Stdio};
+
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let mut c = Command::new("open");
+        c.arg(url);
+        c
+    };
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        // rundll32 handles `&` in URLs without cmd.exe quoting games.
+        let mut c = Command::new("rundll32");
+        c.arg("url.dll,FileProtocolHandler").arg(url);
+        c
+    };
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let mut command = {
+        let mut c = Command::new("xdg-open");
+        c.arg(url);
+        c
+    };
+
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map(drop)
+}
+
 /// Accepts a raw code, a full redirect URL, `code#state`, or a query string.
 pub(crate) fn parse_authorization_input(input: &str) -> (Option<String>, Option<String>) {
     let value = input.trim();

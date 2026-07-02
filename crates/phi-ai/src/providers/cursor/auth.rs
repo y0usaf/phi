@@ -302,14 +302,15 @@ fn cursor_auth_file_path() -> Result<PathBuf> {
     {
         let appdata = std::env::var_os("APPDATA")
             .map(PathBuf::from)
-            .or_else(|| dirs::config_dir())
+            .or_else(|| directories::BaseDirs::new().map(|dirs| dirs.config_dir().to_path_buf()))
             .ok_or_else(|| anyhow::anyhow!("No APPDATA directory found"))?;
         return Ok(appdata.join("Cursor").join("auth.json"));
     }
 
     #[cfg(target_os = "macos")]
     {
-        return Ok(dirs::home_dir()
+        return Ok(directories::BaseDirs::new()
+            .map(|dirs| dirs.home_dir().to_path_buf())
             .ok_or_else(|| anyhow::anyhow!("No home directory found"))?
             .join(".cursor")
             .join("auth.json"));
@@ -317,8 +318,9 @@ fn cursor_auth_file_path() -> Result<PathBuf> {
 
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
-        let config_dir =
-            dirs::config_dir().ok_or_else(|| anyhow::anyhow!("No config directory found"))?;
+        let config_dir = directories::BaseDirs::new()
+            .map(|dirs| dirs.config_dir().to_path_buf())
+            .ok_or_else(|| anyhow::anyhow!("No config directory found"))?;
         Ok(config_dir.join("cursor").join("auth.json"))
     }
 }
@@ -367,9 +369,10 @@ fn cursor_vscdb_paths() -> Vec<PathBuf> {
         "AppData/Roaming/cursor/User/globalStorage/state.vscdb",
     ];
 
+    let home = directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf());
     relatives
         .into_iter()
-        .filter_map(|relative| dirs::home_dir().map(|h| h.join(relative)))
+        .filter_map(|relative| home.as_ref().map(|h| h.join(relative)))
         .collect()
 }
 

@@ -50,9 +50,7 @@ unicode-width = "0.2"
 url = "2.5.4"
 uuid = { version = "1.17.0", features = ["v7", "v4", "v5"] }
 vt100 = "0.16"
-dirs = "5"
 flate2 = "1"
-webbrowser = "1.0.4"
 
 phi-ai = { path = "crates/phi-ai" }
 phi-ai-auth = { path = "crates/phi-ai-auth" }

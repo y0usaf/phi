@@ -12,7 +12,7 @@ use sha2::{Digest, Sha256};
 use tokio_util::sync::CancellationToken;
 
 use crate::auth::pkce::Pkce;
-use crate::auth::{AuthError, LoginCallbacks, OAuthCredentials};
+use crate::auth::{AuthError, LoginCallbacks, OAuthCredentials, open_browser};
 use phi_ai_types::now_ms;
 
 const CURSOR_LOGIN_URL: &str = "https://cursor.com/loginDeepControl";
@@ -62,7 +62,7 @@ pub async fn login(
         &params.login_url,
         "Complete login in your browser. If the browser is on another machine, open the URL manually.",
     );
-    let _ = webbrowser::open(&params.login_url);
+    let _ = open_browser(&params.login_url);
     callbacks.on_progress("Waiting for Cursor login to complete...");
 
     let tokens = poll_auth(&params.uuid, &params.verifier, cancel).await?;

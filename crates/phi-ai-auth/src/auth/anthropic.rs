@@ -5,7 +5,9 @@ use tokio_util::sync::CancellationToken;
 
 use crate::auth::callback_server::CallbackServer;
 use crate::auth::pkce::Pkce;
-use crate::auth::{AuthError, LoginCallbacks, OAuthCredentials, parse_authorization_input};
+use crate::auth::{
+    AuthError, LoginCallbacks, OAuthCredentials, open_browser, parse_authorization_input,
+};
 use phi_ai_types::now_ms;
 
 const CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
@@ -47,7 +49,7 @@ pub async fn login(
         &url,
         "Complete login in your browser. If the browser is on another machine, paste the final redirect URL here.",
     );
-    let _ = webbrowser::open(&url);
+    let _ = open_browser(&url);
 
     let code = tokio::select! {
         code = server.wait(cancel) => match code {
