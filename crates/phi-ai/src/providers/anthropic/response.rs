@@ -116,10 +116,21 @@ struct StopDetails {
     explanation: Option<String>,
 }
 
+/// Usage attached to `message_delta`. Anthropic sends cumulative
+/// `output_tokens` here; gateways that proxy other models through the
+/// Messages API (e.g. Vercel AI Gateway) often report the *full* usage
+/// here instead of on `message_start`, so the prompt-side fields are
+/// parsed too and treated as authoritative when present.
 #[derive(Deserialize, Default)]
 struct UsageDelta {
     #[serde(default)]
     output_tokens: Option<u64>,
+    #[serde(default)]
+    input_tokens: Option<u64>,
+    #[serde(default)]
+    cache_read_input_tokens: Option<u64>,
+    #[serde(default)]
+    cache_creation_input_tokens: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -389,8 +400,18 @@ impl SseHandler for Parser {
                             Some(refusal_message(&reason, event.delta.stop_details));
                     }
                 }
+                let usage = &mut self.acc.message_mut().usage;
                 if let Some(output) = event.usage.output_tokens {
-                    self.acc.message_mut().usage.output = output;
+                    usage.output = output;
+                }
+                if let Some(input) = event.usage.input_tokens {
+                    usage.input = input;
+                }
+                if let Some(cache_read) = event.usage.cache_read_input_tokens {
+                    usage.cache_read = cache_read;
+                }
+                if let Some(cache_write) = event.usage.cache_creation_input_tokens {
+                    usage.cache_write = cache_write;
                 }
             }
             "error" => {
@@ -517,6 +538,57 @@ mod tests {
         assert_eq!(tool.id, "t1");
         assert_eq!(tool.name, "run");
         assert_eq!(tool.arguments["x"], 1);
+    }
+
+    /// Gateways proxying non-Anthropic models through the Messages API
+    /// (e.g. Vercel AI Gateway) omit usage on `message_start` and report
+    /// the full breakdown only on the final `message_delta`. Prompt-side
+    /// tokens must be picked up from there, not recorded as zero.
+    #[tokio::test]
+    async fn gateway_usage_reported_only_in_message_delta() {
+        let model = model();
+        let mut parser = Parser::new(&model);
+        let (sink, mut stream) = AssistantEventStream::channel();
+
+        parser.on_event(
+            "message_start",
+            r#"{"type":"message_start","message":{"id":"gen_1","role":"assistant"}}"#,
+            &sink,
+        );
+        parser.on_event(
+            "content_block_start",
+            r#"{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#,
+            &sink,
+        );
+        parser.on_event(
+            "content_block_delta",
+            r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}"#,
+            &sink,
+        );
+        parser.on_event(
+            "content_block_stop",
+            r#"{"type":"content_block_stop","index":0}"#,
+            &sink,
+        );
+        parser.on_event(
+            "message_delta",
+            r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":1200,"cache_read_input_tokens":800,"cache_creation_input_tokens":50,"output_tokens":42}}"#,
+            &sink,
+        );
+        parser.finish(&model, &sink);
+        drop(sink);
+
+        let mut done = None;
+        while let Some(event) = stream.next().await {
+            if let AssistantEvent::Done { message } = event {
+                done = Some(message);
+            }
+        }
+        let message = done.expect("terminal Done event");
+        assert_eq!(message.usage.input, 1200);
+        assert_eq!(message.usage.cache_read, 800);
+        assert_eq!(message.usage.cache_write, 50);
+        assert_eq!(message.usage.output, 42);
     }
 
     #[tokio::test]
