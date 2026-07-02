@@ -2,6 +2,20 @@
 
 Guide for AI coding agents working in the `phi` repository.
 
+## Direction — read PLAN.md first
+
+`PLAN.md` at the repo root is the source of truth for Phi's direction: a minimal
+pi-style core whose only differentiators are the mux, the RLM engine, and a
+greater extension surface. It defines **The Rule**:
+
+> If a feature can be an extension, it must be an extension. Built-in features
+> must be implemented through the same public extension API that user extensions
+> use, and live in `phi-builtins`. Do not hardwire extension-shaped features
+> (commands, overlays, themes, providers, tools) into core crates.
+
+Before adding a feature, check `PLAN.md` for whether it belongs in core, in
+`phi-builtins`, or nowhere. Update the plan's checkboxes as workstream items land.
+
 ## Project Overview
 
 `phi` is a Rust workspace (edition 2024) built with [crane](https://github.com/ipetkov/crane) via Nix flakes. The binary entrypoint is `crates/phi-app` (produces the `phi` binary). There are ~15 workspace crates under `crates/`.
