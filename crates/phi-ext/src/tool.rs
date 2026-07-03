@@ -119,6 +119,54 @@ pub struct ToolParam {
     pub default: Option<String>,
 }
 
+/// Make a wire-level parameter name safe to use as a Python parameter in a
+/// generated REPL stub: invalid characters become `_`, a leading digit gets
+/// a `_` prefix, and Python keywords get a trailing `_` (PEP 8 convention,
+/// e.g. `from` → `from_`). The wire name stays the dict key in the stub
+/// body, so the tool handler still receives the original name.
+pub fn python_param_name(name: &str) -> String {
+    const KEYWORDS: &[&str] = &[
+        "False", "None", "True", "and", "as", "assert", "async", "await", "break", "class",
+        "continue", "def", "del", "elif", "else", "except", "finally", "for", "from", "global",
+        "if", "import", "in", "is", "lambda", "nonlocal", "not", "or", "pass", "raise", "return",
+        "try", "while", "with", "yield",
+    ];
+    let mut out: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if out.is_empty() || out.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+        out.insert(0, '_');
+    }
+    if KEYWORDS.contains(&out.as_str()) {
+        out.push('_');
+    }
+    out
+}
+
+/// [`python_param_name`] for a whole signature, with collisions after
+/// sanitization (`a-b` vs `a_b`) deduplicated by trailing underscores so the
+/// generated `def` never repeats a parameter name.
+pub fn python_param_names(params: &[ToolParam]) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    params
+        .iter()
+        .map(|p| {
+            let mut py = python_param_name(&p.name);
+            while !seen.insert(py.clone()) {
+                py.push('_');
+            }
+            py
+        })
+        .collect()
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ToolInvocation {
     pub input: String,
@@ -163,6 +211,29 @@ mod tests {
         assert_eq!(required.len(), 2);
         assert!(required.contains(&serde_json::json!("path")));
         assert!(required.contains(&serde_json::json!("flag")));
+    }
+
+    #[test]
+    fn python_param_name_sanitizes_keywords_digits_and_chars() {
+        assert_eq!(python_param_name("path"), "path");
+        assert_eq!(python_param_name("from"), "from_");
+        assert_eq!(python_param_name("async"), "async_");
+        assert_eq!(python_param_name("my-param"), "my_param");
+        assert_eq!(python_param_name("2fast"), "_2fast");
+        assert_eq!(python_param_name(""), "_");
+    }
+
+    #[test]
+    fn python_param_names_dedupes_collisions() {
+        let params: Vec<ToolParam> = ["a-b", "a_b", "a.b"]
+            .iter()
+            .map(|n| ToolParam {
+                name: (*n).to_owned(),
+                ty: "str".into(),
+                default: None,
+            })
+            .collect();
+        assert_eq!(python_param_names(&params), vec!["a_b", "a_b_", "a_b__"]);
     }
 
     #[test]

@@ -3,6 +3,8 @@ pub mod catalog;
 #[cfg(feature = "builtins")]
 pub mod commands;
 #[cfg(feature = "builtins")]
+pub mod mcp;
+#[cfg(feature = "builtins")]
 pub mod mux_commands;
 #[cfg(feature = "builtins")]
 pub mod overlays;
@@ -16,6 +18,8 @@ pub mod visual;
 pub use catalog::CatalogExtension;
 #[cfg(feature = "builtins")]
 pub use commands::BuiltinCommandsExtension;
+#[cfg(feature = "builtins")]
+pub use mcp::McpExtension;
 #[cfg(feature = "builtins")]
 pub use mux_commands::MuxCommandsExtension;
 #[cfg(feature = "builtins")]

@@ -4,7 +4,7 @@
 //! is a Lua chunk returning a settings table — the same language planned
 //! for third-party extensions (phi-lua), nvim-style.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
 use anyhow::{Context as _, Result};
@@ -76,7 +76,55 @@ shared_fields_struct! {
         /// Paths support `~` expansion; relative paths resolve against `cwd`.
         /// Example: `skills = { "~/.claude/skills", ".forge/skills" }`
         pub skills: Option<Vec<String>>,
+        /// MCP servers, keyed by name (WS7.1). Consumed by the builtin MCP
+        /// extension, not by core. Unlike the rest of the config, project-level
+        /// entries are trust-gated ([`Config::load_mcp`]) — MCP servers spawn
+        /// processes and send requests at startup.
+        pub mcp: Option<BTreeMap<String, McpServerConfig>>,
     }
+}
+
+/// One MCP server. One shape covers all transports (crush's `MCPConfig`):
+/// stdio servers set `command`/`args`/`env`; http/sse servers set
+/// `url`/`headers`. `env` and `headers` values are shell-expanded when the
+/// server starts (`$VAR`, `${VAR}`, `$(cmd)`), so secrets can come from the
+/// environment or a command instead of living in the config file.
+///
+/// ```lua
+/// mcp = {
+///   context7 = { command = "npx", args = { "-y", "@upstash/context7-mcp" } },
+///   linear = { type = "http", url = "https://mcp.linear.app/mcp",
+///              headers = { Authorization = "Bearer $LINEAR_TOKEN" } },
+/// }
+/// ```
+#[derive(Debug, Default, Clone, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct McpServerConfig {
+    /// Transport: "stdio" (default), "http", or "sse".
+    #[serde(rename = "type")]
+    pub transport: Option<String>,
+    /// Command to execute (stdio).
+    pub command: Option<String>,
+    /// Arguments for `command` (stdio).
+    pub args: Option<Vec<String>>,
+    /// Environment variables for the server process (stdio). Values are
+    /// shell-expanded.
+    pub env: Option<HashMap<String, String>>,
+    /// Server URL (http/sse).
+    pub url: Option<String>,
+    /// HTTP headers (http/sse). Values are shell-expanded; a header whose
+    /// value expands to the empty string is omitted rather than sent blank.
+    pub headers: Option<HashMap<String, String>>,
+    /// Skip this server without deleting its config.
+    pub disabled: Option<bool>,
+    /// Allowlist of tool names (server-side names). Absent/empty = all.
+    pub enabled_tools: Option<Vec<String>>,
+    /// Denylist of tool names, applied after `enabled_tools`.
+    pub disabled_tools: Option<Vec<String>>,
+    /// Seconds allowed for connect + handshake + tool listing (default 15).
+    pub timeout: Option<u64>,
+    /// Tool surface: "repl" (default), "native", or "both" (WS9.3a).
+    pub expose: Option<String>,
 }
 
 /// Tool display configuration: how many output lines to show per tool card,
@@ -138,6 +186,24 @@ impl Config {
         Ok(config)
     }
 
+    /// MCP server configs, with the project layer trust-gated: the global
+    /// config's `mcp` table always loads; the project `.phi/config.lua`'s
+    /// only when `include_project` (callers gate it on project trust —
+    /// MCP servers spawn processes and send requests at startup).
+    pub fn load_mcp(
+        cwd: &Path,
+        include_project: bool,
+    ) -> Result<BTreeMap<String, McpServerConfig>> {
+        let mut config = Self::default();
+        if let Some(dirs) = directories::ProjectDirs::from("", "", "phi") {
+            config.overlay(Self::read(&dirs.config_dir().join("config.lua"))?);
+        }
+        if include_project {
+            config.overlay(Self::read(&cwd.join(".phi").join("config.lua"))?);
+        }
+        Ok(config.mcp.unwrap_or_default())
+    }
+
     fn read(path: &Path) -> Result<Self> {
         let Ok(text) = std::fs::read_to_string(path) else {
             return Ok(Self::default());
@@ -191,6 +257,11 @@ impl Config {
             max_concurrent_subcalls,
             skills
         );
+        // MCP servers merge per name: a project entry overrides the
+        // same-named global entry wholesale, others coexist.
+        if let Some(other_mcp) = other.mcp {
+            self.mcp.get_or_insert_with(BTreeMap::new).extend(other_mcp);
+        }
         if let Some(other_mux) = other.mux {
             let mux = self.mux.get_or_insert_with(MuxConfig::default);
             macro_rules! take_mux {
@@ -442,6 +513,73 @@ mod tests {
         assert_eq!(settings.tools.user_padding, 0);
         assert_eq!(settings.tools.gap, 0);
         assert!(settings.tools.tool_summary);
+    }
+
+    #[test]
+    fn mcp_table_parses_all_transports() {
+        let config = eval(
+            "return { mcp = {\n\
+               context7 = { command = \"npx\", args = { \"-y\", \"@upstash/context7-mcp\" },\n\
+                            env = { KEY = \"$CTX7_KEY\" }, timeout = 30 },\n\
+               linear = { type = \"http\", url = \"https://mcp.linear.app/mcp\",\n\
+                          headers = { Authorization = \"Bearer $TOK\" },\n\
+                          enabled_tools = { \"list_issues\" }, expose = \"both\" },\n\
+               old = { type = \"sse\", url = \"https://x/sse\", disabled = true },\n\
+             } }",
+        )
+        .unwrap();
+        let mcp = config.mcp.unwrap();
+        assert_eq!(mcp.len(), 3);
+        let ctx7 = &mcp["context7"];
+        assert_eq!(ctx7.transport, None);
+        assert_eq!(ctx7.command.as_deref(), Some("npx"));
+        assert_eq!(ctx7.args.as_ref().unwrap().len(), 2);
+        assert_eq!(ctx7.env.as_ref().unwrap()["KEY"], "$CTX7_KEY");
+        assert_eq!(ctx7.timeout, Some(30));
+        let linear = &mcp["linear"];
+        assert_eq!(linear.transport.as_deref(), Some("http"));
+        assert_eq!(linear.url.as_deref(), Some("https://mcp.linear.app/mcp"));
+        assert_eq!(linear.enabled_tools.as_ref().unwrap(), &["list_issues"]);
+        assert_eq!(linear.expose.as_deref(), Some("both"));
+        assert_eq!(mcp["old"].disabled, Some(true));
+    }
+
+    #[test]
+    fn mcp_unknown_keys_rejected() {
+        assert!(eval("return { mcp = { s = { comand = \"npx\" } } }").is_err());
+    }
+
+    #[test]
+    fn mcp_overlay_merges_per_server() {
+        let mut global =
+            eval("return { mcp = { a = { command = \"one\" }, b = { command = \"two\" } } }")
+                .unwrap();
+        let project = eval(
+            "return { mcp = { b = { command = \"override\" }, c = { command = \"three\" } } }",
+        )
+        .unwrap();
+        global.overlay(project);
+        let mcp = global.mcp.unwrap();
+        assert_eq!(mcp.len(), 3);
+        assert_eq!(mcp["a"].command.as_deref(), Some("one"));
+        assert_eq!(mcp["b"].command.as_deref(), Some("override"));
+        assert_eq!(mcp["c"].command.as_deref(), Some("three"));
+    }
+
+    #[test]
+    fn load_mcp_gates_project_layer_on_trust() {
+        let dir = tempfile::tempdir().unwrap();
+        let phi = dir.path().join(".phi");
+        std::fs::create_dir_all(&phi).unwrap();
+        std::fs::write(
+            phi.join("config.lua"),
+            "return { mcp = { evil = { command = \"curl\" } } }",
+        )
+        .unwrap();
+        let untrusted = Config::load_mcp(dir.path(), false).unwrap();
+        assert!(!untrusted.contains_key("evil"));
+        let trusted = Config::load_mcp(dir.path(), true).unwrap();
+        assert!(trusted.contains_key("evil"));
     }
 
     #[test]

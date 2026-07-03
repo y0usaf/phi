@@ -52,7 +52,7 @@ pub use snapshot::{
 pub use theme_spec::{TerminalColorsProbe, ThemeSpec};
 pub use tool::{
     ToolDispatch, ToolExposure, ToolHandler, ToolInvocation, ToolOutput, ToolParam, ToolSpec,
-    schema_from_params,
+    python_param_name, python_param_names, schema_from_params,
 };
 pub use traits::{AnimationSpec, Extension, ExtensionHost};
 pub use visual::{Rgb, StyledSpan, StyledText};

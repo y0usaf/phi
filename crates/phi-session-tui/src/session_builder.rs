@@ -192,6 +192,15 @@ pub async fn build_runtime(
             settings.skills.clone(),
             project_trusted,
         ));
+        // MCP servers from config.lua's `mcp` table (project entries only
+        // when trusted — they spawn processes). Connect failures degrade to
+        // warnings inside `connect`; a session never fails to build because
+        // a server is down.
+        let mcp_servers = Config::load_mcp(cwd, project_trusted).unwrap_or_default();
+        if !mcp_servers.is_empty() {
+            rt_builder = rt_builder
+                .register_extension(phi_builtins::McpExtension::connect(mcp_servers).await);
+        }
     }
     for ext in config_exts {
         rt_builder = rt_builder.register_boxed_extension(ext);

@@ -1165,18 +1165,24 @@ impl AppRuntime {
                 t.expose.includes_repl() && matches!(t.dispatch, crate::ToolDispatch::Handler(_))
             })
             .map(|t| {
+                // Wire param names may be Python keywords or contain invalid
+                // characters (MCP schemas are arbitrary); the signature uses
+                // sanitized names while the dict keeps the wire names.
+                let py_names = crate::python_param_names(&t.params);
                 let sig: Vec<String> = t
                     .params
                     .iter()
-                    .map(|p| match &p.default {
-                        Some(def) => format!("{}: {} = {}", p.name, p.ty, def),
-                        None => format!("{}: {}", p.name, p.ty),
+                    .zip(&py_names)
+                    .map(|(p, py)| match &p.default {
+                        Some(def) => format!("{}: {} = {}", py, p.ty, def),
+                        None => format!("{}: {}", py, p.ty),
                     })
                     .collect();
                 let dict: Vec<String> = t
                     .params
                     .iter()
-                    .map(|p| format!("\"{}\":  {}", p.name, p.name))
+                    .zip(&py_names)
+                    .map(|(p, py)| format!("\"{}\":  {}", p.name, py))
                     .collect();
                 format!(
                     "def {}({}) -> str:\n    return __phi_ext_tool__(\"{}\" , {{{}}})",
@@ -1683,6 +1689,59 @@ mod tests {
         ));
         assert!(rt.native_tool_dispatch("repl_tool").is_none());
         assert!(rt.native_tool_dispatch("missing").is_none());
+    }
+
+    #[test]
+    fn stub_signature_sanitizes_keyword_params_but_keeps_wire_names() {
+        struct KeywordParamExt;
+        impl Extension for KeywordParamExt {
+            fn manifest(&self) -> ExtensionManifest {
+                ExtensionManifest {
+                    id: "test.kw".to_owned(),
+                    name: "Kw".to_owned(),
+                    version: "0".to_owned(),
+                    description: "keyword param tool".to_owned(),
+                }
+            }
+            fn register(&self, host: &mut dyn ExtensionHost) -> anyhow::Result<()> {
+                host.register_tool(crate::ToolSpec::repl(
+                    "mail_search",
+                    "search",
+                    vec![
+                        crate::ToolParam {
+                            name: "from".to_owned(),
+                            ty: "str".to_owned(),
+                            default: None,
+                        },
+                        crate::ToolParam {
+                            name: "max-results".to_owned(),
+                            ty: "int".to_owned(),
+                            default: Some("None".to_owned()),
+                        },
+                    ],
+                    Arc::new(|_inv| {
+                        Ok(crate::ToolOutput {
+                            content: String::new(),
+                        })
+                    }),
+                ))
+            }
+        }
+
+        let rt = RuntimeBuilder::new()
+            .with_cwd(std::path::Path::new("."))
+            .register_extension(KeywordParamExt)
+            .build()
+            .expect("build runtime");
+        let stubs = rt.extension_prelude_stubs();
+        // Signature: valid Python (keyword suffixed, dash replaced)...
+        assert!(
+            stubs.contains("def mail_search(from_: str, max_results: int = None)"),
+            "{stubs}"
+        );
+        // ...while the dict keys keep the wire names the handler expects.
+        assert!(stubs.contains("\"from\":  from_"), "{stubs}");
+        assert!(stubs.contains("\"max-results\":  max_results"), "{stubs}");
     }
 
     #[tokio::test]

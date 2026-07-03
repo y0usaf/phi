@@ -638,10 +638,39 @@ finer-grained than zellij's). But:
 
 Build these as extensions *because* they stress the API, in this order of value:
 
-- [ ] **7.1 MCP client extension.** Config: one shape covering stdio/sse/http,
+- [x] **7.1 MCP client extension.** Config: one shape covering stdio/sse/http,
       per-server tool allow/deny lists, shell-expanded env/headers (reference:
       `ref/crush/internal/config/config.go:182`). Exposes MCP tools via
       `register_tool` into the Python prelude namespace.
+      *Landed as:* `McpExtension` (`phi-builtins/src/mcp/`) — a hand-rolled
+      JSON-RPC client (stdio: tokio child process, newline-delimited,
+      kill-on-drop, stderr tail in error reports; streamable http: reqwest
+      POST with json-or-SSE responses, `Mcp-Session-Id` echo; legacy `sse`
+      accepted in config but reported unsupported). Servers come from a
+      crush-shaped `mcp` table in config.lua (`McpServerConfig` in
+      `phi-session/config.rs`, the skills precedent) with a twist the skills
+      field doesn't have: `Config::load_mcp` trust-gates the *project* layer
+      specifically, because MCP servers spawn processes at startup. Env and
+      header values shell-expand (`$VAR`/`${VAR}`/`$(cmd)`, empty-expanded
+      headers omitted). Each tool registers as `ToolSpec { dispatch:
+      Handler }` named `{server}_{tool}`, so all of WS9.3a applies unchanged
+      — REPL stubs, per-server `expose = repl|native|both`, the 60s host
+      watchdog, ToolCall/ToolResult interception; params derive from the
+      server's JSON Schema (required-first for Python default ordering) and
+      the schema passes through verbatim for native exposure. A
+      `BeforeAgentStart` hook appends an `# MCP tools` roster so the model
+      learns repl-exposed names (stubs land in the env silently). Connect is
+      parallel across servers, bounded by per-server `timeout` (default 15s);
+      failures degrade to warnings, never build errors. API gaps closed on
+      the way: stub generation emitted invalid Python for params named after
+      Python keywords or containing `-`/`.` (`python_param_name[s]` in
+      phi-ext now sanitizes signatures while dict keys keep wire names) —
+      MCP schemas are the first tool source core doesn't control. E2E test:
+      fake python stdio server through connect → register → watchdogged
+      invoke (`phi-builtins/tests/mcp_stdio.rs`). Remaining, deliberately:
+      legacy SSE transport; OAuth for remote servers; dynamic
+      `tools/list_changed` (the registry is immutable after build);
+      per-session (not per-server) connection reuse in the mux.
 - [ ] **7.2 Approval/permission extension.** Uses the `ToolCall` interception
       event to gate `bash`/`write_file`/`edit_file` behind user confirmation
       with a persistable allowlist. Optional install — core stays pi-stance.
