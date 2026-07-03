@@ -349,12 +349,17 @@ impl MuxApp {
         let name_end = input.find(char::is_whitespace).unwrap_or(input.len());
         let name = input[..name_end].to_ascii_lowercase();
         let args = input[name_end..].trim();
-        let result = self.visual_runtime.as_ref().map(|rt| {
-            rt.invoke_command_sync_in(phi_ext::CommandContext::Mux, &name, args)
-        });
+        let result = self
+            .visual_runtime
+            .as_ref()
+            .map(|rt| rt.invoke_command_sync_in(phi_ext::CommandContext::Mux, &name, args));
         let output = match result {
             None | Some(Ok(None)) => {
-                self.set_note_on(vid, format!("unknown command: :{name}"), StatusNoteKind::Error);
+                self.set_note_on(
+                    vid,
+                    format!("unknown command: :{name}"),
+                    StatusNoteKind::Error,
+                );
                 return;
             }
             Some(Err(error)) => {
@@ -384,8 +389,7 @@ impl MuxApp {
                 phi_ext::OVERLAY_HELP => self.toggle_help_overlay(vid),
                 phi_ext::OVERLAY_USAGE => self.open_usage_overlay(vid),
                 _ => {
-                    let payload =
-                        payload.map(|value| Box::new(value) as phi_ext::OverlayPayload);
+                    let payload = payload.map(|value| Box::new(value) as phi_ext::OverlayPayload);
                     if !self.open_extension_overlay(vid, &name, payload) {
                         self.set_note_on(
                             vid,

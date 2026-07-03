@@ -65,11 +65,14 @@ fn context_tokens(usage: &Usage) -> u64 {
     usage.input + usage.cache_read + usage.cache_write + usage.output
 }
 
-/// Index of the last `Role::User` message that still has messages after it,
-/// past the preserved head (`system` + initial user prompt). Cutting at a
-/// user-message boundary can never orphan a tool result from its assistant
-/// tool call (tool results always directly follow their assistant message).
-/// `history.len()` when there is no safe boundary (keep no tail).
+/// Index of the last `Role::Assistant` message that still has messages after
+/// it (its tool results), past the preserved head (`system` + initial user
+/// prompt) — i.e. the start of the most recent complete iteration, which is
+/// kept verbatim. Ordinary iterations carry no user messages anymore (WS9.2),
+/// so the assistant tool-call message is the iteration boundary. Cutting at
+/// it can never orphan a tool result from its assistant tool call (results
+/// always directly follow their assistant message, so they land in the tail
+/// together). `history.len()` when there is no safe boundary (keep no tail).
 fn recent_tail_boundary(history: &[ChatMessage]) -> usize {
     history
         .iter()
@@ -77,7 +80,7 @@ fn recent_tail_boundary(history: &[ChatMessage]) -> usize {
         .skip(2)
         .rev()
         .skip(1) // the boundary must keep at least one message after it
-        .find(|(_, m)| m.role == Role::User)
+        .find(|(_, m)| m.role == Role::Assistant)
         .map(|(i, _)| i)
         .unwrap_or(history.len())
 }
@@ -271,30 +274,47 @@ mod tests {
     }
 
     #[test]
-    fn tail_boundary_cuts_at_last_user_with_following_messages() {
+    fn tail_boundary_cuts_at_last_assistant_with_following_messages() {
+        // Two iterations, no per-turn user messages (WS9.2 history shape):
+        // the boundary is the last assistant tool-call message, keeping the
+        // most recent iteration (a1 + t1) verbatim.
         let history = vec![
             msg(Role::System, "sys"),
             msg(Role::User, "initial"),
-            msg(Role::User, "turn 0"),
             msg(Role::Assistant, "a0"),
             msg(Role::Tool, "t0"),
-            msg(Role::User, "turn 1"),
             msg(Role::Assistant, "a1"),
             msg(Role::Tool, "t1"),
         ];
-        assert_eq!(recent_tail_boundary(&history), 5);
+        assert_eq!(recent_tail_boundary(&history), 4);
     }
 
     #[test]
-    fn tail_boundary_skips_trailing_user_message() {
-        // A trailing user message (e.g. a nudge) is not a useful boundary —
-        // it would keep nothing but the nudge itself.
+    fn tail_boundary_keeps_trailing_nudge_with_last_iteration() {
+        // A trailing user message (e.g. a loop nudge) stays in the tail with
+        // the iteration it follows.
         let history = vec![
             msg(Role::System, "sys"),
             msg(Role::User, "initial"),
-            msg(Role::User, "turn 0"),
             msg(Role::Assistant, "a0"),
+            msg(Role::Tool, "t0"),
+            msg(Role::Assistant, "a1"),
+            msg(Role::Tool, "t1"),
             msg(Role::User, "nudge"),
+        ];
+        assert_eq!(recent_tail_boundary(&history), 4);
+    }
+
+    #[test]
+    fn tail_boundary_bails_on_single_iteration() {
+        // One iteration only: the boundary lands on the head edge (index 2),
+        // which maybe_compact treats as "no compactable span" — rebuilding
+        // would only grow the history.
+        let history = vec![
+            msg(Role::System, "sys"),
+            msg(Role::User, "initial"),
+            msg(Role::Assistant, "a0"),
+            msg(Role::Tool, "t0"),
         ];
         assert_eq!(recent_tail_boundary(&history), 2);
     }

@@ -7,10 +7,9 @@ use tokio::sync::Mutex as TokioMutex;
 
 use crate::{
     CommandContext, CommandInvocation, CommandOutput, CommandSpec, EventHandlerRegistration,
-    EventKind,
-    EventPayload, EventReturn, ExtensionContextRef, ExtensionManifest, ExtensionMode, FlagSpec,
-    LifecycleEvent, MessageRendererSpec, OverlaySpec, ProviderConfig, ShortcutSpec, SpinnerSpec,
-    TextEffectSpec, ThemeSpec, ThinkingExpressionSpec, ToolSpec,
+    EventKind, EventPayload, EventReturn, ExtensionContextRef, ExtensionManifest, ExtensionMode,
+    FlagSpec, LifecycleEvent, MessageRendererSpec, OverlaySpec, ProviderConfig, ShortcutSpec,
+    SpinnerSpec, TextEffectSpec, ThemeSpec, ThinkingExpressionSpec, ToolSpec,
 };
 use anyhow::{Result, anyhow};
 

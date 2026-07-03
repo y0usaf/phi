@@ -34,13 +34,15 @@ fn uncapped_root_omits_turn_scarcity_nudge() {
 }
 
 #[test]
-fn capped_child_appends_turn_scarcity_nudge() {
+fn capped_child_appends_turn_budget_and_scarcity_nudge() {
     let opts = SystemPromptOptions {
         orchestrator: true,
         turn_cap: Some(30),
         ..Default::default()
     };
     let prompt = build_system_prompt(&opts);
+    // WS9.2: the cap itself lives in the system prompt, not per-turn messages.
+    assert!(prompt.contains("hard cap of 30 turns"));
     assert!(prompt.contains("running out of turns"));
     assert!(prompt.contains(TURN_SCARCITY_NUDGE));
     assert!(!ORCHESTRATOR_ADDENDUM.contains("running out of turns"));
@@ -128,22 +130,24 @@ fn metadata_prompt_matches_upstream() {
 }
 
 #[test]
-fn user_prompt_matches_upstream() {
+fn session_notes_one_time_per_send() {
+    // WS9.2: no per-turn "Turn N:" scaffolding exists anymore. Environment
+    // notes are emitted once per send, and only when there is something to
+    // note — a cold single-context run gets nothing.
+    assert_eq!(session_notes(1, 0, false), None);
+    // Warm continuation with prior histories.
     assert_eq!(
-        build_user_prompt(0, Some(30), 1, 0, false),
-        "You have not interacted with the REPL environment or seen your prompt / context yet. Look at the context first; do not provide a final answer yet.\n\nTurn 1/30:"
+        session_notes(1, 2, true).as_deref(),
+        Some(
+            "Note: You have 2 prior conversation histories available (history_0 through history_1).\n\nNote: You are continuing this session. Your previous conversation context is included above; your REPL environment and variables persist across turns. Do not re-probe `context` from scratch — build on what you already know."
+        )
     );
-    assert_eq!(build_user_prompt(4, Some(30), 1, 0, false), "Turn 5/30:");
-    assert_eq!(build_user_prompt(4, None, 1, 0, false), "Turn 5:");
-    // Warm session: no cold-start preamble, continuation note on turn 1.
+    // Extra contexts + a single prior history, cold restore path.
     assert_eq!(
-        build_user_prompt(0, Some(30), 1, 2, true),
-        "Turn 1/30:\n\nNote: You have 2 prior conversation histories available (history_0 through history_1).\n\nNote: You are continuing this session. Your previous conversation context is included above; your REPL environment and variables persist across turns. Do not re-probe `context` from scratch — build on what you already know."
-    );
-    // Warm session, turn 2+: no continuation note (only on turn 1).
-    assert_eq!(
-        build_user_prompt(1, Some(10), 2, 1, true),
-        "Turn 2/10:\n\nNote: You have 2 contexts available (context_0 through context_1).\n\nNote: You have 1 prior conversation history available in the `history` variable."
+        session_notes(2, 1, false).as_deref(),
+        Some(
+            "Note: You have 2 contexts available (context_0 through context_1).\n\nNote: You have 1 prior conversation history available in the `history` variable."
+        )
     );
 }
 

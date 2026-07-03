@@ -464,17 +464,12 @@ async fn prose_and_tool_call_in_same_turn() {
 }
 
 #[tokio::test]
-async fn prose_silently_banked_then_repl_answer() {
-    // Silent banking: a block-free turn executes nothing, but instead of
-    // injecting a prose nudge, the prose is silently banked into history
-    // and the loop continues. The model proceeds to code on the next turn.
+async fn first_prose_turn_is_final_answer() {
+    // WS9.1: a no-tool-call, non-empty turn IS the final answer, immediately
+    // — even on turn 1. No banking, no nudge, no extra completions.
     let root = Arc::new(ScriptedLm::new(
         "root-model",
-        &[
-            "I can answer without using the REPL.",
-            "Probing now.\n```repl\nprint(context[:4])\n```",
-            "```repl\nanswer['content'] = context.split()[-1]\nanswer['ready'] = True\n```",
-        ],
+        &["The magic number is 42.", "NEVER REACHED"],
     ));
     let engine = rlm(RlmConfig::default(), root.clone(), quiet_sub());
     let result = engine
@@ -484,26 +479,10 @@ async fn prose_silently_banked_then_repl_answer() {
             &CancellationToken::new(),
         )
         .await;
-    assert_eq!(result.stop, StopCause::Answer, "{:?}", result.error);
-    assert_eq!(result.response, "42");
-    assert_eq!(result.iterations, 3);
-
-    let prompts = root.recorded_prompts();
-    // Turn 2's prompt must contain the banked prose-only assistant message
-    // from turn 1, but NO prose-nudge user reminder (silent banking).
-    let second = &prompts[1];
-    assert!(
-        second
-            .iter()
-            .any(|m| m.role == Role::Assistant && m.content.contains("without using the REPL"))
-    );
-    assert!(
-        !second
-            .iter()
-            .any(|m| m.role == Role::User
-                && m.content.contains("no tool calls or answer submission")),
-        "no nudge after first prose (below PROSE_NUDGE_THRESHOLD)"
-    );
+    assert_eq!(result.stop, StopCause::Prose, "{:?}", result.error);
+    assert_eq!(result.response, "The magic number is 42.");
+    assert_eq!(result.iterations, 1, "zero wasted end-of-task completions");
+    assert_eq!(root.recorded_prompts().len(), 1);
 }
 
 #[tokio::test]
@@ -532,91 +511,41 @@ async fn explicit_task_complete_token_ends_session() {
 }
 
 #[tokio::test]
-async fn max_consecutive_prose_safety_valve_fires() {
-    // After MAX_CONSECUTIVE_PROSE (5) consecutive block-free turns
-    // without a <task_complete> token, the safety valve fires and the
-    // prose is accepted as the final answer. A nudge is injected after
-    // PROSE_NUDGE_THRESHOLD (2) consecutive prose turns.
+async fn prose_after_code_turns_ends_run() {
+    // Code turns, then a prose turn: the prose is the final answer on the
+    // spot (WS9.1) — the model followed the system prompt ("stop making tool
+    // calls and output your answer as text") and pays no extra completions.
     let root = Arc::new(ScriptedLm::new(
         "root-model",
         &[
-            "Thinking about it.",
-            "Still thinking.",
-            "Almost there.",
-            "Getting closer.",
-            "The answer is 42.",
+            "Probing.\n```repl\nprint(context[:10])\n```",
+            "The context says the magic number is 42.",
+            "NEVER REACHED",
         ],
     ));
     let engine = rlm(RlmConfig::default(), root.clone(), quiet_sub());
     let result = engine
         .completion(
-            ContextPayload::Str("ctx".into()),
+            ContextPayload::Str("The magic number is 42".into()),
             Some("What is the magic number?"),
             &CancellationToken::new(),
         )
         .await;
     assert_eq!(result.stop, StopCause::Prose, "{:?}", result.error);
-    assert_eq!(result.response, "The answer is 42.");
-    assert_eq!(result.iterations, 5);
-
-    let prompts = root.recorded_prompts();
-    // A prose nudge should be injected after the 2nd consecutive prose turn,
-    // appearing in the prompt for turn 3 (index 2) and persisting in history
-    // for all subsequent turns.
-    let third = &prompts[2];
-    assert!(
-        third
-            .iter()
-            .any(|m| m.role == Role::User
-                && m.content.contains("no tool calls or answer submission")),
-        "prose nudge should be injected after PROSE_NUDGE_THRESHOLD consecutive prose turns"
-    );
-    // The nudge should NOT appear in the first two turns (before the threshold).
-    for prompt in &prompts[..2] {
-        assert!(
-            !prompt.iter().any(|m| m.role == Role::User
-                && m.content.contains("no tool calls or answer submission")),
-            "prose nudge should not be injected before PROSE_NUDGE_THRESHOLD"
-        );
-    }
-    // Exactly one nudge User message should exist in the last prompt's history.
-    let nudge_msgs = prompts
-        .last()
-        .unwrap()
-        .iter()
-        .filter(|m| {
-            m.role == Role::User && m.content.contains("no tool calls or answer submission")
-        })
-        .count();
-    assert_eq!(nudge_msgs, 1, "prose nudge should be injected exactly once");
+    assert_eq!(result.response, "The context says the magic number is 42.");
+    assert_eq!(result.iterations, 2);
 }
 
-// (second_consecutive_prose_turn_accepted_as_answer removed: the
-//  2-strike prose-bounce is replaced by silent banking + task_complete
-//  token + MAX_CONSECUTIVE_PROSE safety valve with a nudge at
-//  PROSE_NUDGE_THRESHOLD. See explicit_task_complete_token_ends_session,
-//  max_consecutive_prose_safety_valve_fires, and
-//  prose_nudge_course_corrects below.)
-
 #[tokio::test]
-async fn prose_nudge_course_corrects() {
-    // prose → prose → (nudge injected at PROSE_NUDGE_THRESHOLD=2) → code →
-    // repl-answer. The model course-corrects after receiving the nudge,
-    // proving the nudge gives a drifting model a chance to recover before
-    // the safety valve fires.
+async fn empty_turn_nudged_then_recovers() {
+    // An empty turn (no tool calls, no text) cannot be an answer: an
+    // EMPTY_TURN_NUDGE user message is injected and the loop continues,
+    // giving the model a chance to recover.
     let root = Arc::new(ScriptedLm::new(
         "root-model",
         &[
-            "I can figure this out by reasoning.",
-            "Let me think through the logic step by step.",
-            "Actually, let me just check.
-```repl
-print(context[:4])
-```",
-            "```repl
-answer['content'] = 'done'
-answer['ready'] = True
-```",
+            "",
+            "```repl\nanswer['content'] = 'recovered'\nanswer['ready'] = True\n```",
         ],
     ));
     let engine = rlm(RlmConfig::default(), root.clone(), quiet_sub());
@@ -628,91 +557,51 @@ answer['ready'] = True
         )
         .await;
     assert_eq!(result.stop, StopCause::Answer, "{:?}", result.error);
-    assert_eq!(result.response, "done");
-    assert_eq!(result.iterations, 4);
+    assert_eq!(result.response, "recovered");
+    assert_eq!(result.iterations, 2);
 
     let prompts = root.recorded_prompts();
-    // Turn 1 (consecutive_prose=1): banked silently, no nudge in turn 2's prompt.
+    // The nudge lands in turn 2's prompt; nothing is banked for the empty
+    // turn itself (an empty assistant message is provider-hostile).
     let second = &prompts[1];
+    assert!(
+        second
+            .iter()
+            .any(|m| m.role == Role::User && m.content.contains("Your previous turn was empty")),
+        "empty-turn nudge expected in turn 2's prompt"
+    );
     assert!(
         !second
             .iter()
-            .any(|m| m.role == Role::User
-                && m.content.contains("no tool calls or answer submission")),
-        "no nudge before PROSE_NUDGE_THRESHOLD"
+            .any(|m| m.role == Role::Assistant && m.content.is_empty()),
+        "no empty assistant message banked"
     );
-    // Turn 2 (consecutive_prose=2): nudge injected, appears in turn 3's prompt.
-    let third = &prompts[2];
-    assert!(
-        third
-            .iter()
-            .any(|m| m.role == Role::User
-                && m.content.contains("no tool calls or answer submission")),
-        "nudge should appear in turn 3's prompt after 2 consecutive prose turns"
-    );
-    // Turn 3: code (counter resets to 0). The nudge from turn 2 persists
-    // in history, but no NEW nudge should be injected. Verify exactly one
-    // nudge message exists in the final prompt's history.
-    let nudge_msgs = prompts
-        .last()
-        .unwrap()
-        .iter()
-        .filter(|m| {
-            m.role == Role::User && m.content.contains("no tool calls or answer submission")
-        })
-        .count();
-    assert_eq!(nudge_msgs, 1, "no additional nudge after counter reset");
 }
 
 #[tokio::test]
-async fn prose_counter_resets_after_code_turn() {
-    // prose → code → prose → repl-answer: the `consecutive_prose` counter
-    // must reset to 0 when a turn contains a ```repl``` block. With silent
-    // banking (no nudge), both prose turns are banked silently and the
-    // model proceeds to the REPL on turn 4.
-    let root = Arc::new(ScriptedLm::new(
-        "root-model",
-        &[
-            "Let me think about this without using the REPL.",
-            "Actually, let me check.\n```repl\nprint('checking')\n```",
-            "So the answer is clear now, without needing more code.",
-            "Here it is.\n```repl\nanswer['content'] = 'done'\nanswer['ready'] = True\n```",
-        ],
-    ));
+async fn consecutive_empty_turns_fail_run() {
+    // MAX_CONSECUTIVE_EMPTY (3) empty turns in a row fail the run — an empty
+    // string can never be accepted as an answer, so failing beats spinning.
+    let root = Arc::new(ScriptedLm::new("root-model", &[]).with_default(""));
     let engine = rlm(RlmConfig::default(), root.clone(), quiet_sub());
     let result = engine
         .completion(
             ContextPayload::Str("ctx".into()),
-            Some("What is the magic number?"),
+            Some("What is the answer?"),
             &CancellationToken::new(),
         )
         .await;
-    assert_eq!(result.response, "done", "{:?}", result.error);
-    assert_eq!(result.stop, StopCause::Answer, "{:?}", result.error);
-    assert_eq!(result.iterations, 4);
-
-    let prompts = root.recorded_prompts();
-    // Turn 1 (prose, consecutive=1) is banked silently — no nudge fires
-    // because consecutive_prose (1) < PROSE_NUDGE_THRESHOLD (2).
-    let second = &prompts[1];
+    assert_eq!(result.stop, StopCause::Failed);
     assert!(
-        !second
-            .iter()
-            .any(|m| m.role == Role::User
-                && m.content.contains("no tool calls or answer submission")),
-        "no nudge after first prose (below PROSE_NUDGE_THRESHOLD)"
+        result
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("consecutive empty model turns"),
+        "{:?}",
+        result.error
     );
-    // Turn 3 (the second prose, after the code turn reset, consecutive=1)
-    // is also banked silently — the counter reset to 0 after the code turn,
-    // so this prose turn is consecutive=1 again, below the threshold.
-    let fourth = &prompts[3];
-    assert!(
-        !fourth
-            .iter()
-            .any(|m| m.role == Role::User
-                && m.content.contains("no tool calls or answer submission")),
-        "no nudge after counter reset (below PROSE_NUDGE_THRESHOLD)"
-    );
+    assert_eq!(result.iterations, 3);
 }
 
 #[tokio::test]
@@ -741,9 +630,18 @@ async fn root_ignores_iteration_limit() {
     assert_eq!(result.response, "done");
     assert_eq!(result.iterations, 3);
 
+    // WS9.2: the uncapped root gets no per-turn scaffolding at all — the
+    // only user message in any turn's prompt is the initial one, and later
+    // turns continue straight from the tool results.
     let prompts = root.recorded_prompts();
-    assert!(prompts[0].iter().any(|m| m.content.contains("Turn 1:")));
-    assert!(prompts[1].iter().any(|m| m.content.contains("Turn 2:")));
+    for prompt in &prompts {
+        assert_eq!(
+            prompt.iter().filter(|m| m.role == Role::User).count(),
+            1,
+            "no per-turn user messages expected"
+        );
+    }
+    assert_eq!(prompts[1].last().unwrap().role, Role::Tool);
 }
 
 #[tokio::test]
@@ -776,7 +674,19 @@ async fn recursive_child_default_answer_on_iteration_exhaustion() {
     assert_eq!(result.response, "the synthesized final");
 
     let prompts = root.recorded_prompts();
-    assert!(prompts[0].iter().any(|m| m.content.contains("Turn 1/2:")));
+    // The cap lives in the system prompt (WS9.2), and with 2 turns remaining
+    // out of 2 (≤ TURN_WARNING_THRESHOLD) the remaining-turns reminder is
+    // included from turn 1.
+    assert!(
+        prompts[0]
+            .iter()
+            .any(|m| m.role == Role::System && m.content.contains("hard cap of 2 turns"))
+    );
+    assert!(
+        prompts[0]
+            .iter()
+            .any(|m| m.role == Role::User && m.content.contains("turn 1/2 — 2 turn(s) remaining"))
+    );
     let last = prompts.last().unwrap().last().unwrap();
     assert_eq!(last.role, Role::Assistant);
     assert_eq!(last.content, DEFAULT_ANSWER_NUDGE);
@@ -1711,10 +1621,12 @@ async fn compaction_folds_history_and_archives_span() {
 
     // The archive variable is a real, populated REPL list: printing its
     // first role produced output visible in the next turn's tool result.
+    // With no per-turn user messages (WS9.2), the compacted span starts at
+    // the turn-0 assistant message.
     let last = prompts.last().unwrap();
     assert!(
         last.iter()
-            .any(|m| m.role == Role::Tool && m.content.contains("user")),
+            .any(|m| m.role == Role::Tool && m.content.contains("assistant")),
         "compacted_0_0 must exist in the REPL and hold message dicts"
     );
 }

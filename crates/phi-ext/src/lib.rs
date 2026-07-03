@@ -35,9 +35,8 @@ pub use manifest::ExtensionManifest;
 pub use message_renderer::MessageRendererSpec;
 pub use overlay_spec::{
     HelpEntry, HelpPayload, ModelPickerPayload, OVERLAY_ARCHIVE, OVERLAY_HELP, OVERLAY_MODEL,
-    OVERLAY_USAGE,
-    OverlayInitFn, OverlayKeyFn, OverlayOutcome, OverlayPayload, OverlayRenderFn, OverlayResponder,
-    OverlayScrollFn, OverlaySpec, OverlayState,
+    OVERLAY_USAGE, OverlayInitFn, OverlayKeyFn, OverlayOutcome, OverlayPayload, OverlayRenderFn,
+    OverlayResponder, OverlayScrollFn, OverlaySpec, OverlayState,
 };
 pub use provider::{ProviderConfig, ProviderModelConfig, ProviderModelCost};
 pub use runtime::{

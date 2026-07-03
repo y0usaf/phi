@@ -271,6 +271,17 @@ impl RlmSession {
         // empties the source vector.
         history.append(&mut self.pending_shell);
         let warm = !self.transcript.is_empty();
+        // One-time environment notes (extra contexts, prior histories, warm
+        // continuation). These used to be re-injected before every model call
+        // by run_loop's per-turn "Turn N:" message (WS9.2); now they land once
+        // per send, as a user message providers merge with the prompt above.
+        if let Some(notes) = crate::prompts::session_notes(self.contexts, self.exchanges, warm) {
+            history.push(ChatMessage {
+                role: Role::User,
+                content: notes,
+                ..Default::default()
+            });
+        }
         self.rlm.register_repl_tool();
         // Build the save-point closure that drains steered messages into
         // live history at each iteration boundary. Each drained text becomes
@@ -299,9 +310,7 @@ impl RlmSession {
                 env,
                 &self.handler,
                 &mut history,
-                self.contexts,
                 self.exchanges,
-                warm,
                 cancel,
                 Some(&*sp),
             )

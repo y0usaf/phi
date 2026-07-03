@@ -16,14 +16,14 @@ use phi_ext::AppRuntime;
 use phi_ext::{EventKind, EventPayload, EventReturn, LifecycleEvent};
 
 use crate::config::{
-    EnvFactory, Events, LimitKind, PythonEnvFactory, RlmCompletion, RlmConfig,
-    RlmEvent, SavePointFn, StopCause,
+    EnvFactory, Events, LimitKind, PythonEnvFactory, RlmCompletion, RlmConfig, RlmEvent,
+    SavePointFn, StopCause,
 };
 use crate::llm_parse::{ExecutedBlock, format_execution_result};
 use crate::lm_core::{ChatMessage, ContextPayload, LanguageModel, LmHandler, Role};
 use crate::prompts::{
-    DEFAULT_ANSWER_NUDGE, PROSE_NUDGE, QueryMetadata, SystemPromptOptions,
-    build_system_prompt, build_user_prompt, metadata_user_prompt,
+    DEFAULT_ANSWER_NUDGE, EMPTY_TURN_NUDGE, QueryMetadata, SystemPromptOptions,
+    build_system_prompt, metadata_user_prompt,
 };
 
 use super::super::TurnState;
@@ -38,19 +38,17 @@ static TASK_COMPLETE_RE: LazyLock<Regex> = LazyLock::new(|| {
         .expect("task_complete regex")
 });
 
-/// Number of consecutive block-free turns after which a `Role::User` nudge
-/// is injected, reminding the model to use the REPL or submit a final answer.
-/// Low enough to course-correct a model that is drifting in prose, high enough
-/// that a single turn of verbal planning is not interrupted.
-const PROSE_NUDGE_THRESHOLD: usize = 2;
+/// Maximum consecutive *empty* turns (no tool calls AND no text) before the
+/// run fails. Non-empty prose is the final answer immediately (WS9.1), so
+/// only a model emitting nothing at all reaches this — each empty turn gets
+/// an `EMPTY_TURN_NUDGE` first, and an empty string can never be accepted as
+/// an answer, so the run fails rather than spinning.
+const MAX_CONSECUTIVE_EMPTY: usize = 3;
 
-/// Maximum consecutive block-free turns (no ```repl``` block, no
-/// `<task_complete>` token) before the prose-safety-valve fires and the prose
-/// is accepted as the final answer. High enough that a verbally-planning model
-/// won't trip it (with the nudge at `PROSE_NUDGE_THRESHOLD` giving it a chance
-/// to course-correct first), low enough to catch a genuinely stuck model
-/// before exhausting `max_iterations`.
-const MAX_CONSECUTIVE_PROSE: usize = 5;
+/// When a turn-capped run has this many turns (or fewer) remaining, a
+/// remaining-turns reminder is included in the next turn's user preamble
+/// (codex's token-budget-reminder pattern). Uncapped root runs never see it.
+const TURN_WARNING_THRESHOLD: usize = 3;
 
 /// Number of additional identical-signature iterations (after the first match)
 /// that must accumulate before a corrective nudge is injected into history.
@@ -263,7 +261,7 @@ impl Rlm {
                 }
                 self.register_repl_tool();
                 let outcome = self
-                    .run_loop(&mut env, &handler, &mut history, 1, 0, false, cancel, None)
+                    .run_loop(&mut env, &handler, &mut history, 0, cancel, None)
                     .await;
                 env.shutdown().await;
                 outcome
@@ -360,16 +358,14 @@ impl Rlm {
         env: &mut Box<dyn ReplEnv>,
         handler: &Arc<LmHandler>,
         history: &mut Vec<ChatMessage>,
-        context_count: usize,
         history_count: usize,
-        warm: bool,
         cancel: &CancellationToken,
         save_point: Option<&SavePointFn>,
     ) -> Outcome {
         let start = Instant::now();
         let mut best_partial: Option<String> = None;
         let mut consecutive_errors = 0usize;
-        let mut consecutive_prose = 0usize;
+        let mut consecutive_empty = 0usize;
         let mut iterations = 0usize;
         // Loop-detection state: tracks the hash of all (code, stdout, stderr)
         // triples from the most recent iteration. Reset whenever the signature
@@ -407,21 +403,6 @@ impl Rlm {
                 return self.limit_outcome(LimitKind::Timeout, detail, best_partial, iterations);
             }
 
-            // Prepend any steer text carried from the previous turn's save_point
-            // so the model sees it at the top of the next turn's user prompt.
-            let turn_prompt =
-                build_user_prompt(i, iteration_limit, context_count, history_count, warm);
-            let turn_prompt = if let Some(steer) = pending_steer.take() {
-                format!("{steer}\n\n{turn_prompt}")
-            } else {
-                turn_prompt
-            };
-            history.push(ChatMessage {
-                role: Role::User,
-                content: turn_prompt,
-                ..Default::default()
-            });
-
             self.events.emit(RlmEvent::IterationStart {
                 depth: self.depth,
                 iteration: i,
@@ -435,10 +416,16 @@ impl Rlm {
             );
             let iter_start = Instant::now();
 
-            // ── Context injection from extensions ───────────────────────────
-            // Extensions can inject (label, content) pairs that get prepended
-            // to the user prompt for this turn. This mirrors pi's `context`
-            // event with `MessageInjection` returns.
+            // ── Per-turn user preamble (WS9.2) ──────────────────────────────
+            // No routine "Turn N:" scaffolding is injected — the model just
+            // continues from the tool results, like pi/codex. A user message
+            // is pushed only when there is real content for this turn:
+            // extension context injections (pi's `context` event), steer text
+            // carried from the previous turn's save_point, or a remaining-
+            // turns reminder when a capped run nears its limit. Providers
+            // merge consecutive user-role messages, so pushing this after
+            // tool results is safe.
+            let mut preamble: Vec<String> = Vec::new();
             if let Some(rt) = &self.runtime {
                 // Race context injection against cancellation. On cancel,
                 // yield no injections and let the outer `select!` catch cancel
@@ -448,22 +435,28 @@ impl Rlm {
                     r = rt.context_injections(i as u32) => r.unwrap_or_default(),
                     () = cancel.cancelled() => Vec::new(),
                 };
-                if !injections.is_empty() {
-                    let mut combined = String::new();
-                    for (label, content) in &injections {
-                        combined.push_str(&format!(
-                            "# {label}
-{content}
-
-"
-                        ));
-                    }
-                    if let Some(last) = history.last_mut() {
-                        if last.role == Role::User {
-                            last.content = format!("{combined}{}", last.content);
-                        }
-                    }
+                for (label, content) in &injections {
+                    preamble.push(format!("# {label}\n{content}"));
                 }
+            }
+            if let Some(steer) = pending_steer.take() {
+                preamble.push(steer);
+            }
+            if let Some(limit) = iteration_limit {
+                let remaining = limit - i;
+                if remaining <= TURN_WARNING_THRESHOLD {
+                    preamble.push(format!(
+                        "Note: turn {}/{limit} — {remaining} turn(s) remaining. If you cannot finish in time, submit your best answer now.",
+                        i + 1
+                    ));
+                }
+            }
+            if !preamble.is_empty() {
+                history.push(ChatMessage {
+                    role: Role::User,
+                    content: preamble.join("\n\n"),
+                    ..Default::default()
+                });
             }
 
             // Channel for eagerly executing tool calls during the stream.
@@ -758,7 +751,7 @@ impl Rlm {
             let had_tool_calls = !completion.tool_calls.is_empty();
 
             if had_tool_calls {
-                consecutive_prose = 0;
+                consecutive_empty = 0;
 
                 // ── Loop detection ─────────────────────────────────────────
                 // Hash all (code, stdout, stderr) triples from this iteration.
@@ -963,18 +956,20 @@ impl Rlm {
                 };
             }
 
-            // Safety valve: after MAX_CONSECUTIVE_PROSE block-free turns,
-            // accept the prose as the final answer.
-            // An empty-blocks (prose) turn resets loop detection: the model is
-            // not in a code-execution stall if it emitted prose at all.
+            // A block-free turn resets loop detection: the model is not in a
+            // code-execution stall if it stopped calling tools.
             prev_loop_sig = None;
             consecutive_loop = 0;
             loop_nudge_injected = false;
-            consecutive_prose += 1;
-            // Safety valve: after MAX_CONSECUTIVE_PROSE block-free turns,
-            // accept the prose as the final answer.
-            if consecutive_prose >= MAX_CONSECUTIVE_PROSE {
-                let prose = response.trim().to_owned();
+
+            // WS9.1: a no-tool-call, non-empty turn IS the final answer —
+            // immediately, matching our own system prompt ("stop making tool
+            // calls and output your answer as text") and pi/codex turn
+            // semantics. `answer['ready']` and `<task_complete>` above remain
+            // the explicit alternate completion paths.
+            let prose = response.trim();
+            if !prose.is_empty() {
+                let prose = prose.to_owned();
                 self.events.emit(RlmEvent::AnswerSubmitted {
                     depth: self.depth,
                     content: prose.clone(),
@@ -1002,7 +997,26 @@ impl Rlm {
                 };
             }
 
-            // Bank the prose into history and continue.
+            // Empty turn: no tool calls AND no text. Nothing to bank (an
+            // empty assistant message is provider-hostile) and nothing that
+            // could be an answer. Nudge every empty turn — without new input
+            // the model faces an identical context and would likely repeat —
+            // and fail at the ceiling rather than spin.
+            consecutive_empty += 1;
+            if consecutive_empty >= MAX_CONSECUTIVE_EMPTY {
+                let message = format!(
+                    "Error: {MAX_CONSECUTIVE_EMPTY} consecutive empty model turns (no tool calls, no text); aborting run"
+                );
+                return match best_partial {
+                    Some(partial) => Outcome {
+                        stop: StopCause::Failed,
+                        response: partial,
+                        error: Some(message),
+                        iterations,
+                    },
+                    None => Outcome::failed(message, iterations),
+                };
+            }
             dispatch_event(
                 &self.runtime,
                 LifecycleEvent {
@@ -1019,34 +1033,10 @@ impl Rlm {
                 duration: iter_start.elapsed(),
             });
             history.push(ChatMessage {
-                role: Role::Assistant,
-                content: response,
+                role: Role::User,
+                content: EMPTY_TURN_NUDGE.to_owned(),
                 ..Default::default()
             });
-
-            // After PROSE_NUDGE_THRESHOLD consecutive block-free turns,
-            // inject a nudge (once) reminding the model to use the REPL or
-            // submit a final answer before the safety valve fires.
-            if consecutive_prose == PROSE_NUDGE_THRESHOLD {
-                history.push(ChatMessage {
-                    role: Role::User,
-                    content: PROSE_NUDGE.to_owned(),
-                    ..Default::default()
-                });
-            }
-            // Prose turns still grow history; compact here too so a long
-            // prose-heavy run can't overflow between code turns.
-            self.maybe_compact(
-                env,
-                handler,
-                history,
-                &completion.usage,
-                &mut compaction,
-                i,
-                history_count,
-                cancel,
-            )
-            .await;
             i += 1;
         }
 

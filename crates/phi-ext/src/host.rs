@@ -2,9 +2,8 @@ use std::collections::BTreeMap;
 
 use crate::{
     CommandContext, CommandSpec, EventHandlerRegistration, ExtensionHost, FlagSpec,
-    MessageRendererSpec,
-    OverlaySpec, ProviderConfig, ShortcutSpec, SpinnerSpec, TextEffectSpec, ThemeSpec,
-    ThinkingExpressionSpec, ToolSpec,
+    MessageRendererSpec, OverlaySpec, ProviderConfig, ShortcutSpec, SpinnerSpec, TextEffectSpec,
+    ThemeSpec, ThinkingExpressionSpec, ToolSpec,
 };
 use anyhow::{Result, bail};
 

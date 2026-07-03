@@ -273,7 +273,10 @@ mod tests {
         let out = invoke(&rt, "q", "");
         assert_eq!(out.actions, vec![UiAction::Quit]);
         let out = invoke(&rt, "o", "/tmp");
-        assert_eq!(out.actions, vec![UiAction::OpenProject(PathBuf::from("/tmp"))]);
+        assert_eq!(
+            out.actions,
+            vec![UiAction::OpenProject(PathBuf::from("/tmp"))]
+        );
         let out = invoke(&rt, "archives", "");
         assert_eq!(
             out.actions,

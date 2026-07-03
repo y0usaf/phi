@@ -1,48 +1,40 @@
 use super::constants::*;
 
-/// Per-turn user prompt. `iteration` is 0-based.
-pub(crate) fn build_user_prompt(
-    iteration: usize,
-    max_iterations: Option<usize>,
+/// One-time environment notes for a session send (WS9.2: these used to be
+/// re-injected before every model call via a per-turn "Turn N:" user message;
+/// now they are appended once to the send's user prompt). `None` when there is
+/// nothing worth noting (single context, no prior exchanges, cold run).
+pub(crate) fn session_notes(
     context_count: usize,
     history_count: usize,
     warm: bool,
-) -> String {
-    let body = match max_iterations {
-        Some(max_iterations) => format!("Turn {}/{}:", iteration + 1, max_iterations),
-        None => format!("Turn {}:", iteration + 1),
-    };
-    let mut prompt = if iteration == 0 && history_count == 0 && !warm {
-        format!(
-            "You have not interacted with the REPL environment or seen your prompt / context yet. Look at the context first; do not provide a final answer yet.\n\n{body}"
-        )
-    } else {
-        body
-    };
+) -> Option<String> {
+    let mut notes: Vec<String> = Vec::new();
     if context_count > 1 {
-        prompt.push_str(&format!(
-            "\n\nNote: You have {} contexts available (context_0 through context_{}).",
+        notes.push(format!(
+            "Note: You have {} contexts available (context_0 through context_{}).",
             context_count,
             context_count - 1
         ));
     }
     if history_count == 1 {
-        prompt.push_str(
-            "\n\nNote: You have 1 prior conversation history available in the `history` variable.",
+        notes.push(
+            "Note: You have 1 prior conversation history available in the `history` variable."
+                .to_owned(),
         );
     } else if history_count > 1 {
-        prompt.push_str(&format!(
-            "\n\nNote: You have {} prior conversation histories available (history_0 through history_{}).",
+        notes.push(format!(
+            "Note: You have {} prior conversation histories available (history_0 through history_{}).",
             history_count,
             history_count - 1
         ));
     }
-    if warm && iteration == 0 {
-        prompt.push_str(
-            "\n\nNote: You are continuing this session. Your previous conversation context is included above; your REPL environment and variables persist across turns. Do not re-probe `context` from scratch — build on what you already know.",
+    if warm {
+        notes.push(
+            "Note: You are continuing this session. Your previous conversation context is included above; your REPL environment and variables persist across turns. Do not re-probe `context` from scratch — build on what you already know.".to_owned(),
         );
     }
-    prompt
+    (!notes.is_empty()).then(|| notes.join("\n\n"))
 }
 
 /// A file loaded from the working directory (e.g. AGENTS.md, CLAUDE.md) to
@@ -136,9 +128,12 @@ pub fn build_system_prompt(opts: &SystemPromptOptions) -> String {
         sections.push(ORCHESTRATOR_ADDENDUM.to_owned());
     }
 
-    // turn scarcity nudge (capped children only)
-    if opts.turn_cap.is_some() {
-        sections.push(TURN_SCARCITY_NUDGE.to_owned());
+    // turn budget + scarcity nudge (capped children only). The cap lives in
+    // the system prompt, not in per-turn user messages (WS9.2).
+    if let Some(cap) = opts.turn_cap {
+        sections.push(format!(
+            "You have a hard cap of {cap} turns for this run. {TURN_SCARCITY_NUDGE}"
+        ));
     }
 
     // project_context

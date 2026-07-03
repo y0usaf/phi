@@ -702,7 +702,7 @@ Phi does neither. This workstream does **not** soften differentiator #2 — the
 REPL, recursion, and persistent env stay; what changes is the turn protocol
 around them and the shape of the tool surface on top of them.
 
-- [ ] **9.1 Accept prose as the final answer (bug-level contradiction; do
+- [x] **9.1 Accept prose as the final answer (bug-level contradiction; do
       first).** `DEFAULT_MECHANICS` tells the model *"If you are finished …
       stop making tool calls and output your answer as text"*
       (`phi-rlm/src/prompts/constants.rs:21`), but `run_loop` refuses the
@@ -717,7 +717,17 @@ around them and the shape of the tool surface on top of them.
       keep the nudge only for empty/whitespace-only responses. Side benefit:
       final answers stream to the user as text deltas instead of arriving as
       a Python string literal in `answer['content']`.
-- [ ] **9.2 Stop injecting a `Role::User` "Turn N:" message every iteration.**
+      *Landed as:* a no-tool-call, non-empty turn returns `StopCause::Prose`
+      on the spot; `<task_complete>` and `answer['ready']` stay as the
+      explicit alternate paths. `PROSE_NUDGE`/threshold/valve deleted; only
+      genuinely *empty* turns (no tool calls, no text) get an
+      `EMPTY_TURN_NUDGE` — nothing is banked (an empty assistant message is
+      provider-hostile), and `MAX_CONSECUTIVE_EMPTY = 3` fails the run
+      rather than accepting an empty answer or spinning. `DEFAULT_MECHANICS`
+      now states outright that a tool-free turn ends the run. Prep commit
+      removed the `ProsePolicy` strict/lenient machinery (strict tool-only
+      mode contradicted this item and lenient was the only mode in use).
+- [x] **9.2 Stop injecting a `Role::User` "Turn N:" message every iteration.**
       `build_user_prompt` pushes a user message before *every* model call
       (`core.rs:412-423`, `prompts/builder.rs:4-46`). No reference harness
       does this — codex/pi feed back tool results and let the model continue.
@@ -729,6 +739,21 @@ around them and the shape of the tool surface on top of them.
       Also drop the turn-0 "Look at the context first; do not provide a
       final answer yet" gate for coding sessions — it forces a probe turn on
       questions that need none.
+      *Landed as:* `build_user_prompt` deleted. `run_loop` pushes a user
+      message only when the turn has real content: extension context
+      injections, steer text from `save_point`, or a remaining-turns
+      reminder once a capped run has ≤ `TURN_WARNING_THRESHOLD (3)` turns
+      left (uncapped root runs get zero per-turn scaffolding). The cap
+      itself is in the system prompt ("You have a hard cap of {n} turns" +
+      the scarcity nudge); the one-time notes (extra contexts, prior
+      histories, warm continuation) moved to `session_notes()`, appended
+      once per send in `RlmSession::send`. The turn-0 probe gate is deleted
+      unconditionally — its guidance already lives in `DEFAULT_MECHANICS` /
+      `ORCHESTRATOR_ADDENDUM`. Knock-on fix: compaction's keep-last-
+      iteration tail boundary re-anchored from last `Role::User` to last
+      `Role::Assistant`, since iterations no longer carry user messages.
+      Consecutive user-role messages are safe where they still occur — the
+      providers merge them.
 - [ ] **9.3 Tool surface through the extension API (API gap fix +
       evidence-gated experiment).** The tension: pure-CodeAct is
       off-distribution for models RL-trained on native read/edit/bash
@@ -788,13 +813,23 @@ around them and the shape of the tool surface on top of them.
       guidance becomes claude-code-shaped — subagents for fan-out *search*
       and isolating huge outputs, not the default reasoning path. Keep the
       orchestrator addendum for genuine long-context/QA payloads.
-- [ ] **9.5 Retry transient provider errors with backoff.** `run_loop`
+- [x] **9.5 Retry transient provider errors with backoff.** `run_loop`
       returns `Outcome::failed` on the first `complete_root` error
       (`core.rs:643-657`) — a single 429/529 blip kills a long run. Both
       references retry: codex exponential backoff `200ms·2ⁿ` with jitter
       (`responses_retry.rs`, `util.rs:85-90`), pi two layers (provider
       settings + app-level `baseDelayMs·2ⁿ`, default 3 retries). Verify what
       `phi-ai` does internally; add the missing layer where it belongs.
+      *Verified already implemented (2026-07-03)* — no missing layer.
+      Engine seam: `ProviderLm::complete_streaming`
+      (`phi-rlm/src/provider.rs:191-241`, commit c5f31fc) retries transient
+      failures (429/5xx/529, overload, timeout, transport) with
+      `500ms·2ⁿ ±20%` jitter, 3 retries, only while nothing has streamed
+      (retrying after visible deltas would duplicate output), with
+      terminal-quota 429s fast-failed via `is_terminal_rate_limit`.
+      Transport layer: phi-ai adds mid-stream retry with rollback and a
+      fresh unpooled client (commit 1171000). `run_loop`'s error arm is now
+      only reached after both layers are exhausted — correct.
 - [ ] **9.6 Turn telemetry before further tuning.** `IterationEnd` already
       carries a duration; split it into model-time vs exec-time vs
       event-dispatch per iteration so "slow" is attributable. Candidate
