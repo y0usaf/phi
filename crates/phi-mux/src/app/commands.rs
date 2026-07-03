@@ -241,7 +241,7 @@ impl MuxApp {
             self.set_note_on(vid, "draft has no file to archive", StatusNoteKind::Error);
             return;
         };
-        match workspace::archive_session(&path) {
+        match phi_session::archive::archive_session(&path) {
             Ok(_) => {
                 if let Some(view) = self.views.get_mut(&vid) {
                     view.selection.clear();
@@ -265,35 +265,6 @@ impl MuxApp {
             Err(_error) => {
                 // Archive I/O is copy+delete fallback — an error here means
                 // the session file is still safely in place. Stay silent.
-            }
-        }
-    }
-
-    pub(crate) fn restore_archived(&mut self, vid: u64, archived: &std::path::Path) {
-        match workspace::restore_session(archived) {
-            Ok(target) => {
-                if let Some(view) = self.views.get_mut(&vid) {
-                    view.archive_viewer = None;
-                }
-                for index in 0..self.workspace.projects.len() {
-                    let _ = self.refresh_project_all_views(index);
-                }
-                self.set_note_on(
-                    vid,
-                    format!("restored {}", target.display()),
-                    StatusNoteKind::Ok,
-                );
-            }
-            Err(_error) => {
-                // Restore I/O is copy+delete fallback — the archived file is
-                // still safely in place. Reload the viewer silently.
-                if let Some(viewer) = self
-                    .views
-                    .get_mut(&vid)
-                    .and_then(|view| view.archive_viewer.as_mut())
-                {
-                    viewer.reload_sessions();
-                }
             }
         }
     }
@@ -379,8 +350,8 @@ impl MuxApp {
     }
 
     /// Interpret one declarative [`phi_ext::UiAction`] returned by a
-    /// Mux-context command handler.
-    async fn apply_mux_ui_action(&mut self, vid: u64, action: phi_ext::UiAction) {
+    /// Mux-context command handler or an overlay's `Complete` outcome.
+    pub(crate) async fn apply_mux_ui_action(&mut self, vid: u64, action: phi_ext::UiAction) {
         use phi_ext::UiAction;
         match action {
             UiAction::Quit => self.quit = true,
@@ -400,7 +371,7 @@ impl MuxApp {
                 }
             },
             UiAction::RunHostAction { name } => match name.as_str() {
-                "cleanup" => match workspace::cleanup_archive(ARCHIVE_MAX_AGE) {
+                "cleanup" => match phi_session::archive::cleanup_archive(ARCHIVE_MAX_AGE) {
                     Ok(count) => {
                         self.set_note_on(
                             vid,

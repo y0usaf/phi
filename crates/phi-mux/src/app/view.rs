@@ -18,7 +18,6 @@ use crate::command_line::CommandLineState;
 use crate::grid::ansi::AnsiRenderer;
 use crate::grid::cell_surface::CellSurface;
 use crate::grid::selection::TerminalSelection;
-use crate::ui::overlays::archive::ArchiveViewerState;
 use crate::ui::scene::StatusNoteKind;
 use crate::workspace::Focus;
 
@@ -36,7 +35,6 @@ pub(crate) struct MuxView {
     pub(crate) renderer: AnsiRenderer,
     pub(crate) sidebar_scroll: usize,
     pub(crate) command_line: Option<CommandLineState>,
-    pub(crate) archive_viewer: Option<ArchiveViewerState>,
     /// The currently open extension overlay (if any).
     pub(crate) active_extension_overlay: Option<ActiveExtensionOverlay>,
     pub(crate) selection: TerminalSelection,
@@ -55,7 +53,7 @@ pub(crate) struct MuxView {
 
 impl MuxView {
     pub(crate) fn overlay_active(&self) -> bool {
-        self.archive_viewer.is_some() || self.active_extension_overlay.is_some()
+        self.active_extension_overlay.is_some()
     }
 
     pub(crate) fn new(focus: Focus, size: (u16, u16)) -> Self {
@@ -66,7 +64,6 @@ impl MuxView {
             renderer: AnsiRenderer::default(),
             sidebar_scroll: 0,
             command_line: None,
-            archive_viewer: None,
             active_extension_overlay: None,
             selection: TerminalSelection::default(),
             note: None,

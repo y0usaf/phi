@@ -49,14 +49,6 @@ impl MuxApp {
         };
         let (cols, rows) = view.size;
 
-        if let Some(viewer) = &mut view.archive_viewer {
-            match viewer.handle_key(&key, cols, rows) {
-                ArchiveOutcome::Close => view.archive_viewer = None,
-                ArchiveOutcome::Restore(path) => self.restore_archived(vid, &path),
-                ArchiveOutcome::None => {}
-            }
-            return;
-        }
         if let Some(active) = &mut view.active_extension_overlay {
             // The overlay's toggle key closes it again.
             if let Some(stroke) = KeyStroke::from_key_event(&key) {
@@ -78,6 +70,18 @@ impl MuxApp {
                 phi_ext::OverlayOutcome::Submit(value) => {
                     view.active_extension_overlay = None;
                     self.set_note_on(vid, format!("Overlay: {value}"), super::StatusNoteKind::Ok);
+                }
+                phi_ext::OverlayOutcome::Complete(output) => {
+                    view.active_extension_overlay = None;
+                    // Actions first, message second: a host action may post
+                    // its own note (e.g. "reload" → "rescanned all projects"),
+                    // and the overlay's status is what should stick.
+                    for action in output.actions {
+                        self.apply_mux_ui_action(vid, action).await;
+                    }
+                    if let Some(message) = output.message {
+                        self.set_note_on(vid, message, super::StatusNoteKind::Ok);
+                    }
                 }
             }
             return;
@@ -161,9 +165,7 @@ impl MuxApp {
                 MouseEventKind::ScrollDown => WHEEL_LINES,
                 _ => return,
             };
-            if let Some(viewer) = &mut view.archive_viewer {
-                viewer.move_selection(delta);
-            } else if let Some(active) = &mut view.active_extension_overlay
+            if let Some(active) = &mut view.active_extension_overlay
                 && let Some(handle_scroll) = &active.spec.handle_scroll
             {
                 handle_scroll(&mut active.state, delta, cols, rows);

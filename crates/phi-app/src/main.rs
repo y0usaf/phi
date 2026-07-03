@@ -91,7 +91,8 @@ async fn async_main() -> Result<()> {
         // The listing covers the embedded first-party models plus the
         // bundled catalog — the same set a session resolves against before
         // any user extension registers additional providers.
-        let mut notices = Vec::new();
+        #[allow(unused_mut)]
+        let mut notices: Vec<String> = Vec::new();
         #[allow(unused_mut)]
         let mut extra = Vec::new();
         #[cfg(feature = "builtins")]

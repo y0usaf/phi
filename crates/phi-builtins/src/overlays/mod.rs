@@ -9,6 +9,7 @@
 //! typed payload.
 
 mod about;
+mod archive;
 mod dialog;
 mod help;
 mod model;
@@ -25,6 +26,8 @@ use phi_ext::{Extension, ExtensionHost, ExtensionManifest};
 /// - `phi:model` — model picker (opened with a [`phi_ext::ModelPickerPayload`]).
 /// - `phi:help` — keybinding/command reference (opened with a
 ///   [`phi_ext::HelpPayload`]).
+/// - `phi:archive` — archived-session browser/restorer (opened via
+///   `:archive`).
 pub struct DefaultOverlayExtension;
 
 impl Extension for DefaultOverlayExtension {
@@ -42,6 +45,7 @@ impl Extension for DefaultOverlayExtension {
         host.register_overlay(usage::spec())?;
         host.register_overlay(model::spec())?;
         host.register_overlay(help::spec())?;
+        host.register_overlay(archive::spec())?;
         Ok(())
     }
 }
@@ -115,7 +119,7 @@ pub(crate) mod test_host {
 #[cfg(test)]
 mod tests {
     use super::test_host::registered_overlays;
-    use phi_ext::{OVERLAY_HELP, OVERLAY_MODEL, OVERLAY_USAGE};
+    use phi_ext::{OVERLAY_ARCHIVE, OVERLAY_HELP, OVERLAY_MODEL, OVERLAY_USAGE};
 
     #[test]
     fn registers_all_builtin_overlays() {
@@ -124,6 +128,7 @@ mod tests {
         assert!(overlays.contains_key(OVERLAY_USAGE));
         assert!(overlays.contains_key(OVERLAY_MODEL));
         assert!(overlays.contains_key(OVERLAY_HELP));
+        assert!(overlays.contains_key(OVERLAY_ARCHIVE));
     }
 
     #[test]
@@ -133,5 +138,6 @@ mod tests {
         assert_eq!(overlays[OVERLAY_USAGE].toggle_key, None);
         assert_eq!(overlays[OVERLAY_MODEL].toggle_key, None);
         assert_eq!(overlays[OVERLAY_HELP].toggle_key, None);
+        assert_eq!(overlays[OVERLAY_ARCHIVE].toggle_key, None);
     }
 }

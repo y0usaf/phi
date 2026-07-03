@@ -60,6 +60,13 @@ pub enum OverlayOutcome {
     Close,
     /// Close the overlay and submit a result string.
     Submit(String),
+    /// Close the overlay and hand a command-style output back to the host:
+    /// declarative [`UiAction`](crate::UiAction)s plus an optional status
+    /// message. The host applies the actions first, then posts the message,
+    /// so the overlay's own status is what the user ends up seeing. This is
+    /// the same vocabulary command handlers return — an overlay needing a
+    /// host effect is not a special case.
+    Complete(crate::CommandOutput),
 }
 
 /// A registered overlay spec.

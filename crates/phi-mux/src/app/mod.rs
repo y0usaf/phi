@@ -16,7 +16,6 @@ use phi_tui::{AnimationClock, RawModeGuard};
 use tokio::sync::mpsc;
 
 use super::command_line::{CommandLineEvent, CommandLineState, command_line_start_col};
-use super::ui::overlays::archive::{ArchiveOutcome, render_archive_viewer};
 use super::ui::palette::ScenePalette;
 use super::ui::scene::{Chrome, MuxMode, StatusNoteKind, render_scene, statusline_status};
 use super::ui::screen_snapshot::ScreenSnapshot;

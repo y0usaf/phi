@@ -144,17 +144,7 @@ impl MuxApp {
             });
         }
 
-        if view.archive_viewer.is_some() {
-            let MuxView {
-                surface,
-                archive_viewer,
-                ..
-            } = view;
-            if let Some(viewer) = archive_viewer {
-                render_archive_viewer(surface, viewer, &palette);
-            }
-            hardware_cursor = None;
-        } else if view.active_extension_overlay.is_some() {
+        if view.active_extension_overlay.is_some() {
             let overlay_palette = crate::ui::draw_context_impl::overlay_palette(
                 &palette,
                 self.terminal_colors.background,

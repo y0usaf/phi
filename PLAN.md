@@ -296,19 +296,23 @@ API (`phi-ext`/`phi-lua`/`phi-event`), never bypass it.
       `phi-session`'s config schema (`config.rs:78-81`), consumed only by the
       builtin. Symptom of a missing primitive: extension-owned config
       sections. Fold into whatever WS1.8 decides, or accept and document.
-- [ ] **1.5 Acceptance (made mechanical, 2026-07-02):** `phi-session-tui`
+- [x] **1.5 Acceptance (made mechanical, 2026-07-02):** `phi-session-tui`
       contains zero hardcoded command strings (✓ done); `phi-mux` contains
-      zero hardwired overlay feature logic (✗ archive viewer, `:command`
-      parser — WS1.7); deleting `phi-builtins` from the build leaves a
-      bare-but-functional harness (engine + REPL + plain TUI + mux shell).
+      zero hardwired overlay feature logic (✓ done — WS1.7 closed both the
+      `:command` parser and the archive viewer); deleting `phi-builtins`
+      from the build leaves a bare-but-functional harness (engine + REPL +
+      plain TUI + mux shell).
       *Audit finding:* the last clause is currently false at the Cargo level —
       all three app crates hard-depend on `phi-builtins` with no feature
       gate, and there is no CI, so the doctrine ("bare core must boot") is
       prose, not a property. *Status (WS1.5 sub-items landed):* the feature
       gate + CI check below are done, so "deleting phi-builtins from the
-      build" is now mechanical (`--no-default-features`); the parent box
-      stays open only on the WS1.7 clause (archive viewer / `:command`
-      parser). Do this before more migration work:
+      build" is now mechanical (`--no-default-features`); with WS1.7 landed,
+      all three clauses hold and the bare build stays CI-enforced. In a
+      builtins-less build the mux `:` line has no commands (every input is
+      an "unknown command" note) and no overlays — the shell itself
+      (sidebar, sessions, keybound navigation) still works. Do this before
+      more migration work:
       - [x] Gate builtin *extension registration* behind a cargo feature
             (default-on). The prelude splice stays unconditional —
             `phi-builtins/prelude` is core per the table above; if the
@@ -344,7 +348,7 @@ API (`phi-ext`/`phi-lua`/`phi-event`), never bypass it.
       API. Dogfood test, same method as WS1.1: port one builtin command that
       returns `UiAction`s and one builtin overlay to Lua; every failure is
       the work list.
-- [ ] **1.7 Mux `:command` registry.** The mux colon-command line is a closed
+- [x] **1.7 Mux `:command` registry.** The mux colon-command line is a closed
       enum + literal string matches (`phi-mux/src/keys/mod.rs:10-51`) — the
       exact pattern WS1.1 removed from the inline TUI, missed by the original
       inventory. Route it through the same `CommandSpec` registry (namespace
@@ -352,6 +356,26 @@ API (`phi-ext`/`phi-lua`/`phi-event`), never bypass it.
       viewer overlay (`ui/overlays/archive.rs`, `Restore(PathBuf)` host
       action, own hardcoded keyset) migrates to `register_overlay` as part of
       this — it needs whatever host-action mechanism WS1.8 lands.
+      *Landed as (part A):* `CommandSpec` grew `context: CommandContext`
+      (`Session` default / `Mux`) and `aliases`; the colon commands live in
+      `phi-builtins/src/mux_commands.rs` and return declarative actions —
+      `UiAction::OpenProject` and the generic `UiAction::RunHostAction
+      {name}` ("cleanup", "refresh", "reload", nav) join the vocabulary;
+      the mux dispatches via `invoke_command_sync_in(CommandContext::Mux, …)`
+      and interprets actions in `apply_mux_ui_action`. The `AppAction` closed
+      enum survives only for *keybound* navigation (keymap territory, WS6.3),
+      not command dispatch.
+      *Landed as (part B):* archive persistence moved to
+      `phi_session::archive` (pure store-layout code — list/archive/restore/
+      cleanup); the viewer is now the `phi:archive` builtin overlay
+      (`phi-builtins/src/overlays/archive.rs`) opened by name from
+      `:archive`. API gap closed: `OverlayOutcome::Complete(CommandOutput)`
+      — an overlay hands the host the same message+`UiAction`s vocabulary
+      command handlers return (host applies actions first, then posts the
+      message, so the overlay's status wins). Restore itself happens inside
+      the extension via `restore_session`; the host only interprets
+      `RunHostAction("reload")`. `phi-mux/src/ui/overlays/` is deleted
+      entirely — the mux has zero hardwired overlay feature logic.
 - [x] **1.8 Decide the `UiAction` vocabulary stance (before WS7).** Every
       host effect is a feature-named variant in `phi-ext` (`SwitchModel`,
       `StartLogin`, `TrustProject`, `PickerKind::…`) interpreted by a match

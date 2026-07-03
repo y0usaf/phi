@@ -108,7 +108,7 @@ pub enum PickerKind {
     Tree,
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CommandOutput {
     pub message: Option<String>,
     #[serde(default)]
