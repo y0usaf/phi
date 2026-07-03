@@ -1569,6 +1569,7 @@ dependencies = [
  "directories",
  "phi-ai",
  "phi-builtins",
+ "phi-ext",
  "phi-mux",
  "phi-rlm",
  "phi-session",

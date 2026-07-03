@@ -620,7 +620,7 @@ impl Ui {
         lang: Option<&str>,
         failed: bool,
     ) -> Vec<String> {
-        let identity = tool_identity(name, args, &self.palette);
+        let identity = tool_identity(self.tool_render.get(name), name, args, &self.palette);
 
         // tool_max_lines = 0: one-line summary `glyph tool ╱ detail`, mirroring
         // pi-compact's compact tools: `✓ bash ╱ git status`.
@@ -750,15 +750,19 @@ impl Ui {
         tools: &[session::ToolCall],
         repl_count: usize,
     ) -> Vec<String> {
-        use phi_tui::tool_category::{ToolCategory, tally};
-
         if repl_count == 0 && tools.is_empty() {
             return Vec::new();
         }
         let ck = format!("{}✓{RESET}", &self.palette.success_fg);
         let nr = format!("{}✗{RESET}", &self.palette.error_fg);
 
-        let tallies = tally(tools.iter().map(|t| (t.name.as_str(), t.error.is_some())));
+        // Categories come from the registered tool render specs; tools
+        // without a spec tally as "other".
+        let tallies = phi_ext::tally(
+            tools
+                .iter()
+                .map(|t| (self.tool_render.category(&t.name), t.error.is_some())),
+        );
         let any_failed = tallies.iter().any(|(_, _, failed)| *failed > 0);
 
         // Flat summary lines inside one neutral REPL container: the colored
@@ -783,22 +787,12 @@ impl Ui {
                 if ok == 0 && failed == 0 {
                     continue;
                 }
-                let singular = match cat {
-                    ToolCategory::Reads => "read",
-                    ToolCategory::Edits => "edit",
-                    ToolCategory::Commands => "command",
-                    ToolCategory::Searches => "search",
-                    ToolCategory::Other => "other",
-                };
-                let plural = match cat {
-                    ToolCategory::Reads => "reads",
-                    ToolCategory::Edits => "edits",
-                    ToolCategory::Commands => "commands",
-                    ToolCategory::Searches => "searches",
-                    ToolCategory::Other => "others",
-                };
                 if ok > 0 {
-                    let noun = if ok == 1 { singular } else { plural };
+                    let noun = if ok == 1 {
+                        cat.singular()
+                    } else {
+                        cat.plural()
+                    };
                     let line = format!("  {ck} {ok} {noun}");
                     body.extend(wrap_ansi(&line, content_width));
                 }

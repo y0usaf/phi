@@ -81,6 +81,9 @@ pub(crate) mod test_host {
         fn register_message_renderer(&mut self, _r: phi_ext::MessageRendererSpec) -> Result<()> {
             Ok(())
         }
+        fn register_tool_renderer(&mut self, _s: phi_ext::ToolRenderSpec) -> Result<()> {
+            Ok(())
+        }
         fn register_provider(&mut self, _c: phi_ext::ProviderConfig) -> Result<()> {
             Ok(())
         }

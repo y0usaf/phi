@@ -934,7 +934,7 @@ impl Ui {
         if !self.block_active && self.live_code.is_none() {
             self.begin_tool_block();
         }
-        let label = tool_title(&name, &args, &self.palette);
+        let label = tool_title(self.tool_render.get(&name), &name, &args, &self.palette);
         let elapsed = self.clock.now_ms();
         if let Some((start, len)) = self.push_status(
             depth + 1,
@@ -998,7 +998,7 @@ impl Ui {
         let lang = if error.is_some() {
             None
         } else {
-            tool_preview_lang(&name, &args)
+            tool_preview_lang(self.tool_render.get(&name), &args)
         };
         let rows = if self.tools.tool_summary {
             // When tool_summary is enabled, suppress individual tool cards
@@ -1013,7 +1013,7 @@ impl Ui {
                 &args,
                 output,
                 self.output_limit(),
-                lang,
+                lang.as_deref(),
                 error.is_some(),
             )
         };

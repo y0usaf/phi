@@ -880,3 +880,78 @@ phi.register_overlay("json-payload", {
     (overlay.render)(&mut ctx, &mut state);
     assert!(ctx.all_text().contains("none"));
 }
+
+// ── Tool renderers (WS1.3a) ─────────────────────────────────────────────
+
+#[tokio::test]
+async fn lua_register_tool_renderer_works() {
+    // Dogfood test: the full declarative vocabulary a builtin spec uses
+    // (verb, display name, category, styled anchor args, code body, result
+    // lang, exit trailer) must round-trip from a Lua table.
+    let source = r#"
+phi.register_tool_renderer("deploy", {
+    verb = "deploy",
+    display_name = "Deploy",
+    category = "commands",
+    anchor = {
+        { key = "target", style = "pattern" },
+        { key = "env", style = "path", prefix = "to", skip_values = { "prod" } },
+    },
+    body = { kind = "code", key = "script", lang = "bash", prompt = "$" },
+    result_lang = { kind = "fixed", lang = "json" },
+    exit_code_trailer = true,
+})
+"#;
+    let rt = load_lua(source);
+    let idx = rt.tool_render_index();
+    let spec = idx.get("deploy").expect("lua-registered spec present");
+    assert_eq!(spec.verb.as_deref(), Some("deploy"));
+    assert_eq!(spec.resolved_display_name(), "Deploy");
+    assert_eq!(
+        idx.category("deploy"),
+        phi_ext::ToolRenderCategory::Commands
+    );
+    assert_eq!(spec.anchor.len(), 2);
+    assert_eq!(spec.anchor[0].key, "target");
+    assert_eq!(spec.anchor[0].style, phi_ext::AnchorStyle::Pattern);
+    assert_eq!(spec.anchor[1].prefix.as_deref(), Some("to"));
+    assert!(spec.anchor[1].skips("prod"));
+    assert!(matches!(
+        &spec.body,
+        phi_ext::ToolBody::Code { key, lang, prompt }
+            if key == "script" && lang.as_deref() == Some("bash") && prompt.as_deref() == Some("$")
+    ));
+    assert!(matches!(
+        &spec.result_lang,
+        phi_ext::ResultLang::Fixed { lang } if lang == "json"
+    ));
+    assert!(spec.exit_code_trailer);
+}
+
+#[tokio::test]
+async fn lua_tool_renderer_overrides_core_repl_seed() {
+    // Last-write-wins: a user extension can restyle even the core repl spec.
+    let source = r#"
+phi.register_tool_renderer("repl", { display_name = "Sandbox" })
+"#;
+    let rt = load_lua(source);
+    let idx = rt.tool_render_index();
+    assert_eq!(idx.get("repl").unwrap().resolved_display_name(), "Sandbox");
+}
+
+#[tokio::test]
+async fn lua_tool_renderer_defaults_fill_in() {
+    // A minimal spec: everything optional defaults (generic anchor form,
+    // args body, "other" category).
+    let source = r#"
+phi.register_tool_renderer("mystery", {})
+"#;
+    let rt = load_lua(source);
+    let idx = rt.tool_render_index();
+    let spec = idx.get("mystery").unwrap();
+    assert!(spec.verb.is_none());
+    assert_eq!(spec.resolved_display_name(), "Mystery");
+    assert_eq!(idx.category("mystery"), phi_ext::ToolRenderCategory::Other);
+    assert!(matches!(spec.body, phi_ext::ToolBody::Args));
+    assert!(!spec.exit_code_trailer);
+}

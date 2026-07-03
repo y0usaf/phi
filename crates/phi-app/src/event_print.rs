@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 use std::io::IsTerminal;
 
+use phi_ext::ToolRenderIndex;
 use phi_rlm::RlmEvent;
 use phi_session::config::ToolsSettings;
-use phi_tui::tool_category::{ToolCategory, tally};
 
 use crate::render::render_tool_panel;
 use crate::tool_view::{
@@ -21,6 +21,7 @@ pub(crate) async fn print_events(
     verbose: bool,
     max_iterations: usize,
     tools: ToolsSettings,
+    tool_render: ToolRenderIndex,
 ) {
     let color = std::io::stderr().is_terminal();
     let mut open_tool_args: HashMap<u64, serde_json::Value> = HashMap::new();
@@ -129,7 +130,7 @@ pub(crate) async fn print_events(
                     eprintln!(
                         "{} {}{}",
                         spin(color),
-                        call_anchor(&name, &args),
+                        call_anchor(tool_render.get(&name), &name, &args),
                         depth_tag(depth)
                     );
                 }
@@ -176,13 +177,13 @@ pub(crate) async fn print_events(
                         if detail.is_empty() {
                             eprintln!(
                                 "  {glyph} {}{}",
-                                call_anchor(&name, &args),
+                                call_anchor(tool_render.get(&name), &name, &args),
                                 depth_tag(depth)
                             );
                         } else {
                             eprintln!(
                                 "  {glyph} {} \u{2571} {}{}",
-                                call_anchor(&name, &args),
+                                call_anchor(tool_render.get(&name), &name, &args),
                                 detail,
                                 depth_tag(depth)
                             );
@@ -190,7 +191,15 @@ pub(crate) async fn print_events(
                     } else {
                         eprintln!(
                             "{}",
-                            render_tool_panel(&name, &args, output, failed, verbose, color)
+                            render_tool_panel(
+                                tool_render.get(&name),
+                                &name,
+                                &args,
+                                output,
+                                failed,
+                                verbose,
+                                color
+                            )
                         );
                     }
                 }
@@ -200,7 +209,7 @@ pub(crate) async fn print_events(
             }
             RlmEvent::AnswerSubmitted { .. } => {
                 if tools.tool_summary && (!pending_tools.is_empty() || repl_count > 0) {
-                    print_tool_summary(&pending_tools, repl_count, color);
+                    print_tool_summary(&pending_tools, repl_count, color, &tool_render);
                     pending_tools.clear();
                     repl_count = 0;
                 }
@@ -231,7 +240,7 @@ pub(crate) async fn print_events(
     // (covers cases where the model hits max iterations without
     // submitting an answer).
     if tools.tool_summary && (!pending_tools.is_empty() || repl_count > 0) {
-        print_tool_summary(&pending_tools, repl_count, color);
+        print_tool_summary(&pending_tools, repl_count, color, &tool_render);
     }
 }
 
@@ -254,7 +263,12 @@ pub(crate) async fn print_events(
 ///   \u{2713} 5 reads
 ///   \u{2717} 1
 /// ```
-fn print_tool_summary(tools: &[PendingTool], repl_count: usize, color: bool) {
+fn print_tool_summary(
+    tools: &[PendingTool],
+    repl_count: usize,
+    color: bool,
+    tool_render: &ToolRenderIndex,
+) {
     let ck = check(color);
     if repl_count > 0 {
         let noun = if repl_count == 1 { "repl" } else { "repls" };
@@ -266,7 +280,13 @@ fn print_tool_summary(tools: &[PendingTool], repl_count: usize, color: bool) {
         eprintln!("    {ck} {total} {noun}");
     }
 
-    let tallies = tally(tools.iter().map(|t| (t.name.as_str(), t.failed)));
+    // Categories come from the registered tool render specs; tools without
+    // a spec tally as "other".
+    let tallies = phi_ext::tally(
+        tools
+            .iter()
+            .map(|t| (tool_render.category(&t.name), t.failed)),
+    );
 
     let cr = cross(color);
     for (cat, ok, failed) in tallies {
@@ -274,42 +294,10 @@ fn print_tool_summary(tools: &[PendingTool], repl_count: usize, color: bool) {
             continue;
         }
         // Pluralize: "1 read" vs "2 reads", "1 edit" vs "2 edits", etc.
-        let noun = match cat {
-            ToolCategory::Reads => {
-                if ok == 1 {
-                    "read"
-                } else {
-                    "reads"
-                }
-            }
-            ToolCategory::Edits => {
-                if ok == 1 {
-                    "edit"
-                } else {
-                    "edits"
-                }
-            }
-            ToolCategory::Commands => {
-                if ok == 1 {
-                    "command"
-                } else {
-                    "commands"
-                }
-            }
-            ToolCategory::Searches => {
-                if ok == 1 {
-                    "search"
-                } else {
-                    "searches"
-                }
-            }
-            ToolCategory::Other => {
-                if ok == 1 {
-                    "other"
-                } else {
-                    "others"
-                }
-            }
+        let noun = if ok == 1 {
+            cat.singular()
+        } else {
+            cat.plural()
         };
         if ok > 0 {
             eprintln!("    {ck} {ok} {noun}");

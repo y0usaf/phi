@@ -14,6 +14,8 @@ pub mod prelude;
 #[cfg(feature = "builtins")]
 pub mod skills;
 #[cfg(feature = "builtins")]
+pub mod tool_render;
+#[cfg(feature = "builtins")]
 pub mod visual;
 
 #[cfg(feature = "builtins")]
@@ -30,5 +32,7 @@ pub use mux_commands::MuxCommandsExtension;
 pub use overlays::DefaultOverlayExtension;
 #[cfg(feature = "builtins")]
 pub use skills::SkillsExtension;
+#[cfg(feature = "builtins")]
+pub use tool_render::ToolRenderExtension;
 #[cfg(feature = "builtins")]
 pub use visual::DefaultVisualExtension;

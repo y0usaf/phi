@@ -7,7 +7,7 @@ use phi_ext::{
     CommandInvocation, CommandOutput, CommandSpec, EventHandlerRegistration, ExtensionHost,
     ExtensionManifest, FlagSpec, FlagType, LifecycleEvent, MessageRendererSpec, ProviderConfig,
     ProviderModelConfig, ShortcutSpec, SpinnerSpec, ThemeSpec, ThinkingExpressionSpec,
-    ToolDispatch, ToolExposure, ToolInvocation, ToolOutput, ToolParam, ToolSpec,
+    ToolDispatch, ToolExposure, ToolInvocation, ToolOutput, ToolParam, ToolRenderSpec, ToolSpec,
 };
 use std::collections::BTreeMap;
 
@@ -294,6 +294,30 @@ impl phi_ext::Extension for LuaExtension {
             });
         }
 
+        // ── Read registered tool renderers ──────────────────────────────────
+        let reg_tool_renderers: mlua::Table = globals.get("_phi_registered_tool_renderers")?;
+        let tool_renderer_names: Vec<String> = (1..)
+            .map_while(|i| reg_tool_renderers.get::<Option<String>>(i).ok().flatten())
+            .collect();
+
+        let phi_tool_renderers_table: mlua::Table = globals.get("_phi_tool_renderers")?;
+        let mut tool_renderers: Vec<ToolRenderSpec> = Vec::new();
+        for name in &tool_renderer_names {
+            use mlua::LuaSerdeExt as _;
+            let spec_table: mlua::Table = phi_tool_renderers_table.get(name.as_str())?;
+            // The tool name is the registration key, not a table field.
+            spec_table.set("tool", name.as_str())?;
+            // Spec tables deserialize straight into `ToolRenderSpec` so Lua
+            // gets the full declarative vocabulary without hand-mirrored
+            // reads; malformed specs are hard, named errors.
+            let spec: ToolRenderSpec =
+                lua.from_value(mlua::Value::Table(spec_table))
+                    .map_err(|e| {
+                        mlua::Error::runtime(format!("tool renderer '{name}': bad spec: {e}"))
+                    })?;
+            tool_renderers.push(spec);
+        }
+
         // ── Read registered message renderers ───────────────────────────────
         let reg_renderers: mlua::Table = globals.get("_phi_registered_renderers")?;
         let renderer_types: Vec<String> = (1..)
@@ -534,6 +558,11 @@ impl phi_ext::Extension for LuaExtension {
         // ── Register providers ───────────────────────────────────────────────
         for config in providers {
             host.register_provider(config)?;
+        }
+
+        // ── Register tool renderers ─────────────────────────────────────────
+        for spec in tool_renderers {
+            host.register_tool_renderer(spec)?;
         }
 
         // ── Register message renderers ──────────────────────────────────────

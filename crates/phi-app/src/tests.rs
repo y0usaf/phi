@@ -54,15 +54,30 @@ fn format_usage_summary_shows_breakdown_and_total() {
     );
 }
 
+/// Tool display metadata resolved the same way the live printer does:
+/// the builtin render specs plus the core `repl` seed.
+#[cfg(feature = "builtins")]
+fn render_index() -> phi_ext::ToolRenderIndex {
+    phi_ext::ToolRenderIndex::new(phi_builtins::tool_render::specs())
+}
+
+#[cfg(feature = "builtins")]
 #[test]
 fn observational_tools_hide_args_and_prettify_names() {
-    assert_eq!(tool_display_name("read_file"), "Read File");
-    assert!(!tool_shows_args_section("read_file"));
-    assert!(tool_input_lines("read_file", &serde_json::json!({"path": "src/main.rs"})).is_empty());
+    let idx = render_index();
+    assert_eq!(
+        tool_display_name(idx.get("read_file"), "read_file"),
+        "Read File"
+    );
+    // Anchor-only tools show no Input section when nothing survives
+    // stripping the canonical key.
+    let read_args = serde_json::json!({"path": "src/main.rs"});
+    assert!(!tool_shows_input_section(idx.get("read_file"), &read_args));
+    assert!(tool_input_lines(idx.get("read_file"), &read_args).is_empty());
     // write_file's path is the canonical key (shown in the title suffix), so the
     // Args section strips it and keeps only the residual (content).
     let write_args = tool_input_lines(
-        "write_file",
+        idx.get("write_file"),
         &serde_json::json!({"path": "src/main.rs", "content": "fn main() {}\n"}),
     );
     let joined = write_args.join("\n");
@@ -76,24 +91,34 @@ fn observational_tools_hide_args_and_prettify_names() {
         "residual should drop the path already in the title: {joined}"
     );
     assert_eq!(
-        tool_title_suffix("read_file", &serde_json::json!({"path": "src/main.rs"})),
+        tool_title_suffix(idx.get("read_file"), &read_args),
         Some(" — src/main.rs".to_owned())
     );
     assert!(
-        tool_shows_args_section("edit_file"),
-        "edit_file should render args section"
+        tool_shows_input_section(
+            idx.get("edit_file"),
+            &serde_json::json!({"path": "a.rs", "old_string": "x"})
+        ),
+        "edit_file should render its residual args section"
     );
 }
 
+#[cfg(feature = "builtins")]
 #[test]
 fn call_anchor_shows_identity_once() {
+    let idx = render_index();
     // Path-bearing tools: anchor carries the path (no key=value dump).
     assert_eq!(
-        call_anchor("read_file", &serde_json::json!({"path": "src/main.rs"})),
+        call_anchor(
+            idx.get("read_file"),
+            "read_file",
+            &serde_json::json!({"path": "src/main.rs"})
+        ),
         "Read File — src/main.rs"
     );
     assert_eq!(
         call_anchor(
+            idx.get("edit_file"),
             "edit_file",
             &serde_json::json!({"path": "a.rs", "content": "x"})
         ),
@@ -101,48 +126,68 @@ fn call_anchor_shows_identity_once() {
     );
     // bash: first command line inlined; multi-line truncated.
     assert_eq!(
-        call_anchor("bash", &serde_json::json!({"cmd": "echo hi"})),
+        call_anchor(
+            idx.get("bash"),
+            "bash",
+            &serde_json::json!({"cmd": "echo hi"})
+        ),
         "Shell: $ echo hi"
     );
     assert!(
-        call_anchor("bash", &serde_json::json!({"cmd": "echo one\necho two"})).ends_with('…'),
+        call_anchor(
+            idx.get("bash"),
+            "bash",
+            &serde_json::json!({"cmd": "echo one\necho two"})
+        )
+        .ends_with('…'),
         "multi-line bash anchor truncates"
     );
     // grep: pattern (and path) inlined.
     assert_eq!(
         call_anchor(
+            idx.get("grep"),
             "grep",
             &serde_json::json!({"pattern": "foo", "path": "src"})
         ),
         "Grep — foo in src"
     );
+    // A tool with no registered spec degrades to its bare display name.
+    assert_eq!(
+        call_anchor(None, "custom_tool", &serde_json::json!({"a": 1})),
+        "Custom Tool"
+    );
 }
 
+#[cfg(feature = "builtins")]
 #[test]
 fn residual_args_strips_canonical_key_only() {
+    let idx = render_index();
     // edit_file: path stripped, content/old_string kept.
     let r = residual_args(
-        "edit_file",
+        idx.get("edit_file"),
         &serde_json::json!({"path": "a.rs", "old_string": "x", "new_string": "y"}),
     );
     let map = r.as_object().unwrap();
     assert!(!map.contains_key("path"));
     assert!(map.contains_key("old_string") && map.contains_key("new_string"));
     // unknown tool: nothing stripped (no canonical key in any title).
-    let u = residual_args("custom_tool", &serde_json::json!({"a": 1, "b": 2}));
+    let u = residual_args(None, &serde_json::json!({"a": 1, "b": 2}));
     assert_eq!(u.as_object().unwrap().len(), 2);
     // edit_file with only a path -> empty residual (no Args section).
     assert!(
-        residual_args("edit_file", &serde_json::json!({"path": "a.rs"}))
+        residual_args(idx.get("edit_file"), &serde_json::json!({"path": "a.rs"}))
             .as_object()
             .unwrap()
             .is_empty()
     );
 }
 
+#[cfg(feature = "builtins")]
 #[test]
 fn input_output_tools_render_separators_inside_one_box() {
+    let idx = render_index();
     let panel = render_tool_panel(
+        idx.get("bash"),
         "bash",
         &serde_json::json!({"cmd": "echo hi"}),
         "hi\n",
@@ -162,7 +207,10 @@ fn input_output_tools_render_separators_inside_one_box() {
 
 #[test]
 fn repl_renders_input_output_sections() {
+    // The repl spec is the core seed — present even with no builtins.
+    let idx = phi_ext::ToolRenderIndex::default();
     let panel = render_tool_panel(
+        idx.get("repl"),
         "repl",
         &serde_json::json!({"code": "print(1)"}),
         "1\n",
@@ -178,9 +226,12 @@ fn repl_renders_input_output_sections() {
     assert!(panel.contains("│ 1"));
 }
 
+#[cfg(feature = "builtins")]
 #[test]
 fn observational_tools_render_as_single_output_box() {
+    let idx = render_index();
     let panel = render_tool_panel(
+        idx.get("read_file"),
         "read_file",
         &serde_json::json!({"path": "src/main.rs"}),
         "fn main() {}\n",
@@ -197,6 +248,7 @@ fn observational_tools_render_as_single_output_box() {
     assert_eq!(panel.matches('└').count(), 1);
 }
 
+#[cfg(feature = "builtins")]
 #[test]
 fn bash_body_preserved_multiline() {
     // The Command section preserves every line of a multi-line bash cmd (one
@@ -204,7 +256,9 @@ fn bash_body_preserved_multiline() {
     // command text (the bash title suffix is empty); the full command is shown
     // only here, once, not truncated. `call_anchor` separately truncates the
     // start line — tested in `call_anchor_shows_identity_once`.
+    let idx = render_index();
     let panel = render_tool_panel(
+        idx.get("bash"),
         "bash",
         &serde_json::json!({"cmd": "cargo test\ncargo build --release"}),
         "running 12 tests\n",

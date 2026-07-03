@@ -9,7 +9,8 @@ use crate::{
     CommandContext, CommandInvocation, CommandOutput, CommandSpec, EventHandlerRegistration,
     EventKind, EventPayload, EventReturn, ExtensionContextRef, ExtensionManifest, ExtensionMode,
     FlagSpec, LifecycleEvent, MessageRendererSpec, OverlaySpec, ProviderConfig, ShortcutSpec,
-    SpinnerSpec, TextEffectSpec, ThemeSpec, ThinkingExpressionSpec, ToolSpec,
+    SpinnerSpec, TextEffectSpec, ThemeSpec, ThinkingExpressionSpec, ToolRenderIndex,
+    ToolRenderSpec, ToolSpec,
 };
 use anyhow::{Result, anyhow};
 
@@ -31,6 +32,7 @@ pub struct AppRuntime {
     pub(crate) flags: BTreeMap<String, FlagSpec>,
     pub(crate) event_handlers: Vec<EventHandlerRegistration>,
     pub(crate) message_renderers: BTreeMap<String, MessageRendererSpec>,
+    pub(crate) tool_renderers: BTreeMap<String, ToolRenderSpec>,
     pub(crate) providers: BTreeMap<String, ProviderConfig>,
     // ── Visual ──────────────────────────────────────────────────────────
     pub(crate) themes: BTreeMap<String, ThemeSpec>,
@@ -103,6 +105,7 @@ impl AppRuntime {
         flags: BTreeMap<String, FlagSpec>,
         event_handlers: Vec<EventHandlerRegistration>,
         message_renderers: BTreeMap<String, MessageRendererSpec>,
+        tool_renderers: BTreeMap<String, ToolRenderSpec>,
         providers: BTreeMap<String, ProviderConfig>,
         themes: BTreeMap<String, ThemeSpec>,
         spinners: BTreeMap<String, SpinnerSpec>,
@@ -120,6 +123,7 @@ impl AppRuntime {
             flags,
             event_handlers,
             message_renderers,
+            tool_renderers,
             providers,
             themes,
             spinners,
@@ -900,6 +904,15 @@ impl AppRuntime {
 
     pub fn list_message_renderers(&self) -> Vec<String> {
         self.message_renderers.keys().cloned().collect()
+    }
+
+    // ── Tool render specs ──────────────────────────────────────────────────────
+
+    /// Snapshot of the registered tool display metadata, seeded with the
+    /// core `repl` spec. Frontends take this once (the registry is
+    /// immutable after build) and project it into their own rendering.
+    pub fn tool_render_index(&self) -> ToolRenderIndex {
+        ToolRenderIndex::new(self.tool_renderers.values().cloned())
     }
 
     // ── Visual: theme accessors ──────────────────────────────────────────

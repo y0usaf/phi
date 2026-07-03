@@ -177,7 +177,7 @@ impl Ui {
             let lang = if failed {
                 None
             } else {
-                tool_preview_lang(&tool.name, &tool.args)
+                tool_preview_lang(self.tool_render.get(&tool.name), &tool.args)
             };
             body.extend(self.tool_result_rows(
                 depth,
@@ -185,7 +185,7 @@ impl Ui {
                 &tool.args,
                 output,
                 self.output_limit(),
-                lang,
+                lang.as_deref(),
                 failed,
             ));
         }

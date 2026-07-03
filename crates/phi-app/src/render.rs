@@ -67,6 +67,7 @@ pub(crate) fn panel_bottom(width: usize) -> String {
 }
 
 pub(crate) fn render_tool_panel(
+    spec: Option<&phi_ext::ToolRenderSpec>,
     name: &str,
     args: &serde_json::Value,
     text: &str,
@@ -75,12 +76,12 @@ pub(crate) fn render_tool_panel(
     color: bool,
 ) -> String {
     let width = terminal_preview_width().saturating_sub(1).max(40);
-    let display = tool_display_name(name);
+    let display = tool_display_name(spec, name);
     let display = format!(
         "{display}{}",
-        tool_title_suffix(name, args).unwrap_or_default()
+        tool_title_suffix(spec, args).unwrap_or_default()
     );
-    let (parsed_lines, footer_lines, parsed_ok) = tool_output_lines(name, args, text);
+    let (parsed_lines, footer_lines, parsed_ok) = tool_output_lines(spec, args, text);
     let ok = !failed && parsed_ok;
     let title_plain = format!("{} {display}", if ok { "✔" } else { "✘" });
     let title = if color {
@@ -97,10 +98,10 @@ pub(crate) fn render_tool_panel(
     let mut out = Vec::new();
     out.push(panel_border(&title, &title_plain, '┌', '┐', width));
 
-    let input_lines = tool_input_lines(name, args);
-    let show_input = tool_shows_input_section(name);
+    let input_lines = tool_input_lines(spec, args);
+    let show_input = tool_shows_input_section(spec, args);
     if show_input {
-        let input_label = tool_input_label(name);
+        let input_label = tool_input_label(spec);
         out.push(panel_border(input_label, input_label, '├', '┤', width));
         if input_lines.is_empty() {
             out.push(panel_row("(no input)", width));

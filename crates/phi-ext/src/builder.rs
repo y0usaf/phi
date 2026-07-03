@@ -69,6 +69,7 @@ impl RuntimeBuilder {
             host.flags,
             host.event_handlers,
             host.message_renderers,
+            host.tool_renderers,
             host.providers,
             host.themes,
             host.spinners,

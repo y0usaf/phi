@@ -16,6 +16,8 @@ pub(super) fn setup_phi_global(lua: &mlua::Lua) -> mlua::Result<()> {
     let phi_registered_providers = lua.create_table()?;
     let phi_renderers = lua.create_table()?;
     let phi_registered_renderers = lua.create_table()?;
+    let phi_tool_renderers = lua.create_table()?;
+    let phi_registered_tool_renderers = lua.create_table()?;
     let phi_themes = lua.create_table()?;
     let phi_registered_themes = lua.create_table()?;
     let phi_spinners = lua.create_table()?;
@@ -39,6 +41,11 @@ pub(super) fn setup_phi_global(lua: &mlua::Lua) -> mlua::Result<()> {
     globals.set("_phi_registered_providers", phi_registered_providers)?;
     globals.set("_phi_renderers", phi_renderers)?;
     globals.set("_phi_registered_renderers", phi_registered_renderers)?;
+    globals.set("_phi_tool_renderers", phi_tool_renderers)?;
+    globals.set(
+        "_phi_registered_tool_renderers",
+        phi_registered_tool_renderers,
+    )?;
     globals.set("_phi_themes", phi_themes)?;
     globals.set("_phi_registered_themes", phi_registered_themes)?;
     globals.set("_phi_spinners", phi_spinners)?;
@@ -159,6 +166,30 @@ pub(super) fn setup_phi_global(lua: &mlua::Lua) -> mlua::Result<()> {
             Ok(())
         })?;
     phi.set("register_message_renderer", register_renderer_fn)?;
+
+    // phi.register_tool_renderer(name, spec)
+    // spec: { verb = "read", display_name = "Read File", category =
+    //         "reads"|"edits"|"commands"|"searches"|"other",
+    //         anchor = { { key = "path", style = "plain"|"path"|"pattern",
+    //                      prefix = "in", skip_values = { "." } }, ... },
+    //         body = { kind = "args"|"none"|"code", key = "cmd",
+    //                  lang = "bash", prompt = "$" },
+    //         result_lang = { kind = "none"|"fixed"|"path_arg",
+    //                         lang = "...", key = "path" },
+    //         exit_code_trailer = true }
+    // Declarative display metadata for a tool (last write wins — restyling
+    // a builtin tool is supported).
+    let register_tool_renderer_fn =
+        lua.create_function(|lua, (name, spec): (String, mlua::Table)| {
+            let globals = lua.globals();
+            let renderers: mlua::Table = globals.get("_phi_tool_renderers")?;
+            renderers.set(name.as_str(), spec)?;
+            let reg: mlua::Table = globals.get("_phi_registered_tool_renderers")?;
+            let len = reg.raw_len();
+            reg.raw_set(len + 1, name)?;
+            Ok(())
+        })?;
+    phi.set("register_tool_renderer", register_tool_renderer_fn)?;
 
     // phi.register_theme(name, palette)
     // palette: { foreground = {r,g,b}, background = {r,g,b}, accent = {r,g,b}, ... }

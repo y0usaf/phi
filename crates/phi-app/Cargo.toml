@@ -14,6 +14,7 @@ clap.workspace = true
 directories.workspace = true
 phi-ai.workspace = true
 phi-builtins = { workspace = true, default-features = false }
+phi-ext.workspace = true
 phi-mux = { workspace = true, default-features = false }
 phi-rlm.workspace = true
 phi-tui.workspace = true

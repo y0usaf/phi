@@ -1,3 +1,5 @@
+use phi_ext::{ToolBody, ToolRenderSpec, title_case_tool_name};
+
 /// First non-empty line of `text`, trimmed and truncated to `max` chars with a
 /// trailing `…` when either the line or the whole text was cut.
 fn first_line_trunc(text: &str, max: usize) -> String {
@@ -16,51 +18,53 @@ fn first_line_trunc(text: &str, max: usize) -> String {
 
 /// Single-line canonical identity for a tool call, used by the in-flight start
 /// line AND the panel title so the load-bearing argument (path / command /
-/// pattern) is rendered exactly once. Mirrors the interactive `tool_title`.
-pub(crate) fn call_anchor(name: &str, args: &serde_json::Value) -> String {
-    let display = tool_display_name(name);
-    match name {
-        "bash" => {
-            let cmd = tool_arg(args, "cmd");
-            if cmd.trim().is_empty() {
-                display
-            } else {
-                format!("{display}: $ {}", first_line_trunc(cmd, 60))
-            }
-        }
-        "repl" => {
-            let code = args
-                .get("code")
-                .or_else(|| args.get("input"))
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("");
+/// pattern) is rendered exactly once. Mirrors the interactive `tool_title`:
+/// the shape is a projection of the tool's registered render spec; a tool
+/// without one gets its bare display name.
+pub(crate) fn call_anchor(
+    spec: Option<&ToolRenderSpec>,
+    name: &str,
+    args: &serde_json::Value,
+) -> String {
+    let display = tool_display_name(spec, name);
+    match spec.map(|s| &s.body) {
+        // Code-carrying tools (shell/repl shape): the anchor echoes the
+        // code's first line, behind the prompt glyph when the spec has one.
+        Some(ToolBody::Code { key, prompt, .. }) => {
+            let code = tool_arg(args, key);
             if code.trim().is_empty() {
                 display
             } else {
-                format!("{display}: {}", first_line_trunc(code, 60))
+                let prompt = prompt
+                    .as_deref()
+                    .map(|p| format!("{p} "))
+                    .unwrap_or_default();
+                format!("{display}: {prompt}{}", first_line_trunc(code, 60))
             }
         }
         _ => format!(
             "{display}{}",
-            tool_title_suffix(name, args).unwrap_or_default()
+            tool_title_suffix(spec, args).unwrap_or_default()
         ),
     }
 }
 
 /// `args` with the canonical key(s) already shown in the anchor/title removed,
-/// so the Args section never re-states the path/pattern. Bash/repl/unknown are
-/// untouched (their body IS the command/code, not a residual).
-pub(crate) fn residual_args(name: &str, args: &serde_json::Value) -> serde_json::Value {
-    let strip: &[&str] = match name {
-        "read_file" | "write_file" | "edit_file" | "ls" => &["path"],
-        "grep" | "find" => &["pattern", "path"],
-        _ => return args.clone(),
-    };
+/// so the Args section never re-states the path/pattern. Tools without anchor
+/// args (code-bodied, unknown) are untouched.
+pub(crate) fn residual_args(
+    spec: Option<&ToolRenderSpec>,
+    args: &serde_json::Value,
+) -> serde_json::Value {
+    let strip: Vec<&str> = spec.map(|s| s.anchor_keys().collect()).unwrap_or_default();
+    if strip.is_empty() {
+        return args.clone();
+    }
     let Some(mut map) = args.as_object().cloned() else {
         return args.clone();
     };
     for key in strip {
-        map.remove(*key);
+        map.remove(key);
     }
     serde_json::Value::Object(map)
 }
@@ -234,22 +238,11 @@ pub(crate) fn parse_bash_result(text: &str) -> (Vec<String>, Option<i64>, Option
     (lines, exit_code, timed_out)
 }
 
-pub(crate) fn tool_display_name(name: &str) -> String {
-    // The tool is named "bash" but should display as "Shell" in transcripts.
-    if name == "bash" {
-        return "Shell".to_owned();
+pub(crate) fn tool_display_name(spec: Option<&ToolRenderSpec>, name: &str) -> String {
+    match spec {
+        Some(spec) => spec.resolved_display_name(),
+        None => title_case_tool_name(name),
     }
-    name.split('_')
-        .filter(|part| !part.is_empty())
-        .map(|part| {
-            let mut chars = part.chars();
-            match chars.next() {
-                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
-                None => String::new(),
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
 }
 
 pub(crate) fn tool_arg<'a>(args: &'a serde_json::Value, key: &str) -> &'a str {
@@ -258,75 +251,66 @@ pub(crate) fn tool_arg<'a>(args: &'a serde_json::Value, key: &str) -> &'a str {
         .unwrap_or("")
 }
 
-pub(crate) fn tool_title_suffix(name: &str, args: &serde_json::Value) -> Option<String> {
-    match name {
-        "read_file" | "edit_file" => {
-            let path = tool_arg(args, "path");
-            (!path.is_empty()).then(|| format!(" — {path}"))
+/// ` — pattern in path` panel-title suffix built from the spec's anchor
+/// args (skips absent/skip-listed values). `None` when nothing survives.
+pub(crate) fn tool_title_suffix(
+    spec: Option<&ToolRenderSpec>,
+    args: &serde_json::Value,
+) -> Option<String> {
+    let spec = spec?;
+    let mut parts: Vec<String> = Vec::new();
+    for a in &spec.anchor {
+        let value = tool_arg(args, &a.key);
+        if a.skips(value) {
+            continue;
         }
-        "grep" | "find" => {
-            let pattern = tool_arg(args, "pattern");
-            let path = tool_arg(args, "path");
-            if pattern.is_empty() {
-                None
-            } else if path.is_empty() || path == "." {
-                Some(format!(" — {pattern}"))
-            } else {
-                Some(format!(" — {pattern} in {path}"))
-            }
+        match &a.prefix {
+            Some(prefix) => parts.push(format!("{prefix} {value}")),
+            None => parts.push(value.to_owned()),
         }
-        "ls" => {
-            let path = tool_arg(args, "path");
-            Some(format!(" — {}", if path.is_empty() { "." } else { path }))
-        }
-        _ => None,
     }
+    (!parts.is_empty()).then(|| format!(" — {}", parts.join(" ")))
 }
 
-pub(crate) fn tool_shows_args_section(name: &str) -> bool {
-    !matches!(name, "read_file" | "grep" | "find" | "ls")
-}
-
-pub(crate) fn tool_shows_input_section(name: &str) -> bool {
-    name == "bash" || name == "repl" || tool_shows_args_section(name)
-}
-
-pub(crate) fn tool_input_label(name: &str) -> &'static str {
-    match name {
-        "bash" => "Command",
-        "repl" => "",
+pub(crate) fn tool_input_label(spec: Option<&ToolRenderSpec>) -> &'static str {
+    match spec.map(|s| &s.body) {
+        Some(ToolBody::Code {
+            prompt: Some(_), ..
+        }) => "Command",
+        Some(ToolBody::Code { prompt: None, .. }) => "",
         _ => "Args",
     }
 }
 
-pub(crate) fn tool_input_lines(name: &str, args: &serde_json::Value) -> Vec<String> {
-    if name == "bash" {
-        let cmd = args
-            .get("cmd")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("");
-        if cmd.trim().is_empty() {
-            vec!["$ ".to_owned()]
-        } else {
-            cmd.lines().map(|line| format!("$ {line}")).collect()
-        }
-    } else if name == "repl" {
-        let code = args
-            .get("code")
-            .or_else(|| args.get("input"))
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("");
-        if code.trim().is_empty() {
-            Vec::new()
-        } else {
-            code.lines().map(str::to_owned).collect()
-        }
-    } else if !tool_shows_args_section(name) || args.is_null() {
+pub(crate) fn tool_input_lines(
+    spec: Option<&ToolRenderSpec>,
+    args: &serde_json::Value,
+) -> Vec<String> {
+    if let Some(ToolBody::Code { key, prompt, .. }) = spec.map(|s| &s.body) {
+        let code = tool_arg(args, key);
+        return match prompt {
+            Some(p) => {
+                if code.trim().is_empty() {
+                    vec![format!("{p} ")]
+                } else {
+                    code.lines().map(|line| format!("{p} {line}")).collect()
+                }
+            }
+            None => {
+                if code.trim().is_empty() {
+                    Vec::new()
+                } else {
+                    code.lines().map(str::to_owned).collect()
+                }
+            }
+        };
+    }
+    if args.is_null() {
         Vec::new()
     } else if args.as_object().is_some() {
         // Strip the canonical key(s) already shown in the panel title suffix so
         // the Args section never re-states the path/pattern (anchor-once).
-        let residual = residual_args(name, args);
+        let residual = residual_args(spec, args);
         if residual.as_object().is_some_and(|m| m.is_empty()) {
             Vec::new()
         } else {
@@ -349,12 +333,23 @@ pub(crate) fn tool_input_lines(name: &str, args: &serde_json::Value) -> Vec<Stri
     }
 }
 
+/// Whether the panel gets an Input section (and the matching Output border):
+/// code-bodied tools always do (an empty command still reads as `$ `), other
+/// tools only when residual args survive anchor stripping.
+pub(crate) fn tool_shows_input_section(
+    spec: Option<&ToolRenderSpec>,
+    args: &serde_json::Value,
+) -> bool {
+    matches!(spec.map(|s| &s.body), Some(ToolBody::Code { .. }))
+        || !tool_input_lines(spec, args).is_empty()
+}
+
 pub(crate) fn tool_output_lines(
-    name: &str,
+    spec: Option<&ToolRenderSpec>,
     args: &serde_json::Value,
     text: &str,
 ) -> (Vec<String>, Vec<String>, bool) {
-    if name == "bash" {
+    if spec.is_some_and(|s| s.exit_code_trailer) {
         let timeout = bash_timeout_arg(args);
         let (lines, exit_code, timed_out) = parse_bash_result(text);
         let ok = exit_code.unwrap_or(0) == 0 && timed_out.is_none();

@@ -2,7 +2,7 @@ use anyhow::Result;
 
 use crate::{
     CommandSpec, EventHandlerRegistration, ExtensionManifest, FlagSpec, MessageRendererSpec,
-    OverlaySpec, ProviderConfig, ShortcutSpec, ThemeSpec, ToolSpec,
+    OverlaySpec, ProviderConfig, ShortcutSpec, ThemeSpec, ToolRenderSpec, ToolSpec,
 };
 
 pub trait Extension: Send + Sync {
@@ -31,6 +31,13 @@ pub trait ExtensionHost {
 
     // ── Message rendering ───────────────────────────────────────────────────
     fn register_message_renderer(&mut self, renderer: MessageRendererSpec) -> Result<()>;
+
+    /// Register declarative display metadata for a tool (anchor verb,
+    /// canonical args, body kind, summary category). Keyed by tool name,
+    /// independent of `register_tool` — prelude-implemented tools have
+    /// display metadata without being registry tools. Last write wins, so
+    /// a user extension can restyle a builtin.
+    fn register_tool_renderer(&mut self, spec: ToolRenderSpec) -> Result<()>;
 
     // ── Provider registration ───────────────────────────────────────────────
     fn register_provider(&mut self, config: ProviderConfig) -> Result<()>;

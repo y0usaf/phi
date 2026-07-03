@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use crate::{
     CommandContext, CommandSpec, EventHandlerRegistration, ExtensionHost, FlagSpec,
     MessageRendererSpec, OverlaySpec, ProviderConfig, ShortcutSpec, SpinnerSpec, TextEffectSpec,
-    ThemeSpec, ThinkingExpressionSpec, ToolSpec,
+    ThemeSpec, ThinkingExpressionSpec, ToolRenderSpec, ToolSpec,
 };
 use anyhow::{Result, bail};
 
@@ -15,6 +15,7 @@ pub(crate) struct RegistryHost {
     pub(crate) flags: BTreeMap<String, FlagSpec>,
     pub(crate) event_handlers: Vec<EventHandlerRegistration>,
     pub(crate) message_renderers: BTreeMap<String, MessageRendererSpec>,
+    pub(crate) tool_renderers: BTreeMap<String, ToolRenderSpec>,
     pub(crate) providers: BTreeMap<String, ProviderConfig>,
     // ── Visual ──────────────────────────────────────────────────────────
     pub(crate) themes: BTreeMap<String, ThemeSpec>,
@@ -76,6 +77,13 @@ impl ExtensionHost for RegistryHost {
             bail!("message renderer for '{}' is already registered", ct);
         }
         self.message_renderers.insert(ct, renderer);
+        Ok(())
+    }
+
+    fn register_tool_renderer(&mut self, spec: ToolRenderSpec) -> Result<()> {
+        // Last write wins (the provider precedent): builtins register first,
+        // so a user extension can restyle a builtin tool.
+        self.tool_renderers.insert(spec.tool.clone(), spec);
         Ok(())
     }
 

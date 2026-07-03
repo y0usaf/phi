@@ -1,6 +1,7 @@
 //! Tool identity, title formatting, and status text helpers.
 
 use phi_ai::Model;
+use phi_ext::{AnchorStyle, ResultLang, ToolBody, ToolRenderSpec};
 
 use super::palette::InlinePalette;
 use super::*;
@@ -53,9 +54,11 @@ pub(crate) fn failed_status_text(
 /// the in-flight status line and the committed card header. `anchor` is the
 /// one-line form (verb + defining argument, e.g. `read src/parser.rs`,
 /// `$ cargo check`); `body` is the multi-line detail folded under it (full
-/// highlighted bash command, repl code, a long/nested unknown-tool arg).
-/// `tool_title` below is a thin projection over this — never duplicate the
-/// per-tool match.
+/// highlighted command code, a long/nested unknown-tool arg). The shape is
+/// a projection of the tool's registered [`ToolRenderSpec`] (WS1.3a) — this
+/// file holds no per-tool-name knowledge; a tool without a spec gets the
+/// generic `name key=value` form. `tool_title` below is a thin projection
+/// over this.
 ///
 /// Anchor-once invariant: the canonical argument (path/command/pattern/value)
 /// is shown **once** across the card — in the anchor when it fits, in the body
@@ -70,7 +73,12 @@ pub(crate) struct Identity {
     pub(crate) body: Vec<String>,
 }
 
-pub(crate) fn tool_identity(name: &str, args: &serde_json::Value, p: &InlinePalette) -> Identity {
+pub(crate) fn tool_identity(
+    spec: Option<&ToolRenderSpec>,
+    name: &str,
+    args: &serde_json::Value,
+    p: &InlinePalette,
+) -> Identity {
     let arg = |key: &str| tool_arg(args, key);
     let one_line = |text: &str| {
         let flat = text.lines().next().unwrap_or("").trim().to_owned();
@@ -79,13 +87,6 @@ pub(crate) fn tool_identity(name: &str, args: &serde_json::Value, p: &InlinePale
             format!("{short}…")
         } else {
             short
-        }
-    };
-    let in_path = |path: &str| {
-        if path.is_empty() || path == "." {
-            String::new()
-        } else {
-            format!(" in {path}")
         }
     };
     // Fallback anchor (unknown tools, and `repl` which has no dedicated one):
@@ -136,112 +137,104 @@ pub(crate) fn tool_identity(name: &str, args: &serde_json::Value, p: &InlinePale
             Vec::new()
         }
     };
-    let (anchor, body): (String, Vec<String>) = match name {
-        "bash" => {
-            let cmd = arg("cmd");
-            let multiline = cmd.lines().count() > 1;
-            let anchor = if multiline {
-                // Multi-line: anchor is the truncated first line; the full
-                // command is the body, so the canonical content is shown once.
-                format!(
-                    "{tool}${RESET} {tert}{}{RESET}",
-                    one_line(cmd),
+    let (anchor, body): (String, Vec<String>) = match spec {
+        // Code-bodied tool (shell/repl shape): the anchor carries the code's
+        // truncated first line; the body carries the full text only when it
+        // is multi-line (anchor-once — the canonical code is shown exactly
+        // once, not in both the anchor and a body line).
+        Some(ToolRenderSpec {
+            verb,
+            body: ToolBody::Code { key, lang, prompt },
+            ..
+        }) => {
+            let code = arg(key);
+            let multiline = code.lines().count() > 1;
+            let anchor = match verb {
+                // Multi-line: the truncated first line, unhighlighted — the
+                // full highlighted command is the body.
+                Some(verb) if multiline => format!(
+                    "{tool}{verb}{RESET} {tert}{}{RESET}",
+                    one_line(code),
                     tool = &p.tool_title_fg,
                     tert = &p.text_tertiary,
-                )
-            } else {
-                let echoed = one_line(cmd);
-                let lit = highlight_code(&echoed, Some("bash"), &p.markdown)
-                    .into_iter()
-                    .next()
-                    .unwrap_or(echoed);
-                format!("{tool}${RESET} {lit}{RESET}", tool = &p.tool_title_fg)
+                ),
+                Some(verb) => {
+                    let echoed = one_line(code);
+                    let lit = highlight_code(&echoed, lang.as_deref(), &p.markdown)
+                        .into_iter()
+                        .next()
+                        .unwrap_or(echoed);
+                    format!("{tool}{verb}{RESET} {lit}{RESET}", tool = &p.tool_title_fg)
+                }
+                // No verb (repl): keep the fallback `name key=<first line>…`
+                // anchor form.
+                None => fallback_anchor(),
             };
-            // The body carries the full multi-line command. For a single-line
-            // command the anchor already shows it — emitting a body line
-            // would duplicate the canonical content (anchor-once), so the
-            // body is reserved for the multi-line case (and empty cmd).
-            let body = if cmd.trim().is_empty() {
-                vec![format!("{tool}${RESET}", tool = &p.tool_title_fg)]
-            } else if multiline {
-                highlight_code(cmd, Some("bash"), &p.markdown)
-                    .into_iter()
-                    .map(|line| format!("{tool}${RESET} {line}", tool = &p.tool_title_fg))
-                    .collect()
-            } else {
+            let body = if code.trim().is_empty() || !multiline {
                 Vec::new()
+            } else {
+                highlight_code(code, lang.as_deref(), &p.markdown)
+                    .into_iter()
+                    .map(|line| match prompt {
+                        Some(pr) => format!("{tool}{pr}{RESET} {line}", tool = &p.tool_title_fg),
+                        None => line,
+                    })
+                    .collect()
             };
             (anchor, body)
         }
-        "read_file" | "write_file" | "edit_file" => {
-            let verb = match name {
-                "read_file" => "read",
-                "write_file" => "write",
-                _ => "edit",
+        // Anchored tool (read/grep/ls shape): verb + styled canonical args.
+        Some(spec) if spec.verb.is_some() || !spec.anchor.is_empty() => {
+            let verb = spec.verb.as_deref().unwrap_or(name);
+            let mut anchor = format!("{tool}{verb}{RESET}", tool = &p.tool_title_fg);
+            for a in &spec.anchor {
+                let raw = arg(&a.key);
+                if a.skips(raw) {
+                    continue;
+                }
+                let value = match a.style {
+                    // Paths are shown in full; patterns/plain values are
+                    // truncated to the anchor's one-line budget.
+                    AnchorStyle::Path => raw.to_owned(),
+                    AnchorStyle::Pattern | AnchorStyle::Plain => one_line(raw),
+                };
+                let color = match a.style {
+                    AnchorStyle::Path => &p.path_fg,
+                    AnchorStyle::Pattern => &p.string_fg,
+                    AnchorStyle::Plain => &p.text_tertiary,
+                };
+                let rendered = match &a.prefix {
+                    Some(prefix) => format!(" {prefix} {value}"),
+                    None => format!(" {value}"),
+                };
+                anchor.push_str(&format!("{color}{rendered}{RESET}"));
+            }
+            let body = match &spec.body {
+                ToolBody::Args => fallback_body(),
+                _ => Vec::new(),
             };
-            let path = arg("path");
-            (
-                format!(
-                    "{tool}{verb}{RESET} {pathfg}{}{RESET}",
-                    path,
-                    tool = &p.tool_title_fg,
-                    pathfg = &p.path_fg,
-                ),
-                Vec::new(),
-            )
+            (anchor, body)
         }
-        "grep" | "find" => {
-            let verb = if name == "grep" { "grep" } else { "find" };
-            let pattern = arg("pattern");
-            let path = arg("path");
-            let anchor = format!(
-                "{tool}{verb}{RESET} {strfg}{}{RESET}{pathfg}{}{RESET}",
-                one_line(pattern),
-                in_path(path),
-                tool = &p.tool_title_fg,
-                strfg = &p.string_fg,
-                pathfg = &p.path_fg,
-            );
-            (anchor, Vec::new())
-        }
-        "ls" => {
-            let path = arg("path");
-            let anchor = format!(
-                "{tool}ls{RESET} {pathfg}{}{RESET}",
-                path,
-                tool = &p.tool_title_fg,
-                pathfg = &p.path_fg,
-            )
-            .trim_end()
-            .to_owned();
-            (anchor, Vec::new())
-        }
-        "repl" => {
-            // No dedicated one-line anchor (keeps the fallback form `repl
-            // code=<first line>…`); the body carries the full repl code. A
-            // single-line code value is already in the anchor, so the body is
-            // reserved for the multi-line case (anchor-once — the canonical
-            // code is shown once, not in both the anchor and a body line).
-            let code = args
-                .get("code")
-                .or_else(|| args.get("input"))
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("");
-            let body = if code.trim().is_empty() || code.lines().count() <= 1 {
-                Vec::new()
-            } else {
-                highlight_code(code, Some("repl"), &p.markdown)
+        Some(spec) => {
+            let body = match &spec.body {
+                ToolBody::Args => fallback_body(),
+                _ => Vec::new(),
             };
             (fallback_anchor(), body)
         }
-        _ => (fallback_anchor(), fallback_body()),
+        None => (fallback_anchor(), fallback_body()),
     };
     Identity { anchor, body }
 }
 
 /// One-line title for a tool block. Thin projection over [`tool_identity`].
-pub(crate) fn tool_title(name: &str, args: &serde_json::Value, p: &InlinePalette) -> String {
-    tool_identity(name, args, p).anchor
+pub(crate) fn tool_title(
+    spec: Option<&ToolRenderSpec>,
+    name: &str,
+    args: &serde_json::Value,
+    p: &InlinePalette,
+) -> String {
+    tool_identity(spec, name, args, p).anchor
 }
 
 pub(crate) fn lang_hint_for_path(path: &str) -> Option<&'static str> {
@@ -273,13 +266,21 @@ pub(crate) fn lang_hint_for_path(path: &str) -> Option<&'static str> {
     }
 }
 
-pub(crate) fn tool_preview_lang(name: &str, args: &serde_json::Value) -> Option<&'static str> {
-    match name {
-        "read_file" => args
-            .get("path")
+/// Syntax-highlight hint for a tool's result preview, from the spec's
+/// [`ResultLang`] (e.g. `read_file` results highlighted by the file's
+/// language).
+pub(crate) fn tool_preview_lang(
+    spec: Option<&ToolRenderSpec>,
+    args: &serde_json::Value,
+) -> Option<String> {
+    match &spec?.result_lang {
+        ResultLang::None => None,
+        ResultLang::Fixed { lang } => Some(lang.clone()),
+        ResultLang::PathArg { key } => args
+            .get(key)
             .and_then(serde_json::Value::as_str)
-            .and_then(lang_hint_for_path),
-        _ => None,
+            .and_then(lang_hint_for_path)
+            .map(str::to_owned),
     }
 }
 

@@ -258,25 +258,54 @@ API (`phi-ext`/`phi-lua`/`phi-event`), never bypass it.
             `ExtRgb` at the edge); the mux sidebar spinner goes through
             `VisualContext` instead of calling `phi_tui::spinner_frame_at`
             directly.
-      - [ ] Message renderers: `register_message_renderer` is wired end-to-end
-            in the API (`MessageRendererSpec`, Lua bridge, registry) but dead —
-            zero non-test consumers and no way for an extension to inject a
-            custom-typed message. Two real API additions needed: (a) per-tool
-            render hooks so the hardcoded match on
-            `bash`/`read_file`/`write_file`/`edit_file`/`grep`/`find`/`ls`/
-            `repl` becomes registry-driven (pi reference: `registerTool`'s
-            `renderCall`/`renderResult`). *Scope corrected by the 2026-07-02
-            audit: there are **three** independent copies of this table, not
-            one — `phi-session-tui/src/tui/tool_display.rs:139-238`,
-            `phi-app/src/tool_view.rs` (one-shot/ndjson renderer, own
-            bash→"Shell"/"Command" special-casing), and
-            `phi-tui/src/tool_category.rs` (summary-card categorizer). All
-            three must consume the same registry or the hook is cosmetic.*
-            (b) a `Custom` transcript-entry
-            variant dispatched through `get_message_renderer`, plus a
-            `send_message`-style producer. Needs a design decision on how
-            extension renderers receive palette/styling (grow
-            `OverlayPalette`? `StyledText` return?) — don't rush it.
+      - [x] (a) Per-tool render hooks: the hardcoded match on
+            `bash`/`read_file`/`write_file`/`edit_file`/`grep`/`find`/`ls`
+            becomes registry-driven, all **three** copies of the table
+            (2026-07-02 audit) consuming one registry.
+            *Landed as (2026-07-03):* `register_tool_renderer` +
+            `ToolRenderSpec` in `phi-ext/src/tool_render.rs` — deliberately
+            **declarative data, not pi-style `renderCall`/`renderResult`
+            closures** (the design decision this item flagged): verb,
+            display name, summary category, styled anchor args
+            (`path`/`pattern` roles, `prefix`, `skip_values`), body kind
+            (`args`/`none`/`code {key, lang, prompt}`), result-lang
+            (`fixed`/`path_arg`), plus an `exit_code_trailer` flag for the
+            prelude bash output convention. Rationale: three heterogeneous
+            consumers (ANSI TUI cards, plain CLI panels, category tallies)
+            project the same facts differently, and the in-flight status
+            line re-renders every animation tick — closure hooks would put
+            extension VMs on the hot render path, and pi's component-return
+            hooks presume a single TUI framework Phi doesn't have. All
+            three tables now consume the registry: `tool_display.rs`
+            (`tool_identity`/`tool_title`/`tool_preview_lang`) and
+            `tool_view.rs`/`render.rs` take `Option<&ToolRenderSpec>` and
+            keep the old generic `name key=value` rendering as the
+            no-spec fallback; `phi-tui/src/tool_category.rs` is deleted
+            (`tally` + `ToolRenderCategory` live in phi-ext, categories
+            come from specs, unknown → `other`). The 7 prelude helpers'
+            specs live in `phi-builtins/src/tool_render.rs`
+            (`ToolRenderExtension`, drift-tested against
+            `coding_tools_section`); the core `repl` spec is seeded by
+            `ToolRenderIndex` itself, so a builtins-less build still
+            renders the engine's own tool richly and everything else
+            degrades to generic anchors — the same bare-core story as
+            commands/overlays. Registration is last-write-wins (provider
+            precedent) so a user extension can restyle a builtin —
+            covered by a Lua override test; Lua gets the full vocabulary
+            via serde (`phi.register_tool_renderer`, dogfood tests in
+            `phi-lua/tests/lua_api.rs`). Fixed on the way: the CLI
+            `write_file` panel never showed its path (no title suffix and
+            stripped from args); CLI Input/Args sections are now
+            data-driven (shown iff residual args survive anchor
+            stripping) instead of name-gated.
+      - [ ] (b) A `Custom` transcript-entry variant dispatched through
+            `get_message_renderer`, plus a `send_message`-style producer —
+            `register_message_renderer` stays wired-but-dead (zero
+            non-test consumers, no way for an extension to inject a
+            custom-typed message) until this lands. Styling decision for
+            *this* half is still open (renderer returns markdown? spans of
+            `StyledText` with palette roles, per the WS1.6 overlay
+            precedent?) — don't rush it.
 - [x] **1.4 Skills.** Relocate `phi-session/src/skills.rs` into a builtin
       extension (discovery of `SKILL.md` dirs, injection into the system prompt
       via the `before_agent_start`-equivalent event). Skills are not RLM-core.

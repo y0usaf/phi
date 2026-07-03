@@ -14,6 +14,7 @@ pub mod shortcut;
 pub mod snapshot;
 pub mod theme_spec;
 pub mod tool;
+pub mod tool_render;
 pub mod traits;
 pub mod visual;
 
@@ -53,6 +54,10 @@ pub use theme_spec::{TerminalColorsProbe, ThemeSpec};
 pub use tool::{
     ToolDispatch, ToolExposure, ToolHandler, ToolInvocation, ToolOutput, ToolParam, ToolSpec,
     python_param_name, python_param_names, schema_from_params,
+};
+pub use tool_render::{
+    AnchorArg, AnchorStyle, ResultLang, ToolBody, ToolRenderCategory, ToolRenderIndex,
+    ToolRenderSpec, repl_render_spec, tally, title_case_tool_name,
 };
 pub use traits::{AnimationSpec, Extension, ExtensionHost};
 pub use visual::{Rgb, StyledSpan, StyledText};

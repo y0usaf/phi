@@ -123,6 +123,9 @@ pub async fn run(
         storage.clone(),
         sub_model_thinking,
     );
+    // Snapshot the tool display metadata before the runtime moves into the
+    // engine — the printer task projects tool anchors/categories from it.
+    let tool_render = runtime.tool_render_index();
     rlm = rlm.with_runtime(runtime);
     let mut printer = None;
     if !args.quiet {
@@ -136,6 +139,7 @@ pub async fn run(
                 args.verbose,
                 settings.max_iterations,
                 settings.tools.clone(),
+                tool_render,
             )));
         }
     }

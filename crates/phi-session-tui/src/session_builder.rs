@@ -185,6 +185,10 @@ pub async fn build_runtime(
     {
         rt_builder = rt_builder.register_extension(phi_builtins::CatalogExtension);
         rt_builder = rt_builder.register_extension(phi_builtins::DefaultVisualExtension);
+        // Display metadata for the prelude coding tools (WS1.3a). Registered
+        // before user extensions so a later spec for the same tool wins
+        // (tool renderer registration is last-write-wins).
+        rt_builder = rt_builder.register_extension(phi_builtins::ToolRenderExtension);
         rt_builder =
             rt_builder.register_extension(phi_builtins::BuiltinCommandsExtension::new(model_names));
         rt_builder = rt_builder.register_extension(phi_builtins::SkillsExtension::new(

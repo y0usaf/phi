@@ -770,6 +770,9 @@ struct Ui {
     pub(super) root_lm: Arc<ProviderLm>,
     pub(super) sub_lm: Arc<ProviderLm>,
     pub(super) runtime: Arc<AppRuntime>,
+    /// Registered tool display metadata (anchor verbs, canonical args,
+    /// summary categories), snapshotted from the runtime at startup.
+    pub(super) tool_render: phi_ext::ToolRenderIndex,
     /// Qualified `provider/id` names offered by /model completion.
     pub(super) model_names: Vec<String>,
     pub(super) login_tx: mpsc::UnboundedSender<LoginMsg>,
@@ -896,6 +899,7 @@ impl Ui {
             registry,
             root_lm,
             sub_lm,
+            tool_render: runtime.tool_render_index(),
             runtime,
             model_names,
             login_tx,
@@ -1006,6 +1010,7 @@ mod tests {
             phi_ext::RuntimeBuilder::new()
                 .with_cwd(&cwd)
                 .register_extension(phi_builtins::BuiltinCommandsExtension::new(model_names))
+                .register_extension(phi_builtins::ToolRenderExtension)
                 .build()
                 .unwrap(),
         );
@@ -1287,7 +1292,11 @@ mod tests {
     #[test]
     fn tool_identity_anchor_shown_once() {
         let p = InlinePalette::default_const();
+        // The per-tool shapes come from the builtin render specs — the same
+        // registry path the live UI resolves through `Ui::tool_render`.
+        let idx = phi_ext::ToolRenderIndex::new(phi_builtins::tool_render::specs());
         let read = tool_identity(
+            idx.get("read_file"),
             "read_file",
             &serde_json::json!({"path": "src/parser.rs"}),
             &p,
@@ -1295,6 +1304,7 @@ mod tests {
         assert!(phi_tui::strip_ansi(&read.anchor).contains("read src/parser.rs"));
         assert!(read.body.is_empty());
         let grep = tool_identity(
+            idx.get("grep"),
             "grep",
             &serde_json::json!({"pattern": "parse", "path": "src/"}),
             &p,
@@ -1302,19 +1312,25 @@ mod tests {
         let grep_plain = phi_tui::strip_ansi(&grep.anchor);
         assert!(grep_plain.contains("grep parse in src/"));
         assert!(grep.body.is_empty());
-        let ls = tool_identity("ls", &serde_json::json!({"path": "src"}), &p);
+        let ls = tool_identity(idx.get("ls"), "ls", &serde_json::json!({"path": "src"}), &p);
         assert!(phi_tui::strip_ansi(&ls.anchor) == "ls src");
         assert!(ls.body.is_empty());
         // bash: single-line command lives in the anchor only (empty body); a
         // multi-line command's truncated first line is the anchor and its full
         // text is the body — the canonical command is shown once either way.
-        let bash1 = tool_identity("bash", &serde_json::json!({"cmd": "cargo check"}), &p);
+        let bash1 = tool_identity(
+            idx.get("bash"),
+            "bash",
+            &serde_json::json!({"cmd": "cargo check"}),
+            &p,
+        );
         assert!(phi_tui::strip_ansi(&bash1.anchor).contains("$ cargo check"));
         assert!(
             bash1.body.is_empty(),
             "single-line bash must not duplicate the command in the body"
         );
         let bash2 = tool_identity(
+            idx.get("bash"),
             "bash",
             &serde_json::json!({"cmd": "cargo test\ncargo build"}),
             &p,
@@ -1328,7 +1344,7 @@ mod tests {
         // Unknown (e.g. MCP/extension) tools: small `key=value` args live in the
         // anchor only (empty body — no dup); a long value earns a body row with
         // the full text (anchor keeps the truncated one).
-        let small = tool_identity("mcp__x", &serde_json::json!({"q": "hi"}), &p);
+        let small = tool_identity(None, "mcp__x", &serde_json::json!({"q": "hi"}), &p);
         assert_eq!(
             phi_tui::strip_ansi(&small.anchor),
             "mcp__x q=hi",
@@ -1340,7 +1356,7 @@ mod tests {
             "small unknown-tool arg must not duplicate in the body"
         );
         let big_cmd = "x".repeat(120);
-        let big = tool_identity("mcp__x", &serde_json::json!({"q": big_cmd}), &p);
+        let big = tool_identity(None, "mcp__x", &serde_json::json!({"q": big_cmd}), &p);
         assert!(
             !big.body.is_empty(),
             "long unknown-tool arg should carry full text in body"
@@ -1354,7 +1370,7 @@ mod tests {
         assert!(joined.contains(&big_cmd), "{joined}");
         // A bare (non-object) arg is never in the anchor (anchor is just the
         // name), so a non-empty value lives in the body once.
-        let bare = tool_identity("mcp__x", &serde_json::json!("hello"), &p);
+        let bare = tool_identity(None, "mcp__x", &serde_json::json!("hello"), &p);
         assert_eq!(
             phi_tui::strip_ansi(&bare.anchor),
             "mcp__x",
