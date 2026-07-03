@@ -33,7 +33,8 @@ pub use engine::{
 };
 
 pub use prompts::{
-    DEFAULT_ANSWER_NUDGE, SystemPromptOptions, build_system_prompt, discover_prompt_overrides,
+    CODING_IDENTITY, DEFAULT_ANSWER_NUDGE, SystemPromptOptions, build_system_prompt,
+    discover_prompt_overrides,
 };
 pub use provider::ProviderLm;
 pub use session::RlmSession;

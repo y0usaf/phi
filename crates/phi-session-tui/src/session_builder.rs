@@ -254,21 +254,22 @@ fn build_rlm_config(
 
     let (prompt_override, append_prompt) = phi_rlm::discover_prompt_overrides(cwd, project_trusted);
 
+    // Coding-session prompt shape (WS9.4): the coding identity replaces the
+    // long-context-QA RLM identity (unless a .phi/SYSTEM.md override wins),
+    // and the orchestrator addendum is off — delegation guidance lives in
+    // the identity, claude-code-shaped. The old user_prologue restated the
+    // identity as a user message; the system prompt now owns it.
     RlmConfig {
         max_rlm_depth: settings.max_rlm_depth,
         max_iterations: settings.max_iterations,
         max_concurrent_subcalls: settings.max_concurrent_subcalls,
-        custom_system_prompt: prompt_override,
+        custom_system_prompt: prompt_override.or_else(|| Some(phi_rlm::CODING_IDENTITY.to_owned())),
         append_system_prompt: append_prompt,
         setup_code: Some(setup_code),
         tools_section: Some(coding_tools_section()),
         env_info: Some(env_info_block(cwd)),
         cwd: Some(cwd.display().to_string()),
-        user_prologue: Some(format!(
-            "You are a coding agent operating directly in the user's working directory: {}. \
-             Use the pre-defined helper functions to explore and modify the project.",
-            cwd.display()
-        )),
+        orchestrator: false,
         ..RlmConfig::default()
     }
 }

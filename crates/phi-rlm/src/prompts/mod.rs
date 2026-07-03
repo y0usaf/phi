@@ -7,7 +7,7 @@ mod overrides;
 mod tests;
 
 pub use builder::{SystemPromptOptions, build_system_prompt};
-pub use constants::DEFAULT_ANSWER_NUDGE;
+pub use constants::{CODING_IDENTITY, DEFAULT_ANSWER_NUDGE};
 pub(crate) use constants::{
     COMPACTION_SUMMARY_PROMPT, EMPTY_TURN_NUDGE, compaction_continue_message,
 };

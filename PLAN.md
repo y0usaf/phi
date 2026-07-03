@@ -802,7 +802,7 @@ around them and the shape of the tool surface on top of them.
       abstracting the RLM *loop* itself behind an extension path — that cut
       violates doctrines 2 and 6 and is rejected here so it isn't
       relitigated by drift.
-- [ ] **9.4 Coding-session prompt retune.** The "You are a Recursive Language
+- [x] **9.4 Coding-session prompt retune.** The "You are a Recursive Language
       Model" identity and the `ORCHESTRATOR_ADDENDUM` ("if you find yourself
       about to write several sentences of unaided reasoning, that is usually
       a sign to delegate with `subagent`", `constants.rs:23`) are tuned for
@@ -813,6 +813,20 @@ around them and the shape of the tool surface on top of them.
       guidance becomes claude-code-shaped — subagents for fan-out *search*
       and isolating huge outputs, not the default reasoning path. Keep the
       orchestrator addendum for genuine long-context/QA payloads.
+      *Landed as:* `phi_rlm::CODING_IDENTITY` (claude-code-shaped: do the
+      work yourself in the REPL; `subagent` for fan-out search and isolating
+      oversized output; `llm_query` for one-shot extraction; never delegate
+      ordinary reasoning). The interactive TUI and plain `phi -p` runs set
+      it via `custom_system_prompt` (a `.phi/SYSTEM.md` override still wins)
+      with `orchestrator: false`; `phi -p --context <file>` keeps the QA
+      identity + orchestrator addendum — that's the long-context payload
+      path the addendum was tuned for. The QA delegation stance ("use
+      subagent as your default delegation path") moved out of the shared
+      `DEFAULT_REPL_TOOLS` listing (it contradicted whichever identity was
+      active; the addendum already carries it for QA runs). Both hosts'
+      `user_prologue` ("You are a coding agent…" as a *user* message) died —
+      the system prompt owns the identity now, and `user_prologue` reverts
+      to its real job: the `preamble=` channel for subagent children.
 - [x] **9.5 Retry transient provider errors with backoff.** `run_loop`
       returns `Outcome::failed` on the first `complete_root` error
       (`core.rs:643-657`) — a single 429/529 blip kills a long run. Both

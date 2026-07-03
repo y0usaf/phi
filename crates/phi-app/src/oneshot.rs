@@ -72,18 +72,22 @@ pub async fn run(
         }
     }
 
+    // `--context` runs are long-context QA payloads: keep the RLM identity
+    // and orchestrator addendum they were tuned for. Plain `-p` runs are
+    // coding runs (WS9.4): coding identity, no orchestrator addendum — its
+    // delegate-by-default stance multiplies latency and degrades output on
+    // coding tasks. The old user_prologue restated the identity as a user
+    // message; the system prompt now owns it.
+    let qa_run = args.context.is_some();
     let config = RlmConfig {
         max_rlm_depth: settings.max_rlm_depth,
         max_iterations: settings.max_iterations,
         max_concurrent_subcalls: settings.max_concurrent_subcalls,
+        custom_system_prompt: (!qa_run).then(|| phi_rlm::CODING_IDENTITY.to_owned()),
         setup_code: Some(CODING_PRELUDE.to_owned()),
         tools_section: Some(coding_tools_section()),
         cwd: Some(cwd.display().to_string()),
-        user_prologue: Some(format!(
-            "You are a coding agent operating directly in the user's working directory: {}. \
-             Use the pre-defined helper functions to explore and modify the project.",
-            cwd.display()
-        )),
+        orchestrator: qa_run,
         ..RlmConfig::default()
     };
 
