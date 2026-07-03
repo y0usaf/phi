@@ -425,16 +425,22 @@ impl Rlm {
             // turns reminder when a capped run nears its limit. Providers
             // merge consecutive user-role messages, so pushing this after
             // tool results is safe.
+            // Extension-dispatch time for this iteration (WS9.6 telemetry):
+            // context injections here, plus the tool interception hooks
+            // accumulated inside the exec loop below.
+            let mut dispatch_time = std::time::Duration::ZERO;
             let mut preamble: Vec<String> = Vec::new();
             if let Some(rt) = &self.runtime {
                 // Race context injection against cancellation. On cancel,
                 // yield no injections and let the outer `select!` catch cancel
                 // on the next poll — a blocked Context handler can't strand the
                 // iteration.
+                let dispatch_start = Instant::now();
                 let injections = tokio::select! {
                     r = rt.context_injections(i as u32) => r.unwrap_or_default(),
                     () = cancel.cancelled() => Vec::new(),
                 };
+                dispatch_time += dispatch_start.elapsed();
                 for (label, content) in &injections {
                     preamble.push(format!("# {label}\n{content}"));
                 }
@@ -468,7 +474,8 @@ impl Rlm {
             drop(tool_tx);
 
             let stream = async {
-                handler
+                let model_start = Instant::now();
+                let result = handler
                     .complete_root(
                         history,
                         Some(self.delta_sink(i)),
@@ -476,12 +483,14 @@ impl Rlm {
                         Some(tool_sink),
                         cancel,
                     )
-                    .await
+                    .await;
+                (result, model_start.elapsed())
             };
 
             // Eagerly execute tool calls as they arrive during the stream.
             let exec = async {
                 let mut blocks = Vec::new();
+                let mut dispatch = std::time::Duration::ZERO;
                 while let Some(result) = tool_rx.recv().await {
                     let tool_call_id = result.id;
                     if let Some(code) = result.code {
@@ -489,6 +498,7 @@ impl Rlm {
                         // Dispatch tool_call event before execution. If any
                         // handler returns ToolBlock, skip execution and inject
                         // a blocked result instead.
+                        let dispatch_start = Instant::now();
                         let returns = dispatch_await(
                             &self.runtime,
                             LifecycleEvent {
@@ -500,6 +510,7 @@ impl Rlm {
                             },
                         )
                         .await;
+                        dispatch += dispatch_start.elapsed();
 
                         let blocked = returns
                             .iter()
@@ -515,9 +526,11 @@ impl Rlm {
                         // ── Extension: ToolExecutionStart ──────────────────────
                         if let Some(rt) = &self.runtime {
                             let call_id = format!("d{}i{}", self.depth, i);
+                            let dispatch_start = Instant::now();
                             let _ = rt
                                 .on_tool_execution_start(&call_id, "repl", json!({ "code": code }))
                                 .await;
+                            dispatch += dispatch_start.elapsed();
                         }
 
                         let repl_result = if blocked {
@@ -560,6 +573,7 @@ impl Rlm {
                         // ── Extension: ToolExecutionEnd ────────────────────────
                         if let Some(rt) = &self.runtime {
                             let call_id = format!("d{}i{}", self.depth, i);
+                            let dispatch_start = Instant::now();
                             let _ = rt
                                 .on_tool_execution_end(
                                     &call_id,
@@ -572,9 +586,11 @@ impl Rlm {
                                     !repl_result.stderr.is_empty(),
                                 )
                                 .await;
+                            dispatch += dispatch_start.elapsed();
                         }
 
                         let result_str = format_execution_result(&repl_result);
+                        let dispatch_start = Instant::now();
                         let returns = dispatch_await(
                             &self.runtime,
                             LifecycleEvent {
@@ -591,6 +607,7 @@ impl Rlm {
                             },
                         )
                         .await;
+                        dispatch += dispatch_start.elapsed();
 
                         let mut final_result = repl_result;
                         for r in &returns {
@@ -624,15 +641,17 @@ impl Rlm {
                         });
                     }
                 }
-                blocks
+                (blocks, dispatch)
             };
 
-            let (completion, blocks) = tokio::select! {
+            let ((completion, model_time), (blocks, exec_dispatch)) = tokio::select! {
                 pair = async { tokio::join!(stream, exec) } => pair,
                 () = cancel.cancelled() => {
                     return self.cancelled_outcome(best_partial, iterations);
                 }
             };
+            dispatch_time += exec_dispatch;
+            let exec_time: std::time::Duration = blocks.iter().map(|b| b.result.duration).sum();
             let completion = match completion {
                 Ok(completion) => completion,
                 Err(e) => {
@@ -731,6 +750,9 @@ impl Rlm {
                     depth: self.depth,
                     iteration: i,
                     duration: iter_start.elapsed(),
+                    model: model_time,
+                    exec: exec_time,
+                    dispatch: dispatch_time,
                 });
                 return Outcome {
                     stop: StopCause::Answer,
@@ -869,6 +891,9 @@ impl Rlm {
                     depth: self.depth,
                     iteration: i,
                     duration: iter_start.elapsed(),
+                    model: model_time,
+                    exec: exec_time,
+                    dispatch: dispatch_time,
                 });
 
                 // Save Point: collect pending steer messages from the caller.
@@ -947,6 +972,9 @@ impl Rlm {
                     depth: self.depth,
                     iteration: i,
                     duration: iter_start.elapsed(),
+                    model: model_time,
+                    exec: exec_time,
+                    dispatch: dispatch_time,
                 });
                 return Outcome {
                     stop: StopCause::Prose,
@@ -988,6 +1016,9 @@ impl Rlm {
                     depth: self.depth,
                     iteration: i,
                     duration: iter_start.elapsed(),
+                    model: model_time,
+                    exec: exec_time,
+                    dispatch: dispatch_time,
                 });
                 return Outcome {
                     stop: StopCause::Prose,
@@ -1031,6 +1062,9 @@ impl Rlm {
                 depth: self.depth,
                 iteration: i,
                 duration: iter_start.elapsed(),
+                model: model_time,
+                exec: exec_time,
+                dispatch: dispatch_time,
             });
             history.push(ChatMessage {
                 role: Role::User,

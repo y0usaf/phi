@@ -131,8 +131,21 @@ pub enum RlmEvent {
     IterationEnd {
         depth: usize,
         iteration: usize,
+        /// Wall-clock duration of the whole iteration.
         #[serde(serialize_with = "duration_secs")]
         duration: Duration,
+        /// Time inside the root completion (request + stream). Overlaps
+        /// `exec` — tool calls execute eagerly while the stream continues —
+        /// so the parts are raw attributions, not an additive breakdown.
+        #[serde(serialize_with = "duration_secs")]
+        model: Duration,
+        /// Total REPL execution time (sum over this iteration's blocks).
+        #[serde(serialize_with = "duration_secs")]
+        exec: Duration,
+        /// Time spent in extension event dispatch (context injections,
+        /// tool_call/tool_result interception, execution start/end hooks).
+        #[serde(serialize_with = "duration_secs")]
+        dispatch: Duration,
     },
     /// Streamed root-model text chunk (only when the model streams).
     RootDelta {

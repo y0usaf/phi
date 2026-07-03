@@ -844,13 +844,21 @@ around them and the shape of the tool surface on top of them.
       Transport layer: phi-ai adds mid-stream retry with rollback and a
       fresh unpooled client (commit 1171000). `run_loop`'s error arm is now
       only reached after both layers are exhausted — correct.
-- [ ] **9.6 Turn telemetry before further tuning.** `IterationEnd` already
+- [x] **9.6 Turn telemetry before further tuning.** `IterationEnd` already
       carries a duration; split it into model-time vs exec-time vs
       event-dispatch per iteration so "slow" is attributable. Candidate
       follow-ups that should wait for this data: parallel execution of
       read-only tool calls, prompt-cache-hit verification (history is
       append-only between compactions, so provider prefix caching *should*
       already work — confirm, don't assume).
+      *Landed as:* `RlmEvent::IterationEnd` grew `model` (root completion
+      request + stream), `exec` (sum of the iteration's REPL block
+      durations), and `dispatch` (extension hooks: context injections,
+      tool_call/tool_result interception, execution start/end) alongside
+      the wall `duration` — all serialized as seconds in NDJSON. Raw
+      attributions, deliberately not an additive breakdown: exec overlaps
+      model because tool calls execute eagerly during the stream. The
+      listed follow-ups remain open pending collected data.
 
 What the audit confirmed is *right* in the loop (keep, don't churn): loop
 detection with output-aware signatures, compaction archiving the compacted
