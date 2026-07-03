@@ -700,6 +700,13 @@ struct Ui {
     pub(super) block: Vec<String>,
     pub(super) block_active: bool,
     pub(super) block_errored: bool,
+    /// Whether the active block is a bare tool container opened by
+    /// `handle_tool_start` for a tool that ran outside any repl block
+    /// (native/registry dispatch, stray late events). Such a block has no
+    /// owner waiting to commit it — `handle_tool_end` commits it as soon
+    /// as the last open activity row resolves. Repl (`CodeExecStart`) and
+    /// shell (`send_shell`) blocks keep this false: their own flows commit.
+    pub(super) tool_block: bool,
     /// Code of the in-flight depth-0 agent ```repl``` block, stashed at
     /// `CodeExecStart` and persisted to the session store at `CodeExecEnd`.
     pub(super) live_code: Option<String>,
@@ -864,6 +871,7 @@ impl Ui {
             block: Vec::new(),
             block_active: false,
             block_errored: false,
+            tool_block: false,
             live_code: None,
             pending_prose: String::new(),
             live_prose: String::new(),
@@ -1586,6 +1594,76 @@ nothing to commit
         assert!(!replay_plain.contains("turn"), "{replay_plain}");
         assert!(replay_plain.contains("print(1)"), "{replay_plain}");
         assert!(replay_plain.contains("repl"), "{replay_plain}");
+    }
+
+    #[test]
+    fn native_tool_outside_block_gets_container() {
+        let mut ui = test_ui(80, 24);
+        ui.running = Some(CancellationToken::new());
+        // Native/registry dispatch: ToolStart arrives with no CodeExecStart
+        // before it (repl blocks open at CodeExecStart; native tools never
+        // send one).
+        ui.handle_rlm_event(RlmEvent::ToolStart {
+            depth: 0,
+            call_id: 7,
+            name: "bash".to_owned(),
+            args: serde_json::json!({"cmd": "sleep 999"}),
+        });
+        // The spinner status must live in the live block (replaceable on
+        // ToolEnd), not in committed pending — a frozen spinner frame must
+        // never reach scrollback.
+        assert!(ui.block_active && ui.tool_block);
+        assert!(
+            ui.block.iter().any(|l| strip_ansi(l).contains("sleep 999")),
+            "status row in live block: {:?}",
+            ui.block
+        );
+        ui.handle_rlm_event(RlmEvent::ToolEnd {
+            depth: 0,
+            call_id: 7,
+            name: "bash".to_owned(),
+            result: String::new(),
+            error: Some("Error: command timed out after 120s".to_owned()),
+            duration: Duration::from_secs(120),
+        });
+        // The container commits itself once the last activity resolves,
+        // and the card rows carry the block surface (fill_bg background)
+        // instead of floating as bare flat rows.
+        assert!(!ui.block_active && !ui.tool_block);
+        let lines = pending_lines(&mut ui);
+        let card: Vec<&String> = lines.iter().filter(|l| l.contains("timed out")).collect();
+        assert!(!card.is_empty(), "{lines:?}");
+        for row in card {
+            assert!(
+                row.starts_with("\x1b[48"),
+                "card row must carry the block bg: {row:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn shell_block_survives_tool_end() {
+        // The `!cmd` flow opens a repl-style block and commits it at
+        // handle_shell_done — the tool-container auto-commit must not close
+        // it early when bash's in-env tool events fire.
+        let mut ui = test_ui(80, 24);
+        ui.begin_block();
+        ui.handle_rlm_event(RlmEvent::ToolStart {
+            depth: 0,
+            call_id: 3,
+            name: "bash".to_owned(),
+            args: serde_json::json!({"cmd": "ls"}),
+        });
+        ui.handle_rlm_event(RlmEvent::ToolEnd {
+            depth: 0,
+            call_id: 3,
+            name: "bash".to_owned(),
+            result: "ok".to_owned(),
+            error: None,
+            duration: Duration::from_millis(5),
+        });
+        assert!(ui.block_active, "shell block must stay open for shell_done");
+        assert!(!ui.tool_block);
     }
 
     #[test]

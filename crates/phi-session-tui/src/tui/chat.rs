@@ -437,12 +437,26 @@ impl Ui {
         self.flash_rows.clear();
         self.block_errored = false;
         self.block_active = true;
+        self.tool_block = false;
         self.push_row(format!("{}repl{}", &self.palette.tool_title_fg, RESET));
         // Skip the blank separator line when REPL code is suppressed
         // (repl_max_lines == 0): the header stands alone.
         if self.tools.repl_max_lines > 0 {
             self.push_row(String::new());
         }
+    }
+
+    /// Open a bare live container for a tool that runs outside any repl
+    /// block (native/registry dispatch, or a stray event after its block
+    /// closed). No `repl` header — the tool card carries its own identity —
+    /// but the same live machinery: spinner statuses splice in place instead
+    /// of freezing into committed scrollback, and the card gets the block
+    /// surface instead of floating as bare flat rows. `handle_tool_end`
+    /// commits it once the last open activity row resolves.
+    pub(super) fn begin_tool_block(&mut self) {
+        self.begin_block();
+        self.block.clear();
+        self.tool_block = true;
     }
 
     pub(super) fn commit_block(&mut self) {
@@ -456,6 +470,7 @@ impl Ui {
             self.replace_block_rows(flash.start, flash.len, flash.rows.clone());
         }
         self.block_active = false;
+        self.tool_block = false;
         let body = std::mem::take(&mut self.block);
         // One neutral container surface for committed REPL blocks: failures
         // are signaled by the ✗ glyphs and error text inside, not by tinting

@@ -926,6 +926,14 @@ impl Ui {
         if self.live_code.is_some() {
             self.open_tool_args.insert(key, args.clone());
         }
+        // A tool starting with no block open (native/registry dispatch —
+        // repl blocks open at CodeExecStart, before their tools) gets a
+        // bare container: without one, the boxed spinner status would be
+        // committed to scrollback as a frozen frame and the result card
+        // would render as bare flat rows outside any block surface.
+        if !self.block_active && self.live_code.is_none() {
+            self.begin_tool_block();
+        }
         let label = tool_title(&name, &args, &self.palette);
         let elapsed = self.clock.now_ms();
         if let Some((start, len)) = self.push_status(
@@ -1023,10 +1031,22 @@ impl Ui {
             }
             self.last_activity = true;
         } else {
+            // No open status row to replace: a stray end (its block already
+            // closed) or a start the UI never saw. Give the card a container
+            // rather than bare flat rows.
+            let orphan = !self.block_active && self.live_code.is_none() && !rows.is_empty();
+            if orphan {
+                self.begin_tool_block();
+            }
             for row in rows {
                 self.push_row(row);
             }
             self.last_activity = true;
+        }
+        // A container opened by handle_tool_start has no repl/shell flow
+        // waiting to commit it: close it once the last activity resolves.
+        if self.tool_block && self.open_tool_rows.is_empty() && self.open_subcall_rows.is_empty() {
+            self.commit_block();
         }
         if depth == 0 {
             self.status = "running code...".to_owned();
@@ -1044,6 +1064,11 @@ impl Ui {
                 len: 0,
             });
         } else {
+            // Same container rule as handle_tool_start: a subcall spinner
+            // outside any block would be committed to scrollback frozen.
+            if !self.block_active && self.live_code.is_none() {
+                self.begin_tool_block();
+            }
             let elapsed = self.clock.now_ms();
             if let Some((start, len)) = self.push_status(
                 depth,
@@ -1123,7 +1148,11 @@ impl Ui {
             self.replace_block_rows(row.start, row.len, rows);
             self.last_activity = true;
         } else {
-            if self.block_active {
+            // Same orphan handling as handle_tool_end: a subcall card with
+            // no block open gets its own container, not bare flat rows.
+            if !self.block_active && self.live_code.is_none() && !rows.is_empty() {
+                self.begin_tool_block();
+            } else if self.block_active {
                 self.ensure_block_gap();
             } else if depth == 0 {
                 self.ensure_pending_gap();
@@ -1132,6 +1161,9 @@ impl Ui {
                 self.push_row(row);
             }
             self.last_activity = true;
+        }
+        if self.tool_block && self.open_tool_rows.is_empty() && self.open_subcall_rows.is_empty() {
+            self.commit_block();
         }
     }
 
