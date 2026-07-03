@@ -121,6 +121,18 @@ def _make_host_fn(name):
     return shim
 
 
+def _ext_tool(name, args):
+    """Invoke a host-registered extension tool (the target of the generated
+    prelude stubs). Blocks on the subcall round-trip; errors surface as
+    exceptions so stub callers see a normal Python failure."""
+    frame = _subcall({"kind": "ext_tool", "name": name, "args": args})
+    if frame.get("error") is not None:
+        raise RuntimeError(str(frame["error"]))
+    if frame.get("text") is not None:
+        return frame["text"]
+    return frame.get("value", "")
+
+
 def _clean(text):
     return text.encode("utf-8", "replace").decode("utf-8")
 
@@ -248,6 +260,8 @@ class Env:
             "job_status": self._job_status,
             "job_output": self._job_output,
             "__phi_tool_event__": _tool_event,
+            "__phi_ext_tool__": _ext_tool,
+            "__phi_native_call__": self._native_call,
             "message": _message,
             "_subcall": _subcall,
         }
@@ -298,6 +312,20 @@ class Env:
         if not available:
             return "No variables created yet. Use ```repl``` blocks to create variables."
         return "Available variables: %s" % available
+
+    def _native_call(self, name, args_json):
+        """Entry point for native tool calls dispatched into the env: call
+        the same-named function (usually prelude-defined, living in locals)
+        with the JSON-decoded kwargs and print a non-None result so it flows
+        through the normal stdout capture/truncation path."""
+        fn = self.locals.get(name, self.globals.get(name))
+        if not callable(fn):
+            raise NameError(
+                "no tool function named %r in the REPL environment" % name
+            )
+        result = fn(**json.loads(args_json))
+        if result is not None:
+            print(result)
 
     def _spill(self, text):
         """Wrap oversized subcall text so printing it can't flood stdout."""

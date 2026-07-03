@@ -798,7 +798,8 @@ around them and the shape of the tool surface on top of them.
       Consecutive user-role messages are safe where they still occur — the
       providers merge them.
 - [ ] **9.3 Tool surface through the extension API (API gap fix +
-      evidence-gated experiment).** The tension: pure-CodeAct is
+      evidence-gated experiment).** *(a) landed 2026-07-03; (b) and (c)
+      remain.* The tension: pure-CodeAct is
       off-distribution for models RL-trained on native read/edit/bash
       harnesses (a real quality risk), but the single-`repl` surface is also
       the differentiator's substance — composition (filter/loop/batch in one
@@ -826,6 +827,32 @@ around them and the shape of the tool surface on top of them.
         sequencing in `run_loop` is the only dependency); this is the API
         WS7.1/7.2 build on, and per the 2026-07-03 reorder it precedes the
         UI-side extension work.
+        *Landed as:* `ToolSpec` grew `expose: ToolExposure`
+        (`repl`/`native`/`both`, default `repl`), optional `input_schema`
+        (JSON Schema; derived from `params` via `schema_from_params` when
+        absent), and `dispatch: ToolDispatch` — `Handler(ToolHandler)` (the
+        MCP/WS7.1 shape) or `Python` (implemented by a same-named function
+        already in the REPL env; no stub generated, native calls map onto
+        it). `register_repl_tool` became `register_tools`: per-turn tool
+        list = engine-owned `repl` (bare core must boot) + every
+        `native_tool_specs()` entry from the registry. The exec loop routes
+        each streamed call (`ToolCallResult` now carries name + raw args):
+        `repl` → `env.exec`; `Handler` → `AppRuntime::invoke_tool` (new,
+        spawn_blocking + 60s watchdog — the same path the REPL-side
+        `ext_tool` subcall now uses); `Python` → `__phi_native_call__(name,
+        args_json)` executed in the env (JSON-encoded literals are valid
+        Python literals, so args round-trip safely). ToolCall/ToolResult
+        interception and ToolExecutionStart/End fire with the real tool
+        name on every route; registry-tool executions emit
+        `RlmEvent::ToolStart/ToolEnd`, repl keeps its CodeExec channel.
+        Loop detection hashes name+args+stdout+stderr (`ExecutedBlock`
+        lost `code`, gained `name`+`args`); unroutable calls still get a
+        synthetic error tool_result so providers always see one result per
+        tool_use. Lua `register_tool` accepts `expose` and `input_schema`.
+        Bug found and fixed on the way: the generated prelude stubs call
+        `__phi_ext_tool__`, which was never defined in the env — every
+        repl-exposed extension tool died with a NameError; router.py now
+        defines the shim (covered by `repl_stub_reaches_extension_handler`).
       - (b) *The hybrid ships as a default-off builtin* (`coding-tools-
         native`): registers bash/read_file/edit_file/write_file/grep/find/ls
         with `expose: both`. Enabling it by default is gated on measurement:

@@ -152,44 +152,53 @@ impl LanguageModel for ScriptedLm {
     }
 }
 
-/// Parse a raw response string: extract ```repl fences as tool calls,
-/// strip the fences from the text, and determine the stop reason.
+/// Parse a raw response string: extract ```repl fences (Python code) and
+/// ```tool:NAME fences (JSON arguments) as tool calls, strip the fences from
+/// the text, and determine the stop reason.
 fn parse_response(raw: &str) -> (String, Vec<ToolCall>, StopReason) {
-    let (text, blocks) = extract_repl_fences(raw);
+    let (text, blocks) = extract_fences(raw);
     if blocks.is_empty() {
         return (raw.to_owned(), Vec::new(), StopReason::Stop);
     }
     let tool_calls = blocks
         .iter()
         .enumerate()
-        .map(|(i, code)| ToolCall {
+        .map(|(i, (name, args))| ToolCall {
             id: format!("call_{i}"),
-            name: "repl".to_owned(),
-            arguments: serde_json::json!({ "code": code }),
+            name: name.clone(),
+            arguments: args.clone(),
         })
         .collect();
     (text, tool_calls, StopReason::ToolUse)
 }
 
-/// Local ```repl fence parser for the test harness. Returns (prose-without-
-/// fences, extracted code blocks). A simple state machine: it scans line by
-/// line, toggling in/out of a ```repl block; lines inside become the code
-/// body, lines outside become prose.
-fn extract_repl_fences(raw: &str) -> (String, Vec<String>) {
+/// Local fence parser for the test harness. Returns (prose-without-fences,
+/// extracted (tool name, arguments) pairs). A simple state machine: it scans
+/// line by line, toggling in/out of a fenced block; ```repl bodies become the
+/// `repl` tool's `code` argument, ```tool:NAME bodies are parsed as JSON
+/// arguments for tool NAME.
+fn extract_fences(raw: &str) -> (String, Vec<(String, serde_json::Value)>) {
     let mut prose = String::new();
     let mut blocks = Vec::new();
-    let mut in_block = false;
+    let mut in_block: Option<String> = None;
     let mut current = String::new();
     for line in raw.split_inclusive('\n') {
         let trimmed = line.trim_end_matches('\n').trim_end_matches('\r');
-        if !in_block && trimmed.starts_with("```repl") {
-            in_block = true;
+        if in_block.is_none() && trimmed.starts_with("```repl") {
+            in_block = Some("repl".to_owned());
             current.clear();
-        } else if in_block && trimmed.starts_with("```") {
-            in_block = false;
-            blocks.push(current.trim().to_owned());
+        } else if in_block.is_none() && trimmed.starts_with("```tool:") {
+            in_block = Some(trimmed.trim_start_matches("```tool:").trim().to_owned());
             current.clear();
-        } else if in_block {
+        } else if let Some(name) = in_block.take_if(|_| trimmed.starts_with("```")) {
+            let args = if name == "repl" {
+                serde_json::json!({ "code": current.trim() })
+            } else {
+                serde_json::from_str(current.trim()).expect("valid JSON in tool fence")
+            };
+            blocks.push((name, args));
+            current.clear();
+        } else if in_block.is_some() {
             current.push_str(line);
         } else {
             prose.push_str(line);
@@ -1723,4 +1732,269 @@ async fn compaction_disabled_without_context_window() {
     assert_eq!(result.stop, StopCause::Answer, "{:?}", result.error);
     assert_eq!(result.response, "2");
     assert_eq!(root.recorded_prompts().len(), 3, "no summary call expected");
+}
+
+// ── WS9.3a: tool surface through the extension API ──────────────────────────
+
+/// A test extension registering:
+/// - `greet`: native-exposed, handler-dispatched (the MCP/WS7.1 shape)
+/// - `shout`: native-exposed, Python-dispatched (the coding-helper shape;
+///   the function itself is defined by `setup_code` in the test config)
+struct NativeToolsExt;
+
+impl phi_ext::Extension for NativeToolsExt {
+    fn manifest(&self) -> phi_ext::ExtensionManifest {
+        phi_ext::ExtensionManifest {
+            id: "test.native-tools".to_owned(),
+            name: "NativeTools".to_owned(),
+            version: "0".to_owned(),
+            description: "WS9.3a test tools".to_owned(),
+        }
+    }
+
+    fn register(&self, host: &mut dyn phi_ext::ExtensionHost) -> anyhow::Result<()> {
+        host.register_tool(phi_ext::ToolSpec {
+            name: "greet".to_owned(),
+            description: "Greets someone".to_owned(),
+            params: vec![phi_ext::ToolParam {
+                name: "who".to_owned(),
+                ty: "str".to_owned(),
+                default: None,
+            }],
+            expose: phi_ext::ToolExposure::Native,
+            input_schema: None,
+            dispatch: phi_ext::ToolDispatch::Handler(Arc::new(|inv| {
+                let args: serde_json::Value = serde_json::from_str(&inv.input)?;
+                Ok(phi_ext::ToolOutput {
+                    content: format!("Hello, {}!", args["who"].as_str().unwrap_or("?")),
+                })
+            })),
+        })?;
+        host.register_tool(phi_ext::ToolSpec {
+            name: "shout".to_owned(),
+            description: "Uppercases text".to_owned(),
+            params: vec![phi_ext::ToolParam {
+                name: "text".to_owned(),
+                ty: "str".to_owned(),
+                default: None,
+            }],
+            expose: phi_ext::ToolExposure::Both,
+            input_schema: None,
+            dispatch: phi_ext::ToolDispatch::Python,
+        })?;
+        host.register_tool(phi_ext::ToolSpec::repl(
+            "echo_tool",
+            "Echoes its input",
+            vec![phi_ext::ToolParam {
+                name: "text".to_owned(),
+                ty: "str".to_owned(),
+                default: None,
+            }],
+            Arc::new(|inv| {
+                Ok(phi_ext::ToolOutput {
+                    content: format!("echo:{}", inv.input),
+                })
+            }),
+        ))?;
+        Ok(())
+    }
+}
+
+fn native_tools_runtime() -> Arc<phi_ext::AppRuntime> {
+    Arc::new(
+        phi_ext::RuntimeBuilder::new()
+            .with_cwd(std::path::Path::new("."))
+            .register_extension(NativeToolsExt)
+            .build()
+            .expect("build runtime"),
+    )
+}
+
+/// Find the tool_result message contents in a recorded prompt.
+fn tool_results(prompt: &[ChatMessage]) -> Vec<String> {
+    prompt
+        .iter()
+        .filter(|m| m.role == Role::Tool)
+        .map(|m| m.content.clone())
+        .collect()
+}
+
+#[tokio::test]
+async fn native_handler_tool_round_trips_through_loop() {
+    // Turn 1 calls the handler-dispatched `greet` tool natively; the handler
+    // output must come back as that call's tool_result in turn 2's prompt.
+    let root = Arc::new(ScriptedLm::new(
+        "root-model",
+        &[
+            "Greeting.\n```tool:greet\n{\"who\": \"world\"}\n```",
+            "The tool said hello.",
+        ],
+    ));
+    let engine =
+        rlm(RlmConfig::default(), root.clone(), quiet_sub()).with_runtime(native_tools_runtime());
+    let result = engine
+        .completion(
+            ContextPayload::Str("ctx".into()),
+            Some("Greet the world."),
+            &CancellationToken::new(),
+        )
+        .await;
+    assert_eq!(result.stop, StopCause::Prose, "{:?}", result.error);
+    assert_eq!(result.response, "The tool said hello.");
+
+    let prompts = root.recorded_prompts();
+    assert_eq!(prompts.len(), 2);
+    let results = tool_results(&prompts[1]);
+    assert_eq!(results.len(), 1);
+    assert!(
+        results[0].contains("Hello, world!"),
+        "tool_result missing handler output: {results:?}"
+    );
+}
+
+#[tokio::test]
+async fn native_python_tool_executes_in_the_repl_env() {
+    // `shout` is Python-dispatched: the native call maps onto the same-named
+    // function defined in the env (here via setup_code, standing in for the
+    // prelude). One implementation, two exposures.
+    let root = Arc::new(ScriptedLm::new(
+        "root-model",
+        &[
+            "Shouting.\n```tool:shout\n{\"text\": \"hello \\\"quoted\\\" world\"}\n```",
+            "Shouted.",
+        ],
+    ));
+    let config = RlmConfig {
+        setup_code: Some("def shout(text):\n    return str(text).upper()".to_owned()),
+        ..RlmConfig::default()
+    };
+    let engine = rlm(config, root.clone(), quiet_sub()).with_runtime(native_tools_runtime());
+    let result = engine
+        .completion(
+            ContextPayload::Str("ctx".into()),
+            Some("Shout it."),
+            &CancellationToken::new(),
+        )
+        .await;
+    assert_eq!(result.stop, StopCause::Prose, "{:?}", result.error);
+
+    let prompts = root.recorded_prompts();
+    assert_eq!(prompts.len(), 2);
+    let results = tool_results(&prompts[1]);
+    assert_eq!(results.len(), 1);
+    assert!(
+        results[0].contains("HELLO \"QUOTED\" WORLD"),
+        "python-dispatched result missing (JSON-literal escaping broken?): {results:?}"
+    );
+}
+
+#[tokio::test]
+async fn unknown_native_tool_gets_synthetic_error_result() {
+    // A tool call whose name isn't `repl` and isn't a native-exposed registry
+    // tool is not executed, but the provider must still see a tool_result.
+    let root = Arc::new(ScriptedLm::new(
+        "root-model",
+        &["Trying.\n```tool:nonexistent\n{}\n```", "Gave up."],
+    ));
+    let engine =
+        rlm(RlmConfig::default(), root.clone(), quiet_sub()).with_runtime(native_tools_runtime());
+    let result = engine
+        .completion(
+            ContextPayload::Str("ctx".into()),
+            Some("Try a bogus tool."),
+            &CancellationToken::new(),
+        )
+        .await;
+    assert_eq!(result.stop, StopCause::Prose, "{:?}", result.error);
+
+    let prompts = root.recorded_prompts();
+    assert_eq!(prompts.len(), 2);
+    let results = tool_results(&prompts[1]);
+    assert_eq!(results.len(), 1);
+    assert!(
+        results[0].contains("was not executed"),
+        "missing synthetic error result: {results:?}"
+    );
+}
+
+#[tokio::test]
+async fn repl_stub_reaches_extension_handler() {
+    // The other exposure: a repl-only extension tool called from Python via
+    // its generated stub, which round-trips through `__phi_ext_tool__` to the
+    // host handler. (Regression guard: the stub target used to be undefined
+    // in the env, so every stub call died with a NameError.)
+    let runtime = native_tools_runtime();
+    let config = RlmConfig {
+        setup_code: Some(runtime.extension_prelude_stubs()),
+        ..RlmConfig::default()
+    };
+    let root = Arc::new(ScriptedLm::new(
+        "root-model",
+        &[
+            "Echoing.\n```repl\nprint(echo_tool(text=\"hi\"))\n```",
+            "Echoed.",
+        ],
+    ));
+    let engine = rlm(config, root.clone(), quiet_sub()).with_runtime(runtime);
+    let result = engine
+        .completion(
+            ContextPayload::Str("ctx".into()),
+            Some("Echo hi."),
+            &CancellationToken::new(),
+        )
+        .await;
+    assert_eq!(result.stop, StopCause::Prose, "{:?}", result.error);
+
+    let prompts = root.recorded_prompts();
+    assert_eq!(prompts.len(), 2);
+    let results = tool_results(&prompts[1]);
+    assert_eq!(results.len(), 1);
+    assert!(
+        results[0].contains("echo:") && results[0].contains("\"text\""),
+        "stub call did not reach the handler: {results:?}"
+    );
+    assert!(
+        !results[0].contains("NameError"),
+        "__phi_ext_tool__ undefined in env: {results:?}"
+    );
+}
+
+#[tokio::test]
+async fn register_tools_includes_native_registry_tools() {
+    // The per-turn tool list is registry-built: repl always (bare core must
+    // boot), plus every native-exposed tool. Repl-only tools stay off it.
+    struct CapturingLm(Mutex<Vec<phi_ai::ToolDefinition>>);
+    #[async_trait]
+    impl LanguageModel for CapturingLm {
+        fn name(&self) -> String {
+            "capturing".to_owned()
+        }
+        fn set_tools(&self, tools: Vec<phi_ai::ToolDefinition>) {
+            *self.0.lock().unwrap() = tools;
+        }
+        async fn complete(
+            &self,
+            _prompt: &[ChatMessage],
+            _cancel: &tokio_util::sync::CancellationToken,
+        ) -> Result<Completion, String> {
+            Err("unused".into())
+        }
+    }
+
+    let root = Arc::new(CapturingLm(Mutex::new(Vec::new())));
+    let engine = Rlm::new(
+        RlmConfig::default(),
+        root.clone(),
+        quiet_sub(),
+        "python3".to_owned(),
+    )
+    .with_runtime(native_tools_runtime());
+    engine.register_tools();
+
+    let tools = root.0.lock().unwrap().clone();
+    let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+    assert_eq!(names, vec!["repl", "greet", "shout"]);
+    let greet = &tools[1];
+    assert_eq!(greet.input_schema["properties"]["who"]["type"], "string");
+    assert_eq!(greet.input_schema["required"][0], "who");
 }

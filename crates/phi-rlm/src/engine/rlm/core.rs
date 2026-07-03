@@ -71,14 +71,24 @@ const MAX_CONSECUTIVE_LOOP: usize = 5;
 /// iterations, asking the model to re-read its output and try something new.
 const LOOP_NUDGE: &str = "Your recent iterations executed identical code producing identical output — no progress is being made. Step back: re-read the actual output, state a new hypothesis in prose, and take a different action (different command, different file, or delegate a fresh-context look via subagent(...)).";
 
-/// A tool call result arriving from the streaming sink, carrying the provider-
-/// assigned tool call id and the code extracted from the tool call's arguments
-/// for eager execution. The id is threaded into `ExecutedBlock` so the exec
-/// loop can pair each result with the correct `tool_result` message without
-/// relying on code-string equality.
+/// A tool call arriving from the streaming sink, carrying the provider-
+/// assigned tool call id, the tool name, and the raw arguments for eager
+/// execution. The id is threaded into `ExecutedBlock` so the exec loop can
+/// pair each result with the correct `tool_result` message without relying
+/// on argument equality.
 pub struct ToolCallResult {
     pub id: String,
-    pub code: Option<String>,
+    pub name: String,
+    pub arguments: serde_json::Value,
+}
+
+/// How one streamed tool call executes (WS9.3a): the engine-owned `repl`
+/// tool runs its `code` in the env; registry tools dispatch either to their
+/// host handler (watchdogged) or to a same-named Python function in the env.
+enum ToolRoute {
+    Repl(String),
+    Handler,
+    Python,
 }
 
 /// The native tool definition for the `repl` tool. The model calls this
@@ -99,6 +109,29 @@ pub fn repl_tool_definition() -> ToolDefinition {
             "required": ["code"]
         }),
     }
+}
+
+/// A `ReplResult` carrying only an error, for failed/blocked tool routes.
+fn error_result(stderr: String, duration: std::time::Duration) -> ReplResult {
+    ReplResult {
+        stdout: String::new(),
+        stderr,
+        vars: Vec::new(),
+        final_answer: None,
+        duration,
+        truncated: false,
+    }
+}
+
+/// Synthesize the env-side call for a Python-dispatched native tool:
+/// `__phi_native_call__("<name>", "<args json>")`. Both literals are JSON-
+/// encoded strings, which are valid Python string literals (same escape
+/// vocabulary), so arbitrary argument content round-trips safely.
+fn native_python_call(name: &str, args: &serde_json::Value) -> String {
+    let name_lit = serde_json::to_string(name).unwrap_or_else(|_| "\"\"".to_owned());
+    let args_json = serde_json::to_string(args).unwrap_or_else(|_| "{}".to_owned());
+    let args_lit = serde_json::to_string(&args_json).unwrap_or_else(|_| "\"{}\"".to_owned());
+    format!("__phi_native_call__({name_lit}, {args_lit})")
 }
 
 #[derive(Clone)]
@@ -159,10 +192,26 @@ impl Rlm {
         self
     }
 
-    /// Register the `repl` tool definition on the root model, enabling
-    /// native tool-call-based REPL execution instead of text-based fences.
-    pub fn register_repl_tool(&self) {
-        self.root.set_tools(vec![repl_tool_definition()]);
+    /// Register the per-turn tool list on the root model: the engine-owned
+    /// `repl` tool (always — bare core must boot), plus every native-exposed
+    /// tool from the extension registry (WS9.3a). Called before each run so
+    /// the list tracks registry state.
+    pub fn register_tools(&self) {
+        let mut tools = vec![repl_tool_definition()];
+        if let Some(rt) = &self.runtime {
+            for spec in rt.native_tool_specs() {
+                // `repl` is engine-registered; a registry tool can't shadow it.
+                if spec.name == "repl" {
+                    continue;
+                }
+                tools.push(ToolDefinition {
+                    name: spec.name.clone(),
+                    description: spec.description.clone(),
+                    input_schema: spec.native_input_schema(),
+                });
+            }
+        }
+        self.root.set_tools(tools);
     }
 
     pub fn at_depth(mut self, depth: usize) -> Self {
@@ -259,7 +308,7 @@ impl Rlm {
                     };
                     sys_msg.content = filtered;
                 }
-                self.register_repl_tool();
+                self.register_tools();
                 let outcome = self
                     .run_loop(&mut env, &handler, &mut history, 0, cancel, None)
                     .await;
@@ -491,155 +540,243 @@ impl Rlm {
             let exec = async {
                 let mut blocks = Vec::new();
                 let mut dispatch = std::time::Duration::ZERO;
-                while let Some(result) = tool_rx.recv().await {
-                    let tool_call_id = result.id;
-                    if let Some(code) = result.code {
-                        // ── ToolCall interception ──────────────────────────
-                        // Dispatch tool_call event before execution. If any
-                        // handler returns ToolBlock, skip execution and inject
-                        // a blocked result instead.
-                        let dispatch_start = Instant::now();
-                        let returns = dispatch_await(
-                            &self.runtime,
-                            LifecycleEvent {
-                                kind: EventKind::ToolCall,
-                                payload: EventPayload::ToolCall {
-                                    name: "repl".to_owned(),
-                                    args: json!({ "code": code }),
-                                },
-                            },
-                        )
-                        .await;
-                        dispatch += dispatch_start.elapsed();
+                while let Some(call) = tool_rx.recv().await {
+                    let ToolCallResult {
+                        id: tool_call_id,
+                        name,
+                        arguments,
+                    } = call;
 
-                        let blocked = returns
+                    // Route the call (WS9.3a): engine-owned `repl` executes
+                    // its code in the env; any other name resolves against
+                    // the registry's native-exposed tools. Unroutable calls
+                    // are skipped here — the banking pass below pushes a
+                    // synthetic error tool_result for them so the provider
+                    // always sees one result per tool_use.
+                    let route = if name == "repl" {
+                        match arguments.get("code").and_then(|v| v.as_str()) {
+                            Some(code) => ToolRoute::Repl(code.to_owned()),
+                            None => continue,
+                        }
+                    } else {
+                        match self
+                            .runtime
+                            .as_ref()
+                            .and_then(|rt| rt.native_tool_dispatch(&name))
+                        {
+                            Some(phi_ext::ToolDispatch::Handler(_)) => ToolRoute::Handler,
+                            Some(phi_ext::ToolDispatch::Python) => ToolRoute::Python,
+                            None => continue,
+                        }
+                    };
+
+                    // ── ToolCall interception ──────────────────────────
+                    // Dispatch tool_call event before execution. If any
+                    // handler returns ToolBlock, skip execution and inject
+                    // a blocked result instead.
+                    let dispatch_start = Instant::now();
+                    let returns = dispatch_await(
+                        &self.runtime,
+                        LifecycleEvent {
+                            kind: EventKind::ToolCall,
+                            payload: EventPayload::ToolCall {
+                                name: name.clone(),
+                                args: arguments.clone(),
+                            },
+                        },
+                    )
+                    .await;
+                    dispatch += dispatch_start.elapsed();
+
+                    let blocked = returns
+                        .iter()
+                        .any(|r| matches!(r, EventReturn::ToolBlock { .. }));
+
+                    // UI events: repl executions keep their dedicated
+                    // CodeExec channel; registry tools go out as ToolStart/
+                    // ToolEnd (the same vocabulary prelude tool events use),
+                    // with a call id hashed from the provider-assigned id.
+                    let ui_call_id = {
+                        let mut h = DefaultHasher::new();
+                        tool_call_id.hash(&mut h);
+                        h.finish()
+                    };
+                    match &route {
+                        ToolRoute::Repl(code) => {
+                            self.events.emit(RlmEvent::CodeExecStart {
+                                depth: self.depth,
+                                iteration: i,
+                                code: code.clone(),
+                            });
+                        }
+                        _ => {
+                            self.events.emit(RlmEvent::ToolStart {
+                                depth: self.depth,
+                                call_id: ui_call_id,
+                                name: name.clone(),
+                                args: arguments.clone(),
+                            });
+                        }
+                    }
+                    let exec_start = Instant::now();
+
+                    // ── Extension: ToolExecutionStart ──────────────────────
+                    if let Some(rt) = &self.runtime {
+                        let call_id = format!("d{}i{}", self.depth, i);
+                        let dispatch_start = Instant::now();
+                        let _ = rt
+                            .on_tool_execution_start(&call_id, &name, arguments.clone())
+                            .await;
+                        dispatch += dispatch_start.elapsed();
+                    }
+
+                    let repl_result = if blocked {
+                        // Find the block reason for the error message.
+                        let reason = returns
                             .iter()
-                            .any(|r| matches!(r, EventReturn::ToolBlock { .. }));
-
-                        self.events.emit(RlmEvent::CodeExecStart {
-                            depth: self.depth,
-                            iteration: i,
-                            code: code.clone(),
-                        });
-                        let exec_start = Instant::now();
-
-                        // ── Extension: ToolExecutionStart ──────────────────────
-                        if let Some(rt) = &self.runtime {
-                            let call_id = format!("d{}i{}", self.depth, i);
-                            let dispatch_start = Instant::now();
-                            let _ = rt
-                                .on_tool_execution_start(&call_id, "repl", json!({ "code": code }))
-                                .await;
-                            dispatch += dispatch_start.elapsed();
-                        }
-
-                        let repl_result = if blocked {
-                            // Find the block reason for the error message.
-                            let reason = returns
-                                .iter()
-                                .find_map(|r| {
-                                    if let EventReturn::ToolBlock { reason } = r {
-                                        Some(reason.clone())
-                                    } else {
-                                        None
-                                    }
-                                })
-                                .unwrap_or_else(|| "Blocked by extension".to_owned());
-                            ReplResult {
-                                stdout: String::new(),
-                                stderr: format!("Tool blocked: {reason}"),
-                                vars: Vec::new(),
-                                final_answer: None,
-                                duration: exec_start.elapsed(),
-                                truncated: false,
-                            }
-                        } else {
-                            env.exec(&code, self.config.exec_timeout)
-                                .await
-                                .unwrap_or_else(|e| ReplResult {
-                                    stdout: String::new(),
-                                    stderr: e.to_string(),
-                                    vars: Vec::new(),
-                                    final_answer: None,
-                                    duration: exec_start.elapsed(),
-                                    truncated: false,
-                                })
-                        };
-
-                        // ── ToolResult interception ───────────────────────
-                        // Dispatch tool_result event after execution. If any
-                        // handler returns ToolResultOverride, use the override
-                        // content instead of the actual result.
-                        // ── Extension: ToolExecutionEnd ────────────────────────
-                        if let Some(rt) = &self.runtime {
-                            let call_id = format!("d{}i{}", self.depth, i);
-                            let dispatch_start = Instant::now();
-                            let _ = rt
-                                .on_tool_execution_end(
-                                    &call_id,
-                                    "repl",
-                                    serde_json::json!({
-                                        "stdout": repl_result.stdout,
-                                        "stderr": repl_result.stderr,
-                                        "duration": repl_result.duration.as_secs_f64(),
-                                    }),
-                                    !repl_result.stderr.is_empty(),
-                                )
-                                .await;
-                            dispatch += dispatch_start.elapsed();
-                        }
-
-                        let result_str = format_execution_result(&repl_result);
-                        let dispatch_start = Instant::now();
-                        let returns = dispatch_await(
-                            &self.runtime,
-                            LifecycleEvent {
-                                kind: EventKind::ToolResult,
-                                payload: EventPayload::ToolResult {
-                                    name: "repl".to_owned(),
-                                    result: result_str.clone(),
-                                    error: if repl_result.stderr.is_empty() {
-                                        None
-                                    } else {
-                                        Some(repl_result.stderr.clone())
-                                    },
-                                },
-                            },
-                        )
-                        .await;
-                        dispatch += dispatch_start.elapsed();
-
-                        let mut final_result = repl_result;
-                        for r in &returns {
-                            if let EventReturn::ToolResultOverride {
-                                content,
-                                is_error,
-                                details: _,
-                            } = r
-                            {
-                                final_result.stdout = content.clone();
-                                if is_error.unwrap_or(false) {
-                                    final_result.stderr = content.clone();
-                                    final_result.stdout = String::new();
+                            .find_map(|r| {
+                                if let EventReturn::ToolBlock { reason } = r {
+                                    Some(reason.clone())
                                 } else {
-                                    final_result.stderr = String::new();
+                                    None
+                                }
+                            })
+                            .unwrap_or_else(|| "Blocked by extension".to_owned());
+                        error_result(format!("Tool blocked: {reason}"), exec_start.elapsed())
+                    } else {
+                        match &route {
+                            ToolRoute::Repl(code) => env
+                                .exec(code, self.config.exec_timeout)
+                                .await
+                                .unwrap_or_else(|e| {
+                                    error_result(e.to_string(), exec_start.elapsed())
+                                }),
+                            ToolRoute::Python => {
+                                // Same implementation, second exposure: the
+                                // structured args call the same-named prelude
+                                // function in the same env, so hashline cache,
+                                // read-before-edit, and spill are shared.
+                                let code = native_python_call(&name, &arguments);
+                                env.exec(&code, self.config.exec_timeout)
+                                    .await
+                                    .unwrap_or_else(|e| {
+                                        error_result(e.to_string(), exec_start.elapsed())
+                                    })
+                            }
+                            ToolRoute::Handler => {
+                                // Host handler with the doctrine-2 watchdog
+                                // (timeout enforced inside `invoke_tool`).
+                                let rt = self.runtime.as_ref().expect("routed via runtime");
+                                match rt.invoke_tool(&name, arguments.clone()).await {
+                                    Ok(Some(output)) => ReplResult {
+                                        stdout: output.content,
+                                        stderr: String::new(),
+                                        vars: Vec::new(),
+                                        final_answer: None,
+                                        duration: exec_start.elapsed(),
+                                        truncated: false,
+                                    },
+                                    Ok(None) => error_result(
+                                        format!("Error: no tool named '{name}'"),
+                                        exec_start.elapsed(),
+                                    ),
+                                    Err(e) => {
+                                        error_result(format!("Error: {e}"), exec_start.elapsed())
+                                    }
                                 }
                             }
                         }
+                    };
 
-                        self.events.emit(RlmEvent::CodeExecEnd {
-                            depth: self.depth,
-                            iteration: i,
-                            stdout: final_result.stdout.clone(),
-                            stderr: final_result.stderr.clone(),
-                            duration: final_result.duration,
-                        });
-                        blocks.push(ExecutedBlock {
-                            id: tool_call_id,
-                            code,
-                            result: final_result,
-                        });
+                    // ── ToolResult interception ───────────────────────
+                    // Dispatch tool_result event after execution. If any
+                    // handler returns ToolResultOverride, use the override
+                    // content instead of the actual result.
+                    // ── Extension: ToolExecutionEnd ────────────────────────
+                    if let Some(rt) = &self.runtime {
+                        let call_id = format!("d{}i{}", self.depth, i);
+                        let dispatch_start = Instant::now();
+                        let _ = rt
+                            .on_tool_execution_end(
+                                &call_id,
+                                &name,
+                                serde_json::json!({
+                                    "stdout": repl_result.stdout,
+                                    "stderr": repl_result.stderr,
+                                    "duration": repl_result.duration.as_secs_f64(),
+                                }),
+                                !repl_result.stderr.is_empty(),
+                            )
+                            .await;
+                        dispatch += dispatch_start.elapsed();
                     }
+
+                    let result_str = format_execution_result(&repl_result);
+                    let dispatch_start = Instant::now();
+                    let returns = dispatch_await(
+                        &self.runtime,
+                        LifecycleEvent {
+                            kind: EventKind::ToolResult,
+                            payload: EventPayload::ToolResult {
+                                name: name.clone(),
+                                result: result_str.clone(),
+                                error: if repl_result.stderr.is_empty() {
+                                    None
+                                } else {
+                                    Some(repl_result.stderr.clone())
+                                },
+                            },
+                        },
+                    )
+                    .await;
+                    dispatch += dispatch_start.elapsed();
+
+                    let mut final_result = repl_result;
+                    for r in &returns {
+                        if let EventReturn::ToolResultOverride {
+                            content,
+                            is_error,
+                            details: _,
+                        } = r
+                        {
+                            final_result.stdout = content.clone();
+                            if is_error.unwrap_or(false) {
+                                final_result.stderr = content.clone();
+                                final_result.stdout = String::new();
+                            } else {
+                                final_result.stderr = String::new();
+                            }
+                        }
+                    }
+
+                    match &route {
+                        ToolRoute::Repl(_) => {
+                            self.events.emit(RlmEvent::CodeExecEnd {
+                                depth: self.depth,
+                                iteration: i,
+                                stdout: final_result.stdout.clone(),
+                                stderr: final_result.stderr.clone(),
+                                duration: final_result.duration,
+                            });
+                        }
+                        _ => {
+                            self.events.emit(RlmEvent::ToolEnd {
+                                depth: self.depth,
+                                call_id: ui_call_id,
+                                name: name.clone(),
+                                result: final_result.stdout.clone(),
+                                error: (!final_result.stderr.is_empty())
+                                    .then(|| final_result.stderr.clone()),
+                                duration: final_result.duration,
+                            });
+                        }
+                    }
+                    blocks.push(ExecutedBlock {
+                        id: tool_call_id,
+                        name,
+                        args: arguments,
+                        result: final_result,
+                    });
                 }
                 (blocks, dispatch)
             };
@@ -787,7 +924,8 @@ impl Rlm {
                     let loop_sig = {
                         let mut h = DefaultHasher::new();
                         for b in &blocks {
-                            b.code.hash(&mut h);
+                            b.name.hash(&mut h);
+                            b.args.to_string().hash(&mut h);
                             b.result.stdout.hash(&mut h);
                             b.result.stderr.hash(&mut h);
                         }
@@ -805,7 +943,8 @@ impl Rlm {
                         let preview: String = blocks
                             .first()
                             .map(|b| {
-                                let s = b.code.trim();
+                                let source = b.source();
+                                let s = source.trim();
                                 let chars: String = s.chars().take(120).collect();
                                 if s.chars().count() > 120 {
                                     format!("{chars}…")
@@ -815,7 +954,7 @@ impl Rlm {
                             })
                             .unwrap_or_default();
                         let detail = format!(
-                            "{consecutive_loop} consecutive identical iterations (code+output unchanged); repeated code preview: {preview:?}"
+                            "{consecutive_loop} consecutive identical iterations (calls+output unchanged); repeated call preview: {preview:?}"
                         );
                         if !response.trim().is_empty() {
                             best_partial = Some(response);
@@ -845,10 +984,11 @@ impl Rlm {
                 // Each block carries the provider-assigned id from the sink, so
                 // we use it directly — no code-equality heuristic that would
                 // collide when two tool calls have identical code.
-                // For any tool call that did not produce an executed block (e.g.
-                // a non-`repl` tool call whose `code` argument was absent), push
-                // a synthetic error result so the provider always sees exactly one
-                // tool_result per tool_use in the preceding assistant message.
+                // For any tool call that did not produce an executed block
+                // (a `repl` call without `code`, or a name that isn't a
+                // native-exposed registry tool), push a synthetic error
+                // result so the provider always sees exactly one tool_result
+                // per tool_use in the preceding assistant message.
                 let executed_ids: std::collections::HashSet<&str> =
                     blocks.iter().map(|b| b.id.as_str()).collect();
                 // Aggregate truncation budget: each result is already capped
@@ -870,7 +1010,7 @@ impl Rlm {
                         history.push(ChatMessage::tool_result(
                             tc.id.clone(),
                             format!(
-                                "Error: tool call '{}' did not produce executable code",
+                                "Error: tool call '{}' was not executed (unknown tool or missing required arguments)",
                                 tc.name
                             ),
                         ));

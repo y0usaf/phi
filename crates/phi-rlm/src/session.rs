@@ -282,7 +282,7 @@ impl RlmSession {
                 ..Default::default()
             });
         }
-        self.rlm.register_repl_tool();
+        self.rlm.register_tools();
         // Build the save-point closure that drains steered messages into
         // live history at each iteration boundary. Each drained text becomes
         // a distinct `Role::User` message prefixed with `[user interjection]`
@@ -365,11 +365,7 @@ impl RlmSession {
                 content: format!("```repl\n{code}\n```"),
                 ..Default::default()
             });
-            let block = ExecutedBlock {
-                id: String::new(),
-                code: code.to_owned(),
-                result: result.clone(),
-            };
+            let block = ExecutedBlock::repl(String::new(), code, result.clone());
             if let Some(outputs) = format_iteration(
                 std::slice::from_ref(&block),
                 self.rlm.config.max_output_chars,

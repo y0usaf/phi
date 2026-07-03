@@ -7,7 +7,8 @@ use phi_ext::{
     CommandInvocation, CommandOutput, CommandSpec, EventHandlerRegistration, ExtensionHost,
     ExtensionManifest, FlagSpec, FlagType, LifecycleEvent, MessageRendererSpec, OverlayOutcome,
     OverlaySpec, ProviderConfig, ProviderModelConfig, ShortcutSpec, SpinnerSpec, ThemeSpec,
-    ThinkingExpressionSpec, ToolInvocation, ToolOutput, ToolParam, ToolSpec,
+    ThinkingExpressionSpec, ToolDispatch, ToolExposure, ToolInvocation, ToolOutput, ToolParam,
+    ToolSpec,
 };
 use std::collections::BTreeMap;
 
@@ -94,11 +95,46 @@ impl phi_ext::Extension for LuaExtension {
             .map_while(|i| reg_tools.get::<Option<String>>(i).ok().flatten())
             .collect();
 
+        /// One tool registration read from Lua:
+        /// (name, description, params, expose, input_schema).
+        type LuaToolReg = (
+            String,
+            String,
+            Vec<ToolParam>,
+            ToolExposure,
+            Option<serde_json::Value>,
+        );
         let phi_tools_table: mlua::Table = globals.get("_phi_tools")?;
-        let mut tools: Vec<(String, String, Vec<ToolParam>)> = Vec::new();
+        let mut tools: Vec<LuaToolReg> = Vec::new();
         for name in &tool_names {
             let tool_table: mlua::Table = phi_tools_table.get(name.as_str())?;
             let description: String = tool_table.get("description").unwrap_or_default();
+
+            // Exposure: "repl" (default) | "native" | "both".
+            let expose = match tool_table
+                .get::<String>("expose")
+                .unwrap_or_default()
+                .as_str()
+            {
+                "native" => ToolExposure::Native,
+                "both" => ToolExposure::Both,
+                _ => ToolExposure::Repl,
+            };
+
+            // Optional explicit JSON Schema for the native definition;
+            // derived from params when absent.
+            let input_schema: Option<serde_json::Value> = match tool_table
+                .get::<Option<mlua::Table>>("input_schema")
+                .unwrap_or_default()
+            {
+                Some(t) => {
+                    use mlua::LuaSerdeExt as _;
+                    Some(lua.from_value(mlua::Value::Table(t)).map_err(|e| {
+                        mlua::Error::runtime(format!("tool '{name}': bad input_schema: {e}"))
+                    })?)
+                }
+                None => None,
+            };
 
             // Parse params: array of { name = "...", type = "..." [, default = "..." ] }
             let params_table: Option<mlua::Table> = tool_table.get("params").ok();
@@ -135,7 +171,7 @@ impl phi_ext::Extension for LuaExtension {
                 None => Vec::new(),
             };
 
-            tools.push((name.clone(), description, params));
+            tools.push((name.clone(), description, params, expose, input_schema));
         }
 
         // ── Read registered shortcuts ────────────────────────────────────────
@@ -386,14 +422,16 @@ impl phi_ext::Extension for LuaExtension {
         }
 
         // ── Register tools ──────────────────────────────────────────────────
-        for (tool_name, description, params) in tools {
+        for (tool_name, description, params, expose, input_schema) in tools {
             let tx4 = Arc::clone(&tx);
             let name4 = tool_name.clone();
             host.register_tool(ToolSpec {
                 name: tool_name,
                 description,
                 params,
-                handler: Arc::new(move |inv: ToolInvocation| {
+                expose,
+                input_schema,
+                dispatch: ToolDispatch::Handler(Arc::new(move |inv: ToolInvocation| {
                     let (rtx, rrx) = std::sync::mpsc::sync_channel(1);
                     tx4.send(LuaMsg::InvokeTool {
                         name: name4.clone(),
@@ -407,7 +445,7 @@ impl phi_ext::Extension for LuaExtension {
                     Ok(ToolOutput {
                         content: content_opt.unwrap_or_default(),
                     })
-                }),
+                })),
             })?;
         }
 

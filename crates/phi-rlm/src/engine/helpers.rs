@@ -121,10 +121,10 @@ pub fn push_repl_turns(
             arguments: serde_json::json!({ "code": repl.code }),
         }],
     ));
-    let block = ExecutedBlock {
-        id: String::new(),
-        code: repl.code.clone(),
-        result: ReplResult {
+    let block = ExecutedBlock::repl(
+        String::new(),
+        &repl.code,
+        ReplResult {
             stdout: repl.stdout.clone(),
             stderr: repl.stderr.clone(),
             vars: Vec::new(),
@@ -132,7 +132,7 @@ pub fn push_repl_turns(
             duration: std::time::Duration::ZERO,
             truncated: false,
         },
-    };
+    );
     if let Some(outputs) = format_iteration(std::slice::from_ref(&block), max_output_chars) {
         history.push(ChatMessage::tool_result(String::new(), outputs));
     }

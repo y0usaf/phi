@@ -34,7 +34,8 @@ impl Rlm {
         })
     }
 
-    /// Tool-call sink that executes code eagerly during the stream.
+    /// Tool-call sink that forwards completed calls (name + raw arguments)
+    /// to the exec loop for eager per-tool dispatch during the stream.
     pub(super) fn tool_call_sink(
         &self,
         _iteration: usize,
@@ -42,14 +43,16 @@ impl Rlm {
     ) -> ToolCallSink {
         let tx = tool_tx.clone();
         Arc::new(move |event: ToolCallEvent| {
-            if let ToolCallEvent::End { id, arguments, .. } = &event {
-                let code = arguments
-                    .get("code")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_owned());
+            if let ToolCallEvent::End {
+                id,
+                name,
+                arguments,
+            } = &event
+            {
                 let _ = tx.send(ToolCallResult {
                     id: id.clone(),
-                    code,
+                    name: name.clone(),
+                    arguments: arguments.clone(),
                 });
             }
         })

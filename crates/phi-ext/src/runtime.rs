@@ -1103,18 +1103,67 @@ impl AppRuntime {
         let Some(tool) = self.tools.get(name) else {
             return Ok(None);
         };
-        let h = tool.handler.clone();
+        let crate::ToolDispatch::Handler(h) = &tool.dispatch else {
+            // Python-dispatch tools live in the REPL env; the engine calls
+            // them there, never through the host handler path.
+            return Err(anyhow!(
+                "tool '{name}' is implemented in the REPL environment, not by a host handler"
+            ));
+        };
+        let h = h.clone();
         let inv = crate::ToolInvocation {
             input: input.to_owned(),
         };
         Ok(Some(h(inv)?))
     }
 
+    /// Invoke a handler-dispatched tool with the doctrine-2 watchdog: the
+    /// handler runs on the blocking pool and the wait is bounded, so a hung
+    /// extension tool cannot wedge the agent loop. `Ok(None)` means no such
+    /// tool is registered.
+    pub async fn invoke_tool(
+        &self,
+        name: &str,
+        args: serde_json::Value,
+    ) -> Result<Option<crate::ToolOutput>> {
+        let Some(tool) = self.tools.get(name) else {
+            return Ok(None);
+        };
+        let crate::ToolDispatch::Handler(h) = &tool.dispatch else {
+            return Err(anyhow!(
+                "tool '{name}' is implemented in the REPL environment, not by a host handler"
+            ));
+        };
+        let h = h.clone();
+        let input = serde_json::to_string(&args).unwrap_or_default();
+        // Tools may do real work (network calls, subprocesses), so the budget
+        // is generous — but it exists: a native tool call must always produce
+        // a tool_result for the provider, even when the handler hangs.
+        let timeout = Duration::from_secs(60);
+        match tokio::time::timeout(
+            timeout,
+            tokio::task::spawn_blocking(move || h(crate::ToolInvocation { input })),
+        )
+        .await
+        {
+            Ok(Ok(Ok(output))) => Ok(Some(output)),
+            Ok(Ok(Err(e))) => Err(anyhow!("tool '{name}': {e}")),
+            Ok(Err(e)) => Err(anyhow!("tool '{name}' join error: {e}")),
+            Err(_elapsed) => Err(anyhow!("tool '{name}' timed out after {timeout:?}")),
+        }
+    }
+
     // ── Tool prelude stubs ────────────────────────────────────────────────────
 
+    /// Python stubs injected into the REPL for repl-exposed handler tools.
+    /// Python-dispatch tools are skipped — their function already exists in
+    /// the env (the prelude defines it); a stub would shadow it.
     pub fn extension_prelude_stubs(&self) -> String {
         self.tools
             .values()
+            .filter(|t| {
+                t.expose.includes_repl() && matches!(t.dispatch, crate::ToolDispatch::Handler(_))
+            })
             .map(|t| {
                 let sig: Vec<String> = t
                     .params
@@ -1143,6 +1192,21 @@ impl AppRuntime {
 
     pub fn tool_specs(&self) -> impl Iterator<Item = &ToolSpec> {
         self.tools.values()
+    }
+
+    /// Tools that surface as provider-level tool definitions (`expose:
+    /// native | both`). The engine builds its per-turn tool list from this.
+    pub fn native_tool_specs(&self) -> impl Iterator<Item = &ToolSpec> {
+        self.tools.values().filter(|t| t.expose.includes_native())
+    }
+
+    /// Look up a native-exposed tool's dispatch kind. `None` when the name
+    /// isn't registered or isn't native-exposed.
+    pub fn native_tool_dispatch(&self, name: &str) -> Option<&crate::ToolDispatch> {
+        self.tools
+            .get(name)
+            .filter(|t| t.expose.includes_native())
+            .map(|t| &t.dispatch)
     }
 
     // ── Snapshot ──────────────────────────────────────────────────────────────
@@ -1535,6 +1599,117 @@ mod tests {
 
         let instructions = rt.before_compact(None).await.expect("before compact");
         assert!(instructions.is_none());
+    }
+
+    // ── Tool exposure / dispatch (WS9.3a) ────────────────────────────────────
+
+    /// Registers one tool per (exposure, dispatch) shape the API supports.
+    struct ExposedToolsExt;
+    impl Extension for ExposedToolsExt {
+        fn manifest(&self) -> ExtensionManifest {
+            ExtensionManifest {
+                id: "test.tools".to_owned(),
+                name: "Tools".to_owned(),
+                version: "0".to_owned(),
+                description: "test tools".to_owned(),
+            }
+        }
+        fn register(&self, host: &mut dyn ExtensionHost) -> anyhow::Result<()> {
+            host.register_tool(crate::ToolSpec::repl(
+                "repl_tool",
+                "repl-only handler tool",
+                Vec::new(),
+                Arc::new(|_inv| {
+                    Ok(crate::ToolOutput {
+                        content: "repl".to_owned(),
+                    })
+                }),
+            ))?;
+            host.register_tool(crate::ToolSpec {
+                name: "native_tool".to_owned(),
+                description: "native handler tool".to_owned(),
+                params: Vec::new(),
+                expose: crate::ToolExposure::Native,
+                input_schema: None,
+                dispatch: crate::ToolDispatch::Handler(Arc::new(|inv| {
+                    Ok(crate::ToolOutput {
+                        content: format!("handled:{}", inv.input),
+                    })
+                })),
+            })?;
+            host.register_tool(crate::ToolSpec {
+                name: "py_tool".to_owned(),
+                description: "python-implemented tool, both surfaces".to_owned(),
+                params: Vec::new(),
+                expose: crate::ToolExposure::Both,
+                input_schema: None,
+                dispatch: crate::ToolDispatch::Python,
+            })?;
+            Ok(())
+        }
+    }
+
+    fn tools_runtime() -> crate::AppRuntime {
+        RuntimeBuilder::new()
+            .with_cwd(std::path::Path::new("."))
+            .register_extension(ExposedToolsExt)
+            .build()
+            .expect("build runtime")
+    }
+
+    #[test]
+    fn exposure_filters_prelude_stubs_and_native_list() {
+        let rt = tools_runtime();
+
+        // Stubs: only repl-exposed handler tools. Python-dispatch tools are
+        // already defined in the env; native-only tools never surface there.
+        let stubs = rt.extension_prelude_stubs();
+        assert!(stubs.contains("def repl_tool("), "{stubs}");
+        assert!(!stubs.contains("native_tool"), "{stubs}");
+        assert!(!stubs.contains("py_tool"), "{stubs}");
+
+        // Native list: native + both.
+        let native: Vec<&str> = rt.native_tool_specs().map(|t| t.name.as_str()).collect();
+        assert_eq!(native, vec!["native_tool", "py_tool"]);
+
+        // Dispatch lookup respects exposure.
+        assert!(matches!(
+            rt.native_tool_dispatch("native_tool"),
+            Some(crate::ToolDispatch::Handler(_))
+        ));
+        assert!(matches!(
+            rt.native_tool_dispatch("py_tool"),
+            Some(crate::ToolDispatch::Python)
+        ));
+        assert!(rt.native_tool_dispatch("repl_tool").is_none());
+        assert!(rt.native_tool_dispatch("missing").is_none());
+    }
+
+    #[tokio::test]
+    async fn invoke_tool_runs_handler_and_rejects_python_dispatch() {
+        let rt = tools_runtime();
+
+        let out = rt
+            .invoke_tool("native_tool", serde_json::json!({"x": 1}))
+            .await
+            .expect("invoke")
+            .expect("registered");
+        assert_eq!(out.content, "handled:{\"x\":1}");
+
+        // Python-dispatch tools are executed in the REPL env by the engine,
+        // never through the handler path.
+        assert!(
+            rt.invoke_tool("py_tool", serde_json::json!({}))
+                .await
+                .is_err()
+        );
+        // Unknown tool: None, not an error.
+        assert!(
+            rt.invoke_tool("missing", serde_json::json!({}))
+                .await
+                .expect("invoke")
+                .is_none()
+        );
     }
 
     // ── dispatch timeout / continue-on-error ─────────────────────────────────

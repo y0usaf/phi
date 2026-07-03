@@ -50,7 +50,10 @@ pub use snapshot::{
     ToolSummary,
 };
 pub use theme_spec::{TerminalColorsProbe, ThemeSpec};
-pub use tool::{ToolHandler, ToolInvocation, ToolOutput, ToolParam, ToolSpec};
+pub use tool::{
+    ToolDispatch, ToolExposure, ToolHandler, ToolInvocation, ToolOutput, ToolParam, ToolSpec,
+    schema_from_params,
+};
 pub use traits::{AnimationSpec, Extension, ExtensionHost};
 pub use visual::{Rgb, StyledSpan, StyledText};
 
@@ -155,20 +158,21 @@ mod tests {
             ty: "string".to_string(),
             default: None,
         };
-        let spec = ToolSpec {
-            name: "test-tool".to_string(),
-            description: "A test tool".to_string(),
-            params: vec![param],
-            handler: std::sync::Arc::new(|_inv| {
+        let spec = ToolSpec::repl(
+            "test-tool",
+            "A test tool",
+            vec![param],
+            std::sync::Arc::new(|_inv| {
                 Ok(ToolOutput {
                     content: "ok".to_string(),
                 })
             }),
-        };
+        );
         let json = serde_json::to_value(&spec).unwrap();
         assert_eq!(json["name"], "test-tool");
         assert_eq!(json["description"], "A test tool");
         assert_eq!(json["params"][0]["name"], "x");
+        assert_eq!(json["expose"], "repl");
     }
 
     // --- FlagSpec tests ---

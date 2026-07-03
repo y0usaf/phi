@@ -78,7 +78,10 @@ pub(super) fn setup_phi_global(lua: &mlua::Lua) -> mlua::Result<()> {
     phi.set("register_command", register_command_fn)?;
 
     // phi.register_tool(name, opts)
-    // opts: { description = "...", params = {...}, handler = function(input) ... end }
+    // opts: { description = "...", params = {...}, handler = function(input) ... end,
+    //         expose = "repl"|"native"|"both" (default "repl"),
+    //         input_schema = { ... } (optional JSON Schema for the native
+    //         tool definition; derived from params when absent) }
     let register_tool_fn = lua.create_function(|lua, (name, opts): (String, mlua::Table)| {
         let globals = lua.globals();
         let tools: mlua::Table = globals.get("_phi_tools")?;

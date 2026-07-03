@@ -6,10 +6,36 @@ use phi_repl::ReplResult;
 pub struct ExecutedBlock {
     /// The tool call id assigned by the LLM provider; used to match this
     /// block back to the corresponding `ToolCall` in `ChatMessage::tool_result`
-    /// without relying on code-string equality (which breaks for duplicate code).
+    /// without relying on argument equality (which breaks for duplicate calls).
     pub id: String,
-    pub code: String,
+    /// The tool that executed: `repl` or a native-exposed registry tool.
+    pub name: String,
+    /// The raw tool-call arguments (for `repl`, `{"code": ...}`).
+    pub args: serde_json::Value,
     pub result: ReplResult,
+}
+
+impl ExecutedBlock {
+    /// Convenience constructor for a `repl` execution.
+    pub fn repl(id: impl Into<String>, code: &str, result: ReplResult) -> Self {
+        Self {
+            id: id.into(),
+            name: "repl".to_owned(),
+            args: serde_json::json!({ "code": code }),
+            result,
+        }
+    }
+
+    /// Human-readable source of this block: the Python code for `repl`
+    /// executions, `name(args)` for native tool calls.
+    pub fn source(&self) -> String {
+        if self.name == "repl"
+            && let Some(code) = self.args.get("code").and_then(|v| v.as_str())
+        {
+            return code.to_owned();
+        }
+        format!("{}({})", self.name, self.args)
+    }
 }
 
 fn py_list_repr(names: &[String]) -> String {
@@ -129,27 +155,19 @@ mod tests {
 
     #[test]
     fn formats_single_and_multi_block_iterations() {
-        let blocks = vec![ExecutedBlock {
-            id: "tc_0".into(),
-            code: "print(1)".into(),
-            result: result("1\n", "", &[]),
-        }];
+        let blocks = vec![ExecutedBlock::repl(
+            "tc_0",
+            "print(1)",
+            result("1\n", "", &[]),
+        )];
         assert_eq!(
             format_iteration(&blocks, 20_000).unwrap(),
             "REPL output:\n\n1\n"
         );
 
         let blocks = vec![
-            ExecutedBlock {
-                id: "tc_0".into(),
-                code: "print(1)".into(),
-                result: result("1\n", "", &[]),
-            },
-            ExecutedBlock {
-                id: "tc_1".into(),
-                code: "print(2)".into(),
-                result: result("2\n", "", &[]),
-            },
+            ExecutedBlock::repl("tc_0", "print(1)", result("1\n", "", &[])),
+            ExecutedBlock::repl("tc_1", "print(2)", result("2\n", "", &[])),
         ];
         let formatted = format_iteration(&blocks, 20_000).unwrap();
         assert!(formatted.starts_with("REPL output (block 1):\n"));
@@ -175,11 +193,11 @@ mod tests {
 
     #[test]
     fn truncates_long_results() {
-        let blocks = vec![ExecutedBlock {
-            id: "tc_0".into(),
-            code: "print('a' * 100)".into(),
-            result: result(&"a".repeat(100), "", &[]),
-        }];
+        let blocks = vec![ExecutedBlock::repl(
+            "tc_0",
+            "print('a' * 100)",
+            result(&"a".repeat(100), "", &[]),
+        )];
         let formatted = format_iteration(&blocks, 50).unwrap();
         assert!(formatted.contains("... + ["), "{formatted}");
         assert!(formatted.contains(" chars...]"), "{formatted}");

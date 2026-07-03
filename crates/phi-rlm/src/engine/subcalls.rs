@@ -313,9 +313,10 @@ impl SubcallHandler for EngineSubcalls {
                 }
             },
             SubcallRequest::ExtTool { name, args } => {
-                let input = serde_json::to_string(&args).unwrap_or_default();
+                // Same watchdogged path native dispatch uses: a hung handler
+                // fails this subcall instead of wedging the REPL round-trip.
                 match &self.rlm.runtime {
-                    Some(rt) => match rt.invoke_tool_sync(&name, &input) {
+                    Some(rt) => match rt.invoke_tool(&name, args).await {
                         Ok(Some(output)) => Ok(SubcallResponse::Text(output.content)),
                         Ok(None) => Err(format!("no tool named '{name}'")),
                         Err(e) => Err(format!("tool '{name}' failed: {e}")),
