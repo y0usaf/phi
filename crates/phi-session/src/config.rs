@@ -81,6 +81,12 @@ shared_fields_struct! {
         /// entries are trust-gated ([`Config::load_mcp`]) — MCP servers spawn
         /// processes and send requests at startup.
         pub mcp: Option<BTreeMap<String, McpServerConfig>>,
+        /// Hybrid tool surface (WS9.3b): when true, the builtin
+        /// `coding-tools-native` extension registers the prelude coding
+        /// helpers (bash, read_file, edit_file, ...) as provider-level tool
+        /// definitions alongside their REPL exposure. Default off pending
+        /// measurement — consumed by the builtin, not by core.
+        pub coding_tools_native: Option<bool>,
     }
 }
 
@@ -255,7 +261,8 @@ impl Config {
             timeout,
             max_errors,
             max_concurrent_subcalls,
-            skills
+            skills,
+            coding_tools_native
         );
         // MCP servers merge per name: a project entry overrides the
         // same-named global entry wholesale, others coexist.
@@ -336,6 +343,9 @@ shared_fields_struct! {
         pub tools: ToolsSettings,
         /// User-configured skill paths (from config.lua `skills` field).
         pub skills: Vec<String>,
+        /// Whether the builtin `coding-tools-native` extension registers
+        /// (config.lua `coding_tools_native`, default off — WS9.3b).
+        pub coding_tools_native: bool,
     }
 }
 
@@ -390,6 +400,7 @@ impl Settings {
                 }
             },
             skills: config.skills.unwrap_or_default(),
+            coding_tools_native: config.coding_tools_native.unwrap_or(false),
         }
     }
 }
@@ -513,6 +524,14 @@ mod tests {
         assert_eq!(settings.tools.user_padding, 0);
         assert_eq!(settings.tools.gap, 0);
         assert!(settings.tools.tool_summary);
+    }
+
+    #[test]
+    fn coding_tools_native_defaults_off() {
+        let args = CliArgs::default();
+        assert!(!Settings::resolve(&args, Config::default(), false).coding_tools_native);
+        let config = eval("return { coding_tools_native = true }").unwrap();
+        assert!(Settings::resolve(&args, config, false).coding_tools_native);
     }
 
     #[test]

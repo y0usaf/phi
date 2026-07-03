@@ -1,6 +1,8 @@
 #[cfg(feature = "builtins")]
 pub mod catalog;
 #[cfg(feature = "builtins")]
+pub mod coding_tools;
+#[cfg(feature = "builtins")]
 pub mod commands;
 #[cfg(feature = "builtins")]
 pub mod mcp;
@@ -16,6 +18,8 @@ pub mod visual;
 
 #[cfg(feature = "builtins")]
 pub use catalog::CatalogExtension;
+#[cfg(feature = "builtins")]
+pub use coding_tools::CodingToolsExtension;
 #[cfg(feature = "builtins")]
 pub use commands::BuiltinCommandsExtension;
 #[cfg(feature = "builtins")]

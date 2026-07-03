@@ -839,8 +839,8 @@ around them and the shape of the tool surface on top of them.
       Consecutive user-role messages are safe where they still occur — the
       providers merge them.
 - [ ] **9.3 Tool surface through the extension API (API gap fix +
-      evidence-gated experiment).** *(a) landed 2026-07-03; (b) and (c)
-      remain.* The tension: pure-CodeAct is
+      evidence-gated experiment).** *(a) landed 2026-07-03; (b)'s builtin
+      landed 2026-07-03 — its measurement, and (c), remain.* The tension: pure-CodeAct is
       off-distribution for models RL-trained on native read/edit/bash
       harnesses (a real quality risk), but the single-`repl` surface is also
       the differentiator's substance — composition (filter/loop/batch in one
@@ -901,6 +901,17 @@ around them and the shape of the tool surface on top of them.
         oneshot mode, REPL-only vs hybrid, comparing success rate, turns,
         and wall-clock (9.6 telemetry is the instrumentation). No data, no
         default change.
+        *Builtin landed as:* `CodingToolsExtension`
+        (`phi-builtins/src/coding_tools.rs`), enabled by
+        `coding_tools_native = true` in config.lua (`Settings` field,
+        default off; registered in `build_runtime`, so one-shot runs get it
+        too). All seven helpers register `expose: Both` + `dispatch:
+        Python` with explicit input schemas (per-field descriptions the
+        derived schema can't carry); no REPL stubs are generated — the
+        prelude functions are the implementation, so hashline cache,
+        read-before-edit, and spill hold on both surfaces. A drift test
+        ties every native name to the `coding_tools_section()` roster.
+        The measurement run stays open.
       - (c) *REPL-preserving mitigations* worth doing regardless of the
         experiment's outcome: few-shot examples of idiomatic helper
         composition in the coding system prompt, and leaning on hashline
