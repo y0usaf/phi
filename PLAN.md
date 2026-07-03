@@ -890,8 +890,8 @@ around them and the shape of the tool surface on top of them.
       Consecutive user-role messages are safe where they still occur — the
       providers merge them.
 - [ ] **9.3 Tool surface through the extension API (API gap fix +
-      evidence-gated experiment).** *(a) landed 2026-07-03; (b)'s builtin
-      landed 2026-07-03 — its measurement, and (c), remain.* The tension: pure-CodeAct is
+      evidence-gated experiment).** *(a) and (c) landed 2026-07-03; (b)'s
+      builtin landed 2026-07-03 — only its measurement remains.* The tension: pure-CodeAct is
       off-distribution for models RL-trained on native read/edit/bash
       harnesses (a real quality risk), but the single-`repl` surface is also
       the differentiator's substance — composition (filter/loop/batch in one
@@ -968,6 +968,24 @@ around them and the shape of the tool surface on top of them.
         composition in the coding system prompt, and leaning on hashline
         `patch=` mode to cut the escaped-Python-string editing pain — the
         worst off-distribution surface.
+        *Landed as (2026-07-03):* both mitigations live in
+        `coding_tools_section()` (builtins-owned, next to the helpers they
+        document — not in phi-rlm's identity). The `edit_file` bullet now
+        leads with `patch=` as the preferred mode and documents the full op
+        vocabulary inline (`SWAP N.=M:` + `+TEXT` rows, `DEL N.=M`,
+        `INS.PRE/POST N:`, `INS.HEAD/TAIL:`; header copied from the view;
+        all line numbers refer to the file as last read, no shifting;
+        `r"""..."""` so payload rows are never escaped), demoting old/new
+        to a fallback for short unambiguous substitutions. Three one-turn
+        few-shot idioms appended: grep → filter in Python → targeted
+        reads; a hashline patch mixing SWAP/INS.POST/DEL; loop-edit many
+        files then `cargo check` in the same turn. The as-read-numbering
+        doc claim is guarded by
+        `hashline_multi_op_section_uses_as_read_line_numbers` in the
+        prelude tests; the roster drift tests
+        (`coding_roster_lists_expected_file_helpers`, tool_render's
+        `specs_match_documented_helpers`) keep the rewritten bullets
+        honest.
       Native exposure also unlocks per-tool truncation policies and
       provider-parallel tool calls for whoever enables it (pi parallelizes
       with a per-file mutation queue, `agent-loop.ts:373-388`; codex gates

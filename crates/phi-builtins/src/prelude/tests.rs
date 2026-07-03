@@ -279,6 +279,42 @@ print(edit_file(patch=patch))"#
     repl.shutdown().await;
 }
 
+/// Guards the doc claim in `coding_tools_section()` (WS9.3c few-shot example):
+/// a multi-op section mixes SWAP/INS/DEL and every line number refers to the
+/// file as last read — later ops are not shifted by earlier ones.
+#[tokio::test]
+async fn hashline_multi_op_section_uses_as_read_line_numbers() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("multi.txt");
+    let path = path.to_str().unwrap();
+    std::fs::write(path, "l1\nl2\nl3\nl4\nl5\nl6\nl7\n").unwrap();
+    let (mut repl, _events) = started().await;
+
+    let r = repl
+        .exec(
+            &format!(
+                r#"view = read_file({path:?})
+header = view.splitlines()[0]
+patch = header + "\nSWAP 2.=3:\n+TWO\nINS.POST 5:\n+AFTER-FIVE\nDEL 6.=7\n"
+print(edit_file(patch=patch))"#
+            ),
+            EXEC_TIMEOUT,
+        )
+        .await
+        .unwrap();
+    // SWAP shrank 2 lines to 1; INS.POST 5 and DEL 6.=7 still mean the
+    // original l5/l6/l7, not the post-SWAP positions.
+    assert_eq!(r.stderr, "", "stderr: {}", r.stderr);
+    assert!(r.stdout.contains("1:l1"), "stdout: {}", r.stdout);
+    assert!(r.stdout.contains("2:TWO"), "stdout: {}", r.stdout);
+    assert!(r.stdout.contains("3:l4"), "stdout: {}", r.stdout);
+    assert!(r.stdout.contains("4:l5"), "stdout: {}", r.stdout);
+    assert!(r.stdout.contains("5:AFTER-FIVE"), "stdout: {}", r.stdout);
+    assert!(!r.stdout.contains("l6"), "stdout: {}", r.stdout);
+    assert!(!r.stdout.contains("l7"), "stdout: {}", r.stdout);
+    repl.shutdown().await;
+}
+
 #[tokio::test]
 async fn hashline_seen_line_guard_and_stale_recovery() {
     let dir = tempfile::tempdir().unwrap();
