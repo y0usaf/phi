@@ -355,6 +355,11 @@ pub async fn run(setup: TuiSetup, mut io: SessionIo) -> Result<()> {
     // Wire the session's steer queue into the UI so mid-run prompt
     // submissions can push directly to the queue the save-point closure drains.
     ui.steer_queue = steer_queue;
+    // Attach this TUI as the runtime's interactive host: extension `ask`s
+    // (e.g. the approvals gate) arrive as UiPromptRequests on this channel
+    // and render as prompt selectors while the run keeps streaming.
+    let (ui_prompt_tx, mut ui_prompt_rx) = mpsc::unbounded_channel::<phi_ext::UiPromptRequest>();
+    ui.runtime.connect_ui(ui_prompt_tx);
     // Always populate the visual context from the extension runtime —
     // the runtime has extensions (spinners, thinking expressions, text
     // effects) registered in both standalone and embedded modes.
@@ -465,6 +470,10 @@ pub async fn run(setup: TuiSetup, mut io: SessionIo) -> Result<()> {
             }
             Some(msg) = login_rx.recv() => {
                 ui.handle_login_msg(msg);
+                false
+            }
+            Some(req) = ui_prompt_rx.recv() => {
+                ui.handle_ui_prompt(req);
                 false
             }
             // Animation timer: the clock has a baseline keep-alive so it is
@@ -645,6 +654,10 @@ struct Ui {
     /// Active full-width selector (model/resume/fork/tree); replaces the
     /// editor area and captures all keys until confirmed or cancelled.
     pub(super) selector: Option<(SelectorKind, Selector)>,
+    /// Extension ask-the-user requests (`AppRuntime::connect_ui`) waiting
+    /// for the selector slot; shown one at a time, FIFO. Dropped unanswered
+    /// (quit, run end) they read as "dismissed" → deny on the asking side.
+    pub(super) ui_prompts: std::collections::VecDeque<phi_ext::UiPromptRequest>,
     /// On-disk session store recording the conversation tree.
     pub(super) store: SessionStore,
     /// Time of the last esc.  When idle with an empty editor, a second esc
@@ -854,6 +867,7 @@ impl Ui {
             login: None,
             popup: None,
             selector: None,
+            ui_prompts: std::collections::VecDeque::new(),
             store,
             last_esc: None,
             files: FileSearcher::new(cwd.clone()),
@@ -1122,6 +1136,92 @@ mod tests {
         assert_eq!(header, "read x", "{header}");
         assert!(!header.contains('['), "{header}");
         assert!(!header.contains("●"), "{header}");
+    }
+
+    fn ui_prompt_request(
+        title: &str,
+        body: &str,
+    ) -> (
+        phi_ext::UiPromptRequest,
+        std::sync::mpsc::Receiver<Option<usize>>,
+    ) {
+        let (reply, reply_rx) = std::sync::mpsc::sync_channel(1);
+        (
+            phi_ext::UiPromptRequest {
+                prompt: phi_ext::UiPrompt {
+                    title: title.to_owned(),
+                    body: body.to_owned(),
+                    options: vec![
+                        phi_ext::UiPromptOption::new("Allow once"),
+                        phi_ext::UiPromptOption::new("Deny"),
+                    ],
+                },
+                reply,
+            },
+            reply_rx,
+        )
+    }
+
+    fn key(code: KeyCode) -> phi_tui::crossterm::event::KeyEvent {
+        phi_tui::crossterm::event::KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    // An extension ask opens a Prompt selector, shows the gated subject in
+    // the transcript, and confirm sends the option index back.
+    #[test]
+    fn ui_prompt_opens_selector_and_replies_on_confirm() {
+        let mut ui = test_ui(80, 24);
+        let (req, reply_rx) = ui_prompt_request("Allow bash?", "cargo test");
+        ui.handle_ui_prompt(req);
+        assert!(matches!(
+            ui.selector,
+            Some((SelectorKind::Prompt { .. }, _))
+        ));
+        let lines = pending_lines(&mut ui);
+        assert!(
+            lines
+                .iter()
+                .any(|l| phi_tui::strip_ansi(l).contains("cargo test")),
+            "subject must be visible in the transcript: {lines:?}"
+        );
+
+        let (cmd_tx, _cmd_rx) = mpsc::unbounded_channel();
+        ui.handle_selector_key(key(KeyCode::Down), &cmd_tx);
+        ui.handle_selector_key(key(KeyCode::Enter), &cmd_tx);
+        assert_eq!(reply_rx.try_recv(), Ok(Some(1)), "Deny is index 1");
+        assert!(ui.selector.is_none());
+    }
+
+    // A second ask queues behind the open prompt and is shown when the first
+    // resolves; a run ending dismisses everything (dropped sender = deny).
+    #[test]
+    fn ui_prompts_queue_and_dismiss_on_run_end() {
+        let mut ui = test_ui(80, 24);
+        let (first, first_rx) = ui_prompt_request("Allow bash?", "one");
+        let (second, second_rx) = ui_prompt_request("Allow edit_file?", "two");
+        ui.handle_ui_prompt(first);
+        ui.handle_ui_prompt(second);
+        assert_eq!(ui.ui_prompts.len(), 1, "second waits for the slot");
+
+        let (cmd_tx, _cmd_rx) = mpsc::unbounded_channel();
+        // Esc cancels the first (dropped sender → Dismissed on asking side)
+        // and the queued second takes the slot.
+        ui.handle_selector_key(key(KeyCode::Esc), &cmd_tx);
+        assert_eq!(
+            first_rx.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Disconnected)
+        );
+        assert!(matches!(
+            ui.selector,
+            Some((SelectorKind::Prompt { .. }, _))
+        ));
+
+        ui.dismiss_ui_prompts();
+        assert!(ui.selector.is_none());
+        assert_eq!(
+            second_rx.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Disconnected)
+        );
     }
 
     // `indent` keeps the 2-cells-per-depth nesting budget, and the result

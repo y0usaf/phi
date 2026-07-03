@@ -734,9 +734,45 @@ Build these as extensions *because* they stress the API, in this order of value:
       legacy SSE transport; OAuth for remote servers; dynamic
       `tools/list_changed` (the registry is immutable after build);
       per-session (not per-server) connection reuse in the mux.
-- [ ] **7.2 Approval/permission extension.** Uses the `ToolCall` interception
+- [x] **7.2 Approval/permission extension.** Uses the `ToolCall` interception
       event to gate `bash`/`write_file`/`edit_file` behind user confirmation
       with a persistable allowlist. Optional install — core stays pi-stance.
+      *Landed as:* `ApprovalsExtension` (`phi-builtins/src/approvals.rs`),
+      enabled by an `approvals = { enabled = true, rules = {...} }` config
+      table (`Config::load_approvals` trust-gates the project layer like
+      `mcp` — a cloned repo can't weaken the gate with its own allow rules).
+      Ordered ruleset, opencode's last-match-wins: builtin defaults (ask on
+      `repl`/`bash`/`write_file`/`edit_file`) → config rules → persisted
+      "always allow" answers (`approvals.json`, keyed by canonical project
+      path — the TrustStore layout) → session answers; unmatched calls
+      proceed. Prompt options: Allow once / Always allow (persisted) / Deny;
+      `/approvals` lists rules with provenance and `reset` clears saved
+      answers. Asks fail **closed**: no UI, dismissal, or timeout all deny
+      with an instructive tool error. Two API gaps closed to make it
+      expressible (the Rule's corollary): (a)
+      `EventHandlerRegistration.timeout` — a per-handler override of the
+      dispatch watchdog budget (the 2s ToolCall default fails *open* on
+      timeout, which an approval gate must never do; the watchdog itself
+      remains mandatory, no unbounded option); (b) the ask-the-user
+      primitive (pi's `ctx.ui.confirm` analog): `UiHandle`/`UiPrompt` in
+      `phi-ext/src/ui.rs`, captured at register time via
+      `ExtensionHost::ui_handle()` and late-bound by the host through
+      `AppRuntime::connect_ui` — the session TUI services requests as a
+      `SelectorKind::Prompt` selector (subject rendered into the transcript,
+      requests queued FIFO, dismissed when the run ends), works mid-run in
+      standalone and embedded/mux modes; one-shot `phi -p` never connects,
+      so `has_ui()` is false and ask-rules deny. Lua parity shipped in the
+      same change (WS1.6's lesson): `phi.on(event, handler, { timeout })`
+      and `phi.ui.ask{...}`/`phi.ui.has_ui()`, with the Lua VM's
+      instruction-hook deadline and the bridge wait both tracking the
+      registration timeout; dogfood test ports the gate to Lua
+      (`lua_ui_ask_gates_tool_call`). Honest remainders: under the
+      REPL-only default the gate's granularity is the whole `repl` code
+      blob (subject = the code) — per-tool-name granularity arrives with
+      `coding_tools_native` or MCP tools; `ToolArgsOverride` is still
+      unapplied by the engine, so edit-before-approve isn't expressible
+      yet; dispatch stays fail-open on timeout for ordinary handlers (the
+      gate protects itself via its raised budget).
 - [ ] **7.3 Structured subagent reports.** Extend the `subagent` return
       contract with a bounded summary field (jcode bounds completion reports to
       4K chars) — engine-side, but validated by an extension consuming it.

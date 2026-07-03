@@ -9,6 +9,9 @@ use anyhow::{Result, bail};
 
 #[derive(Default)]
 pub(crate) struct RegistryHost {
+    /// Shared with the built `AppRuntime` (`connect_ui`), so extensions that
+    /// clone it during `register()` reach the host that attaches later.
+    pub(crate) ui: crate::UiHandle,
     pub(crate) tools: BTreeMap<String, ToolSpec>,
     pub(crate) commands: BTreeMap<(CommandContext, String), CommandSpec>,
     pub(crate) shortcuts: Vec<ShortcutSpec>,
@@ -69,6 +72,10 @@ impl ExtensionHost for RegistryHost {
     fn subscribe(&mut self, handler: EventHandlerRegistration) -> Result<()> {
         self.event_handlers.push(handler);
         Ok(())
+    }
+
+    fn ui_handle(&self) -> crate::UiHandle {
+        self.ui.clone()
     }
 
     fn register_message_renderer(&mut self, renderer: MessageRendererSpec) -> Result<()> {

@@ -16,6 +16,7 @@ pub mod theme_spec;
 pub mod tool;
 pub mod tool_render;
 pub mod traits;
+pub mod ui;
 pub mod visual;
 
 pub use builder::RuntimeBuilder;
@@ -60,6 +61,7 @@ pub use tool_render::{
     ToolRenderSpec, repl_render_spec, tally, title_case_tool_name,
 };
 pub use traits::{AnimationSpec, Extension, ExtensionHost};
+pub use ui::{UiAskOutcome, UiHandle, UiPrompt, UiPromptOption, UiPromptRequest};
 pub use visual::{Rgb, StyledSpan, StyledText};
 
 // Re-export animation spec types

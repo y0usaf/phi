@@ -29,6 +29,17 @@ pub trait ExtensionHost {
     // ── Event subscription ──────────────────────────────────────────────────
     fn subscribe(&mut self, handler: EventHandlerRegistration) -> Result<()>;
 
+    // ── UI ──────────────────────────────────────────────────────────────────
+    /// Handle for asking the interactive host a question mid-run (pi's
+    /// `ctx.ui.confirm` analog). Late-bound: disconnected until a host calls
+    /// `AppRuntime::connect_ui`, so `has_ui()` is `false` in non-interactive
+    /// modes and extensions choose their own no-UI policy. The default impl
+    /// returns a permanently disconnected handle so registration hosts that
+    /// never carry a UI need no wiring.
+    fn ui_handle(&self) -> crate::UiHandle {
+        crate::UiHandle::default()
+    }
+
     // ── Message rendering ───────────────────────────────────────────────────
     fn register_message_renderer(&mut self, renderer: MessageRendererSpec) -> Result<()>;
 

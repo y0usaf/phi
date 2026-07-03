@@ -63,6 +63,7 @@ impl RuntimeBuilder {
             self.cwd,
             self.session_id,
             manifests,
+            host.ui,
             host.tools,
             host.commands,
             host.shortcuts,

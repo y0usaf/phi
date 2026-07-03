@@ -201,6 +201,16 @@ pub async fn build_runtime(
         if settings.coding_tools_native {
             rt_builder = rt_builder.register_extension(phi_builtins::CodingToolsExtension);
         }
+        // Tool approval gate (WS7.2, default off): config.lua's `approvals`
+        // table, project layer trust-gated like `mcp` (a cloned repo must not
+        // weaken the gate with its own allow rules). Registered in every
+        // mode; hosts that never `connect_ui` (one-shot `phi -p`) make `ask`
+        // rules fail closed.
+        let approvals = Config::load_approvals(cwd, project_trusted).unwrap_or_default();
+        if approvals.enabled.unwrap_or(false) {
+            rt_builder = rt_builder
+                .register_extension(phi_builtins::ApprovalsExtension::new(cwd, approvals));
+        }
         // MCP servers from config.lua's `mcp` table (project entries only
         // when trusted — they spawn processes). Connect failures degrade to
         // warnings inside `connect`; a session never fails to build because

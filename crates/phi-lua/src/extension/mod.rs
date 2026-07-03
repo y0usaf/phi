@@ -57,6 +57,10 @@ impl phi_ext::Extension for LuaExtension {
     fn register(&self, host: &mut dyn ExtensionHost) -> Result<()> {
         let lua = mlua::Lua::new();
         setup_phi_global(&lua)?;
+        // `phi.ui` (ask-the-user) is late-bound: the handle is disconnected
+        // until an interactive host calls `connect_ui`, and `phi.ui.ask`
+        // resolves to `nil, "no_ui"` everywhere else.
+        globals::attach_ui_namespace(&lua, host.ui_handle())?;
 
         let filename = self
             .path
@@ -73,6 +77,22 @@ impl phi_ext::Extension for LuaExtension {
         let reg_events: mlua::Table = globals.get("_phi_registered_events")?;
         let event_names: Vec<String> = (1..)
             .map_while(|i| reg_events.get::<Option<String>>(i).ok().flatten())
+            .collect();
+        // Per-event `phi.on` opts: `timeout` (seconds) overrides the dispatch
+        // watchdog budget (see EventHandlerRegistration::timeout).
+        let event_opts: mlua::Table = globals.get("_phi_event_opts")?;
+        let event_timeouts: BTreeMap<String, Duration> = event_names
+            .iter()
+            .filter_map(|name| {
+                let secs = event_opts
+                    .get::<Option<mlua::Table>>(name.as_str())
+                    .ok()
+                    .flatten()?
+                    .get::<Option<f64>>("timeout")
+                    .ok()
+                    .flatten()?;
+                Some((name.clone(), Duration::from_secs_f64(secs.max(0.0))))
+            })
             .collect();
 
         // ── Read registered commands ──────────────────────────────────────────
@@ -451,8 +471,15 @@ impl phi_ext::Extension for LuaExtension {
         for event_name in event_names {
             let kind = parse_event_kind(&event_name)?;
             let tx2 = Arc::clone(&tx);
+            let timeout = event_timeouts.get(&event_name).copied();
+            // The bridge's own wait on the Lua thread tracks the registration
+            // timeout (default 10s): a handler blocking on phi.ui.ask must
+            // not be cut off by the bridge before the dispatch watchdog —
+            // whichever budget the registration declared — has its say.
+            let bridge_wait = timeout.unwrap_or(Duration::from_secs(10));
             let name2 = event_name;
             host.subscribe(EventHandlerRegistration {
+                timeout,
                 event: kind,
                 label: format!("lua:{}:{}", self.path.display(), &name2),
                 handler: Arc::new(move |event: LifecycleEvent| {
@@ -461,11 +488,12 @@ impl phi_ext::Extension for LuaExtension {
                     tx2.send(LuaMsg::CallEvent {
                         event_name: name2.clone(),
                         payload_json,
+                        timeout_ms: timeout.map(|t| t.as_millis() as i64),
                         reply: rtx,
                     })
                     .map_err(|e| anyhow::anyhow!("lua send: {e}"))?;
                     let json_opt = rrx
-                        .recv_timeout(Duration::from_secs(10))
+                        .recv_timeout(bridge_wait)
                         .map_err(|e| anyhow::anyhow!("lua recv: {e}"))??;
                     decode_event_return(json_opt)
                 }),
@@ -578,6 +606,7 @@ impl phi_ext::Extension for LuaExtension {
                     tx5.send(LuaMsg::CallEvent {
                         event_name: format!("__render_{}", ct),
                         payload_json: message_json,
+                        timeout_ms: None,
                         reply: rtx,
                     })
                     .map_err(|e| anyhow::anyhow!("lua send: {e}"))?;

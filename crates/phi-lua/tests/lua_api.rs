@@ -955,3 +955,88 @@ phi.register_tool_renderer("mystery", {})
     assert!(matches!(spec.body, phi_ext::ToolBody::Args));
     assert!(!spec.exit_code_trailer);
 }
+
+// ── phi.ui — ask-the-user parity (WS7.2) ────────────────────────────────────
+
+/// Dogfood: the approvals-extension shape, ported to Lua. A `tool_call`
+/// handler with a raised `timeout` blocks on `phi.ui.ask` and gates the
+/// call; without a connected host it fails closed via `phi.ui.has_ui()`.
+#[tokio::test]
+async fn lua_ui_ask_gates_tool_call() {
+    let source = r#"
+phi.on("tool_call", function(payload)
+    if payload.data.name ~= "bash" then return nil end
+    if not phi.ui.has_ui() then
+        return { block = true, reason = "no ui - denied" }
+    end
+    local choice, outcome = phi.ui.ask({
+        title = "Allow bash?",
+        body = payload.data.args.cmd,
+        options = { "Allow", { label = "Deny", detail = "block it" } },
+        wait = 10,
+    })
+    if choice == 1 then return nil end
+    return { block = true, reason = "denied via lua: " .. outcome }
+end, { timeout = 15 })
+"#;
+    let rt = load_lua(source);
+    let bash_call = || LifecycleEvent {
+        kind: EventKind::ToolCall,
+        payload: phi_ext::EventPayload::ToolCall {
+            name: "bash".to_owned(),
+            args: serde_json::json!({"cmd": "rm -rf /tmp/x"}),
+        },
+    };
+
+    // No host connected: the Lua gate fails closed.
+    let returns = rt.dispatch(bash_call()).await.unwrap();
+    assert!(
+        matches!(&returns[..], [EventReturn::ToolBlock { reason }]
+            if reason.contains("no ui")),
+        "expected fail-closed block, got {returns:?}"
+    );
+
+    // Connect a host; it answers Deny (host index 1 → Lua choice 2), then
+    // Allow (host index 0 → Lua choice 1).
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    rt.connect_ui(tx);
+    let host = tokio::spawn(async move {
+        let req = rx.recv().await.expect("prompt 1");
+        assert_eq!(req.prompt.title, "Allow bash?");
+        assert_eq!(req.prompt.body, "rm -rf /tmp/x");
+        assert_eq!(req.prompt.options.len(), 2);
+        assert_eq!(req.prompt.options[0].label, "Allow");
+        assert_eq!(req.prompt.options[1].label, "Deny");
+        assert_eq!(req.prompt.options[1].detail.as_deref(), Some("block it"));
+        req.reply.send(Some(1)).unwrap();
+
+        let req = rx.recv().await.expect("prompt 2");
+        req.reply.send(Some(0)).unwrap();
+    });
+
+    let returns = rt.dispatch(bash_call()).await.unwrap();
+    assert!(
+        matches!(&returns[..], [EventReturn::ToolBlock { reason }]
+            if reason.contains("denied via lua: answer")),
+        "expected user deny, got {returns:?}"
+    );
+    let returns = rt.dispatch(bash_call()).await.unwrap();
+    assert!(
+        returns.is_empty(),
+        "allowed call must not block: {returns:?}"
+    );
+    host.await.unwrap();
+
+    // Tools the Lua gate doesn't cover pass untouched.
+    let returns = rt
+        .dispatch(LifecycleEvent {
+            kind: EventKind::ToolCall,
+            payload: phi_ext::EventPayload::ToolCall {
+                name: "read_file".to_owned(),
+                args: serde_json::json!({"path": "x"}),
+            },
+        })
+        .await
+        .unwrap();
+    assert!(returns.is_empty());
+}

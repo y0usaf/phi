@@ -1278,6 +1278,10 @@ impl Ui {
         self.pending_prose.clear();
         self.live_prose.clear();
         self.running = None;
+        // The engine that was waiting on any approval answer is gone; a
+        // lingering prompt selector would answer into the void. Dropping the
+        // requests reads as "dismissed" (deny) on the asking side.
+        self.dismiss_ui_prompts();
         // Remove the run's keep-alive interest: the equalizer/spinner no
         // longer need dedicated ticks. The baseline keep-alive keeps the
         // clock alive so chrome shimmer/gradient text continue animating.

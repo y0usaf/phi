@@ -24,6 +24,12 @@ pub(crate) enum SelectorKind {
     Fork,
     /// Value is the entry id to navigate the active branch to.
     Tree,
+    /// An extension's ask-the-user prompt (`UiPromptRequest`); confirm sends
+    /// the selected option index back. Dropping the sender unanswered (close,
+    /// replacement, run end) reads as "dismissed" on the asking side.
+    Prompt {
+        reply: std::sync::mpsc::SyncSender<Option<usize>>,
+    },
 }
 
 pub(crate) struct Suggestion {

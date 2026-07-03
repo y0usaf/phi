@@ -24,6 +24,9 @@ pub struct AppRuntime {
     cwd: PathBuf,
     session_id: String,
     extensions: Vec<ExtensionManifest>,
+    /// Late-bound ask-the-user channel; the same handle extensions cloned
+    /// at `register()` time, so `connect_ui` reaches them all.
+    ui: crate::UiHandle,
     pub(crate) tools: BTreeMap<String, ToolSpec>,
     /// Keyed by `(context, name)`: the same name may exist in different
     /// contexts (session `/quit` vs mux `:quit`) without colliding.
@@ -99,6 +102,7 @@ impl AppRuntime {
         cwd: PathBuf,
         session_id: String,
         extensions: Vec<ExtensionManifest>,
+        ui: crate::UiHandle,
         tools: BTreeMap<String, ToolSpec>,
         commands: BTreeMap<(CommandContext, String), CommandSpec>,
         shortcuts: Vec<ShortcutSpec>,
@@ -117,6 +121,7 @@ impl AppRuntime {
             cwd,
             session_id,
             extensions,
+            ui,
             tools,
             commands,
             shortcuts,
@@ -139,6 +144,21 @@ impl AppRuntime {
         }
     }
 
+    // ── UI ─────────────────────────────────────────────────────────────────────
+
+    /// Attach an interactive host's prompt channel. Extensions that captured
+    /// the handle at `register()` time (via `ExtensionHost::ui_handle`) can
+    /// then `ask` the user mid-run; until this is called, `has_ui()` is
+    /// `false` everywhere and asks resolve to `UiAskOutcome::NoUi`.
+    pub fn connect_ui(&self, tx: tokio::sync::mpsc::UnboundedSender<crate::UiPromptRequest>) {
+        self.ui.connect(tx);
+    }
+
+    /// The runtime's ask-the-user handle (same instance extensions hold).
+    pub fn ui_handle(&self) -> crate::UiHandle {
+        self.ui.clone()
+    }
+
     // ── Context ────────────────────────────────────────────────────────────────
 
     /// Build an `ExtensionContextRef` for this runtime.
@@ -155,8 +175,12 @@ impl AppRuntime {
 
     pub async fn dispatch(&self, event: LifecycleEvent) -> Result<Vec<EventReturn>> {
         let mut returns = Vec::new();
-        let timeout = handler_timeout(event.kind);
+        let kind_timeout = handler_timeout(event.kind);
         for reg in self.event_handlers.iter().filter(|h| h.event == event.kind) {
+            // A registration may override its own watchdog budget — e.g. an
+            // approval gate blocking on a user prompt needs far more than the
+            // interception default. The watchdog itself always exists.
+            let timeout = reg.timeout.unwrap_or(kind_timeout);
             let h = reg.handler.clone();
             let ev = event.clone();
             // Run each (sync) handler on the blocking pool, but bound the wait
@@ -1354,6 +1378,7 @@ mod tests {
 
         fn register(&self, host: &mut dyn ExtensionHost) -> anyhow::Result<()> {
             host.subscribe(EventHandlerRegistration {
+                timeout: None,
                 event: EventKind::BeforeAgentStart,
                 label: "test.append".to_owned(),
                 handler: Arc::new(|_ev: LifecycleEvent| {
@@ -1422,6 +1447,7 @@ mod tests {
             }
             fn register(&self, host: &mut dyn ExtensionHost) -> anyhow::Result<()> {
                 host.subscribe(EventHandlerRegistration {
+                    timeout: None,
                     event: EventKind::SessionBeforeSwitch,
                     label: "test.cancel".to_owned(),
                     handler: Arc::new(|_ev| {
@@ -1461,6 +1487,7 @@ mod tests {
             }
             fn register(&self, host: &mut dyn ExtensionHost) -> anyhow::Result<()> {
                 host.subscribe(EventHandlerRegistration {
+                    timeout: None,
                     event: EventKind::ResourcesDiscover,
                     label: "test.resources".to_owned(),
                     handler: Arc::new(|_ev| {
@@ -1560,6 +1587,7 @@ mod tests {
             }
             fn register(&self, host: &mut dyn ExtensionHost) -> anyhow::Result<()> {
                 host.subscribe(EventHandlerRegistration {
+                    timeout: None,
                     event: EventKind::SessionBeforeCompact,
                     label: "test.compact".to_owned(),
                     handler: Arc::new(|_ev| {
@@ -1598,6 +1626,7 @@ mod tests {
             }
             fn register(&self, host: &mut dyn ExtensionHost) -> anyhow::Result<()> {
                 host.subscribe(EventHandlerRegistration {
+                    timeout: None,
                     event: EventKind::SessionBeforeCompact,
                     label: "test.cancel-compact".to_owned(),
                     handler: Arc::new(|_ev| {
@@ -1805,6 +1834,7 @@ mod tests {
             }
             fn register(&self, host: &mut dyn ExtensionHost) -> anyhow::Result<()> {
                 host.subscribe(EventHandlerRegistration {
+                    timeout: None,
                     event: EventKind::AgentStart,
                     label: "test.block".to_owned(),
                     handler: Arc::new(|_ev| {
@@ -1860,11 +1890,13 @@ mod tests {
             }
             fn register(&self, host: &mut dyn ExtensionHost) -> anyhow::Result<()> {
                 host.subscribe(EventHandlerRegistration {
+                    timeout: None,
                     event: EventKind::ModelSelect,
                     label: "test.multi.err".to_owned(),
                     handler: Arc::new(|_ev| Err(anyhow::anyhow!("boom"))),
                 })?;
                 host.subscribe(EventHandlerRegistration {
+                    timeout: None,
                     event: EventKind::ModelSelect,
                     label: "test.multi.ok".to_owned(),
                     handler: Arc::new(|_ev| {
@@ -1918,6 +1950,7 @@ mod tests {
             }
             fn register(&self, host: &mut dyn ExtensionHost) -> anyhow::Result<()> {
                 host.subscribe(EventHandlerRegistration {
+                    timeout: None,
                     event: EventKind::BeforeAgentStart,
                     label: "test.replace".to_owned(),
                     handler: Arc::new(|_ev| {
@@ -1960,6 +1993,7 @@ mod tests {
             }
             fn register(&self, host: &mut dyn ExtensionHost) -> anyhow::Result<()> {
                 host.subscribe(EventHandlerRegistration {
+                    timeout: None,
                     event: EventKind::ToolCall,
                     label: "test.args_override".to_owned(),
                     handler: Arc::new(|_ev| {
@@ -2006,6 +2040,7 @@ mod tests {
             }
             fn register(&self, host: &mut dyn ExtensionHost) -> anyhow::Result<()> {
                 host.subscribe(EventHandlerRegistration {
+                    timeout: None,
                     event: EventKind::SessionBeforeCompact,
                     label: "test.cancel_compact".to_owned(),
                     handler: Arc::new(|_ev| {
@@ -2046,6 +2081,7 @@ mod tests {
             }
             fn register(&self, host: &mut dyn ExtensionHost) -> anyhow::Result<()> {
                 host.subscribe(EventHandlerRegistration {
+                    timeout: None,
                     event: EventKind::SessionBeforeFork,
                     label: "test.fork_cancel".to_owned(),
                     handler: Arc::new(|_ev| {
@@ -2097,6 +2133,7 @@ mod tests {
             }
             fn register(&self, host: &mut dyn ExtensionHost) -> anyhow::Result<()> {
                 host.subscribe(EventHandlerRegistration {
+                    timeout: None,
                     event: EventKind::SessionBeforeTree,
                     label: "test.tree_cancel".to_owned(),
                     handler: Arc::new(|_ev| {
@@ -2128,5 +2165,161 @@ mod tests {
             }
             other => panic!("expected Cancel, got {other:?}"),
         }
+    }
+
+    /// A registration's `timeout` overrides the per-kind dispatch budget in
+    /// both directions: a lowered budget drops a slow handler's return, a
+    /// raised budget keeps a handler alive past where the (larger) kind
+    /// default would have been irrelevant anyway — asserted here by pairing
+    /// two identical slow handlers whose only difference is the override.
+    #[tokio::test]
+    async fn per_registration_timeout_overrides_kind_default() {
+        use std::time::Duration;
+
+        struct SlowGateExt;
+        impl Extension for SlowGateExt {
+            fn manifest(&self) -> ExtensionManifest {
+                ExtensionManifest {
+                    id: "test.slow_gate".to_owned(),
+                    name: "SlowGate".to_owned(),
+                    version: "0".to_owned(),
+                    description: "test timeout override".to_owned(),
+                }
+            }
+            fn register(&self, host: &mut dyn ExtensionHost) -> anyhow::Result<()> {
+                let slow_handler = || {
+                    Arc::new(|_ev: LifecycleEvent| {
+                        std::thread::sleep(Duration::from_millis(300));
+                        Ok(Some(EventReturn::ToolBlock {
+                            reason: "gated".to_owned(),
+                        }))
+                    })
+                };
+                // Tight override: dropped despite the 2s ToolCall default.
+                host.subscribe(EventHandlerRegistration {
+                    event: EventKind::ToolCall,
+                    label: "test.slow_gate.tight".to_owned(),
+                    handler: slow_handler(),
+                    timeout: Some(Duration::from_millis(50)),
+                })?;
+                // Generous override: collected.
+                host.subscribe(EventHandlerRegistration {
+                    event: EventKind::ToolCall,
+                    label: "test.slow_gate.roomy".to_owned(),
+                    handler: slow_handler(),
+                    timeout: Some(Duration::from_secs(5)),
+                })?;
+                Ok(())
+            }
+        }
+
+        let rt = RuntimeBuilder::new()
+            .with_cwd(std::path::Path::new("."))
+            .register_extension(SlowGateExt)
+            .build()
+            .expect("build runtime");
+
+        let returns = rt
+            .dispatch(LifecycleEvent {
+                kind: EventKind::ToolCall,
+                payload: crate::EventPayload::ToolCall {
+                    name: "bash".to_owned(),
+                    args: serde_json::json!({}),
+                },
+            })
+            .await
+            .expect("dispatch");
+
+        assert_eq!(
+            returns.len(),
+            1,
+            "only the roomy registration's return survives"
+        );
+        let notes = rt.drain_notifications();
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.contains("test.slow_gate.tight") && n.contains("timed out")),
+            "tight registration times out: {notes:?}"
+        );
+    }
+
+    /// `ExtensionHost::ui_handle` hands out the same late-bound handle the
+    /// built runtime exposes: a host connecting via `AppRuntime::connect_ui`
+    /// is reachable from a handler that captured the handle at register time.
+    #[tokio::test]
+    async fn ui_handle_connects_extensions_to_late_host() {
+        use std::time::Duration;
+
+        struct AskingExt;
+        impl Extension for AskingExt {
+            fn manifest(&self) -> ExtensionManifest {
+                ExtensionManifest {
+                    id: "test.asking".to_owned(),
+                    name: "Asking".to_owned(),
+                    version: "0".to_owned(),
+                    description: "test ui handle".to_owned(),
+                }
+            }
+            fn register(&self, host: &mut dyn ExtensionHost) -> anyhow::Result<()> {
+                let ui = host.ui_handle();
+                assert!(!ui.has_ui(), "disconnected at register time");
+                host.subscribe(EventHandlerRegistration {
+                    event: EventKind::ToolCall,
+                    label: "test.asking".to_owned(),
+                    handler: Arc::new(move |_ev| {
+                        let outcome = ui.ask(
+                            crate::UiPrompt {
+                                title: "Allow?".to_owned(),
+                                body: String::new(),
+                                options: vec![
+                                    crate::UiPromptOption::new("Allow"),
+                                    crate::UiPromptOption::new("Deny"),
+                                ],
+                            },
+                            Duration::from_secs(5),
+                        );
+                        match outcome {
+                            crate::UiAskOutcome::Answer(0) => Ok(None),
+                            _ => Ok(Some(EventReturn::ToolBlock {
+                                reason: "denied".to_owned(),
+                            })),
+                        }
+                    }),
+                    timeout: Some(Duration::from_secs(6)),
+                })?;
+                Ok(())
+            }
+        }
+
+        let rt = RuntimeBuilder::new()
+            .with_cwd(std::path::Path::new("."))
+            .register_extension(AskingExt)
+            .build()
+            .expect("build runtime");
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        rt.connect_ui(tx);
+        assert!(rt.ui_handle().has_ui());
+
+        // Host side: answer "Allow" (index 0) to the one prompt.
+        let host = tokio::spawn(async move {
+            let req = rx.recv().await.expect("prompt arrives");
+            assert_eq!(req.prompt.title, "Allow?");
+            req.reply.send(Some(0)).expect("buffered reply");
+        });
+
+        let returns = rt
+            .dispatch(LifecycleEvent {
+                kind: EventKind::ToolCall,
+                payload: crate::EventPayload::ToolCall {
+                    name: "bash".to_owned(),
+                    args: serde_json::json!({}),
+                },
+            })
+            .await
+            .expect("dispatch");
+        host.await.unwrap();
+        assert!(returns.is_empty(), "allowed call yields no ToolBlock");
     }
 }

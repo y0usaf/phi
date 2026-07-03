@@ -374,6 +374,13 @@ pub struct EventHandlerRegistration {
     pub label: String,
     #[serde(skip, default = "default_handler")]
     pub handler: EventHandler,
+    /// Per-handler override of the dispatch watchdog budget. `None` uses the
+    /// dispatcher's per-kind default. A handler that legitimately waits on
+    /// the user (e.g. an approval gate blocking on a UI prompt) raises this
+    /// above the tight interception default; the watchdog itself always
+    /// exists (doctrine 2) — there is deliberately no "unbounded" option.
+    #[serde(skip)]
+    pub timeout: Option<std::time::Duration>,
 }
 
 fn default_handler() -> EventHandler {

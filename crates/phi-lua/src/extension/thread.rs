@@ -20,6 +20,11 @@ pub enum LuaMsg {
     CallEvent {
         event_name: String,
         payload_json: String,
+        /// Override for the VM watchdog deadline (default
+        /// [`DEFAULT_TIMEOUT_MS`]). Set from the handler's registration
+        /// timeout so a handler blocking on `phi.ui.ask` isn't aborted by
+        /// the instruction hook the moment the (long) ask returns.
+        timeout_ms: Option<i64>,
         reply: std::sync::mpsc::SyncSender<Result<Option<String>>>,
     },
     InvokeCommand {
@@ -96,11 +101,15 @@ fn lua_thread_loop(lua: &mlua::Lua, rx: std::sync::mpsc::Receiver<LuaMsg>) {
             Ok(LuaMsg::CallEvent {
                 event_name,
                 payload_json,
+                timeout_ms,
                 reply,
             }) => {
-                let res = run_with_timeout(lua, &deadline, DEFAULT_TIMEOUT_MS, || {
-                    call_lua_event(lua, &event_name, &payload_json)
-                });
+                let res = run_with_timeout(
+                    lua,
+                    &deadline,
+                    timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS),
+                    || call_lua_event(lua, &event_name, &payload_json),
+                );
                 let _ = reply.send(res);
             }
             Ok(LuaMsg::InvokeCommand { name, args, reply }) => {

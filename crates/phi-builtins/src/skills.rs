@@ -98,6 +98,7 @@ impl Extension for SkillsExtension {
         let skills = discover_skills(&self.cwd, &self.extra_paths, self.include_project);
         let block = (!skills.is_empty()).then(|| available_skills_block(&skills));
         host.subscribe(EventHandlerRegistration {
+            timeout: None,
             event: EventKind::BeforeAgentStart,
             label: "phi:skills".to_owned(),
             handler: Arc::new(move |_event| {

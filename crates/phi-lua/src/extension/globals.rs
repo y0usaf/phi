@@ -3,6 +3,7 @@ pub(super) fn setup_phi_global(lua: &mlua::Lua) -> mlua::Result<()> {
 
     // Empty tables used by phi.*  methods
     let phi_handlers = lua.create_table()?;
+    let phi_event_opts = lua.create_table()?;
     let phi_registered_events = lua.create_table()?;
     let phi_commands = lua.create_table()?;
     let phi_registered_commands = lua.create_table()?;
@@ -28,6 +29,7 @@ pub(super) fn setup_phi_global(lua: &mlua::Lua) -> mlua::Result<()> {
     let phi_registered_overlays = lua.create_table()?;
     let phi_overlay_instances = lua.create_table()?;
     globals.set("_phi_handlers", phi_handlers)?;
+    globals.set("_phi_event_opts", phi_event_opts)?;
     globals.set("_phi_registered_events", phi_registered_events)?;
     globals.set("_phi_commands", phi_commands)?;
     globals.set("_phi_registered_commands", phi_registered_commands)?;
@@ -62,16 +64,26 @@ pub(super) fn setup_phi_global(lua: &mlua::Lua) -> mlua::Result<()> {
     // Build the phi table
     let phi = lua.create_table()?;
 
-    // phi.on(event_name, handler)
-    let on_fn = lua.create_function(|lua, (event_name, handler): (String, mlua::Function)| {
-        let globals = lua.globals();
-        let handlers: mlua::Table = globals.get("_phi_handlers")?;
-        handlers.set(event_name.as_str(), handler)?;
-        let reg: mlua::Table = globals.get("_phi_registered_events")?;
-        let len = reg.raw_len();
-        reg.raw_set(len + 1, event_name)?;
-        Ok(())
-    })?;
+    // phi.on(event_name, handler [, opts])
+    // opts: { timeout = seconds } — raises this handler's dispatch watchdog
+    // budget above the per-kind default. Needed by handlers that block on
+    // phi.ui.ask (a timed-out interception handler contributes nothing, so
+    // e.g. a gated tool would proceed).
+    let on_fn = lua.create_function(
+        |lua, (event_name, handler, opts): (String, mlua::Function, Option<mlua::Table>)| {
+            let globals = lua.globals();
+            let handlers: mlua::Table = globals.get("_phi_handlers")?;
+            handlers.set(event_name.as_str(), handler)?;
+            if let Some(opts) = opts {
+                let opts_table: mlua::Table = globals.get("_phi_event_opts")?;
+                opts_table.set(event_name.as_str(), opts)?;
+            }
+            let reg: mlua::Table = globals.get("_phi_registered_events")?;
+            let len = reg.raw_len();
+            reg.raw_set(len + 1, event_name)?;
+            Ok(())
+        },
+    )?;
     phi.set("on", on_fn)?;
 
     // phi.register_command(name, opts)
@@ -269,5 +281,84 @@ pub(super) fn setup_phi_global(lua: &mlua::Lua) -> mlua::Result<()> {
     phi.set("register_overlay", register_overlay_fn)?;
 
     globals.set("phi", phi)?;
+    Ok(())
+}
+
+/// Attach `phi.ui` — the ask-the-user namespace (pi's `ctx.ui` analog),
+/// backed by the runtime's late-bound [`phi_ext::UiHandle`]. Separate from
+/// [`setup_phi_global`] because it needs the registration host.
+///
+/// - `phi.ui.has_ui()` → whether an interactive host is connected.
+/// - `phi.ui.ask{ title, body, options = { "Allow", { label = "Deny",
+///   detail = "..." } }, wait = seconds (default 300) }` → blocks the Lua
+///   thread (event/command handling for this extension queues behind it) and
+///   returns `index, outcome`: a 1-based option index with outcome
+///   `"answer"`, or `nil` with `"dismissed"` / `"no_ui"` / `"timeout"`.
+///   Pair a blocking ask with a `phi.on` `timeout` above `wait`, otherwise
+///   the dispatch watchdog stops waiting first.
+pub(super) fn attach_ui_namespace(lua: &mlua::Lua, ui: phi_ext::UiHandle) -> mlua::Result<()> {
+    use std::time::Duration;
+
+    let phi: mlua::Table = lua.globals().get("phi")?;
+    let ui_table = lua.create_table()?;
+
+    let ui_has = ui.clone();
+    ui_table.set(
+        "has_ui",
+        lua.create_function(move |_, ()| Ok(ui_has.has_ui()))?,
+    )?;
+
+    ui_table.set(
+        "ask",
+        lua.create_function(move |_, opts: mlua::Table| {
+            let title: String = opts.get("title").unwrap_or_default();
+            let body: String = opts.get("body").unwrap_or_default();
+            let mut options = Vec::new();
+            if let Ok(Some(t)) = opts.get::<Option<mlua::Table>>("options") {
+                for i in 1..=t.raw_len() {
+                    match t.get::<mlua::Value>(i)? {
+                        mlua::Value::String(s) => {
+                            options.push(phi_ext::UiPromptOption::new(s.to_str()?.to_owned()));
+                        }
+                        mlua::Value::Table(o) => {
+                            let label: String = o.get("label").unwrap_or_default();
+                            let mut option = phi_ext::UiPromptOption::new(label);
+                            if let Ok(Some(detail)) = o.get::<Option<String>>("detail") {
+                                option = option.with_detail(detail);
+                            }
+                            options.push(option);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            if options.is_empty() {
+                return Err(mlua::Error::runtime(
+                    "phi.ui.ask requires a non-empty `options` array",
+                ));
+            }
+            let wait = opts
+                .get::<Option<f64>>("wait")
+                .ok()
+                .flatten()
+                .unwrap_or(300.0);
+            let outcome = ui.ask(
+                phi_ext::UiPrompt {
+                    title,
+                    body,
+                    options,
+                },
+                Duration::from_secs_f64(wait.max(0.0)),
+            );
+            Ok(match outcome {
+                phi_ext::UiAskOutcome::Answer(i) => (Some(i + 1), "answer"),
+                phi_ext::UiAskOutcome::Dismissed => (None, "dismissed"),
+                phi_ext::UiAskOutcome::NoUi => (None, "no_ui"),
+                phi_ext::UiAskOutcome::TimedOut => (None, "timeout"),
+            })
+        })?,
+    )?;
+
+    phi.set("ui", ui_table)?;
     Ok(())
 }

@@ -111,6 +111,7 @@ impl Extension for McpExtension {
         if let Some(block) = &self.prompt_block {
             let block = block.clone();
             host.subscribe(EventHandlerRegistration {
+                timeout: None,
                 event: EventKind::BeforeAgentStart,
                 label: "phi:mcp".to_owned(),
                 handler: Arc::new(move |_event| {

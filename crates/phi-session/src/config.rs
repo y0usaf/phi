@@ -87,6 +87,12 @@ shared_fields_struct! {
         /// definitions alongside their REPL exposure. Default off pending
         /// measurement — consumed by the builtin, not by core.
         pub coding_tools_native: Option<bool>,
+        /// Tool approval gate (WS7.2). Consumed by the builtin approvals
+        /// extension, not by core — core keeps pi's no-permission-theater
+        /// stance. Like `mcp`, the project layer is trust-gated
+        /// ([`Config::load_approvals`]): a cloned repo must not be able to
+        /// weaken the gate with its own allow rules.
+        pub approvals: Option<ApprovalsConfig>,
     }
 }
 
@@ -131,6 +137,46 @@ pub struct McpServerConfig {
     pub timeout: Option<u64>,
     /// Tool surface: "repl" (default), "native", or "both" (WS9.3a).
     pub expose: Option<String>,
+}
+
+/// Tool approval gate configuration (WS7.2), consumed by the builtin
+/// approvals extension. When enabled, tool calls are evaluated against an
+/// ordered ruleset — builtin defaults (ask on `repl`/`bash`/`write_file`/
+/// `edit_file`), then these config rules, then rules persisted from "always
+/// allow" answers, then session-scoped answers — and the **last** matching
+/// rule wins (opencode's semantics). Unmatched calls proceed.
+///
+/// ```lua
+/// approvals = {
+///   enabled = true,
+///   rules = {
+///     { tool = "bash", pattern = "git *", action = "allow" },
+///     { tool = "repl", action = "allow" },
+///     { tool = "*", action = "ask" },
+///   },
+/// }
+/// ```
+#[derive(Debug, Default, Clone, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct ApprovalsConfig {
+    pub enabled: Option<bool>,
+    /// Ordered rules, evaluated after the builtin defaults; last match wins.
+    pub rules: Option<Vec<ApprovalRuleConfig>>,
+}
+
+/// One approval rule. Patterns are simple wildcards (`*` any run, `?` one
+/// char) matched against the call's subject: the shell command for `bash`,
+/// the path for `write_file`/`edit_file`, the code for `repl`, and the
+/// compact JSON args for anything else.
+#[derive(Debug, Default, Clone, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct ApprovalRuleConfig {
+    /// Tool name the rule applies to; `"*"` matches every tool.
+    pub tool: Option<String>,
+    /// Subject pattern; absent means `"*"`.
+    pub pattern: Option<String>,
+    /// `"allow"`, `"deny"`, or `"ask"`.
+    pub action: Option<String>,
 }
 
 /// Tool display configuration: how many output lines to show per tool card,
@@ -190,6 +236,20 @@ impl Config {
         }
         config.overlay(Self::read(&cwd.join(".phi").join("config.lua"))?);
         Ok(config)
+    }
+
+    /// Approvals config, with the project layer trust-gated like `mcp`: a
+    /// cloned repo's `.phi/config.lua` must not weaken the gate with its own
+    /// allow rules before the user trusts the project.
+    pub fn load_approvals(cwd: &Path, include_project: bool) -> Result<ApprovalsConfig> {
+        let mut config = Self::default();
+        if let Some(dirs) = directories::ProjectDirs::from("", "", "phi") {
+            config.overlay(Self::read(&dirs.config_dir().join("config.lua"))?);
+        }
+        if include_project {
+            config.overlay(Self::read(&cwd.join(".phi").join("config.lua"))?);
+        }
+        Ok(config.approvals.unwrap_or_default())
     }
 
     /// MCP server configs, with the project layer trust-gated: the global
@@ -268,6 +328,17 @@ impl Config {
         // same-named global entry wholesale, others coexist.
         if let Some(other_mcp) = other.mcp {
             self.mcp.get_or_insert_with(BTreeMap::new).extend(other_mcp);
+        }
+        // Approvals: `enabled` overrides; rules append (global first, then
+        // project), preserving evaluation order under last-match-wins.
+        if let Some(other_approvals) = other.approvals {
+            let approvals = self.approvals.get_or_insert_with(ApprovalsConfig::default);
+            if other_approvals.enabled.is_some() {
+                approvals.enabled = other_approvals.enabled;
+            }
+            if let Some(rules) = other_approvals.rules {
+                approvals.rules.get_or_insert_with(Vec::new).extend(rules);
+            }
         }
         if let Some(other_mux) = other.mux {
             let mux = self.mux.get_or_insert_with(MuxConfig::default);
@@ -610,5 +681,64 @@ mod tests {
         assert_eq!(global.tools.as_ref().unwrap().tool_max_lines, Some(0));
         assert_eq!(global.tools.as_ref().unwrap().tool_padding, Some(1));
         assert_eq!(global.tools.as_ref().unwrap().gap, Some(0));
+    }
+
+    #[test]
+    fn approvals_table_parses_and_rejects_unknown_keys() {
+        let config = eval(
+            "return { approvals = { enabled = true, rules = {\n\
+               { tool = \"bash\", pattern = \"git *\", action = \"allow\" },\n\
+               { tool = \"repl\", action = \"ask\" },\n\
+             } } }",
+        )
+        .unwrap();
+        let approvals = config.approvals.unwrap();
+        assert_eq!(approvals.enabled, Some(true));
+        let rules = approvals.rules.unwrap();
+        assert_eq!(rules.len(), 2);
+        assert_eq!(rules[0].tool.as_deref(), Some("bash"));
+        assert_eq!(rules[0].pattern.as_deref(), Some("git *"));
+        assert_eq!(rules[0].action.as_deref(), Some("allow"));
+        assert_eq!(rules[1].pattern, None);
+
+        assert!(eval("return { approvals = { enabld = true } }").is_err());
+    }
+
+    #[test]
+    fn approvals_overlay_appends_project_rules() {
+        let mut global = eval(
+            "return { approvals = { enabled = true, rules = {\n\
+               { tool = \"bash\", action = \"ask\" } } } }",
+        )
+        .unwrap();
+        let project = eval(
+            "return { approvals = { rules = {\n\
+               { tool = \"bash\", pattern = \"git *\", action = \"allow\" } } } }",
+        )
+        .unwrap();
+        global.overlay(project);
+        let approvals = global.approvals.unwrap();
+        // enabled survives; project rules land after global ones, so they
+        // win under last-match-wins.
+        assert_eq!(approvals.enabled, Some(true));
+        let rules = approvals.rules.unwrap();
+        assert_eq!(rules.len(), 2);
+        assert_eq!(rules[1].pattern.as_deref(), Some("git *"));
+    }
+
+    #[test]
+    fn load_approvals_gates_project_layer_on_trust() {
+        let dir = tempfile::tempdir().unwrap();
+        let phi = dir.path().join(".phi");
+        std::fs::create_dir_all(&phi).unwrap();
+        std::fs::write(
+            phi.join("config.lua"),
+            "return { approvals = { rules = { { tool = \"*\", action = \"allow\" } } } }",
+        )
+        .unwrap();
+        let untrusted = Config::load_approvals(dir.path(), false).unwrap();
+        assert!(untrusted.rules.unwrap_or_default().is_empty());
+        let trusted = Config::load_approvals(dir.path(), true).unwrap();
+        assert_eq!(trusted.rules.unwrap().len(), 1);
     }
 }
