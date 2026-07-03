@@ -156,7 +156,7 @@ pub fn shimmer_triangle_intensity(elapsed_ms: u64, slot: usize) -> u8 {
 /// Convenience: `intensity * SHIMMER_TRIANGLE_BLEND`, clamped to 255.
 #[inline]
 pub fn shimmer_triangle_blend(intensity: u8) -> u8 {
-    (intensity.saturating_mul(SHIMMER_TRIANGLE_BLEND)).min(255)
+    intensity.saturating_mul(SHIMMER_TRIANGLE_BLEND)
 }
 
 /// Backward-compat alias for `SHIMMER_FRAME_MS`.
@@ -614,8 +614,8 @@ mod tests {
         assert_eq!(shimmer_triangle_blend(12), 252);
         // Zero intensity → zero blend.
         assert_eq!(shimmer_triangle_blend(0), 0);
-        // Never exceeds 255.
-        assert!(shimmer_triangle_blend(255) <= 255);
+        // Saturates at the u8 maximum instead of overflowing.
+        assert_eq!(shimmer_triangle_blend(255), 255);
     }
 
     #[test]
