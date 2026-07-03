@@ -16,7 +16,7 @@ use phi_tui::{AnimationClock, RawModeGuard};
 use tokio::sync::mpsc;
 
 use super::command_line::{CommandLineEvent, CommandLineState, command_line_start_col};
-use super::ui::overlays::archive::{ArchiveOutcome, ArchiveViewerState, render_archive_viewer};
+use super::ui::overlays::archive::{ArchiveOutcome, render_archive_viewer};
 use super::ui::palette::ScenePalette;
 use super::ui::scene::{Chrome, MuxMode, StatusNoteKind, render_scene, statusline_status};
 use super::ui::screen_snapshot::ScreenSnapshot;
@@ -31,7 +31,7 @@ use crate::grid::ansi::HardwareCursor;
 use crate::grid::layout::{CellLayout, SIDEBAR_WIDTH_DEFAULT, compute_cell_layout};
 use crate::grid::selection::{SelectionPoint, selected_text};
 use crate::grid::theme;
-use crate::keys::{AppAction, KeyStroke, Keymap, KeymapMatch, MuxCommand, parse_command};
+use crate::keys::{AppAction, KeyStroke, Keymap, KeymapMatch};
 use crate::persisted::{self as persisted, PersistedState};
 use crate::remote::protocol::ServerMsg;
 use crate::remote::server::{AttachInfo, ClientRegistry, RemoteEvent};
@@ -468,6 +468,7 @@ fn build_visual_runtime(cwd: &std::path::Path) -> Option<Arc<AppRuntime>> {
     {
         rt_builder = rt_builder.register_extension(phi_builtins::DefaultVisualExtension);
         rt_builder = rt_builder.register_extension(phi_builtins::DefaultOverlayExtension);
+        rt_builder = rt_builder.register_extension(phi_builtins::MuxCommandsExtension);
     }
     for ext in config_exts {
         rt_builder = rt_builder.register_boxed_extension(ext);

@@ -380,6 +380,8 @@ impl phi_ext::Extension for LuaExtension {
                     })
                 }),
                 arg_completions: None,
+                context: phi_ext::CommandContext::Session,
+                aliases: Vec::new(),
             })?;
         }
 

@@ -19,8 +19,8 @@ pub mod visual;
 
 pub use builder::RuntimeBuilder;
 pub use command::{
-    ArgCompletionFn, CommandHandler, CommandInfo, CommandInvocation, CommandOutput, CommandSpec,
-    PickerKind, UiAction,
+    ArgCompletionFn, CommandContext, CommandHandler, CommandInfo, CommandInvocation, CommandOutput,
+    CommandSpec, PickerKind, UiAction,
 };
 pub use draw_context::{
     DrawContext, DrawRect, DrawSize, OverlayKey, OverlayKeyCode, OverlayKeyModifiers,
@@ -34,7 +34,8 @@ pub use flag::{FlagSpec, FlagType};
 pub use manifest::ExtensionManifest;
 pub use message_renderer::MessageRendererSpec;
 pub use overlay_spec::{
-    HelpEntry, HelpPayload, ModelPickerPayload, OVERLAY_HELP, OVERLAY_MODEL, OVERLAY_USAGE,
+    HelpEntry, HelpPayload, ModelPickerPayload, OVERLAY_ARCHIVE, OVERLAY_HELP, OVERLAY_MODEL,
+    OVERLAY_USAGE,
     OverlayInitFn, OverlayKeyFn, OverlayOutcome, OverlayPayload, OverlayRenderFn, OverlayResponder,
     OverlayScrollFn, OverlaySpec, OverlayState,
 };
@@ -137,6 +138,8 @@ mod tests {
             args_hint: String::new(),
             handler: std::sync::Arc::new(|_inv| Ok(CommandOutput::default())),
             arg_completions: None,
+            context: CommandContext::Session,
+            aliases: Vec::new(),
         };
         let json = serde_json::to_value(&spec).unwrap();
         assert_eq!(json["name"], "test-cmd");

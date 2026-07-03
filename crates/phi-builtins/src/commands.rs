@@ -6,8 +6,8 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use phi_ext::{
-    ArgCompletionFn, CommandInvocation, CommandOutput, CommandSpec, Extension, ExtensionHost,
-    ExtensionManifest, PickerKind, UiAction,
+    ArgCompletionFn, CommandContext, CommandInvocation, CommandOutput, CommandSpec, Extension,
+    ExtensionHost, ExtensionManifest, PickerKind, UiAction,
 };
 
 /// OAuth providers offered by `/login` and `/logout` completion. Must match
@@ -38,6 +38,8 @@ fn command(
         description: description.to_owned(),
         handler: Arc::new(handler),
         arg_completions: None,
+        context: CommandContext::Session,
+        aliases: Vec::new(),
     }
 }
 

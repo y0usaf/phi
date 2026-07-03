@@ -350,6 +350,10 @@ impl Ui {
             UiAction::StartLogin { provider } => self.start_login(&provider),
             UiAction::Logout { provider } => self.logout(&provider),
             UiAction::TrustProject { trusted } => self.set_project_trust(trusted),
+            // Mux-host-owned effects: session commands never emit these.
+            UiAction::OpenProject(_) | UiAction::RunHostAction { .. } => {
+                self.push_bar(0, "command action not supported in session".to_owned());
+            }
         }
         false
     }

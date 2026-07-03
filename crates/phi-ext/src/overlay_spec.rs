@@ -49,6 +49,7 @@ pub type OverlayScrollFn = Arc<dyn Fn(&mut OverlayState, i32, u16, u16) + Send +
 pub const OVERLAY_USAGE: &str = "phi:usage";
 pub const OVERLAY_MODEL: &str = "phi:model";
 pub const OVERLAY_HELP: &str = "phi:help";
+pub const OVERLAY_ARCHIVE: &str = "phi:archive";
 
 /// Outcome of processing a key event in an overlay.
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -1,7 +1,8 @@
 use std::collections::BTreeMap;
 
 use crate::{
-    CommandSpec, EventHandlerRegistration, ExtensionHost, FlagSpec, MessageRendererSpec,
+    CommandContext, CommandSpec, EventHandlerRegistration, ExtensionHost, FlagSpec,
+    MessageRendererSpec,
     OverlaySpec, ProviderConfig, ShortcutSpec, SpinnerSpec, TextEffectSpec, ThemeSpec,
     ThinkingExpressionSpec, ToolSpec,
 };
@@ -10,7 +11,7 @@ use anyhow::{Result, bail};
 #[derive(Default)]
 pub(crate) struct RegistryHost {
     pub(crate) tools: BTreeMap<String, ToolSpec>,
-    pub(crate) commands: BTreeMap<String, CommandSpec>,
+    pub(crate) commands: BTreeMap<(CommandContext, String), CommandSpec>,
     pub(crate) shortcuts: Vec<ShortcutSpec>,
     pub(crate) flags: BTreeMap<String, FlagSpec>,
     pub(crate) event_handlers: Vec<EventHandlerRegistration>,
@@ -39,8 +40,10 @@ impl ExtensionHost for RegistryHost {
 
     fn register_command(&mut self, command: CommandSpec) -> Result<()> {
         use std::collections::btree_map::Entry;
-        let name = command.name.clone();
-        match self.commands.entry(name) {
+        // Keyed by (context, name): the same name may register in different
+        // contexts (session `/quit` vs mux `:quit`) without colliding.
+        let key = (command.context, command.name.clone());
+        match self.commands.entry(key) {
             Entry::Vacant(v) => {
                 v.insert(command);
                 Ok(())

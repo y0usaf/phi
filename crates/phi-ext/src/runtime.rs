@@ -6,7 +6,8 @@ use std::time::Duration;
 use tokio::sync::Mutex as TokioMutex;
 
 use crate::{
-    CommandInvocation, CommandOutput, CommandSpec, EventHandlerRegistration, EventKind,
+    CommandContext, CommandInvocation, CommandOutput, CommandSpec, EventHandlerRegistration,
+    EventKind,
     EventPayload, EventReturn, ExtensionContextRef, ExtensionManifest, ExtensionMode, FlagSpec,
     LifecycleEvent, MessageRendererSpec, OverlaySpec, ProviderConfig, ShortcutSpec, SpinnerSpec,
     TextEffectSpec, ThemeSpec, ThinkingExpressionSpec, ToolSpec,
@@ -24,7 +25,9 @@ pub struct AppRuntime {
     session_id: String,
     extensions: Vec<ExtensionManifest>,
     pub(crate) tools: BTreeMap<String, ToolSpec>,
-    pub(crate) commands: BTreeMap<String, CommandSpec>,
+    /// Keyed by `(context, name)`: the same name may exist in different
+    /// contexts (session `/quit` vs mux `:quit`) without colliding.
+    pub(crate) commands: BTreeMap<(CommandContext, String), CommandSpec>,
     pub(crate) shortcuts: Vec<ShortcutSpec>,
     pub(crate) flags: BTreeMap<String, FlagSpec>,
     pub(crate) event_handlers: Vec<EventHandlerRegistration>,
@@ -96,7 +99,7 @@ impl AppRuntime {
         session_id: String,
         extensions: Vec<ExtensionManifest>,
         tools: BTreeMap<String, ToolSpec>,
-        commands: BTreeMap<String, CommandSpec>,
+        commands: BTreeMap<(CommandContext, String), CommandSpec>,
         shortcuts: Vec<ShortcutSpec>,
         flags: BTreeMap<String, FlagSpec>,
         event_handlers: Vec<EventHandlerRegistration>,
@@ -987,17 +990,42 @@ impl AppRuntime {
 
     // ── Commands ──────────────────────────────────────────────────────────────
 
-    pub fn list_extension_commands(&self) -> Vec<(String, String)> {
+    /// Look up a command in `context` by primary name, falling back to an
+    /// exact alias match within the same context.
+    fn command_in(&self, context: CommandContext, name: &str) -> Option<&CommandSpec> {
+        if let Some(cmd) = self.commands.get(&(context, name.to_owned())) {
+            return Some(cmd);
+        }
         self.commands
             .values()
+            .find(|c| c.context == context && c.aliases.iter().any(|a| a == name))
+    }
+
+    /// Session-context commands only: `values()` in a given context. Existing
+    /// callers (session TUI) keep seeing only `Session`-context commands.
+    fn session_commands(&self) -> impl Iterator<Item = &CommandSpec> {
+        self.commands
+            .values()
+            .filter(|c| c.context == CommandContext::Session)
+    }
+
+    pub fn list_extension_commands(&self) -> Vec<(String, String)> {
+        self.session_commands()
             .map(|c| (c.name.clone(), c.description.clone()))
             .collect()
     }
 
-    /// Registry listing for completion popups and help output.
+    /// Registry listing for completion popups and help output
+    /// (Session-context commands only; aliases are not listed).
     pub fn list_commands(&self) -> Vec<crate::CommandInfo> {
+        self.list_commands_in(CommandContext::Session)
+    }
+
+    /// Registry listing for one context (aliases are not listed).
+    pub fn list_commands_in(&self, context: CommandContext) -> Vec<crate::CommandInfo> {
         self.commands
             .values()
+            .filter(|c| c.context == context)
             .map(|c| crate::CommandInfo {
                 name: c.name.clone(),
                 args_hint: c.args_hint.clone(),
@@ -1006,11 +1034,10 @@ impl AppRuntime {
             .collect()
     }
 
-    /// First-argument completion candidates for a registered command, if the
-    /// command declared a completion source.
+    /// First-argument completion candidates for a registered Session-context
+    /// command, if the command declared a completion source.
     pub fn complete_command_arg(&self, name: &str) -> Option<Vec<String>> {
-        self.commands
-            .get(name)?
+        self.command_in(CommandContext::Session, name)?
             .arg_completions
             .as_ref()
             .map(|f| f())
@@ -1019,16 +1046,28 @@ impl AppRuntime {
     /// Invoke a command handler synchronously on the calling thread. The TUI
     /// uses this from its input path: handlers are expected to be quick (they
     /// return declarative `UiAction`s rather than doing UI work) and slow
-    /// bridges (Lua) bound their own channel waits.
+    /// bridges (Lua) bound their own channel waits. Session context only.
     pub fn invoke_command_sync(&self, name: &str, raw_args: &str) -> Result<Option<CommandOutput>> {
-        let Some(cmd) = self.commands.get(name) else {
+        self.invoke_command_sync_in(CommandContext::Session, name, raw_args)
+            .map_err(|e| anyhow!("command '{name}': {e}"))
+    }
+
+    /// Like [`Self::invoke_command_sync`] but for an explicit context;
+    /// resolves aliases within that context. Handler errors are returned
+    /// verbatim (no `command '{name}':` wrap) so hosts control presentation.
+    pub fn invoke_command_sync_in(
+        &self,
+        context: CommandContext,
+        name: &str,
+        raw_args: &str,
+    ) -> Result<Option<CommandOutput>> {
+        let Some(cmd) = self.command_in(context, name) else {
             return Ok(None);
         };
         (cmd.handler)(CommandInvocation {
             raw_args: raw_args.to_owned(),
         })
         .map(Some)
-        .map_err(|e| anyhow!("command '{name}': {e}"))
     }
 
     pub async fn invoke_command(
@@ -1036,7 +1075,7 @@ impl AppRuntime {
         name: &str,
         raw_args: &str,
     ) -> Result<Option<CommandOutput>> {
-        let Some(cmd) = self.commands.get(name) else {
+        let Some(cmd) = self.command_in(CommandContext::Session, name) else {
             return Ok(None);
         };
         let h = cmd.handler.clone();

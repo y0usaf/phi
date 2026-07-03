@@ -3,6 +3,20 @@ use std::sync::Arc;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
+/// Which frontend surface a command belongs to. Context-tags commands so the
+/// mux `:` command line only completes/dispatches `Mux`-context commands and
+/// the session TUI's `/` command line only `Session`-context ones.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
+pub enum CommandContext {
+    /// Session TUI slash commands (`/model`, `/login`, ...). The default.
+    #[default]
+    Session,
+    /// Mux colon commands (`:open`, `:quit`, ...).
+    Mux,
+}
+
 /// A slash command contributed through the extension API. Built-in commands
 /// register through this same spec from `phi-builtins` — there is no separate
 /// built-in command path.
@@ -19,6 +33,11 @@ pub struct CommandSpec {
     /// the frontend when the user types `/name <prefix>`.
     #[serde(skip_serializing)]
     pub arg_completions: Option<ArgCompletionFn>,
+    /// Which frontend surface dispatches this command.
+    pub context: CommandContext,
+    /// Alternative names resolved by the registry within the same context.
+    /// Kept out of primary listings (completion, help).
+    pub aliases: Vec<String>,
 }
 
 pub type ArgCompletionFn = Arc<dyn Fn() -> Vec<String> + Send + Sync>;
@@ -70,6 +89,13 @@ pub enum UiAction {
     /// Persist a project-trust decision for the current project. Takes
     /// effect for project-local extensions on the next session build.
     TrustProject { trusted: bool },
+    /// Add the directory as a project in the mux sidebar and focus it — a
+    /// genuinely mux-host-owned effect (workspace/project management).
+    OpenProject(std::path::PathBuf),
+    /// Generic namespaced host action, a mux-host-owned effect: the host maps
+    /// known names (e.g. `"refresh"`, `"session-next"`) onto its own
+    /// behaviors; unknown names produce an error note.
+    RunHostAction { name: String },
 }
 
 /// Pickers a frontend is expected to provide. Only genuinely host-owned

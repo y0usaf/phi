@@ -162,8 +162,15 @@ impl MuxApp {
     }
 
     pub(crate) fn toggle_help_overlay(&mut self, vid: u64) {
+        // Registry-driven command listing: Mux-context commands from the
+        // visual runtime (empty without one, e.g. a bare-core build).
+        let commands = self
+            .visual_runtime
+            .as_ref()
+            .map(|rt| rt.list_commands_in(phi_ext::CommandContext::Mux))
+            .unwrap_or_default();
         let payload = phi_ext::HelpPayload {
-            entries: help_entries(&self.keymap),
+            entries: help_entries(&self.keymap, &commands),
         };
         self.toggle_extension_overlay(vid, phi_ext::OVERLAY_HELP, Some(Box::new(payload)));
     }
@@ -326,61 +333,138 @@ impl MuxApp {
         }
     }
 
+    /// Dispatch a `:` command line through the `CommandSpec` registry
+    /// (Mux-context commands, aliases included) and interpret the returned
+    /// declarative `UiAction`s as host effects.
     pub(crate) async fn run_command_input(&mut self, vid: u64, input: &str) {
         let input = input.trim();
         if input.is_empty() {
             return;
         }
-        match parse_command(input) {
-            Ok(MuxCommand::Open(path)) => {
-                // In daemon mode a relative path would resolve against the
-                // daemon's own cwd; resolve against the typing client's cwd
-                // (carried in its Attach handshake) instead.
-                let path = if path.is_relative() {
-                    self.registry()
-                        .and_then(|r| r.client_cwd(vid))
-                        .map(|base| base.join(&path))
-                        .unwrap_or(path)
-                } else {
-                    path
-                };
-                if path.is_dir() {
-                    let path = PathBuf::from(persisted::normalize_path(&path));
-                    let index = self.workspace.add_project(path);
-                    if let Some(view) = self.views.get_mut(&vid) {
-                        view.focus.project = index;
+        let input = input.strip_prefix(':').unwrap_or(input).trim();
+        if input.is_empty() {
+            self.set_note_on(vid, "empty command", StatusNoteKind::Error);
+            return;
+        }
+        let name_end = input.find(char::is_whitespace).unwrap_or(input.len());
+        let name = input[..name_end].to_ascii_lowercase();
+        let args = input[name_end..].trim();
+        let result = self.visual_runtime.as_ref().map(|rt| {
+            rt.invoke_command_sync_in(phi_ext::CommandContext::Mux, &name, args)
+        });
+        let output = match result {
+            None | Some(Ok(None)) => {
+                self.set_note_on(vid, format!("unknown command: :{name}"), StatusNoteKind::Error);
+                return;
+            }
+            Some(Err(error)) => {
+                // Handler errors carry user-facing text (e.g. the `:open`
+                // usage strings) — surface them verbatim.
+                self.set_note_on(vid, format!("{error:#}"), StatusNoteKind::Error);
+                return;
+            }
+            Some(Ok(Some(output))) => output,
+        };
+        if let Some(message) = output.message {
+            self.set_note_on(vid, message, StatusNoteKind::Ok);
+        }
+        for action in output.actions {
+            self.apply_mux_ui_action(vid, action).await;
+        }
+    }
+
+    /// Interpret one declarative [`phi_ext::UiAction`] returned by a
+    /// Mux-context command handler.
+    async fn apply_mux_ui_action(&mut self, vid: u64, action: phi_ext::UiAction) {
+        use phi_ext::UiAction;
+        match action {
+            UiAction::Quit => self.quit = true,
+            UiAction::OpenProject(path) => self.open_project_path(vid, path),
+            UiAction::OpenOverlay { name, payload } => match name.as_str() {
+                phi_ext::OVERLAY_HELP => self.toggle_help_overlay(vid),
+                phi_ext::OVERLAY_USAGE => self.open_usage_overlay(vid),
+                _ => {
+                    let payload =
+                        payload.map(|value| Box::new(value) as phi_ext::OverlayPayload);
+                    if !self.open_extension_overlay(vid, &name, payload) {
+                        self.set_note_on(
+                            vid,
+                            format!("overlay {name} not available"),
+                            StatusNoteKind::Error,
+                        );
                     }
-                    self.workspace.ensure_project_session(index);
-                    self.sync_watchers();
-                    self.on_focus_changed(vid);
-                } else {
+                }
+            },
+            UiAction::RunHostAction { name } => match name.as_str() {
+                "cleanup" => match workspace::cleanup_archive(ARCHIVE_MAX_AGE) {
+                    Ok(count) => {
+                        self.set_note_on(
+                            vid,
+                            format!("{count} archives removed"),
+                            StatusNoteKind::Ok,
+                        );
+                    }
+                    Err(error) => {
+                        self.set_note_on(vid, format!("cleanup: {error:#}"), StatusNoteKind::Error);
+                    }
+                },
+                "refresh" => self.run_action(vid, AppAction::RefreshSession).await,
+                "reload" => self.run_action(vid, AppAction::RefreshAllSessions).await,
+                "session-prev" => self.run_action(vid, AppAction::PreviousSession).await,
+                "session-next" => self.run_action(vid, AppAction::NextSession).await,
+                "project-prev" => self.run_action(vid, AppAction::PreviousProject).await,
+                "project-next" => self.run_action(vid, AppAction::NextProject).await,
+                _ => {
                     self.set_note_on(
                         vid,
-                        format!("not a directory: {}", path.display()),
+                        format!("unknown host action: {name}"),
                         StatusNoteKind::Error,
                     );
                 }
-            }
-            Ok(MuxCommand::Archive) => {
-                if let Some(view) = self.views.get_mut(&vid) {
-                    view.archive_viewer = Some(ArchiveViewerState::load());
-                }
-            }
-            Ok(MuxCommand::Cleanup) => match workspace::cleanup_archive(ARCHIVE_MAX_AGE) {
-                Ok(count) => {
-                    self.set_note_on(vid, format!("{count} archives removed"), StatusNoteKind::Ok);
-                }
-                Err(error) => {
-                    self.set_note_on(vid, format!("cleanup: {error:#}"), StatusNoteKind::Error);
-                }
             },
-            Ok(MuxCommand::Usage) => self.open_usage_overlay(vid),
-            Ok(MuxCommand::Refresh) => self.run_action(vid, AppAction::RefreshSession).await,
-            Ok(MuxCommand::Reload) => self.run_action(vid, AppAction::RefreshAllSessions).await,
-            Ok(MuxCommand::Quit) => self.quit = true,
-            Ok(MuxCommand::Action(action)) => self.run_action(vid, action).await,
-            Ok(MuxCommand::Help) => self.toggle_help_overlay(vid),
-            Err(note) => self.set_note_on(vid, note, StatusNoteKind::Error),
+            UiAction::NewSession
+            | UiAction::OpenPicker(_)
+            | UiAction::SwitchModel { .. }
+            | UiAction::StartLogin { .. }
+            | UiAction::Logout { .. }
+            | UiAction::TrustProject { .. } => {
+                self.set_note_on(
+                    vid,
+                    "command action not supported in mux",
+                    StatusNoteKind::Error,
+                );
+            }
+        }
+    }
+
+    /// The `:open` effect: add `path` as a project and focus it. In daemon
+    /// mode a relative path would resolve against the daemon's own cwd;
+    /// resolve against the typing client's cwd (carried in its Attach
+    /// handshake) instead.
+    fn open_project_path(&mut self, vid: u64, path: PathBuf) {
+        let path = if path.is_relative() {
+            self.registry()
+                .and_then(|r| r.client_cwd(vid))
+                .map(|base| base.join(&path))
+                .unwrap_or(path)
+        } else {
+            path
+        };
+        if path.is_dir() {
+            let path = PathBuf::from(persisted::normalize_path(&path));
+            let index = self.workspace.add_project(path);
+            if let Some(view) = self.views.get_mut(&vid) {
+                view.focus.project = index;
+            }
+            self.workspace.ensure_project_session(index);
+            self.sync_watchers();
+            self.on_focus_changed(vid);
+        } else {
+            self.set_note_on(
+                vid,
+                format!("not a directory: {}", path.display()),
+                StatusNoteKind::Error,
+            );
         }
     }
 
@@ -534,10 +618,11 @@ impl MuxApp {
     }
 }
 
-/// Build the help overlay's content from the live keymap. The content is
-/// host data (mux commands + current keybindings); the overlay itself is
-/// registered by `phi-builtins` and renders whatever entries it's handed.
-fn help_entries(keymap: &Keymap) -> Vec<phi_ext::HelpEntry> {
+/// Build the help overlay's content from the live keymap and the registered
+/// Mux-context commands. The content is host data (mux commands + current
+/// keybindings); the overlay itself is registered by `phi-builtins` and
+/// renders whatever entries it's handed.
+fn help_entries(keymap: &Keymap, commands: &[phi_ext::CommandInfo]) -> Vec<phi_ext::HelpEntry> {
     use phi_ext::HelpEntry;
     fn item(keys: &str, description: &str) -> HelpEntry {
         HelpEntry::Item {
@@ -549,16 +634,24 @@ fn help_entries(keymap: &Keymap) -> Vec<phi_ext::HelpEntry> {
     let mut entries = vec![
         HelpEntry::Heading("Global".to_owned()),
         item("ctrl+g / :help", "toggle this help"),
-        item(":open <dir>", "open project"),
-        item(":archive", "browse archived sessions"),
-        item(":usage", "show usage totals"),
-        item(":refresh / :reload", "refresh current / all sessions"),
-        item(":up / :down", "previous / next session"),
-        item(":left / :right", "previous / next project"),
-        item(":quit / ctrl+q", "quit"),
+    ];
+
+    if !commands.is_empty() {
+        entries.extend([HelpEntry::Blank, HelpEntry::Heading("Commands".to_owned())]);
+        for cmd in commands {
+            let keys = if cmd.args_hint.is_empty() {
+                format!(":{}", cmd.name)
+            } else {
+                format!(":{} {}", cmd.name, cmd.args_hint)
+            };
+            entries.push(item(&keys, &cmd.description));
+        }
+    }
+
+    entries.extend([
         HelpEntry::Blank,
         HelpEntry::Heading("Navigation & actions".to_owned()),
-    ];
+    ]);
 
     for action in [
         AppAction::PreviousProject,
