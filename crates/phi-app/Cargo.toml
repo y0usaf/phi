@@ -13,12 +13,12 @@ anyhow.workspace = true
 clap.workspace = true
 directories.workspace = true
 phi-ai.workspace = true
-phi-builtins.workspace = true
-phi-mux.workspace = true
+phi-builtins = { workspace = true, default-features = false }
+phi-mux = { workspace = true, default-features = false }
 phi-rlm.workspace = true
 phi-tui.workspace = true
 phi-session.workspace = true
-phi-session-tui.workspace = true
+phi-session-tui = { workspace = true, default-features = false }
 serde_json.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
@@ -27,6 +27,14 @@ tikv-jemalloc-ctl = { workspace = true, optional = true }
 tikv-jemalloc-sys = { workspace = true, optional = true }
 
 [features]
+default = ["builtins"]
+# WS1.5: default-on builtin extensions. `--no-default-features` yields the
+# bare-but-functional harness (engine + REPL + plain TUI + mux shell).
+builtins = [
+    "phi-builtins/builtins",
+    "phi-session-tui/builtins",
+    "phi-mux/builtins",
+]
 jemalloc = [
     "dep:tikv-jemallocator",
     "dep:tikv-jemalloc-ctl",

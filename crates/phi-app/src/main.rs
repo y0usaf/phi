@@ -92,7 +92,9 @@ async fn async_main() -> Result<()> {
         // bundled catalog — the same set a session resolves against before
         // any user extension registers additional providers.
         let mut notices = Vec::new();
+        #[allow(unused_mut)]
         let mut extra = Vec::new();
+        #[cfg(feature = "builtins")]
         for config in phi_builtins::catalog::provider_configs() {
             extra.extend(session_builder::extension_provider_models(
                 config,

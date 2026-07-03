@@ -166,6 +166,7 @@ pub async fn build_runtime(
     // `/model` completion covers the embedded first-party models plus the
     // bundled catalog. Providers registered by user extensions still miss
     // completion (they register during the build below) — known WS3.2 gap.
+    #[cfg(feature = "builtins")]
     let model_names: Vec<String> = registry
         .supported_models()
         .map(|m| format!("{}/{}", m.provider, m.id))
@@ -178,16 +179,20 @@ pub async fn build_runtime(
     // expressions, theme), and the default slash commands. The catalog goes
     // first so a user extension re-registering a bundled provider name wins
     // (provider registration is last-write-wins), e.g. to route it through a
-    // proxy or attach an inline api_key.
-    rt_builder = rt_builder.register_extension(phi_builtins::CatalogExtension);
-    rt_builder = rt_builder.register_extension(phi_builtins::DefaultVisualExtension);
-    rt_builder =
-        rt_builder.register_extension(phi_builtins::BuiltinCommandsExtension::new(model_names));
-    rt_builder = rt_builder.register_extension(phi_builtins::SkillsExtension::new(
-        cwd,
-        settings.skills.clone(),
-        project_trusted,
-    ));
+    // proxy or attach an inline api_key. Without the `builtins` feature the
+    // bare core boots with no builtin extensions registered (WS1.5).
+    #[cfg(feature = "builtins")]
+    {
+        rt_builder = rt_builder.register_extension(phi_builtins::CatalogExtension);
+        rt_builder = rt_builder.register_extension(phi_builtins::DefaultVisualExtension);
+        rt_builder =
+            rt_builder.register_extension(phi_builtins::BuiltinCommandsExtension::new(model_names));
+        rt_builder = rt_builder.register_extension(phi_builtins::SkillsExtension::new(
+            cwd,
+            settings.skills.clone(),
+            project_trusted,
+        ));
+    }
     for ext in config_exts {
         rt_builder = rt_builder.register_boxed_extension(ext);
     }

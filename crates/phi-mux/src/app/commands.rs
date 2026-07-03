@@ -429,12 +429,16 @@ impl MuxApp {
                 // chain the bundled catalog here the same way `/model`
                 // completion does — otherwise catalog providers (neuralwatt,
                 // vercel, ...) never appear in the mux picker.
+                #[cfg(feature = "builtins")]
+                let catalog_names = phi_builtins::catalog::model_names();
+                #[cfg(not(feature = "builtins"))]
+                let catalog_names = std::iter::empty::<String>();
                 let models = self
                     .shared
                     .registry
                     .supported_models()
                     .map(|m| format!("{}/{}", m.provider, m.id))
-                    .chain(phi_builtins::catalog::model_names())
+                    .chain(catalog_names)
                     .collect::<Vec<_>>();
                 if models.is_empty() {
                     let _ = request

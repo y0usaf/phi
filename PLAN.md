@@ -271,14 +271,31 @@ API (`phi-ext`/`phi-lua`/`phi-event`), never bypass it.
       *Audit finding:* the last clause is currently false at the Cargo level —
       all three app crates hard-depend on `phi-builtins` with no feature
       gate, and there is no CI, so the doctrine ("bare core must boot") is
-      prose, not a property. Do this before more migration work:
-      - [ ] Gate builtin *extension registration* behind a cargo feature
+      prose, not a property. *Status (WS1.5 sub-items landed):* the feature
+      gate + CI check below are done, so "deleting phi-builtins from the
+      build" is now mechanical (`--no-default-features`); the parent box
+      stays open only on the WS1.7 clause (archive viewer / `:command`
+      parser). Do this before more migration work:
+      - [x] Gate builtin *extension registration* behind a cargo feature
             (default-on). The prelude splice stays unconditional —
             `phi-builtins/prelude` is core per the table above; if the
             feature split gets awkward, extract the prelude to its own
             module/crate rather than gating it.
-      - [ ] Add a builtins-less build to the flake checks so the acceptance
+            *Landed as:* `builtins` feature *inside* `phi-builtins`
+            (default-on) `#[cfg]`-gates the extension modules
+            (catalog/commands/overlays/skills/visual); the prelude module
+            stays unconditional, so `phi-builtins` remains a non-optional
+            dep everywhere. `phi-app`/`phi-session-tui`/`phi-mux` each
+            expose their own default-on `builtins` feature forwarding down
+            the dep chain, and the registration call sites are
+            `#[cfg(feature = "builtins")]` with graceful fallbacks (no
+            extensions registered, catalog model names drop out of `/model`
+            and the mux picker chains).
+      - [x] Add a builtins-less build to the flake checks so the acceptance
             criterion is CI-enforced, not re-audited by hand.
+            *Landed as:* `checks.<system>.phi-app-no-builtins` — a crane
+            `cargoBuild` of `-p phi-app --no-default-features` (build only,
+            shares `cargoArtifacts`), visible to `nix flake check`.
 - [ ] **1.6 Lua parity for commands and overlays.** The Lua bridge exposes
       only a narrow slice of what builtins use: commands can't return
       `UiAction`s (`phi-lua/src/extension/mod.rs:381-384` hardcodes

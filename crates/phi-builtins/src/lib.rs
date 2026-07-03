@@ -1,12 +1,22 @@
+#[cfg(feature = "builtins")]
 pub mod catalog;
+#[cfg(feature = "builtins")]
 pub mod commands;
+#[cfg(feature = "builtins")]
 pub mod overlays;
 pub mod prelude;
+#[cfg(feature = "builtins")]
 pub mod skills;
+#[cfg(feature = "builtins")]
 pub mod visual;
 
+#[cfg(feature = "builtins")]
 pub use catalog::CatalogExtension;
+#[cfg(feature = "builtins")]
 pub use commands::BuiltinCommandsExtension;
+#[cfg(feature = "builtins")]
 pub use overlays::DefaultOverlayExtension;
+#[cfg(feature = "builtins")]
 pub use skills::SkillsExtension;
+#[cfg(feature = "builtins")]
 pub use visual::DefaultVisualExtension;

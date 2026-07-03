@@ -11,7 +11,7 @@ futures.workspace = true
 ignore.workspace = true
 mlua.workspace = true
 phi-ai.workspace = true
-phi-builtins.workspace = true
+phi-builtins = { workspace = true, default-features = false }
 phi-ext.workspace = true
 phi-lua.workspace = true
 phi-rlm.workspace = true
@@ -22,6 +22,12 @@ serde_json.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 uuid.workspace = true
+
+[features]
+default = ["builtins"]
+# Enables the builtin extension registrations (catalog, commands, skills,
+# visual). Off = bare core: engine + REPL + plain TUI, prelude intact.
+builtins = ["phi-builtins/builtins"]
 
 [dev-dependencies]
 tempfile.workspace = true

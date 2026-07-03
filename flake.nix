@@ -99,6 +99,23 @@
           # Test every workspace member, not just phi-app.
           cargoExtraArgs = "--workspace";
         };
+
+      # WS1.5 acceptance, CI-enforced: the bare core must build with the
+      # builtin extensions compiled out. `--no-default-features` on phi-app
+      # disables the `builtins` feature chain (phi-app -> phi-session-tui /
+      # phi-mux -> phi-builtins), leaving engine + REPL + plain TUI + mux
+      # shell. Build only — cheap, no tests.
+      mkBareBuild = system:
+        let
+          c = mkCraneLib system;
+        in
+        c.craneLib.cargoBuild {
+          inherit (c) src cargoArtifacts;
+          pname = "phi-app-no-builtins";
+          version = "0.1.0";
+          inherit (c.commonEnv) RUSTUP_HOME RUSTUP_TOOLCHAIN nativeBuildInputs;
+          cargoExtraArgs = "-p phi-app --no-default-features";
+        };
     in
     {
       packages = forAllSystems (
@@ -115,6 +132,7 @@
       checks = forAllSystems (
         system: {
           workspace-test = mkTest system;
+          phi-app-no-builtins = mkBareBuild system;
         }
       );
 

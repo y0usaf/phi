@@ -4,6 +4,13 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+# WS1.5: gates the builtin *extension registrations* (catalog, commands,
+# overlays, skills, visual). The Python prelude stays unconditional — it is
+# core, not a builtin extension.
+default = ["builtins"]
+builtins = []
+
 [dependencies]
 phi-ext.workspace = true
 phi-session.workspace = true

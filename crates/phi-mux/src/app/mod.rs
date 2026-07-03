@@ -462,8 +462,13 @@ fn build_visual_runtime(cwd: &std::path::Path) -> Option<Arc<AppRuntime>> {
     // default spinner, thinking expressions, and theme are always
     // available. Lua extensions loaded afterward can register
     // additional themes/spinners with different names.
-    rt_builder = rt_builder.register_extension(phi_builtins::DefaultVisualExtension);
-    rt_builder = rt_builder.register_extension(phi_builtins::DefaultOverlayExtension);
+    // Without the `builtins` feature the bare mux shell boots with no
+    // builtin extensions; overlays and visuals degrade gracefully (WS1.5).
+    #[cfg(feature = "builtins")]
+    {
+        rt_builder = rt_builder.register_extension(phi_builtins::DefaultVisualExtension);
+        rt_builder = rt_builder.register_extension(phi_builtins::DefaultOverlayExtension);
+    }
     for ext in config_exts {
         rt_builder = rt_builder.register_boxed_extension(ext);
     }

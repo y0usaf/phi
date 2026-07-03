@@ -55,15 +55,17 @@ flate2 = "1"
 phi-ai = { path = "crates/phi-ai" }
 phi-ai-auth = { path = "crates/phi-ai-auth" }
 phi-ai-types = { path = "crates/phi-ai-types" }
-phi-builtins = { path = "crates/phi-builtins" }
+# default-features = false so app crates can gate the `builtins` feature
+# (WS1.5); each consumer forwards it via its own default-on feature.
+phi-builtins = { path = "crates/phi-builtins", default-features = false }
 phi-ext = { path = "crates/phi-ext" }
 phi-grid = { path = "crates/phi-grid" }
 phi-event = { path = "crates/phi-event" }
 phi-repl = { path = "crates/phi-repl" }
-phi-mux = { path = "crates/phi-mux" }
+phi-mux = { path = "crates/phi-mux", default-features = false }
 phi-rlm = { path = "crates/phi-rlm" }
 phi-session = { path = "crates/phi-session" }
-phi-session-tui = { path = "crates/phi-session-tui" }
+phi-session-tui = { path = "crates/phi-session-tui", default-features = false }
 phi-tui = { path = "crates/phi-tui" }
 phi-lua = { path = "crates/phi-lua" }
 
