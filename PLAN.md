@@ -333,7 +333,7 @@ API (`phi-ext`/`phi-lua`/`phi-event`), never bypass it.
             *Landed as:* `checks.<system>.phi-app-no-builtins` — a crane
             `cargoBuild` of `-p phi-app --no-default-features` (build only,
             shares `cargoArtifacts`), visible to `nix flake check`.
-- [ ] **1.6 Lua parity for commands and overlays.** The Lua bridge exposes
+- [x] **1.6 Lua parity for commands and overlays.** The Lua bridge exposes
       only a narrow slice of what builtins use: commands can't return
       `UiAction`s (`phi-lua/src/extension/mod.rs:381-384` hardcodes
       `actions: Vec::new()`); overlays get a fixed text-box renderer, a fixed
@@ -348,6 +348,28 @@ API (`phi-ext`/`phi-lua`/`phi-event`), never bypass it.
       API. Dogfood test, same method as WS1.1: port one builtin command that
       returns `UiAction`s and one builtin overlay to Lua; every failure is
       the work list.
+      *Landed as:* commands — the bridge returns the handler's full result
+      as JSON and `parse_command_output` decodes `message` + `actions`
+      (serde `UiAction` wire shape: `{ type = "OpenOverlay", data = {...}
+      }`; malformed actions are hard, named errors), plus `context =
+      "mux"`, `aliases`, and static `completions` so the whole
+      `CommandSpec` surface is reachable. Overlays — a real protocol over
+      the Lua thread (`phi-lua/src/extension/overlay.rs`): per-instance
+      state lives in the VM (`init(payload)` return value, freed on host
+      drop); `render(state, ctx)` gets `{cols, rows, palette}` and returns
+      draw ops (`box`/`fill`/`text`/`clear`/`scrollbar`, colours as rgb
+      arrays or palette role names) with the legacy line-array mode still
+      drawing the (now palette-themed) text box; `handle_key(state, key,
+      cols, rows)` returns `nil`/`"close"`/`{submit}`/`{respond}`/
+      `{message, actions}` → `OverlayOutcome` incl. `Complete`;
+      `handle_scroll` bridges; typed payloads cross as tagged tables
+      (`kind = "model"|"help"`) with the `OverlayResponder` held host-side
+      — `{respond = ...}` fires it, reply-on-drop survives. Dogfood tests
+      port a `/usage`-style command, the help overlay, and a model picker
+      (responder round-trip + dismissal) to Lua in
+      `phi-lua/tests/lua_api.rs`. Shortcuts stay no-op stubs by design —
+      neither frontend consumes `list_shortcuts()` yet; that's WS6.3's
+      keymap work, not a bridge gap.
 - [x] **1.7 Mux `:command` registry.** The mux colon-command line is a closed
       enum + literal string matches (`phi-mux/src/keys/mod.rs:10-51`) — the
       exact pattern WS1.1 removed from the inline TUI, missed by the original

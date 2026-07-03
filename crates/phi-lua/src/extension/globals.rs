@@ -24,6 +24,7 @@ pub(super) fn setup_phi_global(lua: &mlua::Lua) -> mlua::Result<()> {
     let phi_registered_thinking_expressions = lua.create_table()?;
     let phi_overlays = lua.create_table()?;
     let phi_registered_overlays = lua.create_table()?;
+    let phi_overlay_instances = lua.create_table()?;
     globals.set("_phi_handlers", phi_handlers)?;
     globals.set("_phi_registered_events", phi_registered_events)?;
     globals.set("_phi_commands", phi_commands)?;
@@ -49,6 +50,7 @@ pub(super) fn setup_phi_global(lua: &mlua::Lua) -> mlua::Result<()> {
     )?;
     globals.set("_phi_overlays", phi_overlays)?;
     globals.set("_phi_registered_overlays", phi_registered_overlays)?;
+    globals.set("_phi_overlay_instances", phi_overlay_instances)?;
 
     // Build the phi table
     let phi = lua.create_table()?;
@@ -66,6 +68,13 @@ pub(super) fn setup_phi_global(lua: &mlua::Lua) -> mlua::Result<()> {
     phi.set("on", on_fn)?;
 
     // phi.register_command(name, opts)
+    // opts: { description = "...", args_hint = "...", context = "session"|"mux",
+    //         aliases = { "..." }, completions = { "..." },
+    //         handler = function(args) ... end }
+    // The handler returns a string (shorthand for { message = ... }) or a
+    // table { message = "...", actions = { { type = "Quit" },
+    // { type = "OpenOverlay", data = { name = "phi:usage" } }, ... } } —
+    // the same declarative UiAction vocabulary builtin commands use.
     let register_command_fn = lua.create_function(|lua, (name, opts): (String, mlua::Table)| {
         let globals = lua.globals();
         let commands: mlua::Table = globals.get("_phi_commands")?;
@@ -194,9 +203,29 @@ pub(super) fn setup_phi_global(lua: &mlua::Lua) -> mlua::Result<()> {
     phi.set("register_thinking_expression", register_thinking_expr_fn)?;
 
     // phi.register_overlay(name, opts)
-    // opts: { description = "...", toggle_key = "ctrl+?", render = function() ... end }
-    // The render function returns a table of text lines (array of strings).
-    // The TUI draws these lines in a bordered box.
+    // opts: {
+    //   description = "...",
+    //   toggle_key = "ctrl+?",                        -- optional
+    //   init = function(payload) return state end,    -- optional; payload is
+    //         -- the host's open payload as a table (nil for toggle opens):
+    //         -- generic JSON from UiAction::OpenOverlay, or the typed
+    //         -- payloads { kind = "model", root, current, models } /
+    //         -- { kind = "help", entries }.
+    //   render = function(state, ctx) ... end,        -- ctx = { cols, rows,
+    //         -- palette = { fg={r,g,b}, bg, muted, border, accent, accent_2,
+    //         -- surface_raised, statusbar_bg } }. Returns either an array of
+    //         -- plain text lines (drawn in a bordered box) or draw ops:
+    //         -- { { op="box"|"fill"|"text"|"clear"|"scrollbar", ... } } with
+    //         -- colours as {r,g,b} arrays or palette role names ("accent").
+    //   handle_key = function(state, key, cols, rows) -- optional; key =
+    //         -- { code = "esc"|"enter"|"up"|...|"char", char = "q",
+    //         --   ctrl, shift, alt }. Return nil/"none", "close",
+    //         -- { submit = "..." }, { respond = "..." } (fires the typed
+    //         -- payload's response channel), or { message = "...",
+    //         -- actions = {...} } (same vocabulary as command handlers).
+    //         -- Without handle_key, Esc/Enter/q close the overlay.
+    //   handle_scroll = function(state, delta, cols, rows) end, -- optional
+    // }
     let register_overlay_fn = lua.create_function(|lua, (name, opts): (String, mlua::Table)| {
         let globals = lua.globals();
         let overlays: mlua::Table = globals.get("_phi_overlays")?;

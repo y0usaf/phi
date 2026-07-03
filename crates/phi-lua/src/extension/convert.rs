@@ -99,6 +99,35 @@ pub(super) fn lua_val_to_json(val: mlua::Value) -> Result<serde_json::Value> {
     }
 }
 
+/// Decode a Lua command/overlay result (as JSON) into a [`CommandOutput`]:
+/// `message` plus the declarative `actions` array, each entry deserializing
+/// into a [`phi_ext::UiAction`] (`{ type = "Quit" }`,
+/// `{ type = "OpenOverlay", data = { name = "..." } }`, ...). A malformed
+/// action is a hard error naming the entry, so extension authors see what
+/// broke instead of a silently dropped effect.
+pub(super) fn parse_command_output(json: &str) -> Result<phi_ext::CommandOutput> {
+    let value: serde_json::Value = serde_json::from_str(json)?;
+    let message = value
+        .get("message")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    let mut actions = Vec::new();
+    if let Some(raw) = value.get("actions") {
+        let entries = raw
+            .as_array()
+            .ok_or_else(|| anyhow::anyhow!("'actions' must be an array of action tables"))?;
+        for entry in entries {
+            let action: phi_ext::UiAction = serde_json::from_value(entry.clone()).map_err(|e| {
+                anyhow::anyhow!(
+                    "bad action {entry}: {e} (expected {{ type = \"...\", data = ... }})"
+                )
+            })?;
+            actions.push(action);
+        }
+    }
+    Ok(phi_ext::CommandOutput { message, actions })
+}
+
 // ---------------------------------------------------------------------------
 // decode_event_return
 // ---------------------------------------------------------------------------

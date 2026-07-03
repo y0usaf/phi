@@ -32,10 +32,44 @@ pub enum LuaMsg {
         input: String,
         reply: std::sync::mpsc::SyncSender<Result<Option<String>>>,
     },
-    RenderOverlay {
+    /// Open an overlay instance: call its `init(payload)` and store the
+    /// returned state under `instance` in the VM.
+    OverlayInit {
         name: String,
+        instance: u64,
+        payload_json: Option<String>,
         reply: std::sync::mpsc::SyncSender<Result<Option<String>>>,
     },
+    /// Render one frame: call `render(state, ctx)`; the reply is either an
+    /// array of plain lines (legacy text-box mode) or draw ops.
+    RenderOverlay {
+        name: String,
+        instance: u64,
+        ctx_json: String,
+        reply: std::sync::mpsc::SyncSender<Result<Option<String>>>,
+    },
+    /// Forward a key event: call `handle_key(state, key, cols, rows)`; the
+    /// reply is the outcome value (nil/"close"/{submit=..}/...).
+    OverlayKey {
+        name: String,
+        instance: u64,
+        key_json: String,
+        cols: u16,
+        rows: u16,
+        reply: std::sync::mpsc::SyncSender<Result<Option<String>>>,
+    },
+    /// Forward a mouse-wheel scroll: call `handle_scroll(state, delta, cols, rows)`.
+    OverlayScroll {
+        name: String,
+        instance: u64,
+        delta: i32,
+        cols: u16,
+        rows: u16,
+        reply: std::sync::mpsc::SyncSender<Result<Option<String>>>,
+    },
+    /// The host dropped an overlay instance's state — free the Lua-side
+    /// state table. Fire-and-forget (sent from a `Drop` impl).
+    OverlayDrop { instance: u64 },
 }
 
 /// Spawn a dedicated OS thread that owns the Lua VM.
@@ -81,11 +115,61 @@ fn lua_thread_loop(lua: &mlua::Lua, rx: std::sync::mpsc::Receiver<LuaMsg>) {
                 });
                 let _ = reply.send(res);
             }
-            Ok(LuaMsg::RenderOverlay { name, reply }) => {
+            Ok(LuaMsg::OverlayInit {
+                name,
+                instance,
+                payload_json,
+                reply,
+            }) => {
                 let res = run_with_timeout(lua, &deadline, DEFAULT_TIMEOUT_MS, || {
-                    super::bridge::call_lua_overlay_render(lua, &name)
+                    super::bridge::call_lua_overlay_init(
+                        lua,
+                        &name,
+                        instance,
+                        payload_json.as_deref(),
+                    )
                 });
                 let _ = reply.send(res);
+            }
+            Ok(LuaMsg::RenderOverlay {
+                name,
+                instance,
+                ctx_json,
+                reply,
+            }) => {
+                let res = run_with_timeout(lua, &deadline, DEFAULT_TIMEOUT_MS, || {
+                    super::bridge::call_lua_overlay_render(lua, &name, instance, &ctx_json)
+                });
+                let _ = reply.send(res);
+            }
+            Ok(LuaMsg::OverlayKey {
+                name,
+                instance,
+                key_json,
+                cols,
+                rows,
+                reply,
+            }) => {
+                let res = run_with_timeout(lua, &deadline, DEFAULT_TIMEOUT_MS, || {
+                    super::bridge::call_lua_overlay_key(lua, &name, instance, &key_json, cols, rows)
+                });
+                let _ = reply.send(res);
+            }
+            Ok(LuaMsg::OverlayScroll {
+                name,
+                instance,
+                delta,
+                cols,
+                rows,
+                reply,
+            }) => {
+                let res = run_with_timeout(lua, &deadline, DEFAULT_TIMEOUT_MS, || {
+                    super::bridge::call_lua_overlay_scroll(lua, &name, instance, delta, cols, rows)
+                });
+                let _ = reply.send(res);
+            }
+            Ok(LuaMsg::OverlayDrop { instance }) => {
+                let _ = super::bridge::drop_lua_overlay_instance(lua, instance);
             }
             Err(_) => break,
         }

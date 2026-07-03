@@ -5,10 +5,9 @@ use std::time::Duration;
 use anyhow::Result;
 use phi_ext::{
     CommandInvocation, CommandOutput, CommandSpec, EventHandlerRegistration, ExtensionHost,
-    ExtensionManifest, FlagSpec, FlagType, LifecycleEvent, MessageRendererSpec, OverlayOutcome,
-    OverlaySpec, ProviderConfig, ProviderModelConfig, ShortcutSpec, SpinnerSpec, ThemeSpec,
-    ThinkingExpressionSpec, ToolDispatch, ToolExposure, ToolInvocation, ToolOutput, ToolParam,
-    ToolSpec,
+    ExtensionManifest, FlagSpec, FlagType, LifecycleEvent, MessageRendererSpec, ProviderConfig,
+    ProviderModelConfig, ShortcutSpec, SpinnerSpec, ThemeSpec, ThinkingExpressionSpec,
+    ToolDispatch, ToolExposure, ToolInvocation, ToolOutput, ToolParam, ToolSpec,
 };
 use std::collections::BTreeMap;
 
@@ -16,10 +15,12 @@ mod bridge;
 mod convert;
 mod event_return;
 mod globals;
+mod overlay;
 mod thread;
 
 pub use thread::LuaMsg;
 
+use convert::parse_command_output;
 use event_return::{decode_event_return, parse_event_kind};
 use globals::setup_phi_global;
 use thread::spawn_lua_thread;
@@ -80,13 +81,56 @@ impl phi_ext::Extension for LuaExtension {
             .map_while(|i| reg_commands.get::<Option<String>>(i).ok().flatten())
             .collect();
 
+        /// One command registration read from Lua:
+        /// (name, description, args_hint, context, aliases, completions).
+        type LuaCommandReg = (
+            String,
+            String,
+            String,
+            phi_ext::CommandContext,
+            Vec<String>,
+            Option<Vec<String>>,
+        );
         let phi_commands_table: mlua::Table = globals.get("_phi_commands")?;
-        let mut commands: Vec<(String, String, String)> = Vec::new();
+        let mut commands: Vec<LuaCommandReg> = Vec::new();
         for name in &command_names {
             let cmd_table: mlua::Table = phi_commands_table.get(name.as_str())?;
             let description: String = cmd_table.get("description").unwrap_or_default();
             let args_hint: String = cmd_table.get("args_hint").unwrap_or_default();
-            commands.push((name.clone(), description, args_hint));
+            // Context tag: "session" (default) or "mux" — same vocabulary
+            // the builtin registrations use (WS1.7).
+            let context = match cmd_table
+                .get::<String>("context")
+                .unwrap_or_default()
+                .as_str()
+            {
+                "mux" => phi_ext::CommandContext::Mux,
+                _ => phi_ext::CommandContext::Session,
+            };
+            let aliases: Vec<String> = match cmd_table.get::<Option<mlua::Table>>("aliases") {
+                Ok(Some(t)) => (1..=t.raw_len())
+                    .filter_map(|i| t.get::<String>(i).ok())
+                    .collect(),
+                _ => Vec::new(),
+            };
+            // Static completion candidates for the first argument.
+            let completions: Option<Vec<String>> =
+                match cmd_table.get::<Option<mlua::Table>>("completions") {
+                    Ok(Some(t)) => Some(
+                        (1..=t.raw_len())
+                            .filter_map(|i| t.get::<String>(i).ok())
+                            .collect(),
+                    ),
+                    _ => None,
+                };
+            commands.push((
+                name.clone(),
+                description,
+                args_hint,
+                context,
+                aliases,
+                completions,
+            ));
         }
 
         // ── Read registered tools ────────────────────────────────────────────
@@ -353,12 +397,25 @@ impl phi_ext::Extension for LuaExtension {
             .collect();
 
         let phi_overlays_table: mlua::Table = globals.get("_phi_overlays")?;
-        let mut lua_overlays: Vec<(String, String, String)> = Vec::new();
+        let mut lua_overlays: Vec<(String, String, String, overlay::LuaOverlayFns)> = Vec::new();
         for name in &overlay_names {
             let ov_table: mlua::Table = phi_overlays_table.get(name.as_str())?;
             let description: String = ov_table.get("description").unwrap_or_default();
             let toggle_key: String = ov_table.get("toggle_key").unwrap_or_else(|_| "".to_owned());
-            lua_overlays.push((name.clone(), description, toggle_key));
+            // Which optional hooks the registration defined — read once so
+            // absent hooks get host-side fallbacks without a round trip.
+            let has = |key: &str| {
+                ov_table
+                    .get::<Option<mlua::Function>>(key)
+                    .ok()
+                    .flatten()
+                    .is_some()
+            };
+            let fns = overlay::LuaOverlayFns {
+                has_handle_key: has("handle_key"),
+                has_handle_scroll: has("handle_scroll"),
+            };
+            lua_overlays.push((name.clone(), description, toggle_key, fns));
         }
 
         // ── Create the channel and spawn the Lua thread ─────────────────────
@@ -392,7 +449,7 @@ impl phi_ext::Extension for LuaExtension {
         }
 
         // ── Register commands ──────────────────────────────────────────────
-        for (cmd_name, description, args_hint) in commands {
+        for (cmd_name, description, args_hint, context, aliases, completions) in commands {
             let tx3 = Arc::clone(&tx);
             let name3 = cmd_name.clone();
             host.register_command(CommandSpec {
@@ -407,17 +464,22 @@ impl phi_ext::Extension for LuaExtension {
                         reply: rtx,
                     })
                     .map_err(|e| anyhow::anyhow!("lua send: {e}"))?;
-                    let msg_opt = rrx
+                    let output_json = rrx
                         .recv_timeout(Duration::from_secs(10))
                         .map_err(|e| anyhow::anyhow!("lua recv: {e}"))??;
-                    Ok(CommandOutput {
-                        message: msg_opt,
-                        actions: Vec::new(),
-                    })
+                    // Full CommandOutput vocabulary: message + UiActions —
+                    // the same contract builtin command handlers return.
+                    match output_json {
+                        Some(json) => parse_command_output(&json),
+                        None => Ok(CommandOutput::default()),
+                    }
                 }),
-                arg_completions: None,
-                context: phi_ext::CommandContext::Session,
-                aliases: Vec::new(),
+                arg_completions: completions.map(|candidates| {
+                    let candidates = Arc::new(candidates);
+                    Arc::new(move || candidates.as_ref().clone()) as phi_ext::ArgCompletionFn
+                }),
+                context,
+                aliases,
             })?;
         }
 
@@ -514,116 +576,14 @@ impl phi_ext::Extension for LuaExtension {
         }
 
         // ── Register overlays ──────────────────────────────────────────────
-        for (name, description, toggle_key) in lua_overlays {
-            let tx_overlay = Arc::clone(&tx);
-            let overlay_name = name.clone();
-
-            let init_state: phi_ext::OverlayInitFn = Arc::new(|_payload| {
-                Box::new(Vec::<String>::new()) as Box<dyn std::any::Any + Send + Sync>
-            });
-
-            let render: Arc<
-                dyn Fn(&mut dyn phi_ext::DrawContext, &mut Box<dyn std::any::Any + Send + Sync>)
-                    + Send
-                    + Sync,
-            > = Arc::new(
-                move |ctx: &mut dyn phi_ext::DrawContext,
-                      _state: &mut Box<dyn std::any::Any + Send + Sync>| {
-                    // Call the Lua render function via the thread channel
-                    let (rtx, rrx) = std::sync::mpsc::sync_channel(1);
-                    if tx_overlay
-                        .send(crate::extension::LuaMsg::RenderOverlay {
-                            name: overlay_name.clone(),
-                            reply: rtx,
-                        })
-                        .is_err()
-                    {
-                        return;
-                    }
-                    let lines: Vec<String> = match rrx.recv_timeout(Duration::from_secs(5)) {
-                        Ok(Ok(Some(json))) => serde_json::from_str(&json).unwrap_or_default(),
-                        _ => vec!["(render failed)".to_owned()],
-                    };
-
-                    // Draw the lines in a bordered box
-                    let size = ctx.size();
-                    let line_count = lines.len() as i32 + 4; // border + title + padding
-                    let width = size.cols.min(80).max(20);
-                    let height = size.rows.min(line_count).max(6);
-                    let col = (size.cols - width) / 2;
-                    let row = (size.rows - height) / 2;
-                    let rect = phi_ext::DrawRect::new(col, row, width, height);
-
-                    let border = phi_ext::Rgb(100, 100, 100);
-                    let fg = phi_ext::Rgb(220, 220, 220);
-                    let bg = phi_ext::Rgb(30, 30, 30);
-                    let accent = phi_ext::Rgb(100, 200, 255);
-
-                    ctx.draw_box(rect, fg, bg, border);
-                    let inner = rect.inset(2, 1);
-
-                    // Title
-                    ctx.put_text_bold(
-                        inner.col,
-                        inner.row,
-                        inner.cols,
-                        &format!(" {} ", "Overlay"),
-                        accent,
-                        bg,
-                    );
-
-                    // Lines
-                    for (i, line) in lines.iter().enumerate() {
-                        let y = inner.row + 2 + i as i32;
-                        if y < rect.row + rect.rows - 2 {
-                            ctx.put_text(inner.col, y, inner.cols, line, fg, bg);
-                        }
-                    }
-
-                    // Footer hint
-                    let footer = rect.row + rect.rows - 2;
-                    ctx.put_text(
-                        inner.col,
-                        footer,
-                        inner.cols,
-                        "Esc/Enter/q to close",
-                        phi_ext::Rgb(120, 120, 120),
-                        bg,
-                    );
-                },
-            );
-
-            let handle_key: Arc<
-                dyn Fn(
-                        &mut Box<dyn std::any::Any + Send + Sync>,
-                        &phi_ext::OverlayKey,
-                        u16,
-                        u16,
-                    ) -> OverlayOutcome
-                    + Send
-                    + Sync,
-            > = Arc::new(
-                |_state: &mut Box<dyn std::any::Any + Send + Sync>,
-                 key: &phi_ext::OverlayKey,
-                 _cols: u16,
-                 _rows: u16| {
-                    use phi_ext::OverlayKeyCode;
-                    match key.code {
-                        OverlayKeyCode::Esc | OverlayKeyCode::Enter => OverlayOutcome::Close,
-                        OverlayKeyCode::Char('q') | OverlayKeyCode::Char('Q')
-                            if !key.modifiers.control =>
-                        {
-                            OverlayOutcome::Close
-                        }
-                        _ => OverlayOutcome::None,
-                    }
-                },
-            );
-
-            host.register_overlay(
-                OverlaySpec::new(name, description, init_state, render, handle_key)
-                    .with_toggle_key(toggle_key),
-            )?;
+        for (name, description, toggle_key, fns) in lua_overlays {
+            host.register_overlay(overlay::build_overlay_spec(
+                name,
+                description,
+                toggle_key,
+                fns,
+                Arc::clone(&tx),
+            ))?;
         }
 
         Ok(())
