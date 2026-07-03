@@ -367,3 +367,33 @@ fn usage_lines_separate_day_groups() {
     assert!(rows[1].starts_with('─'));
     assert!(rows[1].contains('┼'));
 }
+
+#[test]
+fn total_sentinel_filtered_from_model_breakdowns() {
+    // Old session files write a combined `usage` row with model="__total__"
+    // when usage_by_model is missing or partially malformed. Those tokens
+    // must still count toward day and report totals, but "__total__" must
+    // never appear as a model in the breakdown.
+    let tmp = tempfile::tempdir().unwrap();
+    let project = tmp.path().join("--tmp-project--");
+    fs::create_dir_all(&project).unwrap();
+    let lines = [
+        r#"{"type":"session","id":"s1","timestamp":"2026-01-01T00:00:00Z","cwd":"/tmp/project"}"#
+            .to_owned(),
+        r#"{"type":"message","id":"x","timestamp":"2026-01-03T12:00:00Z","role":"assistant","text":"hi","usage":{"input":107,"output":58,"cache_read":1,"cache_write":2,"cost_total":0.06,"model":"__total__"}}"#.to_owned(),
+    ];
+    fs::write(project.join("a.jsonl"), lines.join("\n")).unwrap();
+
+    let report = load_usage_report_from_path(tmp.path());
+
+    // Totals are preserved.
+    assert_eq!(report.totals.input_tokens, 107);
+    assert_eq!(report.totals.output_tokens, 58);
+    assert_eq!(report.entries, 1);
+    // But __total__ does not appear as a model breakdown.
+    let breakdowns = &report.days[0].model_breakdowns;
+    assert!(
+        breakdowns.is_empty(),
+        "expected no model breakdowns, got: {breakdowns:?}"
+    );
+}

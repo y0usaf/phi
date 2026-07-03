@@ -233,7 +233,10 @@ fn env_auth(provider: &str) -> Option<Auth> {
         }
         return None;
     }
-    if provider == "vercel-ai-gateway" {
+    // Vercel AI Gateway uses AI_GATEWAY_API_KEY, not VERCEL_API_KEY.
+    // "vercel" is the models.dev id (bundled catalog); "vercel-ai-gateway"
+    // is the legacy provider name kept for existing setups.
+    if provider == "vercel" || provider == "vercel-ai-gateway" {
         return std::env::var("AI_GATEWAY_API_KEY")
             .ok()
             .filter(|key| !key.is_empty())

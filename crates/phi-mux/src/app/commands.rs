@@ -421,11 +421,17 @@ impl MuxApp {
                         .send(Err("model picker overlay not available".to_owned()));
                     return;
                 }
+                // The shared registry is the base builtin one; sessions
+                // extend it per-build with catalog/extension providers, so
+                // chain the bundled catalog here the same way `/model`
+                // completion does — otherwise catalog providers (neuralwatt,
+                // vercel, ...) never appear in the mux picker.
                 let models = self
                     .shared
                     .registry
                     .supported_models()
                     .map(|m| format!("{}/{}", m.provider, m.id))
+                    .chain(phi_builtins::catalog::model_names())
                     .collect::<Vec<_>>();
                 if models.is_empty() {
                     let _ = request

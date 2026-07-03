@@ -1242,7 +1242,10 @@ impl Ui {
                 cache_read: completion.usage.cache_read,
                 cache_write: completion.usage.cache_write,
                 cost_total: completion.usage.cost.total,
-                model: "__total__".to_owned(),
+                model: {
+                    let m = self.root_lm.model();
+                    format!("{}/{}", m.provider, m.id)
+                },
             };
             let usage_by_model = completion
                 .usage_by_model

@@ -99,6 +99,10 @@ fn builtin_base_url(provider_id: &str) -> Option<&'static str> {
     Some(match provider_id {
         "anthropic" => "https://api.anthropic.com",
         "openai" => "https://api.openai.com/v1",
+        // Vercel AI Gateway: models.dev encodes the URL in `@ai-sdk/gateway`;
+        // the gateway speaks plain OpenAI chat completions at /v1 with
+        // AI_GATEWAY_API_KEY (see env_auth's special case).
+        "vercel" => "https://ai-gateway.vercel.sh/v1",
         "google" => "https://generativelanguage.googleapis.com/v1beta/openai",
         "mistral" => "https://api.mistral.ai/v1",
         "groq" => "https://api.groq.com/openai/v1",

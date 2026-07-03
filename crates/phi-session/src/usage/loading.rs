@@ -50,10 +50,16 @@ pub fn load_usage_report_from_path(root: &Path) -> UsageReport {
 
                 let day = by_day.entry(entry.date.clone()).or_default();
                 day.totals.add(&entry.totals);
-                day.models
-                    .entry(entry.model.clone())
-                    .or_default()
-                    .add(&entry.totals);
+                // Skip the `__total__` sentinel from per-model breakdowns:
+                // it represents the combined total across all models (written
+                // by older builds), not a real model. Its tokens are still
+                // counted toward the day and report totals above.
+                if entry.model != TOTAL_SENTINEL {
+                    day.models
+                        .entry(entry.model.clone())
+                        .or_default()
+                        .add(&entry.totals);
+                }
             }
         }
     }
@@ -249,6 +255,10 @@ pub(crate) fn usage_entries_from_json(
 
 /// Day-bucket label for entries whose line predates the timestamp field.
 pub const UNDATED_LABEL: &str = "(undated)";
+
+/// Model name written by older builds for the combined `usage` total.
+/// Filtered from per-model breakdowns so it never appears as a model row.
+pub const TOTAL_SENTINEL: &str = "__total__";
 
 pub(super) fn usage_entry_from_json_usage(
     timestamp: Option<jiff::Timestamp>,
