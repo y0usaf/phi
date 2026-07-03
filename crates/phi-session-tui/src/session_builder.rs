@@ -238,11 +238,6 @@ pub async fn build_runtime(
     Ok(runtime)
 }
 
-/// Parse the settings-level prose policy string, falling back to lenient.
-fn prose_policy(settings: &Settings) -> phi_rlm::ProsePolicy {
-    settings.prose_policy.parse().unwrap_or_default()
-}
-
 /// Build RlmConfig from resolved settings, prompt overrides, and environment info.
 fn build_rlm_config(
     cwd: &Path,
@@ -263,7 +258,6 @@ fn build_rlm_config(
         max_rlm_depth: settings.max_rlm_depth,
         max_iterations: settings.max_iterations,
         max_concurrent_subcalls: settings.max_concurrent_subcalls,
-        prose_policy: prose_policy(settings),
         custom_system_prompt: prompt_override,
         append_system_prompt: append_prompt,
         setup_code: Some(setup_code),

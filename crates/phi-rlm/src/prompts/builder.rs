@@ -75,9 +75,6 @@ pub struct SystemPromptOptions<'a> {
     pub extra_guidelines: Vec<String>,
     /// Append the orchestrator addendum (act as coordinator, delegate).
     pub orchestrator: bool,
-    /// Append the strict tool-only addendum (`ProsePolicy::Strict`): prose
-    /// turns are never accepted; `message(...)` + `answer` dict only.
-    pub strict_tools: bool,
     /// Turn cap for this run: `Some(n)` for capped children, `None` for the
     /// uncapped root. Controls the turn-scarcity nudge.
     pub turn_cap: Option<usize>,
@@ -137,11 +134,6 @@ pub fn build_system_prompt(opts: &SystemPromptOptions) -> String {
     // orchestrator addendum
     if opts.orchestrator {
         sections.push(ORCHESTRATOR_ADDENDUM.to_owned());
-    }
-
-    // strict tool-only addendum (ProsePolicy::Strict)
-    if opts.strict_tools {
-        sections.push(STRICT_TOOL_ONLY_ADDENDUM.to_owned());
     }
 
     // turn scarcity nudge (capped children only)

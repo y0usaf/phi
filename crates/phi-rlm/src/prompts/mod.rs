@@ -9,7 +9,7 @@ mod tests;
 pub use builder::{SystemPromptOptions, build_system_prompt};
 pub use constants::DEFAULT_ANSWER_NUDGE;
 pub(crate) use constants::{
-    COMPACTION_SUMMARY_PROMPT, PROSE_NUDGE, STRICT_PROSE_NUDGE, compaction_continue_message,
+    COMPACTION_SUMMARY_PROMPT, PROSE_NUDGE, compaction_continue_message,
 };
 pub use overrides::discover_prompt_overrides;
 

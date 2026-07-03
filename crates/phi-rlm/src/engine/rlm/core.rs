@@ -16,13 +16,13 @@ use phi_ext::AppRuntime;
 use phi_ext::{EventKind, EventPayload, EventReturn, LifecycleEvent};
 
 use crate::config::{
-    EnvFactory, Events, LimitKind, ProsePolicy, PythonEnvFactory, RlmCompletion, RlmConfig,
+    EnvFactory, Events, LimitKind, PythonEnvFactory, RlmCompletion, RlmConfig,
     RlmEvent, SavePointFn, StopCause,
 };
 use crate::llm_parse::{ExecutedBlock, format_execution_result};
 use crate::lm_core::{ChatMessage, ContextPayload, LanguageModel, LmHandler, Role};
 use crate::prompts::{
-    DEFAULT_ANSWER_NUDGE, PROSE_NUDGE, QueryMetadata, STRICT_PROSE_NUDGE, SystemPromptOptions,
+    DEFAULT_ANSWER_NUDGE, PROSE_NUDGE, QueryMetadata, SystemPromptOptions,
     build_system_prompt, build_user_prompt, metadata_user_prompt,
 };
 
@@ -51,12 +51,6 @@ const PROSE_NUDGE_THRESHOLD: usize = 2;
 /// to course-correct first), low enough to catch a genuinely stuck model
 /// before exhausting `max_iterations`.
 const MAX_CONSECUTIVE_PROSE: usize = 5;
-
-/// Last-resort ceiling for `ProsePolicy::Strict`: the prose valve is disabled,
-/// but an uncapped root loop must not spin forever on pure prose. After this
-/// many consecutive block-free turns the run fails rather than silently
-/// accepting prose as an answer.
-const MAX_CONSECUTIVE_PROSE_STRICT: usize = 12;
 
 /// Number of additional identical-signature iterations (after the first match)
 /// that must accumulate before a corrective nudge is injected into history.
@@ -355,7 +349,6 @@ impl Rlm {
             append: self.config.append_system_prompt.as_deref(),
             cwd: self.config.cwd.as_deref(),
             orchestrator: self.config.orchestrator,
-            strict_tools: self.config.prose_policy == ProsePolicy::Strict,
             turn_cap: self.iteration_limit(),
             ..Default::default()
         }
@@ -936,13 +929,9 @@ impl Rlm {
             }
 
             // No tool calls: the model emitted pure text (prose).
-            // Check for explicit <task_complete> token (fallback for models
-            // that don't support native tool calls). Disabled under
-            // `ProsePolicy::Strict`: the answer dict is the only completion
-            // channel in tool-only mode.
-            if self.config.prose_policy == ProsePolicy::Lenient
-                && let Some(caps) = TASK_COMPLETE_RE.captures(&response)
-            {
+            // Check for explicit `<task_complete>` token (fallback for models
+            // that don't support native tool calls).
+            if let Some(caps) = TASK_COMPLETE_RE.captures(&response) {
                 let final_answer = caps
                     .name("output")
                     .map(|m| m.as_str().to_owned())
@@ -982,19 +971,9 @@ impl Rlm {
             consecutive_loop = 0;
             loop_nudge_injected = false;
             consecutive_prose += 1;
-            // Strict (tool-only) mode: prose never becomes the final answer.
-            // A hard ceiling still guards against an infinite prose spin —
-            // the run fails instead of silently accepting prose.
-            if self.config.prose_policy == ProsePolicy::Strict {
-                if consecutive_prose >= MAX_CONSECUTIVE_PROSE_STRICT {
-                    return Outcome::failed(
-                        format!(
-                            "Error: {MAX_CONSECUTIVE_PROSE_STRICT} consecutive turns without a tool call under strict prose policy; aborting run"
-                        ),
-                        iterations,
-                    );
-                }
-            } else if consecutive_prose >= MAX_CONSECUTIVE_PROSE {
+            // Safety valve: after MAX_CONSECUTIVE_PROSE block-free turns,
+            // accept the prose as the final answer.
+            if consecutive_prose >= MAX_CONSECUTIVE_PROSE {
                 let prose = response.trim().to_owned();
                 self.events.emit(RlmEvent::AnswerSubmitted {
                     depth: self.depth,
@@ -1046,23 +1025,12 @@ impl Rlm {
             });
 
             // After PROSE_NUDGE_THRESHOLD consecutive block-free turns,
-            // inject a nudge reminding the model to use the REPL or submit
-            // a final answer. Lenient: once, giving the model a chance to
-            // course-correct before the safety valve fires. Strict: on every
-            // prose turn from the threshold on — there is no valve, so keep
-            // pushing until the model calls a tool or the hard ceiling fires.
-            let nudge_now = match self.config.prose_policy {
-                ProsePolicy::Lenient => consecutive_prose == PROSE_NUDGE_THRESHOLD,
-                ProsePolicy::Strict => consecutive_prose >= PROSE_NUDGE_THRESHOLD,
-            };
-            if nudge_now {
-                let nudge = match self.config.prose_policy {
-                    ProsePolicy::Lenient => PROSE_NUDGE,
-                    ProsePolicy::Strict => STRICT_PROSE_NUDGE,
-                };
+            // inject a nudge (once) reminding the model to use the REPL or
+            // submit a final answer before the safety valve fires.
+            if consecutive_prose == PROSE_NUDGE_THRESHOLD {
                 history.push(ChatMessage {
                     role: Role::User,
-                    content: nudge.to_owned(),
+                    content: PROSE_NUDGE.to_owned(),
                     ..Default::default()
                 });
             }

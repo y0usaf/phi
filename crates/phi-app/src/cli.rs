@@ -65,11 +65,6 @@ pub struct Args {
     #[arg(long)]
     pub max_concurrent_subcalls: Option<usize>,
 
-    /// Prose policy: lenient (prose valve on) or strict (tool-only turns)
-    /// [default: lenient].
-    #[arg(long, value_name = "POLICY", value_parser = ["lenient", "strict"])]
-    pub prose_policy: Option<String>,
-
     /// Python interpreter for the REPL environment [default: python3].
     #[arg(long)]
     pub python: Option<String>,
@@ -150,7 +145,6 @@ impl Args {
             timeout: self.timeout,
             max_errors: self.max_errors,
             max_concurrent_subcalls: self.max_concurrent_subcalls,
-            prose_policy: self.prose_policy.clone(),
         }
     }
 }

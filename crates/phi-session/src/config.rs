@@ -32,7 +32,6 @@ macro_rules! shared_fields_struct {
             timeout: $timeout_ty:ty,
             max_errors: $max_errors_ty:ty,
             max_concurrent_subcalls: $max_concurrent_subcalls_ty:ty,
-            prose_policy: $prose_policy_ty:ty,
             $($extra:tt)*
         }
     ) => {
@@ -50,7 +49,6 @@ macro_rules! shared_fields_struct {
             pub timeout: $timeout_ty,
             pub max_errors: $max_errors_ty,
             pub max_concurrent_subcalls: $max_concurrent_subcalls_ty,
-            pub prose_policy: $prose_policy_ty,
             $($extra)*
         }
     };
@@ -72,7 +70,6 @@ shared_fields_struct! {
         timeout: Option<u64>,
         max_errors: Option<usize>,
         max_concurrent_subcalls: Option<usize>,
-        prose_policy: Option<String>,
         tools: Option<ToolsConfig>,
         pub mux: Option<MuxConfig>,
         /// User-configured skill directories or files to scan for `SKILL.md`.
@@ -192,7 +189,6 @@ impl Config {
             timeout,
             max_errors,
             max_concurrent_subcalls,
-            prose_policy,
             skills
         );
         if let Some(other_mux) = other.mux {
@@ -248,7 +244,6 @@ shared_fields_struct! {
         timeout: Option<u64>,
         max_errors: Option<usize>,
         max_concurrent_subcalls: Option<usize>,
-        prose_policy: Option<String>,
     }
 }
 
@@ -267,7 +262,6 @@ shared_fields_struct! {
         timeout: Option<u64>,
         max_errors: Option<usize>,
         max_concurrent_subcalls: usize,
-        prose_policy: String,
         pub tools: ToolsSettings,
         /// User-configured skill paths (from config.lua `skills` field).
         pub skills: Vec<String>,
@@ -312,11 +306,6 @@ impl Settings {
                 .max_concurrent_subcalls
                 .or(config.max_concurrent_subcalls)
                 .unwrap_or(4),
-            prose_policy: args
-                .prose_policy
-                .clone()
-                .or(config.prose_policy)
-                .unwrap_or_else(|| "lenient".to_owned()),
             tools: {
                 let cfg = config.tools.unwrap_or_default();
                 ToolsSettings {

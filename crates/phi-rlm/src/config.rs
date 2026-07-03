@@ -14,34 +14,6 @@ use crate::lm_core::UsageBreakdown;
 
 pub(crate) type SavePointFn = dyn Fn(usize) -> Vec<ChatMessage> + Send + Sync;
 
-/// How the engine treats prose-only (block-free) turns.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum ProsePolicy {
-    /// Prose turns are tolerated: `<task_complete output="..."/>` is honored
-    /// and the `MAX_CONSECUTIVE_PROSE` valve accepts prose as a final answer.
-    #[default]
-    Lenient,
-    /// Tool-only mode: `<task_complete>` is ignored and prose never becomes
-    /// the final answer via the normal valve. The model must submit through
-    /// `answer['ready'] = True` and can talk to the user via `message(...)`.
-    /// A high last-resort ceiling (`MAX_CONSECUTIVE_PROSE_STRICT`) still
-    /// exists so an uncapped root loop cannot spin forever on pure prose.
-    Strict,
-}
-
-impl std::str::FromStr for ProsePolicy {
-    type Err = String;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_ascii_lowercase().as_str() {
-            "lenient" => Ok(Self::Lenient),
-            "strict" => Ok(Self::Strict),
-            other => Err(format!(
-                "unknown prose policy '{other}' (expected lenient|strict)"
-            )),
-        }
-    }
-}
-
 #[derive(Clone, Debug)]
 pub struct RlmConfig {
     pub max_rlm_depth: usize,
@@ -70,8 +42,6 @@ pub struct RlmConfig {
     pub append_system_prompt: Option<String>,
     /// Host-registered REPL function names, injected as driver shims.
     pub host_fns: Vec<String>,
-    /// How prose-only turns are handled (lenient default, strict = tool-only).
-    pub prose_policy: ProsePolicy,
 }
 
 impl Default for RlmConfig {
@@ -95,7 +65,6 @@ impl Default for RlmConfig {
             cwd: None,
             append_system_prompt: None,
             host_fns: Vec::new(),
-            prose_policy: ProsePolicy::default(),
         }
     }
 }

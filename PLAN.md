@@ -147,6 +147,20 @@ Ordering rationale: WS0/WS1 first (WS1 is the highest-leverage work and everythi
 else benefits from a proven extension API), WS4.1 early (trust gates project
 extensions, which WS1 encourages people to write). WS2/WS3 are mechanical and can
 interleave. WS5 only after WS1 proves the API. WS6 is investigative, no deadline.
+**WS9 jumps the queue for all remaining work** (2026-07-03 loop audit): sessions
+feel long and outputs underperform, and the causes are identified mechanics in
+`run_loop`, not vibes — 9.1/9.2 are small `core.rs` diffs with outsized latency
+wins; 9.3 routes the tool-surface question through the extension API (an API
+gap fix per The Rule's corollary) and gates any default change on measurement.
+**Loop before UI for the remaining extension-ification** (2026-07-03 reorder):
+after the 9.1/9.2/9.4/9.5 quick wins, do 9.3(a) + 9.6, then WS7.1 (MCP) as the
+proof — *before* the UI-side extension work (WS1.6, 1.7, 1.3). Rationale: the
+loop is the product; the 2026-07-02 audit found tools/providers/events *are*
+faithfully Lua-bridged while commands/overlays are not, so loop-surface API
+work is user-reachable today and finally makes the Rule's corollary test an
+API users can reach — and WS7 depends on the tool surface, while nothing
+depends on overlay parity. WS1.6/1.7/1.3 remain committed work, deferred, and
+WS1.7's in-flight part B lands first rather than being abandoned mid-migration.
 
 ### WS0 — Codify the rule (small, do first)
 
@@ -676,6 +690,125 @@ socket. Advances the Mux differentiator (core work per the table above).
       (`--model`) don't reach an already-running daemon; daemon sessions
       inherit the first spawner's environment.
 
+### WS9 — Agent loop: coding-first RLM (latency + quality, highest priority)
+
+Diagnosis (2026-07-03 audit of `run_loop` vs `ref/codex` + `ref/pi`): upstream
+RLM is a **long-context-QA harness** (its own docs and training env are
+chunk-a-huge-document QA), and Phi inherited three of its mechanics that
+measurably hurt interactive coding. Codex stops on the model's finish signal
+(`ref/codex` `core/src/session/turn.rs`, `end_turn`); pi stops the moment a
+turn has no tool calls (`ref/pi` `packages/agent/src/agent-loop.ts:174`).
+Phi does neither. This workstream does **not** soften differentiator #2 — the
+REPL, recursion, and persistent env stay; what changes is the turn protocol
+around them and the shape of the tool surface on top of them.
+
+- [ ] **9.1 Accept prose as the final answer (bug-level contradiction; do
+      first).** `DEFAULT_MECHANICS` tells the model *"If you are finished …
+      stop making tool calls and output your answer as text"*
+      (`phi-rlm/src/prompts/constants.rs:21`), but `run_loop` refuses the
+      first prose turn: it banks it, injects a contradicting `PROSE_NUDGE`
+      ("use the repl tool or set `answer['ready']=True`") at 2 consecutive
+      prose turns, and only accepts at `MAX_CONSECUTIVE_PROSE = 5`
+      (`phi-rlm/src/engine/rlm/core.rs:45-53,931-1003`). A model that follows
+      our own system prompt pays **up to 4 extra full-history completions at
+      the end of every task**. Fix: a no-tool-call, non-empty prose turn is
+      the final answer (`StopCause::Prose`), immediately. Keep
+      `answer['ready']` and `<task_complete>` as explicit alternate paths;
+      keep the nudge only for empty/whitespace-only responses. Side benefit:
+      final answers stream to the user as text deltas instead of arriving as
+      a Python string literal in `answer['content']`.
+- [ ] **9.2 Stop injecting a `Role::User` "Turn N:" message every iteration.**
+      `build_user_prompt` pushes a user message before *every* model call
+      (`core.rs:412-423`, `prompts/builder.rs:4-46`). No reference harness
+      does this — codex/pi feed back tool results and let the model continue.
+      It costs tokens, fragments the model into answer-each-turn mode, and is
+      the exact consecutive-user-message hazard the `pending_steer` machinery
+      exists to work around. Fix: turn-budget info moves to the system
+      prompt; inject a reminder only when approaching a limit (codex's
+      token-budget-reminder pattern, `turn.rs` `token_budget::maybe_record`).
+      Also drop the turn-0 "Look at the context first; do not provide a
+      final answer yet" gate for coding sessions — it forces a probe turn on
+      questions that need none.
+- [ ] **9.3 Tool surface through the extension API (API gap fix +
+      evidence-gated experiment).** The tension: pure-CodeAct is
+      off-distribution for models RL-trained on native read/edit/bash
+      harnesses (a real quality risk), but the single-`repl` surface is also
+      the differentiator's substance — composition (filter/loop/batch in one
+      turn where tool-call harnesses burn a round-trip each), env-as-state,
+      and the uniform tools-are-Python-functions extension story. Which
+      effect dominates for coding with current models is **empirical, not
+      doctrinal** — so don't decide it in core. Resolve via The Rule instead:
+      - (a) *API gap fix:* `register_tool` today means only "inject a Python
+        callable into the REPL namespace" (the WS7.1 shape). Grow the tool
+        spec with a native exposure — `expose: repl | native | both` — so a
+        registered tool can also surface as a provider `ToolDefinition`. The
+        engine builds its per-turn tool list from the registry instead of
+        hardcoding `repl_tool_definition()` (`core.rs:89-104,166-168`), and
+        the exec loop generalizes from `repl`+`code` to per-tool dispatch
+        (extension handlers get the doctrine-2 watchdog; loop detection
+        generalizes its signature from code+stdout+stderr to args+result).
+        Dispatch target for coding helpers is `python`: structured args map
+        to the *same prelude functions in the same env*, so hashline cache,
+        read-before-edit, and spill are shared regardless of surface — one
+        implementation, two exposures (doctrine 5). The `repl` tool itself
+        stays engine-registered (bare core must boot); the loop, guardrails,
+        termination, and compaction stay engine-owned (doctrine 2 — the
+        registry is the seam, the loop is the substrate). *Not gated on the
+        (b) experiment* — start as soon as 9.1/9.2 land (same-file
+        sequencing in `run_loop` is the only dependency); this is the API
+        WS7.1/7.2 build on, and per the 2026-07-03 reorder it precedes the
+        UI-side extension work.
+      - (b) *The hybrid ships as a default-off builtin* (`coding-tools-
+        native`): registers bash/read_file/edit_file/write_file/grep/find/ls
+        with `expose: both`. Enabling it by default is gated on measurement:
+        after 9.1/9.2/9.4 land, run a fixed coding-task suite through
+        oneshot mode, REPL-only vs hybrid, comparing success rate, turns,
+        and wall-clock (9.6 telemetry is the instrumentation). No data, no
+        default change.
+      - (c) *REPL-preserving mitigations* worth doing regardless of the
+        experiment's outcome: few-shot examples of idiomatic helper
+        composition in the coding system prompt, and leaning on hashline
+        `patch=` mode to cut the escaped-Python-string editing pain — the
+        worst off-distribution surface.
+      Native exposure also unlocks per-tool truncation policies and
+      provider-parallel tool calls for whoever enables it (pi parallelizes
+      with a per-file mutation queue, `agent-loop.ts:373-388`; codex gates
+      per-tool via RwLock, `tools/parallel.rs`). Explicitly out of scope:
+      abstracting the RLM *loop* itself behind an extension path — that cut
+      violates doctrines 2 and 6 and is rejected here so it isn't
+      relitigated by drift.
+- [ ] **9.4 Coding-session prompt retune.** The "You are a Recursive Language
+      Model" identity and the `ORCHESTRATOR_ADDENDUM` ("if you find yourself
+      about to write several sentences of unaided reasoning, that is usually
+      a sign to delegate with `subagent`", `constants.rs:23`) are tuned for
+      document QA; for coding they multiply latency (each `subagent` is a
+      full child RLM loop) and degrade output (children lack context; the
+      documented `bg(subagent(...))` deadlock footgun lives in the system
+      prompt). Fix: coding sessions get a coding-agent identity; delegation
+      guidance becomes claude-code-shaped — subagents for fan-out *search*
+      and isolating huge outputs, not the default reasoning path. Keep the
+      orchestrator addendum for genuine long-context/QA payloads.
+- [ ] **9.5 Retry transient provider errors with backoff.** `run_loop`
+      returns `Outcome::failed` on the first `complete_root` error
+      (`core.rs:643-657`) — a single 429/529 blip kills a long run. Both
+      references retry: codex exponential backoff `200ms·2ⁿ` with jitter
+      (`responses_retry.rs`, `util.rs:85-90`), pi two layers (provider
+      settings + app-level `baseDelayMs·2ⁿ`, default 3 retries). Verify what
+      `phi-ai` does internally; add the missing layer where it belongs.
+- [ ] **9.6 Turn telemetry before further tuning.** `IterationEnd` already
+      carries a duration; split it into model-time vs exec-time vs
+      event-dispatch per iteration so "slow" is attributable. Candidate
+      follow-ups that should wait for this data: parallel execution of
+      read-only tool calls, prompt-cache-hit verification (history is
+      append-only between compactions, so provider prefix caching *should*
+      already work — confirm, don't assume).
+
+What the audit confirmed is *right* in the loop (keep, don't churn): loop
+detection with output-aware signatures, compaction archiving the compacted
+span into a REPL variable, hashline read-dedup stubs, exec-during-stream,
+timeout-to-background-job conversion, and steer-text merging. The problem is
+the turn protocol, not the engineering.
+
 ---
 
 ## Non-goals (rejected explicitly — don't relitigate without a new decision)
@@ -726,3 +859,7 @@ Definition of done for the plan overall:
 7. A user Lua extension can reimplement a builtin command (including its
    `UiAction`s) and a builtin overlay without touching core (WS1.6) — the
    extension API the Rule dogfoods is the one users actually get.
+8. A completed task ends on the model's first prose turn — zero wasted
+   end-of-task completions — and no `Role::User` scaffolding is injected on
+   ordinary iterations (WS9.1/9.2). Transient provider errors never kill a
+   run (WS9.5).

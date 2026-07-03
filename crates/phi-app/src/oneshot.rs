@@ -76,7 +76,6 @@ pub async fn run(
         max_rlm_depth: settings.max_rlm_depth,
         max_iterations: settings.max_iterations,
         max_concurrent_subcalls: settings.max_concurrent_subcalls,
-        prose_policy: settings.prose_policy.parse().unwrap_or_default(),
         setup_code: Some(CODING_PRELUDE.to_owned()),
         tools_section: Some(coding_tools_section()),
         cwd: Some(cwd.display().to_string()),

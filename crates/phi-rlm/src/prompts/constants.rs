@@ -35,11 +35,6 @@ pub const DEFAULT_ANSWER_NUDGE: &str =
 /// answer rather than continuing to emit pure prose.
 pub(crate) const PROSE_NUDGE: &str = "Your previous turn(s) contained no tool calls or answer submission. Please either use the `repl` tool to make progress toward an answer, or set `answer['ready'] = True` to submit your final answer.";
 
-/// Appended to the system prompt under `ProsePolicy::Strict`: declares the
-/// tool-only contract — every user-visible message flows through
-/// `message(...)` and the run only ends via the `answer` dict.
-pub(crate) const STRICT_TOOL_ONLY_ADDENDUM: &str = "Tool-only session: every turn MUST include at least one `repl` tool call. Plain prose turns are ignored — they are never accepted as a final answer. To communicate with the user mid-run, call `message(\"...\")` inside the REPL (it renders immediately in the chat; markdown supported). To finish, set `answer['content']` to your final answer and `answer['ready'] = True`. The final answer in `answer['content']` is what the user sees as your reply, so write it as a complete, user-facing response.";
-
 /// Sent as a user message (appended to the live history) to produce the
 /// compaction summary. Structured-section format adapted from claude-code's
 /// compact prompt, trimmed to what an RLM trajectory actually contains; the
@@ -80,7 +75,3 @@ pub(crate) fn compaction_continue_message(
     msg
 }
 
-/// Strict-policy variant of `PROSE_NUDGE`: prose is never accepted as a final
-/// answer, so the model must route everything through the `repl` tool —
-/// `message(...)` for user-facing text, the `answer` dict to finish.
-pub(crate) const STRICT_PROSE_NUDGE: &str = "Your previous turn(s) contained no tool calls. Prose alone is never accepted as a final answer in this session. Use the `repl` tool: call `message(\"...\")` to talk to the user, and set `answer['content'] = ...; answer['ready'] = True` to submit your final answer.";
