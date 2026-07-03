@@ -29,6 +29,25 @@ no built-in permission theater, features arrive as extensions.
 Corollary: the extension API's test suite is `phi-builtins` itself. If a built-in
 can't be expressed through the API, the fix is to grow the API, not to bypass it.
 
+### Direction (2026-07-03): maximal extension surface
+
+New standing decision: **expand the extension surface as much as possible.** The
+long-term ideal is that even the mux mode and the RLM engine themselves run as
+extensions on a minimal substrate — if mux and RLM *can* be extensions, that is
+the preferred end state. The goal is to **ship Phi with amazing defaults**: mux
+and RLM stay first-class differentiators and are enabled out of the box, but
+they get there by being the flagship consumers of the extension API rather than
+hardwired privileges of core. Whenever a capability the loop or the mux needs
+can be expressed as extension API surface, grow the API and move the feature
+across the seam. The "What is core" table below describes today's state, not
+the destination — the direction of travel is to shrink it.
+
+This supersedes the WS9.3 note that rejected abstracting the RLM loop behind an
+extension path: that rejection now reads as *sequencing*, not doctrine. Near
+term the loop stays engine-owned while the registry seam matures (bare core
+must still boot); each workstream should nonetheless prefer cuts that move
+logic toward the extension surface over cuts that entrench it in core.
+
 ### What is core
 
 | Crate | Why it's core |
@@ -798,10 +817,13 @@ around them and the shape of the tool surface on top of them.
       Native exposure also unlocks per-tool truncation policies and
       provider-parallel tool calls for whoever enables it (pi parallelizes
       with a per-file mutation queue, `agent-loop.ts:373-388`; codex gates
-      per-tool via RwLock, `tools/parallel.rs`). Explicitly out of scope:
-      abstracting the RLM *loop* itself behind an extension path — that cut
-      violates doctrines 2 and 6 and is rejected here so it isn't
-      relitigated by drift.
+      per-tool via RwLock, `tools/parallel.rs`). Previously listed as
+      explicitly out of scope: abstracting the RLM *loop* itself behind an
+      extension path. Per the 2026-07-03 "maximal extension surface"
+      direction (see The Rule section), that rejection is downgraded from
+      doctrine to sequencing — the loop stays engine-owned *for now* while
+      the registry seam matures, but loop-as-extension is the eventual goal
+      once the API can carry it without regressing the shipped defaults.
 - [x] **9.4 Coding-session prompt retune.** The "You are a Recursive Language
       Model" identity and the `ORCHESTRATOR_ADDENDUM` ("if you find yourself
       about to write several sentences of unaided reasoning, that is usually
