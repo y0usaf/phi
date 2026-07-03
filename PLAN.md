@@ -633,6 +633,18 @@ finer-grained than zellij's). But:
       frontend — consuming it here is the natural fix (or delete it until
       this workstream needs it; a registered-but-unconsumed API falsely
       signals coverage).
+- [ ] **6.4 Transcript commit hardening.** `Transcript::committed_rows`
+      (`phi-session/src/transcript/render.rs`) is a bare row count: anything
+      that re-renders *already-committed* rows differently (suspects:
+      `tool_summary` run-merging when a new ReplBlock extends a committed
+      run; transcript-cache rebuilds) silently misaligns the commit point
+      and corrupts scrollback from there on. Audit the prefix-stability
+      invariant and assert it (or make commits content-addressed). Related,
+      by design: resize resets `committed_rows` and re-commits the whole
+      transcript below the stale copy (events.rs) — ordinary-CLI behavior
+      on a real terminal, but noisy in mux panes that resize on layout
+      changes; revisit if duplicates persist after the 2026-07-03 sanitize/
+      DECAWM fix in `phi-tui/src/terminal.rs`.
 
 ### WS7 — Prove the API: reference extensions (after WS1)
 

@@ -20,6 +20,8 @@ const HIDE_CURSOR: &str = "\x1b[?25l";
 const SHOW_CURSOR: &str = "\x1b[?25h";
 const CLEAR_DOWN: &str = "\x1b[0J";
 const CLEAR_LINE: &str = "\x1b[2K";
+const WRAP_OFF: &str = "\x1b[?7l";
+const WRAP_ON: &str = "\x1b[?7h";
 
 /// True when PHI_DEBUG_REDRAW=1 is set in the environment. Checked once
 /// (not per-frame) for speed.
@@ -64,7 +66,7 @@ pub fn emergency_restore() {
     let _ = crossterm::execute!(out, DisableMouseCapture);
     let _ = crossterm::execute!(out, DisableFocusChange);
     let _ = crossterm::execute!(out, DisableBracketedPaste);
-    let _ = write!(out, "{SYNC_END}{SHOW_CURSOR}");
+    let _ = write!(out, "{SYNC_END}{WRAP_ON}{SHOW_CURSOR}");
     let _ = out.flush();
     let _ = disable_raw_mode();
 }
@@ -299,6 +301,16 @@ impl<W: Write> Terminal<W> {
         // and the mux emits its own outer SYNC wrapper.
         if !self.embedded {
             buf.push_str(SYNC_BEGIN);
+            // Autowrap off while painting: if the real terminal measures a
+            // grapheme wider than unicode-width does (VS16 emoji, ambiguous
+            // East Asian), an over-wide row must clip — an unexpected
+            // autowrap would add a physical line phi didn't account for,
+            // and every relative cursor move after it lands one row off,
+            // smearing stale frames into scrollback. Re-enabled before the
+            // cursor is parked (deferred wrap is needed there). The vt100
+            // parser behind embedded mode ignores ?7 and shares phi's
+            // width tables, so the guard is skipped there like SYNC.
+            buf.push_str(WRAP_OFF);
         }
         buf.push_str(HIDE_CURSOR);
         let mut cur = self.cursor_row;
@@ -307,7 +319,10 @@ impl<W: Write> Terminal<W> {
             self.move_to_origin(&mut buf);
             buf.push_str(CLEAR_DOWN);
             for line in scrollback {
-                buf.push_str(line);
+                // Scrollback lines are committed verbatim (never wrapped),
+                // and they are permanent: sanitize here so a control byte
+                // can't corrupt history that no later frame can repair.
+                buf.push_str(&sanitize_line(line));
                 buf.push_str("\r\n");
             }
             for (i, row) in rows.iter().enumerate() {
@@ -354,6 +369,9 @@ impl<W: Write> Terminal<W> {
             }
         }
 
+        if !self.embedded {
+            buf.push_str(WRAP_ON);
+        }
         move_rows(&mut buf, cur, target_row);
         if target_col >= self.width && target_row < rows.len() {
             // CHA (\x1b[NG) clamps to width-1, but the cursor may need
@@ -389,6 +407,7 @@ impl<W: Write> Terminal<W> {
         let mut buf = String::new();
         self.move_to_origin(&mut buf);
         buf.push_str(CLEAR_DOWN);
+        buf.push_str(WRAP_ON);
         buf.push_str(SHOW_CURSOR);
         self.out.write_all(buf.as_bytes())?;
         self.out.flush()?;
@@ -679,6 +698,13 @@ pub fn wrap_ansi_locate(line: &str, width: usize, col: usize) -> (Vec<String>, (
 }
 
 fn wrap_ansi_core(line: &str, width: usize) -> WrappedAnsi {
+    // Every rendered row passes through here (chat builders and the
+    // per-frame live-region wrap), so this is the choke point that keeps
+    // control bytes and cursor-moving escapes out of row content — one
+    // stray \r, \t, or CSI from tool output would silently break the
+    // relative row accounting the whole inline renderer depends on.
+    let sanitized = sanitize_line(line);
+    let line: &str = &sanitized;
     let mut w = Wrapper {
         width: width.max(1),
         rows: Vec::new(),
@@ -750,6 +776,99 @@ fn wrap_ansi_core(line: &str, width: usize) -> WrappedAnsi {
     w.rows.push(w.row);
     let end = (w.rows.len() - 1, end_col);
     (w.rows, w.marks, end)
+}
+
+/// True when the escape sequence `esc` (ESC included) is safe to embed in a
+/// rendered row: SGR styling, and terminated OSC 8 hyperlinks / OSC 133
+/// shell-integration zone markers. Everything else — cursor movement, erase,
+/// DECSC/DECRC, RIS, mode switches, title writes — moves the cursor or
+/// mutates terminal state, which breaks the renderer's relative row
+/// accounting (every subsequent frame then repaints over the wrong lines).
+/// Unterminated OSCs are unsafe even when whitelisted: the terminal would
+/// swallow everything after them, row breaks included, until a BEL/ST.
+fn escape_safe_in_row(esc: &str) -> bool {
+    if let Some(body) = esc.strip_prefix("\x1b[") {
+        let Some(params) = body.strip_suffix('m') else {
+            return false;
+        };
+        return params
+            .chars()
+            .all(|c| c.is_ascii_digit() || c == ';' || c == ':');
+    }
+    (esc.starts_with("\x1b]8;") || esc.starts_with("\x1b]133;"))
+        && (esc.ends_with('\x07') || esc.ends_with("\x1b\\"))
+}
+
+/// True when `line` needs no rewriting by [`sanitize_line`]: no control
+/// characters and no escape sequences outside the row-safe whitelist.
+fn line_is_clean(line: &str) -> bool {
+    let mut rest = line;
+    while !rest.is_empty() {
+        if let Some(after) = rest.strip_prefix('\x1b') {
+            let len = escape_len(after) + 1;
+            if !escape_safe_in_row(&rest[..len]) {
+                return false;
+            }
+            rest = &rest[len..];
+            continue;
+        }
+        let ch = rest.chars().next().unwrap();
+        if ch.is_control() {
+            return false;
+        }
+        rest = &rest[ch.len_utf8()..];
+    }
+    true
+}
+
+/// Sanitize one display line of untrusted text (tool output, model text) so
+/// it cannot corrupt the renderer's cursor accounting: tabs expand to
+/// 8-column stops, a carriage return restarts the line (emulating
+/// progress-bar overwrites), remaining control characters are dropped, and
+/// every escape sequence outside the [`escape_safe_in_row`] whitelist is
+/// removed. Returns the input borrowed when it is already clean, so styled
+/// but well-behaved lines cost only a scan per frame.
+pub fn sanitize_line(line: &str) -> std::borrow::Cow<'_, str> {
+    if line_is_clean(line) {
+        return std::borrow::Cow::Borrowed(line);
+    }
+    let mut out = String::with_capacity(line.len());
+    let mut col = 0usize;
+    let mut rest = line;
+    while !rest.is_empty() {
+        if let Some(after) = rest.strip_prefix('\x1b') {
+            let len = escape_len(after) + 1;
+            let esc = &rest[..len];
+            if escape_safe_in_row(esc) {
+                out.push_str(esc);
+            }
+            rest = &rest[len..];
+            continue;
+        }
+        let ch = rest.chars().next().unwrap();
+        rest = &rest[ch.len_utf8()..];
+        match ch {
+            '\t' => {
+                let stop = (col / 8 + 1) * 8;
+                while col < stop {
+                    out.push(' ');
+                    col += 1;
+                }
+            }
+            '\r' => {
+                // Carriage return without a newline: the writer meant to
+                // overwrite the line (progress bars). Keep the rewrite.
+                out.clear();
+                col = 0;
+            }
+            c if c.is_control() => {}
+            c => {
+                out.push(c);
+                col += unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
+            }
+        }
+    }
+    std::borrow::Cow::Owned(out)
 }
 
 /// Byte length of an escape sequence body (after the ESC byte).
@@ -997,6 +1116,99 @@ mod tests {
         term.out.clear();
         term.render(&[], &live, cursor).unwrap();
         assert!(term.out.is_empty());
+    }
+
+    #[test]
+    fn sanitize_line_expands_tabs_to_stops() {
+        // Column-aware: "ab" leaves col 2, tab advances to col 8.
+        assert_eq!(sanitize_line("ab\tc"), "ab      c");
+        assert_eq!(sanitize_line("\tx"), "        x");
+        // Escapes carry zero width: the tab stop ignores them.
+        assert_eq!(sanitize_line("\x1b[1mab\tc"), "\x1b[1mab      c");
+    }
+
+    #[test]
+    fn sanitize_line_emulates_carriage_return_overwrite() {
+        assert_eq!(sanitize_line("progress 50%\rdone"), "done");
+        assert_eq!(sanitize_line("a\rb\rc"), "c");
+        // \r at the very end wipes the line (last write wins).
+        assert_eq!(sanitize_line("gone\r"), "");
+    }
+
+    #[test]
+    fn sanitize_line_strips_cursor_and_state_escapes() {
+        // Cursor movement, erase, full reset, DECSC: all dropped.
+        assert_eq!(sanitize_line("a\x1b[3Ab"), "ab");
+        assert_eq!(sanitize_line("a\x1b[2Kb"), "ab");
+        assert_eq!(sanitize_line("a\x1bcb"), "ab");
+        assert_eq!(sanitize_line("a\x1b7b"), "ab");
+        assert_eq!(sanitize_line("a\x1b[?25lb"), "ab");
+        // Non-whitelisted OSC (title write) dropped, body included.
+        assert_eq!(sanitize_line("a\x1b]0;evil\x07b"), "ab");
+        // Truncated escape at end of line (e.g. cut by a byte budget).
+        assert_eq!(sanitize_line("a\x1b[31"), "a");
+    }
+
+    #[test]
+    fn sanitize_line_keeps_safe_escapes_borrowed() {
+        let styled = "\x1b[1;38;2;10;20;30mbold\x1b[0m";
+        assert!(matches!(
+            sanitize_line(styled),
+            std::borrow::Cow::Borrowed(_)
+        ));
+        let link = "\x1b]8;;http://x\x07link\x1b]8;;\x07";
+        assert!(matches!(sanitize_line(link), std::borrow::Cow::Borrowed(_)));
+        let zone = "\x1b]133;A\x07prompt";
+        assert!(matches!(sanitize_line(zone), std::borrow::Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn sanitize_line_drops_unterminated_osc() {
+        // An unterminated OSC 8 would make the terminal swallow the row
+        // break and everything after it — whitelisted prefix or not.
+        assert_eq!(sanitize_line("a\x1b]8;;http://x"), "a");
+    }
+
+    #[test]
+    fn sanitize_line_drops_remaining_controls() {
+        assert_eq!(sanitize_line("a\x07b\x08c\u{7f}d"), "abcd");
+        // Stray newlines inside a "line" would break the row contract.
+        assert_eq!(sanitize_line("a\nb"), "ab");
+    }
+
+    #[test]
+    fn wrap_ansi_sanitizes_input() {
+        assert_eq!(wrap_ansi("a\x1b[5Ab", 10), vec!["ab"]);
+        // Tab expansion is width-accounted: 8 spaces + "x" fits width 9.
+        assert_eq!(wrap_ansi("\tx", 9), vec!["        x"]);
+    }
+
+    #[test]
+    fn render_sanitizes_scrollback_lines() {
+        let mut term = Terminal::new(Vec::new(), 20, 24);
+        term.render(
+            &["evil\x1b[2J\x1b[3Aline".to_owned()],
+            &["live".to_owned()],
+            None,
+        )
+        .unwrap();
+        let out = String::from_utf8(term.out.clone()).unwrap();
+        assert!(out.contains("evilline\r\n"));
+        assert!(!out.contains("\x1b[2J"));
+        assert!(!out.contains("\x1b[3A"));
+    }
+
+    #[test]
+    fn render_disables_autowrap_while_painting() {
+        let mut term = Terminal::new(Vec::new(), 20, 24);
+        term.render(&[], &["hello".to_owned()], None).unwrap();
+        let out = String::from_utf8(term.out.clone()).unwrap();
+        let off = out.find(WRAP_OFF).expect("wrap disabled");
+        let on = out.find(WRAP_ON).expect("wrap re-enabled");
+        let content = out.find("hello").expect("content painted");
+        // Painting happens inside the wrap-off window; the frame ends
+        // with wrap restored.
+        assert!(off < content && content < on);
     }
 
     #[test]
