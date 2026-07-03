@@ -52,7 +52,10 @@ fn model_command(
     let mut spec = command(name, "[model]", description, move |inv| {
         let query = inv.raw_args.trim();
         Ok(if query.is_empty() {
-            CommandOutput::action(UiAction::OpenPicker(PickerKind::Model { root }))
+            CommandOutput::action(UiAction::OpenOverlay {
+                name: phi_ext::OVERLAY_MODEL.to_owned(),
+                payload: Some(serde_json::json!({ "root": root })),
+            })
         } else {
             CommandOutput::action(UiAction::SwitchModel {
                 root,
@@ -150,12 +153,16 @@ impl Extension for BuiltinCommandsExtension {
             |_| Ok(CommandOutput::action(UiAction::NewSession)),
         ))?;
         host.register_command(command("usage", "", "show usage totals", |_| {
-            Ok(CommandOutput::action(UiAction::OpenPicker(
-                PickerKind::Usage,
-            )))
+            Ok(CommandOutput::action(UiAction::OpenOverlay {
+                name: phi_ext::OVERLAY_USAGE.to_owned(),
+                payload: None,
+            }))
         }))?;
         host.register_command(command("help", "", "show commands and keys", |_| {
-            Ok(CommandOutput::action(UiAction::ShowHelp))
+            Ok(CommandOutput::action(UiAction::OpenOverlay {
+                name: phi_ext::OVERLAY_HELP.to_owned(),
+                payload: None,
+            }))
         }))?;
         host.register_command(command(
             "quit",
@@ -224,7 +231,10 @@ mod tests {
         let out = rt.invoke_command_sync("model", "").unwrap().unwrap();
         assert_eq!(
             out.actions,
-            vec![UiAction::OpenPicker(PickerKind::Model { root: true })]
+            vec![UiAction::OpenOverlay {
+                name: phi_ext::OVERLAY_MODEL.to_owned(),
+                payload: Some(serde_json::json!({ "root": true })),
+            }]
         );
         let out = rt.invoke_command_sync("submodel", "gpt").unwrap().unwrap();
         assert_eq!(

@@ -50,27 +50,36 @@ pub enum UiAction {
     NewSession,
     /// Open one of the host's pickers.
     OpenPicker(PickerKind),
+    /// Open a named overlay (built-in or extension-registered) — the
+    /// generic escape hatch for host-rendered modals. The host interprets
+    /// well-known names specially (e.g. `OVERLAY_MODEL` reads
+    /// `{"root": bool}` from `payload` and attaches the model list and
+    /// response channel itself); unknown names are routed to the
+    /// open-overlay-by-name path with the JSON payload forwarded to the
+    /// overlay's `init_state`.
+    OpenOverlay {
+        name: String,
+        payload: Option<serde_json::Value>,
+    },
     /// Switch the root (or sub) model to `query`, a registry lookup string.
     SwitchModel { root: bool, query: String },
     /// Begin an interactive OAuth login. Empty provider = current root provider.
     StartLogin { provider: String },
     /// Remove stored credentials. Empty provider = current root provider.
     Logout { provider: String },
-    /// Render the host's command and keybinding help.
-    ShowHelp,
     /// Persist a project-trust decision for the current project. Takes
     /// effect for project-local extensions on the next session build.
     TrustProject { trusted: bool },
 }
 
-/// Pickers a frontend is expected to provide.
+/// Pickers a frontend is expected to provide. Only genuinely host-owned
+/// pickers live here; overlays that extensions register (usage, model,
+/// help, ...) are opened by name via [`UiAction::OpenOverlay`].
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum PickerKind {
     Resume,
     Fork,
     Tree,
-    Usage,
-    Model { root: bool },
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

@@ -302,7 +302,7 @@ API (`phi-ext`/`phi-lua`/`phi-event`), never bypass it.
       viewer overlay (`ui/overlays/archive.rs`, `Restore(PathBuf)` host
       action, own hardcoded keyset) migrates to `register_overlay` as part of
       this — it needs whatever host-action mechanism WS1.8 lands.
-- [ ] **1.8 Decide the `UiAction` vocabulary stance (before WS7).** Every
+- [x] **1.8 Decide the `UiAction` vocabulary stance (before WS7).** Every
       host effect is a feature-named variant in `phi-ext` (`SwitchModel`,
       `StartLogin`, `TrustProject`, `PickerKind::…`) interpreted by a match
       arm in each host — extensions cannot define new host effects, and
@@ -314,6 +314,18 @@ API (`phi-ext`/`phi-lua`/`phi-event`), never bypass it.
       `ShowHelp`, most of `PickerKind`, and `HostModalKind` entirely. WS7.1
       (MCP) and WS7.2 (approvals) will hit this immediately; settling it
       first avoids two more rounds of enum growth.
+      *Landed as:* `UiAction::OpenOverlay { name, payload: Option<serde_json::Value> }`
+      subsumes `ShowHelp` and `PickerKind::{Usage, Model}` (both deleted);
+      `PickerKind` keeps only the host-owned `Resume`/`Fork`/`Tree`.
+      `/help`, `/usage`, `/model`, `/submodel` now emit `OpenOverlay` with the
+      `OVERLAY_HELP`/`OVERLAY_USAGE`/`OVERLAY_MODEL` names; the session TUI
+      routes it through one `open_overlay` fn (host-forward first, native
+      selector fallback standalone) and the mux resolves it through
+      `open_extension_overlay`. `HostModalKind` is deleted —
+      `HostModalRequest` now carries `{name, payload}` by-name; the mux
+      attaches the native `ModelPickerPayload` (model list + single
+      `OverlayResponder`, reply-on-drop preserved) for `OVERLAY_MODEL` and
+      routes any other name generically to every focused view.
 
 ### WS2 — Prune the surface
 

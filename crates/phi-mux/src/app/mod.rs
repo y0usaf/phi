@@ -41,7 +41,7 @@ use crate::workspace::{self as workspace, Focus, Workspace};
 use phi_ext::{AppRuntime, OverlaySpec};
 use phi_session::config::MuxConfig;
 use phi_session_tui::session_builder::SharedResources;
-use phi_session_tui::tui::{self, HostModalKind, HostModalRequest};
+use phi_session_tui::tui::{self, HostModalRequest};
 
 const NOTE_TTL: Duration = Duration::from_secs(4);
 const WHEEL_LINES: i32 = 3;

@@ -339,29 +339,51 @@ impl Ui {
     ) -> bool {
         match action {
             UiAction::Quit => return true,
-            UiAction::ShowHelp => self.show_help(),
             UiAction::NewSession => self.reset_session(cmd_tx),
             UiAction::OpenPicker(kind) => match kind {
                 PickerKind::Resume => self.open_resume_selector(),
                 PickerKind::Fork => self.open_fork_selector(),
                 PickerKind::Tree => self.open_tree_selector(),
-                PickerKind::Usage => {
-                    if !self.request_host_usage_modal() {
-                        self.open_usage_selector();
-                    }
-                }
-                PickerKind::Model { root } => {
-                    if !self.request_host_model_modal(root) {
-                        self.open_model_selector(root);
-                    }
-                }
             },
+            UiAction::OpenOverlay { name, payload } => self.open_overlay(&name, payload),
             UiAction::SwitchModel { root, query } => self.switch_model(&query, root),
             UiAction::StartLogin { provider } => self.start_login(&provider),
             UiAction::Logout { provider } => self.logout(&provider),
             UiAction::TrustProject { trusted } => self.set_project_trust(trusted),
         }
         false
+    }
+
+    /// Route a by-name overlay open. Embedded (mux) sessions forward the
+    /// request to the host, which owns the extension overlay registry;
+    /// standalone sessions fall back to their native selectors for the
+    /// well-known names and report unknown overlays.
+    fn open_overlay(&mut self, name: &str, payload: Option<serde_json::Value>) {
+        match name {
+            phi_ext::OVERLAY_HELP => self.show_help(),
+            phi_ext::OVERLAY_USAGE => {
+                if !self.request_host_usage_modal() {
+                    self.open_usage_selector();
+                }
+            }
+            phi_ext::OVERLAY_MODEL => {
+                let root = payload
+                    .as_ref()
+                    .and_then(|p| p.get("root"))
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(true);
+                if !self.request_host_model_modal(root) {
+                    self.open_model_selector(root);
+                }
+            }
+            other => {
+                if !self.request_host_overlay(other, payload) {
+                    self.pending.push(TranscriptEntry::RawLines(vec![
+                        self.warn(&format!("overlay {other} not available")),
+                    ]));
+                }
+            }
+        }
     }
 
     fn set_project_trust(&mut self, trusted: bool) {

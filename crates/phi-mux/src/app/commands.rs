@@ -384,24 +384,27 @@ impl MuxApp {
         }
     }
 
+    /// Open an overlay by name on behalf of an embedded session. Well-known
+    /// names get their native payloads attached here ([`phi_ext::OVERLAY_MODEL`]
+    /// gets the model list and the responder wired to the session's reply
+    /// channel); everything else routes straight through the
+    /// open-overlay-by-name path.
     pub(crate) fn handle_host_modal_request(&mut self, key: SessionKey, request: HostModalRequest) {
-        match request.kind {
-            HostModalKind::Usage => {
-                // Usage has no reply payload, so it can open on every view
-                // focused on the requesting session.
-                let viewers = self.views_focused_on(key);
-                if viewers.is_empty() {
-                    let _ = request
-                        .response_tx
-                        .send(Err("session is not focused by any client".to_owned()));
-                    return;
-                }
-                for vid in viewers {
-                    self.open_usage_overlay(vid);
-                }
-                let _ = request.response_tx.send(Ok(None));
-            }
-            HostModalKind::Model { root, current } => {
+        match request.name.as_str() {
+            phi_ext::OVERLAY_MODEL => {
+                let root = request
+                    .payload
+                    .as_ref()
+                    .and_then(|p| p.get("root"))
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(true);
+                let current = request
+                    .payload
+                    .as_ref()
+                    .and_then(|p| p.get("current"))
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned();
                 // The picker carries a single responder, so it opens on one
                 // view: the last active client if it's viewing the session,
                 // otherwise any viewer.
@@ -452,6 +455,32 @@ impl MuxApp {
                     }),
                 };
                 self.open_extension_overlay(vid, phi_ext::OVERLAY_MODEL, Some(Box::new(payload)));
+            }
+            name => {
+                // No reply payload: open on every view focused on the
+                // requesting session, forwarding the JSON payload (if any)
+                // to the overlay's `init_state`.
+                let viewers = self.views_focused_on(key);
+                if viewers.is_empty() {
+                    let _ = request
+                        .response_tx
+                        .send(Err("session is not focused by any client".to_owned()));
+                    return;
+                }
+                let name = name.to_owned();
+                let mut opened = false;
+                for vid in viewers {
+                    let payload = request
+                        .payload
+                        .clone()
+                        .map(|value| Box::new(value) as phi_ext::OverlayPayload);
+                    opened |= self.open_extension_overlay(vid, &name, payload);
+                }
+                let _ = request.response_tx.send(if opened {
+                    Ok(None)
+                } else {
+                    Err(format!("overlay {name} not available"))
+                });
             }
         }
     }

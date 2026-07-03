@@ -140,19 +140,21 @@ pub struct SuspendRequest {
     pub response_tx: oneshot::Sender<std::result::Result<Option<String>, String>>,
 }
 
-#[derive(Clone, Debug)]
-pub enum HostModalKind {
-    Model { root: bool, current: String },
-    Usage,
-}
-
+/// A by-name overlay-open request forwarded to the host (the mux) when the
+/// session runs embedded. `name` is an overlay name (e.g.
+/// [`phi_ext::OVERLAY_MODEL`]); `payload` is the JSON payload from the
+/// requesting `UiAction::OpenOverlay`. The host interprets well-known names
+/// (attaching native payloads like the model list and a responder) and
+/// routes the rest through its open-overlay-by-name path.
 pub struct HostModalRequest {
-    pub kind: HostModalKind,
+    pub name: String,
+    pub payload: Option<serde_json::Value>,
     pub response_tx: oneshot::Sender<std::result::Result<Option<String>, String>>,
 }
 
 pub(super) struct PendingHostModal {
-    kind: HostModalKind,
+    name: String,
+    payload: Option<serde_json::Value>,
     response_rx: oneshot::Receiver<std::result::Result<Option<String>, String>>,
 }
 
@@ -515,14 +517,22 @@ pub async fn run(setup: TuiSetup, mut io: SessionIo) -> Result<()> {
             }
         }
         if let Some(pending_modal) = ui.pending_host_modal.take() {
-            let kind = pending_modal.kind.clone();
-            let result = pending_modal
-                .response_rx
+            let PendingHostModal {
+                name,
+                payload,
+                response_rx,
+            } = pending_modal;
+            let result = response_rx
                 .await
                 .unwrap_or_else(|_| Err("host modal request cancelled".to_owned()));
             match result {
                 Ok(Some(value)) => {
-                    if let HostModalKind::Model { root, .. } = kind {
+                    if name == phi_ext::OVERLAY_MODEL {
+                        let root = payload
+                            .as_ref()
+                            .and_then(|p| p.get("root"))
+                            .and_then(serde_json::Value::as_bool)
+                            .unwrap_or(true);
                         ui.switch_model(&value, root);
                     }
                 }

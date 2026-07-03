@@ -1,10 +1,37 @@
 use super::*;
 
 impl Ui {
-    pub(super) fn request_host_model_modal(&mut self, root: bool) -> bool {
+    /// Forward an overlay-open request to the embedding host (the mux) by
+    /// name. Returns `false` when there is no host channel (standalone
+    /// mode) — the caller falls back to its native selector.
+    pub(super) fn request_host_overlay(
+        &mut self,
+        name: &str,
+        payload: Option<serde_json::Value>,
+    ) -> bool {
         let Some(host_modal_tx) = &self.host_modal_tx else {
             return false;
         };
+        let (response_tx, response_rx) = oneshot::channel();
+        if host_modal_tx
+            .send(HostModalRequest {
+                name: name.to_owned(),
+                payload: payload.clone(),
+                response_tx,
+            })
+            .is_err()
+        {
+            return false;
+        }
+        self.pending_host_modal = Some(PendingHostModal {
+            name: name.to_owned(),
+            payload,
+            response_rx,
+        });
+        true
+    }
+
+    pub(super) fn request_host_model_modal(&mut self, root: bool) -> bool {
         let current = {
             let m = if root {
                 self.root_lm.model()
@@ -13,41 +40,14 @@ impl Ui {
             };
             format!("{}/{}", m.provider, m.id)
         };
-        let kind = HostModalKind::Model {
-            root,
-            current: current.clone(),
-        };
-        let (response_tx, response_rx) = oneshot::channel();
-        if host_modal_tx
-            .send(HostModalRequest {
-                kind: kind.clone(),
-                response_tx,
-            })
-            .is_err()
-        {
-            return false;
-        }
-        self.pending_host_modal = Some(PendingHostModal { kind, response_rx });
-        true
+        self.request_host_overlay(
+            phi_ext::OVERLAY_MODEL,
+            Some(serde_json::json!({ "root": root, "current": current })),
+        )
     }
 
     pub(super) fn request_host_usage_modal(&mut self) -> bool {
-        let Some(host_modal_tx) = &self.host_modal_tx else {
-            return false;
-        };
-        let kind = HostModalKind::Usage;
-        let (response_tx, response_rx) = oneshot::channel();
-        if host_modal_tx
-            .send(HostModalRequest {
-                kind: kind.clone(),
-                response_tx,
-            })
-            .is_err()
-        {
-            return false;
-        }
-        self.pending_host_modal = Some(PendingHostModal { kind, response_rx });
-        true
+        self.request_host_overlay(phi_ext::OVERLAY_USAGE, None)
     }
 
     pub(super) fn open_usage_selector(&mut self) {
