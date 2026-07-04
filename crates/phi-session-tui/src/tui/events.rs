@@ -438,6 +438,7 @@ impl Ui {
     fn apply_active_style(&mut self) {
         self.visual = VisualContext::from_runtime(Some(&self.runtime));
         self.tool_render = self.runtime.tool_render_index();
+        self.chrome = self.runtime.active_chrome();
         if let Some(colors) = &self.terminal_colors {
             self.palette = match self.runtime.active_theme() {
                 Some(spec) => InlinePalette::from_extension_theme(spec, colors),
@@ -993,7 +994,13 @@ impl Ui {
         if !self.block_active && self.live_code.is_none() {
             self.begin_tool_block();
         }
-        let label = tool_title(self.tool_render.get(&name), &name, &args, &self.palette);
+        let label = tool_title(
+            self.tool_render.get(&name),
+            &name,
+            &args,
+            &self.chrome,
+            &self.palette,
+        );
         let elapsed = self.clock.now_ms();
         if let Some((start, len)) = self.push_status(
             depth + 1,

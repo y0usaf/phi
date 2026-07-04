@@ -243,6 +243,11 @@ impl Ui {
         }
         // One neutral container surface: failures are signaled by the ✗
         // glyphs and error text inside, not by tinting the whole container.
+        // Flat chrome drops the surface (must mirror commit_block exactly —
+        // this is the replay/cache path for the same blocks).
+        if self.chrome.is_flat() {
+            return body;
+        }
         render_repl_block(
             &body,
             &self.palette.repl_bg,
@@ -266,12 +271,16 @@ impl Ui {
 
             if self.block_active {
                 let mut lines = vec![String::new()];
-                lines.extend(render_repl_block(
-                    &self.block,
-                    &self.palette.tool_pending_bg,
-                    self.panel_width(),
-                    self.tools.repl_padding,
-                ));
+                if self.chrome.is_flat() {
+                    lines.extend(self.block.iter().cloned());
+                } else {
+                    lines.extend(render_repl_block(
+                        &self.block,
+                        &self.palette.tool_pending_bg,
+                        self.panel_width(),
+                        self.tools.repl_padding,
+                    ));
+                }
                 blocks.push(TranscriptBlock {
                     key: "live:repl-block".to_owned(),
                     lines,

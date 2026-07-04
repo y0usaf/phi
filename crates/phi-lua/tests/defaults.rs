@@ -452,9 +452,25 @@ async fn defaults_claude_code_style_registers_and_activates() {
     );
     assert_eq!(idx.get("grep").unwrap().verb.as_deref(), Some("Search"));
 
+    // Chrome (WS10.3): the `⏺ Verb(args)` / `  ⎿  ` flat transcript shape.
+    let chrome = rt.active_chrome();
+    assert_eq!(
+        chrome.format_anchor("Read", Some("src/main.rs")),
+        "Read(src/main.rs)"
+    );
+    assert_eq!(chrome.glyph_ok, "⏺");
+    assert_eq!(chrome.glyph_failed, "⏺");
+    assert_eq!(chrome.result_prefix, "  ⎿  ");
+    assert_eq!(
+        chrome.format_more_lines(42),
+        "… +42 lines (ctrl+o to expand)"
+    );
+    assert!(chrome.is_flat());
+
     // Deactivating falls back to the base registrations.
     rt.set_active_style(None).unwrap();
     assert!(rt.tool_render_index().get("bash").is_none());
+    assert_eq!(rt.active_chrome(), phi_ext::ChromeSpec::default());
 }
 
 #[tokio::test]

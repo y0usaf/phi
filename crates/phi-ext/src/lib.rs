@@ -1,5 +1,6 @@
 pub mod animation_spec;
 pub mod builder;
+pub mod chrome_spec;
 pub mod command;
 pub mod draw_context;
 pub mod event;
@@ -21,6 +22,7 @@ pub mod ui;
 pub mod visual;
 
 pub use builder::RuntimeBuilder;
+pub use chrome_spec::{ChromeContainer, ChromeSpec};
 pub use command::{
     ArgCompletionFn, CommandContext, CommandHandler, CommandInfo, CommandInvocation, CommandOutput,
     CommandSpec, PickerKind, UiAction,

@@ -1246,14 +1246,27 @@ one in the abstract.
       today** (worked first try): theme roles, spinner frames/cadence,
       thinking word lists, tool verbs/anchors/categories/bodies.
       **Gap inventory** (the work list for 10.3, worst first):
-      1. *Tool-card chrome:* phi renders bg-tinted block cards; claude-code
-         renders flat `⏺ Verb(args)` gutter lines with `⎿`-prefixed,
-         collapsed-by-default results ("… +42 lines"). Card shape, gutter
-         glyphs, and result collapse presentation are not vocabulary
-         members — the single biggest at-a-glance difference.
-      2. *Anchor format:* claude-code's `Verb(arg)` parenthesized form;
-         phi hardcodes `verb arg` with a space. Needs a small anchor
-         format/template member (data, per WS1.3a).
+      1. *Tool-card chrome:* ~~not vocabulary members~~ **closed
+         (2026-07-04)** by `ChromeSpec` (`phi-ext/src/chrome_spec.rs`), a
+         new `StyleSpec` member (style-only, no standalone registration —
+         chrome is a singular surface, so "which chrome" is exactly "which
+         style"): `glyph_ok`/`glyph_failed` (status glyphs, palette-role
+         coloured), `result_prefix` (first result row's gutter, claude-code
+         `  ⎿  `; continuations hang at same-width blank indent),
+         `more_lines` (`{n}` template), `container = card|flat` (flat
+         drops the tinted repl/tool block surface *and* the pending
+         boxed status — commit, replay/cache, and live paths all
+         conditional, mirrored exactly). Pure data per WS1.3a — the
+         in-flight label is still composed once at ToolStart, nothing
+         extension-side runs on the tick path. `AppRuntime::active_chrome()`
+         (style's chrome else `ChromeSpec::default()` = phi's stock look),
+         snapshotted on `Ui` next to `tool_render`, re-resolved on
+         `/style` switch.
+      2. *Anchor format:* **closed (2026-07-04)** — `ChromeSpec.anchor_format`
+         template over `{verb}`/`{args}` placeholders; `tool_identity`
+         builds styled verb/args segments and composes through it (all
+         branches: code-bodied, anchored, fallback `name key=value`);
+         argless calls collapse to the bare verb, so `()` never dangles.
       3. *Status-line semantics:* claude-code picks one random verb per
          turn and keeps it, suffixed with elapsed time + token count;
          phi cycles expressions on a fixed timer and the suffix is host-
@@ -1265,15 +1278,27 @@ one in the abstract.
          prompt, startup banner — no styling surface at all.
       6. *Custom message renderers* (WS1.3b) — still the right forcing
          function, still open.
+      *Chrome consumption is session-TUI only, deliberately:* the plain
+      CLI (`phi -p` event printing) keeps its own panel presentation —
+      WS1.3a's doctrine is that frontends keep their presentation
+      machinery, and the 10.4 at-a-glance test is the interactive
+      transcript. Revisit only if one-shot output ever becomes a parity
+      surface. The mux inherits chrome for free (it embeds the session
+      TUI); mux *sidebar/statusbar* chrome stays host-owned.
 - [ ] **10.3 Ship the packs.** `claude-code`, `codex`, `crush` as pure Lua
       in `defaults/styles/`; `opencode` as a stretch. The default remains
       Phi's own style; packs contain zero core special-cases (a grep for
       pack names outside `phi-builtins` should come up empty).
-      *Progress:* `claude-code` v1 shipped with 10.2 — it's a faithful
-      colours/spinner/verbs imitation but won't pass 10.4's at-a-glance
-      test until inventory items (1), (2), and (4) above close. Grow the
-      vocabulary first (chrome members, anchor format, effect members),
-      then re-touch the pack and add `codex`/`crush`.
+      *Progress:* `claude-code` v1 shipped with 10.2; inventory items (1)
+      and (2) closed 2026-07-04 (`ChromeSpec`) and the pack now carries
+      `chrome = { "⏺", "  ⎿  ", "{verb}({args})", "… +{n} lines (ctrl+o
+      to expand)", flat }` — phi's expand toggle already *is* ctrl+o, so
+      the marker text is literal claude-code. Remaining before 10.4's
+      at-a-glance test: item (4) effect members (verb shimmer), then
+      re-touch the pack and add `codex`/`crush` (both are flat-chrome
+      harnesses — codex is `{verb} {args}`-shaped with different glyphs;
+      crush needs `container = card` plus its rounded borders, which may
+      grow a border member).
 - [ ] **10.4 Acceptance.** Run one fixed scripted session (prompt → a few
       tool calls → prose answer) in Phi-with-pack and in the real harness
       (`ref/` checkouts), side by side: transcript, tool cards, spinner/

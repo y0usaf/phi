@@ -15,7 +15,7 @@
 //! named `phi` and a builtins-less build degrades the same way it does for
 //! themes today.
 
-use crate::{SpinnerSpec, ThemeSpec, ThinkingExpressionSpec, ToolRenderSpec};
+use crate::{ChromeSpec, SpinnerSpec, ThemeSpec, ThinkingExpressionSpec, ToolRenderSpec};
 
 /// A named visual style bundle registered by an extension.
 #[derive(Clone, Default)]
@@ -32,6 +32,11 @@ pub struct StyleSpec {
     /// active (keyed by tool name; a style spec wins over the base spec for
     /// the same tool).
     pub tool_renderers: Vec<ToolRenderSpec>,
+    /// Transcript tool chrome (anchor composition, gutter glyphs, result
+    /// prefix, hidden-lines marker, card-vs-flat container) used while this
+    /// style is active (falls back to [`ChromeSpec::default`] — Phi's stock
+    /// look — when absent).
+    pub chrome: Option<ChromeSpec>,
 }
 
 impl StyleSpec {
@@ -59,6 +64,11 @@ impl StyleSpec {
 
     pub fn with_tool_renderers(mut self, specs: Vec<ToolRenderSpec>) -> Self {
         self.tool_renderers = specs;
+        self
+    }
+
+    pub fn with_chrome(mut self, chrome: ChromeSpec) -> Self {
+        self.chrome = Some(chrome);
         self
     }
 }

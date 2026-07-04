@@ -787,6 +787,10 @@ struct Ui {
     /// Registered tool display metadata (anchor verbs, canonical args,
     /// summary categories), snapshotted from the runtime at startup.
     pub(super) tool_render: phi_ext::ToolRenderIndex,
+    /// Transcript tool chrome (anchor composition, gutter glyphs, result
+    /// prefix, hidden-lines marker, container surface) from the active
+    /// style, snapshotted like `tool_render` and re-resolved on `/style`.
+    pub(super) chrome: phi_ext::ChromeSpec,
     /// Qualified `provider/id` names offered by /model completion.
     pub(super) model_names: Vec<String>,
     pub(super) login_tx: mpsc::UnboundedSender<LoginMsg>,
@@ -918,6 +922,7 @@ impl Ui {
             root_lm,
             sub_lm,
             tool_render: runtime.tool_render_index(),
+            chrome: runtime.active_chrome(),
             runtime,
             model_names,
             login_tx,
@@ -1410,6 +1415,7 @@ mod tests {
     #[test]
     fn tool_identity_anchor_shown_once() {
         let p = InlinePalette::default_const();
+        let ch = phi_ext::ChromeSpec::default();
         // The per-tool shapes come from the shipping Lua default
         // (`tool_render.lua`) registered through the extension API — the
         // same registry path the live UI resolves through `Ui::tool_render`.
@@ -1429,6 +1435,7 @@ mod tests {
             idx.get("read_file"),
             "read_file",
             &serde_json::json!({"path": "src/parser.rs"}),
+            &ch,
             &p,
         );
         assert!(phi_tui::strip_ansi(&read.anchor).contains("read src/parser.rs"));
@@ -1437,12 +1444,19 @@ mod tests {
             idx.get("grep"),
             "grep",
             &serde_json::json!({"pattern": "parse", "path": "src/"}),
+            &ch,
             &p,
         );
         let grep_plain = phi_tui::strip_ansi(&grep.anchor);
         assert!(grep_plain.contains("grep parse in src/"));
         assert!(grep.body.is_empty());
-        let ls = tool_identity(idx.get("ls"), "ls", &serde_json::json!({"path": "src"}), &p);
+        let ls = tool_identity(
+            idx.get("ls"),
+            "ls",
+            &serde_json::json!({"path": "src"}),
+            &ch,
+            &p,
+        );
         assert!(phi_tui::strip_ansi(&ls.anchor) == "ls src");
         assert!(ls.body.is_empty());
         // bash: single-line command lives in the anchor only (empty body); a
@@ -1452,6 +1466,7 @@ mod tests {
             idx.get("bash"),
             "bash",
             &serde_json::json!({"cmd": "cargo check"}),
+            &ch,
             &p,
         );
         assert!(phi_tui::strip_ansi(&bash1.anchor).contains("$ cargo check"));
@@ -1463,6 +1478,7 @@ mod tests {
             idx.get("bash"),
             "bash",
             &serde_json::json!({"cmd": "cargo test\ncargo build"}),
+            &ch,
             &p,
         );
         assert!(phi_tui::strip_ansi(&bash2.anchor).contains("$ cargo test…"));
@@ -1474,7 +1490,7 @@ mod tests {
         // Unknown (e.g. MCP/extension) tools: small `key=value` args live in the
         // anchor only (empty body — no dup); a long value earns a body row with
         // the full text (anchor keeps the truncated one).
-        let small = tool_identity(None, "mcp__x", &serde_json::json!({"q": "hi"}), &p);
+        let small = tool_identity(None, "mcp__x", &serde_json::json!({"q": "hi"}), &ch, &p);
         assert_eq!(
             phi_tui::strip_ansi(&small.anchor),
             "mcp__x q=hi",
@@ -1486,7 +1502,7 @@ mod tests {
             "small unknown-tool arg must not duplicate in the body"
         );
         let big_cmd = "x".repeat(120);
-        let big = tool_identity(None, "mcp__x", &serde_json::json!({"q": big_cmd}), &p);
+        let big = tool_identity(None, "mcp__x", &serde_json::json!({"q": big_cmd}), &ch, &p);
         assert!(
             !big.body.is_empty(),
             "long unknown-tool arg should carry full text in body"
@@ -1500,7 +1516,7 @@ mod tests {
         assert!(joined.contains(&big_cmd), "{joined}");
         // A bare (non-object) arg is never in the anchor (anchor is just the
         // name), so a non-empty value lives in the body once.
-        let bare = tool_identity(None, "mcp__x", &serde_json::json!("hello"), &p);
+        let bare = tool_identity(None, "mcp__x", &serde_json::json!("hello"), &ch, &p);
         assert_eq!(
             phi_tui::strip_ansi(&bare.anchor),
             "mcp__x",
@@ -1539,6 +1555,80 @@ mod tests {
         assert_eq!(plain.matches("src/parser.rs").count(), 1, "{plain}");
         // The output content (here just the file's first line) shows once too.
         assert_eq!(plain.matches("// file").count(), 1, "{plain}");
+    }
+
+    // Chrome (WS10.3): the anchor composes through the style's template,
+    // glyphs and the result gutter come from the chrome, and the flat
+    // container drops the tinted block surface — the claude-code shape,
+    // expressed as pure data.
+    #[test]
+    fn chrome_reskins_tool_cards() {
+        let p = InlinePalette::default_const();
+        let claude = phi_ext::ChromeSpec {
+            anchor_format: "{verb}({args})".to_owned(),
+            glyph_ok: "⏺".to_owned(),
+            glyph_failed: "⏺".to_owned(),
+            result_prefix: "  ⎿  ".to_owned(),
+            more_lines: "… +{n} lines (ctrl+o to expand)".to_owned(),
+            container: phi_ext::ChromeContainer::Flat,
+        };
+        // Anchored tool: parenthesized args; argless call collapses to the
+        // bare verb (no dangling `()`).
+        let spec = phi_ext::ToolRenderSpec::new("read_file")
+            .with_verb("Read")
+            .with_anchor(phi_ext::AnchorArg::new("path", phi_ext::AnchorStyle::Path));
+        let read = tool_identity(
+            Some(&spec),
+            "read_file",
+            &serde_json::json!({"path": "src/parser.rs"}),
+            &claude,
+            &p,
+        );
+        assert_eq!(phi_tui::strip_ansi(&read.anchor), "Read(src/parser.rs)");
+        let argless = tool_identity(
+            Some(&spec),
+            "read_file",
+            &serde_json::json!({}),
+            &claude,
+            &p,
+        );
+        assert_eq!(phi_tui::strip_ansi(&argless.anchor), "Read");
+
+        // Card rows: chrome glyph on the anchor, gutter prefix on the first
+        // result row, chrome hidden-lines marker; flat container commits
+        // block bodies without the tinted surface.
+        let mut ui = test_ui(80, 24);
+        ui.chrome = claude;
+        let rows = ui.tool_result_rows(
+            0,
+            "read_file",
+            &serde_json::json!({"path": "src/parser.rs"}),
+            "line one\nline two\nline three\n",
+            1,
+            None,
+            false,
+        );
+        let plain: Vec<String> = rows.iter().map(|l| phi_tui::strip_ansi(l)).collect();
+        // Verb comes from the registry index (a pack overlays it via its
+        // tool_renderers member); the chrome supplies glyph + composition.
+        assert!(plain[0].starts_with("⏺ read(src/parser.rs)"), "{plain:?}");
+        assert!(plain[1].starts_with("  ⎿  line one"), "{plain:?}");
+        assert!(
+            plain[2]
+                .trim_start()
+                .starts_with("… +2 lines (ctrl+o to expand)"),
+            "{plain:?}"
+        );
+        ui.begin_block();
+        ui.commit_block();
+        let committed = match ui.pending.last().unwrap() {
+            TranscriptEntry::RawLines(lines) => lines.clone(),
+            other => panic!("unexpected entry: {other:?}"),
+        };
+        assert!(
+            committed.iter().all(|l| !l.contains("\x1b[48;")),
+            "flat chrome must not paint a block background: {committed:?}"
+        );
     }
 
     // A multi-line bash command is preserved in full under the card header —

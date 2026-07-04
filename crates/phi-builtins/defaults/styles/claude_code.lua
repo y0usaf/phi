@@ -73,10 +73,26 @@ phi.register_style("claude-code", {
         expression_interval_ms = 15000,
     },
 
+    -- ── Chrome: gutter bullets, flat transcript, collapsed results ───────
+    -- The WS10.2 gap-inventory items (1) and (2), now vocabulary: the
+    -- `⏺ Verb(args)` anchor (constants/figures.ts BLACK_CIRCLE +
+    -- AssistantToolUseMessage's parenthesized args), the dim `  ⎿  ` result
+    -- gutter (MessageResponse, literally 5 chars), the `… +N lines
+    -- (ctrl+o to expand)` marker (utils/terminal.ts — phi's expand toggle
+    -- happens to be ctrl+o too), and no tinted block surface (claude-code
+    -- transcripts are flat; the bullets are the only structure).
+    chrome = {
+        anchor_format = "{verb}({args})",
+        glyph_ok = "⏺",
+        glyph_failed = "⏺",
+        result_prefix = "  ⎿  ",
+        more_lines = "… +{n} lines (ctrl+o to expand)",
+        container = "flat",
+    },
+
     -- ── Tool renderers: claude-code verbs ────────────────────────────────
     -- Bash / Read / Write / Update / Search / Glob / List over the same
-    -- prelude helpers. Claude Code renders `Verb(arg)`; Phi's anchor form
-    -- is `Verb arg` — the parenthesized form is in the gap inventory.
+    -- prelude helpers; the chrome's anchor_format renders them `Verb(arg)`.
     tool_renderers = {
         bash = {
             verb = "Bash",

@@ -1,7 +1,7 @@
 //! Tool identity, title formatting, and status text helpers.
 
 use phi_ai::Model;
-use phi_ext::{AnchorStyle, ResultLang, ToolBody, ToolRenderSpec};
+use phi_ext::{AnchorStyle, ChromeSpec, ResultLang, ToolBody, ToolRenderSpec};
 
 use super::palette::InlinePalette;
 use super::*;
@@ -38,6 +38,7 @@ pub(crate) fn failed_status_text(
     label: &str,
     duration_secs: Option<f64>,
     detail: Option<&str>,
+    chrome: &ChromeSpec,
     p: &InlinePalette,
 ) -> String {
     let duration = duration_secs
@@ -47,7 +48,10 @@ pub(crate) fn failed_status_text(
         .filter(|d| !d.trim().is_empty())
         .map(|d| format!(" {ghost}—{RESET} {d}", ghost = &p.text_ghost))
         .unwrap_or_default();
-    format!("{}✗{RESET} {label}{duration}{detail}", p.error_fg)
+    format!(
+        "{}{}{RESET} {label}{duration}{detail}",
+        p.error_fg, chrome.glyph_failed
+    )
 }
 
 /// Canonical identity for a tool call — the single source of truth shared by
@@ -77,6 +81,7 @@ pub(crate) fn tool_identity(
     spec: Option<&ToolRenderSpec>,
     name: &str,
     args: &serde_json::Value,
+    chrome: &ChromeSpec,
     p: &InlinePalette,
 ) -> Identity {
     let arg = |key: &str| tool_arg(args, key);
@@ -89,25 +94,37 @@ pub(crate) fn tool_identity(
             short
         }
     };
+    // Every anchor is composed from a styled verb segment and an optional
+    // styled args segment through the chrome's `anchor_format` template
+    // (`{verb} {args}` stock, `{verb}({args})` claude-code); an argless
+    // call collapses to the bare verb.
+    let compose = |verb: &str, args_seg: Option<String>| {
+        chrome.format_anchor(
+            &format!("{tool}{verb}{RESET}", tool = &p.tool_title_fg),
+            args_seg.as_deref().filter(|s| !s.is_empty()),
+        )
+    };
     // Fallback anchor (unknown tools, and `repl` which has no dedicated one):
     // `name key=value …` or bare `name` — exactly what `tool_title` produced.
-    let fallback_anchor = || match args.as_object() {
-        Some(map) if !map.is_empty() => {
-            let pairs: Vec<String> = map
-                .iter()
-                .map(|(key, value)| match value {
-                    serde_json::Value::String(s) => format!("{key}={}", one_line(s)),
-                    other => format!("{key}={other}"),
-                })
-                .collect();
-            format!(
-                "{tool}{name}{RESET} {tert}{}{RESET}",
-                pairs.join(" "),
-                tool = &p.tool_title_fg,
-                tert = &p.text_tertiary,
-            )
-        }
-        _ => format!("{tool}{name}{RESET}", tool = &p.tool_title_fg),
+    let fallback_anchor = || {
+        let args_seg = match args.as_object() {
+            Some(map) if !map.is_empty() => {
+                let pairs: Vec<String> = map
+                    .iter()
+                    .map(|(key, value)| match value {
+                        serde_json::Value::String(s) => format!("{key}={}", one_line(s)),
+                        other => format!("{key}={other}"),
+                    })
+                    .collect();
+                Some(format!(
+                    "{tert}{}{RESET}",
+                    pairs.join(" "),
+                    tert = &p.text_tertiary,
+                ))
+            }
+            _ => None,
+        };
+        compose(name, args_seg)
     };
     // Fallback body: a pretty-print of the args shown only when it carries
     // detail the one-line anchor can't — a value that is multi-line, longer
@@ -152,19 +169,22 @@ pub(crate) fn tool_identity(
             let anchor = match verb {
                 // Multi-line: the truncated first line, unhighlighted — the
                 // full highlighted command is the body.
-                Some(verb) if multiline => format!(
-                    "{tool}{verb}{RESET} {tert}{}{RESET}",
-                    one_line(code),
-                    tool = &p.tool_title_fg,
-                    tert = &p.text_tertiary,
+                Some(verb) if multiline => compose(
+                    verb,
+                    Some(format!(
+                        "{tert}{}{RESET}",
+                        one_line(code),
+                        tert = &p.text_tertiary,
+                    )),
                 ),
+                Some(verb) if code.trim().is_empty() => compose(verb, None),
                 Some(verb) => {
                     let echoed = one_line(code);
                     let lit = highlight_code(&echoed, lang.as_deref(), &p.markdown)
                         .into_iter()
                         .next()
                         .unwrap_or(echoed);
-                    format!("{tool}{verb}{RESET} {lit}{RESET}", tool = &p.tool_title_fg)
+                    compose(verb, Some(format!("{lit}{RESET}")))
                 }
                 // No verb (repl): keep the fallback `name key=<first line>…`
                 // anchor form.
@@ -186,7 +206,7 @@ pub(crate) fn tool_identity(
         // Anchored tool (read/grep/ls shape): verb + styled canonical args.
         Some(spec) if spec.verb.is_some() || !spec.anchor.is_empty() => {
             let verb = spec.verb.as_deref().unwrap_or(name);
-            let mut anchor = format!("{tool}{verb}{RESET}", tool = &p.tool_title_fg);
+            let mut segments: Vec<String> = Vec::new();
             for a in &spec.anchor {
                 let raw = arg(&a.key);
                 if a.skips(raw) {
@@ -204,16 +224,17 @@ pub(crate) fn tool_identity(
                     AnchorStyle::Plain => &p.text_tertiary,
                 };
                 let rendered = match &a.prefix {
-                    Some(prefix) => format!(" {prefix} {value}"),
-                    None => format!(" {value}"),
+                    Some(prefix) => format!("{prefix} {value}"),
+                    None => value,
                 };
-                anchor.push_str(&format!("{color}{rendered}{RESET}"));
+                segments.push(format!("{color}{rendered}{RESET}"));
             }
+            let args_seg = (!segments.is_empty()).then(|| segments.join(" "));
             let body = match &spec.body {
                 ToolBody::Args => fallback_body(),
                 _ => Vec::new(),
             };
-            (anchor, body)
+            (compose(verb, args_seg), body)
         }
         Some(spec) => {
             let body = match &spec.body {
@@ -232,9 +253,10 @@ pub(crate) fn tool_title(
     spec: Option<&ToolRenderSpec>,
     name: &str,
     args: &serde_json::Value,
+    chrome: &ChromeSpec,
     p: &InlinePalette,
 ) -> String {
-    tool_identity(spec, name, args, p).anchor
+    tool_identity(spec, name, args, chrome, p).anchor
 }
 
 pub(crate) fn lang_hint_for_path(path: &str) -> Option<&'static str> {

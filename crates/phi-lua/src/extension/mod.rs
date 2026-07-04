@@ -475,6 +475,9 @@ impl phi_ext::Extension for LuaExtension {
                         .push(tool_render_spec_from_table(&lua, &tool, spec_table)?);
                 }
             }
+            if let Some(ch_table) = st.get::<Option<mlua::Table>>("chrome")? {
+                spec.chrome = Some(chrome_spec_from_table(&lua, name, ch_table)?);
+            }
             styles.push(spec);
         }
 
@@ -784,6 +787,19 @@ fn thinking_from_table(
         tool_expression,
         expression_interval_ms,
     ))
+}
+
+/// Deserialize a style's `chrome` member straight into `ChromeSpec` —
+/// omitted fields keep Phi's stock look via the spec's serde defaults.
+/// Malformed tables are hard, named errors.
+fn chrome_spec_from_table(
+    lua: &mlua::Lua,
+    style: &str,
+    chrome_table: mlua::Table,
+) -> mlua::Result<phi_ext::ChromeSpec> {
+    use mlua::LuaSerdeExt as _;
+    lua.from_value(mlua::Value::Table(chrome_table))
+        .map_err(|e| mlua::Error::runtime(format!("style '{style}': bad chrome: {e}")))
 }
 
 /// Deserialize a tool renderer spec table. The tool name is the

@@ -414,6 +414,14 @@ phi.register_style("crush", {
     tool_renderers = {
         bash = { verb = "exec" },
     },
+    chrome = {
+        anchor_format = "{verb}({args})",
+        glyph_ok = "⏺",
+        glyph_failed = "⏺",
+        result_prefix = "  ⎿  ",
+        more_lines = "… +{n} lines",
+        container = "flat",
+    },
 })
 phi.register_style("bare", {})
 "#;
@@ -440,9 +448,16 @@ phi.register_style("bare", {})
         rt.tool_render_index().get("bash").unwrap().verb.as_deref(),
         Some("exec")
     );
+    let chrome = rt.active_chrome();
+    assert_eq!(chrome.format_anchor("Read", Some("a.rs")), "Read(a.rs)");
+    assert_eq!(chrome.glyph_ok, "⏺");
+    assert_eq!(chrome.result_prefix, "  ⎿  ");
+    assert_eq!(chrome.format_more_lines(3), "… +3 lines");
+    assert!(chrome.is_flat());
 
     // Empty bundle: everything falls back to the base registrations.
     rt.set_active_style(Some("bare")).unwrap();
+    assert_eq!(rt.active_chrome(), phi_ext::ChromeSpec::default());
     assert_eq!(rt.active_theme().unwrap().name, "base");
     assert_eq!(
         rt.tool_render_index().get("bash").unwrap().verb.as_deref(),

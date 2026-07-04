@@ -83,9 +83,9 @@ impl Ui {
             }
             if output_rows.len() > max {
                 rows.push(format!(
-                    "{}… ({} more lines){RESET}",
+                    "{}{}{RESET}",
                     &self.palette.muted_fg,
-                    output_rows.len() - max
+                    self.chrome.format_more_lines(output_rows.len() - max)
                 ));
             }
         }
@@ -113,8 +113,9 @@ impl Ui {
                 let hidden = rows.len() - max;
                 rows.truncate(max);
                 rows.push(format!(
-                    "{}… ({hidden} more lines){RESET}",
-                    &self.palette.text_tertiary
+                    "{}{}{RESET}",
+                    &self.palette.text_tertiary,
+                    self.chrome.format_more_lines(hidden)
                 ));
             }
         }
@@ -184,6 +185,11 @@ impl Ui {
     pub(super) fn status_rows_bg(&self, _depth: usize, text: &str, bg: &str) -> Vec<String> {
         let content_width = self.box_width().saturating_sub(2).max(1);
         let wrapped = wrap_ansi(text, content_width);
+        // Flat chrome: the status line lies bare in the transcript, no
+        // tinted box (claude-code's in-flight rows are flat).
+        if self.chrome.is_flat() {
+            return wrapped;
+        }
         render_boxed_padded(&wrapped, bg, self.box_width(), self.tools.tool_padding)
     }
 
@@ -383,7 +389,7 @@ impl Ui {
     fn failed_rows(&self, label: &str) -> Vec<String> {
         let content_width = self.box_width().saturating_sub(2).max(1);
         wrap_ansi(
-            &failed_status_text(label, None, None, &self.palette),
+            &failed_status_text(label, None, None, &self.chrome, &self.palette),
             content_width,
         )
     }
@@ -475,13 +481,18 @@ impl Ui {
         // One neutral container surface for committed REPL blocks: failures
         // are signaled by the ✗ glyphs and error text inside, not by tinting
         // the whole container. Three surfaces total (terminal, repl, pending)
-        // instead of six.
-        let rows = render_repl_block(
-            &body,
-            &self.palette.repl_bg,
-            self.panel_width(),
-            self.tools.repl_padding,
-        );
+        // instead of six. Flat chrome drops the surface entirely — the
+        // gutter glyphs are the only structure (claude-code shape).
+        let rows = if self.chrome.is_flat() {
+            body
+        } else {
+            render_repl_block(
+                &body,
+                &self.palette.repl_bg,
+                self.panel_width(),
+                self.tools.repl_padding,
+            )
+        };
         self.ensure_pending_gap();
         self.pending.push(TranscriptEntry::RawLines(rows));
         self.open_tool_rows.clear();
@@ -571,8 +582,9 @@ impl Ui {
             let hidden = rows.len() - max;
             rows.truncate(max);
             rows.push(format!(
-                "{}… ({hidden} more lines){RESET}",
-                &self.palette.text_tertiary
+                "{}{}{RESET}",
+                &self.palette.text_tertiary,
+                self.chrome.format_more_lines(hidden)
             ));
         }
         rows
@@ -620,7 +632,13 @@ impl Ui {
         lang: Option<&str>,
         failed: bool,
     ) -> Vec<String> {
-        let identity = tool_identity(self.tool_render.get(name), name, args, &self.palette);
+        let identity = tool_identity(
+            self.tool_render.get(name),
+            name,
+            args,
+            &self.chrome,
+            &self.palette,
+        );
 
         // tool_max_lines = 0: one-line summary `glyph tool ╱ detail`, mirroring
         // pi-compact's compact tools: `✓ bash ╱ git status`.
@@ -629,16 +647,23 @@ impl Ui {
         }
 
         // Full card: flat, crush-style — no background tint. The colored
-        // status glyph (✓ bright green / ✗ red) is the only state signal;
-        // the anchor carries the identity, and the output folds under it
-        // at a 2-space indent in the secondary text level. Removing the
+        // status glyph (✓ bright green / ✗ red stock; chrome-supplied per
+        // style) is the only state signal; the anchor carries the identity,
+        // and the output folds under it behind the chrome's result prefix
+        // (stock: a 2-space indent; claude-code: `  ⎿  `). Removing the
         // per-state background washes keeps the transcript a single flat
         // surface where hue is reserved for meaning. (`tool_padding` applies
         // to the pending tinted box only — flat cards carry no padding rows.)
         let glyph = if failed {
-            format!("{}\u{2717}{RESET}", &self.palette.error_fg)
+            format!(
+                "{}{}{RESET}",
+                &self.palette.error_fg, self.chrome.glyph_failed
+            )
         } else {
-            format!("{}\u{2713}{RESET}", &self.palette.success_fg)
+            format!(
+                "{}{}{RESET}",
+                &self.palette.success_fg, self.chrome.glyph_ok
+            )
         };
         let content_width = self.box_width().saturating_sub(2).max(1);
         let anchor_width = content_width.saturating_sub(2).max(1);
@@ -673,22 +698,35 @@ impl Ui {
                     })
                     .collect(),
             };
+            // The first result row carries the chrome's gutter prefix;
+            // continuations (and the hidden-lines marker) hang at a blank
+            // indent of the same width.
+            let gutter = format!(
+                "{}{}{RESET}",
+                &self.palette.text_ghost, self.chrome.result_prefix
+            );
+            let hang = self.chrome.result_continuation();
+            let result_width = content_width.saturating_sub(hang.len()).max(1);
             let output_rows: Vec<String> = base_rows
                 .into_iter()
                 .flat_map(|line| {
                     let colored = format!("{}{line}{RESET}", &self.palette.tool_output_fg);
-                    wrap_ansi(&colored, body_width)
+                    wrap_ansi(&colored, result_width)
                 })
                 .collect();
             let shown = output_rows.len().min(max);
-            for row in &output_rows[..shown] {
-                content.push(format!("  {row}"));
+            for (i, row) in output_rows[..shown].iter().enumerate() {
+                if i == 0 {
+                    content.push(format!("{gutter}{row}"));
+                } else {
+                    content.push(format!("{hang}{row}"));
+                }
             }
             if output_rows.len() > max {
                 content.push(format!(
-                    "  {}… ({} more lines){RESET}",
+                    "{hang}{}{}{RESET}",
                     &self.palette.text_tertiary,
-                    output_rows.len() - max
+                    self.chrome.format_more_lines(output_rows.len() - max)
                 ));
             }
         }
@@ -707,9 +745,15 @@ impl Ui {
         failed: bool,
     ) -> Vec<String> {
         let glyph = if failed {
-            format!("{}✗{RESET}", &self.palette.error_fg)
+            format!(
+                "{}{}{RESET}",
+                &self.palette.error_fg, self.chrome.glyph_failed
+            )
         } else {
-            format!("{}✓{RESET}", &self.palette.success_fg)
+            format!(
+                "{}{}{RESET}",
+                &self.palette.success_fg, self.chrome.glyph_ok
+            )
         };
         let anchor_plain = strip_ansi(&identity.anchor);
         let detail = output
@@ -753,8 +797,14 @@ impl Ui {
         if repl_count == 0 && tools.is_empty() {
             return Vec::new();
         }
-        let ck = format!("{}✓{RESET}", &self.palette.success_fg);
-        let nr = format!("{}✗{RESET}", &self.palette.error_fg);
+        let ck = format!(
+            "{}{}{RESET}",
+            &self.palette.success_fg, self.chrome.glyph_ok
+        );
+        let nr = format!(
+            "{}{}{RESET}",
+            &self.palette.error_fg, self.chrome.glyph_failed
+        );
 
         // Categories come from the registered tool render specs; tools
         // without a spec tally as "other".
@@ -804,6 +854,10 @@ impl Ui {
         }
 
         // One neutral container surface — error state lives in the glyphs.
+        // Flat chrome: no surface (same degrade as commit_block).
+        if self.chrome.is_flat() {
+            return body;
+        }
         render_repl_block(
             &body,
             &self.palette.repl_bg,
@@ -821,11 +875,18 @@ impl Ui {
         failed: bool,
     ) -> Vec<String> {
         // Flat, like tool cards: colored status glyph + label anchor, with
-        // the output folded under at a 2-space indent. No background tint.
+        // the output folded under behind the chrome's result prefix. No
+        // background tint.
         let glyph = if failed {
-            format!("{}\u{2717}{RESET}", &self.palette.error_fg)
+            format!(
+                "{}{}{RESET}",
+                &self.palette.error_fg, self.chrome.glyph_failed
+            )
         } else {
-            format!("{}\u{2713}{RESET}", &self.palette.success_fg)
+            format!(
+                "{}{}{RESET}",
+                &self.palette.success_fg, self.chrome.glyph_ok
+            )
         };
         let content_width = self.box_width().saturating_sub(2).max(1);
         let anchor_width = content_width.saturating_sub(2).max(1);
@@ -840,23 +901,32 @@ impl Ui {
         if let Some(text) = content {
             let trimmed = text.trim_end();
             if !trimmed.is_empty() {
-                let body_width = content_width.saturating_sub(2).max(1);
+                let gutter = format!(
+                    "{}{}{RESET}",
+                    &self.palette.text_ghost, self.chrome.result_prefix
+                );
+                let hang = self.chrome.result_continuation();
+                let result_width = content_width.saturating_sub(hang.len()).max(1);
                 let output_rows: Vec<String> = trimmed
                     .lines()
                     .flat_map(|line| {
                         let colored = format!("{}{line}{RESET}", &self.palette.tool_output_fg);
-                        wrap_ansi(&colored, body_width)
+                        wrap_ansi(&colored, result_width)
                     })
                     .collect();
                 let shown = output_rows.len().min(max);
-                for row in &output_rows[..shown] {
-                    rows.push(format!("  {row}"));
+                for (i, row) in output_rows[..shown].iter().enumerate() {
+                    if i == 0 {
+                        rows.push(format!("{gutter}{row}"));
+                    } else {
+                        rows.push(format!("{hang}{row}"));
+                    }
                 }
                 if output_rows.len() > max {
                     rows.push(format!(
-                        "  {}… ({} more lines){RESET}",
+                        "{hang}{}{}{RESET}",
                         &self.palette.text_tertiary,
-                        output_rows.len() - max
+                        self.chrome.format_more_lines(output_rows.len() - max)
                     ));
                 }
             }

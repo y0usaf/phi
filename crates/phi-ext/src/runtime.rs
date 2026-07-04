@@ -6,11 +6,11 @@ use std::time::Duration;
 use tokio::sync::Mutex as TokioMutex;
 
 use crate::{
-    CommandContext, CommandInvocation, CommandOutput, CommandSpec, EventHandlerRegistration,
-    EventKind, EventPayload, EventReturn, ExtensionContextRef, ExtensionManifest, ExtensionMode,
-    FlagSpec, LifecycleEvent, MessageRendererSpec, OverlaySpec, ProviderConfig, ShortcutSpec,
-    SpinnerSpec, StyleSpec, TextEffectSpec, ThemeSpec, ThinkingExpressionSpec, ToolRenderIndex,
-    ToolRenderSpec, ToolSpec,
+    ChromeSpec, CommandContext, CommandInvocation, CommandOutput, CommandSpec,
+    EventHandlerRegistration, EventKind, EventPayload, EventReturn, ExtensionContextRef,
+    ExtensionManifest, ExtensionMode, FlagSpec, LifecycleEvent, MessageRendererSpec, OverlaySpec,
+    ProviderConfig, ShortcutSpec, SpinnerSpec, StyleSpec, TextEffectSpec, ThemeSpec,
+    ThinkingExpressionSpec, ToolRenderIndex, ToolRenderSpec, ToolSpec,
 };
 use anyhow::{Result, anyhow, bail};
 
@@ -1017,6 +1017,15 @@ impl AppRuntime {
         self.active_style_spec()
             .and_then(|s| s.thinking_expression.as_ref())
             .or_else(|| self.first_thinking_expression())
+    }
+
+    /// The transcript tool chrome in effect: the active style's, else the
+    /// stock Phi look. Chrome has no standalone registration — it is a
+    /// singular surface, so "which chrome" is exactly "which style".
+    pub fn active_chrome(&self) -> ChromeSpec {
+        self.active_style_spec()
+            .and_then(|s| s.chrome.clone())
+            .unwrap_or_default()
     }
 
     // ── Visual: theme accessors ──────────────────────────────────────────
@@ -2438,9 +2447,12 @@ mod tests {
                         vec![".".to_owned()],
                         120,
                     ))
-                    .with_tool_renderers(vec![
-                        crate::ToolRenderSpec::new("bash").with_verb("exec"),
-                    ]),
+                    .with_tool_renderers(vec![crate::ToolRenderSpec::new("bash").with_verb("exec")])
+                    .with_chrome(crate::ChromeSpec {
+                        anchor_format: "{verb}({args})".to_owned(),
+                        container: crate::ChromeContainer::Flat,
+                        ..Default::default()
+                    }),
             )?;
             // A minimal pack with no members: falls back to the base
             // registrations entirely (the shipped `phi` default's shape).
@@ -2463,6 +2475,7 @@ mod tests {
         // No active style: active_* fall through to the base registrations.
         assert_eq!(rt.active_theme().unwrap().name, "base");
         assert_eq!(rt.active_spinner().unwrap().name, "base");
+        assert_eq!(rt.active_chrome(), crate::ChromeSpec::default());
         assert_eq!(
             rt.tool_render_index().get("bash").unwrap().verb.as_deref(),
             Some("run")
@@ -2480,9 +2493,14 @@ mod tests {
         // Thinking expressions: the pack has none, so base fallback (none
         // registered here) applies.
         assert!(rt.active_thinking_expression().is_none());
+        // Chrome: the pack's bundle applies while active.
+        let chrome = rt.active_chrome();
+        assert_eq!(chrome.format_anchor("Read", Some("a.rs")), "Read(a.rs)");
+        assert!(chrome.is_flat());
 
         // An empty bundle behaves exactly like no style at all.
         rt.set_active_style(Some("bare")).unwrap();
+        assert_eq!(rt.active_chrome(), crate::ChromeSpec::default());
         assert_eq!(rt.active_theme().unwrap().name, "base");
         assert_eq!(
             rt.tool_render_index().get("bash").unwrap().verb.as_deref(),
