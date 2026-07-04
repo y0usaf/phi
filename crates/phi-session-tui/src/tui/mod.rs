@@ -446,6 +446,7 @@ pub async fn run(setup: TuiSetup, mut io: SessionIo) -> Result<()> {
         } else {
             FRAME_BLURRED
         };
+        let mut user_input = false;
         let quit = tokio::select! {
             maybe = input.next() => match maybe {
                 #[cfg(unix)]
@@ -462,7 +463,14 @@ pub async fn run(setup: TuiSetup, mut io: SessionIo) -> Result<()> {
                     }
                     false
                 }
-                Some(Ok(event)) => ui.handle_input(event, &cmd_tx).await,
+                Some(Ok(event)) => {
+                    // User input renders immediately for instant feedback
+                    // (echo, cursor movement) instead of waiting for the
+                    // next frame boundary — mirroring the mux loop, where
+                    // only background events are coalesced.
+                    user_input = true;
+                    ui.handle_input(event, &cmd_tx).await
+                }
                 Some(Err(_)) | None => true,
             },
             Some(event) = events.recv() => {
@@ -570,7 +578,7 @@ pub async fn run(setup: TuiSetup, mut io: SessionIo) -> Result<()> {
             }
         }
         dirty = true;
-        if last_draw.elapsed() >= frame {
+        if user_input || last_draw.elapsed() >= frame {
             // Tick the clock exactly once per frame so now_ms() returns a
             // fresh snapshot shared by refresh_open_activity_rows() (tool
             // header shimmer) and draw() (equalizer, statusbar shimmer,
