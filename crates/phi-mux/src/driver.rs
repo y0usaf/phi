@@ -30,6 +30,11 @@ pub struct SessionHandle {
     pub task: JoinHandle<()>,
     /// JSONL backing this session (may not exist yet for a fresh draft).
     pub store_path: std::path::PathBuf,
+    /// Last watch state told to the session (synthesized FocusGained/
+    /// FocusLost). The session tui starts watched, matching this default;
+    /// [`MuxApp::sync_watch_states`] reconciles it every loop iteration so
+    /// unwatched sessions pause their idle animations.
+    pub watched: std::cell::Cell<bool>,
 }
 
 impl SessionHandle {
@@ -171,6 +176,7 @@ pub async fn spawn(
         parser,
         task,
         store_path,
+        watched: std::cell::Cell::new(true),
     })
 }
 

@@ -273,6 +273,7 @@ fn build_app(
         terminal_colors,
         visual_runtime,
         clock: AnimationClock::with_baseline_keep_alive(),
+        chrome_animated: true,
         channels: MuxChannels {
             status_tx,
             redraw_tx,
@@ -369,6 +370,11 @@ struct MuxApp {
     /// glyphs, gradient text). Replaces the old `ANIMATION_TICK` constant
     /// and ad-hoc `SystemTime::now()` calls.
     clock: AnimationClock,
+    /// Whether the chrome's baseline keep-alive is currently held. With
+    /// zero clients attached nobody sees the sidebar/statusbar shimmer, so
+    /// [`MuxApp::sync_watch_states`] withdraws it and the main loop idles
+    /// at the slow poll instead of frame cadence.
+    chrome_animated: bool,
     channels: MuxChannels,
     session_watcher: SessionWatcher,
     /// Frame destination: local stdout, or the daemon's client fanout.

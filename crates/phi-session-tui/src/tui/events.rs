@@ -213,9 +213,24 @@ impl Ui {
             }
             Event::FocusGained => {
                 self.clock.set_focused(true);
+                if !self.watched {
+                    self.watched = true;
+                    // Restore the baseline keep-alive withdrawn on FocusLost
+                    // so idle-state animations resume. now_ms() ran on
+                    // real-time while paused, so phases continue seamlessly.
+                    self.clock.add_keep_alive();
+                }
             }
             Event::FocusLost => {
                 self.clock.set_focused(false);
+                if self.watched {
+                    self.watched = false;
+                    // Nobody is looking: withdraw the baseline keep-alive so
+                    // an idle session's clock pauses and the run loop stops
+                    // waking at frame cadence. An in-flight run's own
+                    // keep-alive keeps the clock ticking until the turn ends.
+                    self.clock.remove_keep_alive();
+                }
             }
             _ => {}
         }

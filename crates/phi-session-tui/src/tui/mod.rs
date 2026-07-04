@@ -409,6 +409,10 @@ pub async fn run(setup: TuiSetup, mut io: SessionIo) -> Result<()> {
     // invisible animations don't deserve full-rate wake-ups.
     const FRAME: Duration = Duration::from_millis(40);
     const FRAME_BLURRED: Duration = Duration::from_millis(80);
+    // Wake-up cadence while the animation clock is fully paused (unwatched,
+    // no run in flight): just often enough to surface poll-based extension
+    // notifications without burning CPU for an invisible session.
+    const IDLE_POLL_INTERVAL: Duration = Duration::from_secs(1);
     let mut last_draw = tokio::time::Instant::now();
     let mut dirty = false;
 
@@ -477,13 +481,28 @@ pub async fn run(setup: TuiSetup, mut io: SessionIo) -> Result<()> {
                 ui.handle_ui_prompt(req);
                 false
             }
-            // Animation timer: the clock has a baseline keep-alive so it is
-            // always ticking — wake at FRAME cadence so animated surfaces
+            // Animation timer: while the clock is ticking (watched, or a
+            // run in flight), wake at FRAME cadence so animated surfaces
             // (chrome shimmer, gradient text, equalizer, spinner, tool
-            // shimmer) stay in motion even when no run is in flight.
-            // Bursting at the same cadence as the draw coalescer below means
-            // each wake-up produces exactly one render — no redundant work.
+            // shimmer) stay in motion. Bursting at the same cadence as the
+            // draw coalescer below means each wake-up produces exactly one
+            // render — no redundant work. Unwatched and idle, the clock is
+            // paused and this arm is disarmed: zero frame wake-ups.
             _ = tokio::time::sleep_until(last_draw + frame), if ui.clock.is_ticking() => {
+                false
+            }
+            // Idle notification poll: extension notifications are drained by
+            // polling, which the frame timer normally provides. With the
+            // clock paused nothing else would surface them, so poll slowly
+            // and skip the draw entirely when there is nothing to show.
+            _ = tokio::time::sleep(IDLE_POLL_INTERVAL), if !ui.clock.is_ticking() && !dirty => {
+                let notes = ui.runtime.drain_notifications();
+                if notes.is_empty() {
+                    continue;
+                }
+                for msg in notes {
+                    ui.pending.push(TranscriptEntry::RawLines(vec![msg]));
+                }
                 false
             }
             _ = tokio::time::sleep_until(last_draw + frame), if dirty => false,
@@ -556,9 +575,11 @@ pub async fn run(setup: TuiSetup, mut io: SessionIo) -> Result<()> {
             // fresh snapshot shared by refresh_open_activity_rows() (tool
             // header shimmer) and draw() (equalizer, statusbar shimmer,
             // gradient text). Single tick → all animated surfaces are in
-            // phase — no incongruity between tool rows and chrome. With the
-            // baseline keep-alive the clock is always ticking, so this guard
-            // is always true, but is kept defensively.
+            // phase — no incongruity between tool rows and chrome. Paused
+            // (unwatched, no run in flight) the per-frame work is skipped:
+            // stream backlogs only exist mid-run, when the run's keep-alive
+            // guarantees ticking, and notifications are covered by the
+            // idle poll arm above.
             if ui.clock.is_ticking() {
                 ui.clock.tick();
                 // Pace queued stream text into view: one bounded drain per
@@ -645,6 +666,14 @@ struct Ui {
     /// ticking so the chrome shimmer/gradient text animate continuously;
     /// the run adds a second interest for equalizer/spinner during a turn.
     pub(super) clock: phi_tui::AnimationClock,
+    /// Whether anyone is looking at this session. Standalone this follows
+    /// terminal focus; embedded the mux synthesizes FocusGained/FocusLost
+    /// as viewers arrive and leave. While unwatched the baseline keep-alive
+    /// is withdrawn, so an idle session's clock fully pauses — chrome
+    /// shimmer and gradient text don't animate for nobody. A run in flight
+    /// holds its own keep-alive, so streaming turns keep draining/drawing
+    /// regardless.
+    pub(super) watched: bool,
     pub(super) palette: InlinePalette,
     /// Cancel token of the in-flight turn, if any.
     pub(super) running: Option<CancellationToken>,
@@ -881,6 +910,7 @@ impl Ui {
             editor: Editor::new(),
             visual: VisualContext::default(),
             clock: phi_tui::AnimationClock::with_baseline_keep_alive(),
+            watched: true,
             palette: InlinePalette::default_const(),
             running: None,
             run_started_ms: 0,

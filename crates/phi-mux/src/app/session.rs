@@ -34,6 +34,7 @@ impl MuxApp {
         } = receivers;
 
         self.ensure_all_sessions().await;
+        self.sync_watch_states();
         self.draw();
         let mut last_render_at = tokio::time::Instant::now();
         let mut pending_render = false;
@@ -176,6 +177,12 @@ impl MuxApp {
                     dirty = true;
                 }
             }
+
+            // Reconcile per-session watch state and chrome animation with
+            // the (possibly changed) view topology. Cheap diff — only
+            // transitions send anything — so it runs every iteration
+            // rather than chasing each attach/detach/navigation call site.
+            self.sync_watch_states();
 
             if dirty {
                 // User interactions (focus_changed) draw immediately for
@@ -352,6 +359,50 @@ impl MuxApp {
                 let (cur_rows, cur_cols) = driver::lock_parser(&handle.parser).screen().size();
                 if (cur_cols, cur_rows) != (cols, rows) {
                     handle.resize(cols, rows);
+                }
+            }
+        }
+    }
+
+    /// Reconcile animation interest with who is actually looking.
+    ///
+    /// Sessions: each embedded session is told, via synthesized
+    /// FocusGained/FocusLost on its input channel, whether any attached
+    /// view is focused on it — unwatched sessions withdraw their baseline
+    /// keep-alive and stop waking at frame cadence. Views come and go
+    /// (attach/detach) and retarget (sidebar navigation, project
+    /// switches, rescans), so this runs once per main-loop iteration and
+    /// diffs against the last state sent, only notifying on transitions.
+    ///
+    /// Chrome: with zero clients attached nobody sees the sidebar or
+    /// statusbar shimmer either, so the mux's own baseline keep-alive is
+    /// withdrawn until the next attach.
+    pub(crate) fn sync_watch_states(&mut self) {
+        let any_clients = !self.views.is_empty();
+        if any_clients != self.chrome_animated {
+            self.chrome_animated = any_clients;
+            if any_clients {
+                self.clock.add_keep_alive();
+            } else {
+                self.clock.remove_keep_alive();
+            }
+        }
+        for (project_index, project) in self.workspace.projects.iter().enumerate() {
+            for (session_index, session) in project.sessions.iter().enumerate() {
+                let Some(handle) = session.handle.as_ref() else {
+                    continue;
+                };
+                let watched = self.views.values().any(|view| {
+                    view.focus.project == project_index
+                        && view.focus.selected_session(project_index) == session_index
+                });
+                if handle.watched.get() != watched {
+                    handle.watched.set(watched);
+                    let _ = handle.input_tx.send(if watched {
+                        Event::FocusGained
+                    } else {
+                        Event::FocusLost
+                    });
                 }
             }
         }
