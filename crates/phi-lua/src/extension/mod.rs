@@ -28,6 +28,10 @@ use thread::spawn_lua_thread;
 pub struct LuaExtension {
     path: PathBuf,
     source: String,
+    /// Host-injected globals, set on the VM (via typed JSON→Lua conversion)
+    /// before the source runs. This is the host→extension config channel:
+    /// no hand-serialized Lua source, no escaping bugs.
+    globals: Vec<(String, serde_json::Value)>,
 }
 
 impl LuaExtension {
@@ -35,6 +39,7 @@ impl LuaExtension {
         Ok(Self {
             path: path.to_owned(),
             source: std::fs::read_to_string(path)?,
+            globals: Vec::new(),
         })
     }
 
@@ -50,7 +55,17 @@ impl LuaExtension {
         Ok(Self {
             path: PathBuf::from(format!("{name}.lua")),
             source,
+            globals: Vec::new(),
         })
+    }
+
+    /// Inject a global into the VM before the source runs. The value is a
+    /// JSON value converted with the same semantics as `phi.json.decode`
+    /// (JSON `null` → Lua `nil`), so `_phi_*` runtime globals reach the
+    /// extension as real tables — never as concatenated source text.
+    pub fn with_global(mut self, name: &str, value: serde_json::Value) -> Self {
+        self.globals.push((name.to_owned(), value));
+        self
     }
 }
 
@@ -83,6 +98,12 @@ impl phi_ext::Extension for LuaExtension {
             .and_then(|s| s.to_str())
             .unwrap_or("unknown.lua")
             .to_owned();
+
+        // Host-injected globals land before the source runs.
+        for (name, value) in &self.globals {
+            lua.globals()
+                .set(name.as_str(), globals::json_to_lua(&lua, value)?)?;
+        }
 
         lua.load(&self.source).set_name(&filename).exec()?;
 

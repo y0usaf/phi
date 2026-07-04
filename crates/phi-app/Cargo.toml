@@ -27,6 +27,9 @@ tikv-jemallocator = { workspace = true, optional = true }
 tikv-jemalloc-ctl = { workspace = true, optional = true }
 tikv-jemalloc-sys = { workspace = true, optional = true }
 
+[dev-dependencies]
+phi-lua.workspace = true
+
 [features]
 default = ["builtins"]
 # WS1.5: default-on builtin extensions. `--no-default-features` yields the

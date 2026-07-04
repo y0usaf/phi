@@ -24,6 +24,10 @@
 --
 -- Extra paths from config.lua's `skills` field are scanned after the defaults.
 -- Paths support ~ expansion and are resolved relative to cwd.
+--
+-- Discovery runs once, when the extension loads: a SKILL.md added mid-session
+-- appears after the next session start, not the next turn. (Intentional — the
+-- scan touches the filesystem; before_agent_start must stay cheap.)
 
 --------------------------------------------------------------------------------
 -- Constants

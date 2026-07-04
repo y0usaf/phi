@@ -26,134 +26,7 @@ local ASK_WAIT = 300        -- seconds; how long phi.ui.ask waits
 local HANDLER_TIMEOUT = 310 -- seconds; watchdog above ASK_WAIT
 local SUBJECT_PREVIEW_CHARS = 2000
 
---------------------------------------------------------------------------------
--- Minimal JSON encode/decode (for persistence)
---------------------------------------------------------------------------------
-
-local function json_escape(s)
-  return (s:gsub('\\', '\\\\'):gsub('"', '\\"'):gsub('\n', '\\n'):gsub('\r', '\\r'):gsub('\t', '\\t'))
-end
-
---- Encode a simple Lua table (string keys, array-of-tables values) to JSON.
-local function json_encode(data)
-  if data == nil then return "null" end
-  if type(data) == "string" then return '"' .. json_escape(data) .. '"' end
-  if type(data) == "number" or type(data) == "boolean" then return tostring(data) end
-  if type(data) ~= "table" then return "null" end
-
-  -- Detect array vs object: if keys are 1..n, it's an array.
-  local is_array = true
-  local n = 0
-  for k, _ in pairs(data) do
-    n = n + 1
-    if type(k) ~= "number" then is_array = false; break end
-  end
-  if is_array and n > 0 then
-    local parts = {}
-    for i = 1, n do
-      parts[i] = json_encode(data[i])
-    end
-    return "[" .. table.concat(parts, ",") .. "]"
-  elseif n == 0 then
-    -- Empty: could be array or object. We use {}.
-    return "{}"
-  end
-
-  local parts = {}
-  for k, v in pairs(data) do
-    parts[#parts + 1] = '"' .. json_escape(tostring(k)) .. '":' .. json_encode(v)
-  end
-  return "{" .. table.concat(parts, ",") .. "}"
-end
-
---- Minimal JSON string decoder for our persistence format:
---- { "path1": [{tool,pattern,action},...], "path2": [...] }
---- Uses pattern matching (not a full JSON parser, but sufficient for our needs).
-local function json_decode(s)
-  if not s or s:match("^%s*$") then return {} end
-  -- For our simple structure, we parse with a recursive descent approach.
-  local pos = 1
-  local function skip_ws()
-    while pos <= #s and s:sub(pos, pos):match("%s") do pos = pos + 1 end
-  end
-  local function parse_value()
-    skip_ws()
-    local c = s:sub(pos, pos)
-    if c == '"' then
-      pos = pos + 1
-      local result = {}
-      while pos <= #s do
-        local ch = s:sub(pos, pos)
-        if ch == '\\' then
-          local next_ch = s:sub(pos + 1, pos + 1)
-          if next_ch == 'n' then result[#result + 1] = '\n'
-          elseif next_ch == 'r' then result[#result + 1] = '\r'
-          elseif next_ch == 't' then result[#result + 1] = '\t'
-          elseif next_ch == '"' then result[#result + 1] = '"'
-          elseif next_ch == '\\' then result[#result + 1] = '\\'
-          else result[#result + 1] = next_ch
-          end
-          pos = pos + 2
-        elseif ch == '"' then
-          pos = pos + 1
-          return table.concat(result)
-        else
-          result[#result + 1] = ch
-          pos = pos + 1
-        end
-      end
-      return ""
-    elseif c == '{' then
-      pos = pos + 1
-      local obj = {}
-      skip_ws()
-      if s:sub(pos, pos) == '}' then pos = pos + 1; return obj end
-      while true do
-        skip_ws()
-        local key = parse_value() -- should be a string
-        skip_ws()
-        if s:sub(pos, pos) == ':' then pos = pos + 1 end
-        local val = parse_value()
-        obj[key] = val
-        skip_ws()
-        if s:sub(pos, pos) == ',' then pos = pos + 1
-        elseif s:sub(pos, pos) == '}' then pos = pos + 1; break
-        else break end
-      end
-      return obj
-    elseif c == '[' then
-      pos = pos + 1
-      local arr = {}
-      skip_ws()
-      if s:sub(pos, pos) == ']' then pos = pos + 1; return arr end
-      while true do
-        arr[#arr + 1] = parse_value()
-        skip_ws()
-        if s:sub(pos, pos) == ',' then pos = pos + 1
-        elseif s:sub(pos, pos) == ']' then pos = pos + 1; break
-        else break end
-      end
-      return arr
-    elseif c == 't' then
-      pos = pos + 4
-      return true
-    elseif c == 'f' then
-      pos = pos + 5
-      return false
-    elseif c == 'n' then
-      pos = pos + 4
-      return nil
-    elseif c:match("[%d%-]") then
-      local start = pos
-      while pos <= #s and s:sub(pos, pos):match("[%d%.%-eE+]") do pos = pos + 1 end
-      return tonumber(s:sub(start, pos - 1))
-    else
-      pos = pos + 1
-      return nil
-    end
-  end
-  return parse_value()
-end
+local VALID_ACTIONS = { allow = true, deny = true, ask = true }
 
 --------------------------------------------------------------------------------
 -- Wildcard matching (* = any run, ? = one char)
@@ -201,7 +74,7 @@ local function subject_for(name, args)
   end
 
   -- Fall back to compact JSON of args.
-  return json_encode(args)
+  return phi.json.encode(args)
 end
 
 --------------------------------------------------------------------------------
@@ -242,35 +115,44 @@ if not store_path then
 end
 
 local function store_key(cwd_path)
-  -- Canonicalize: resolve symlinks if possible.
-  -- Without lfs, we just use the path as-is.
-  return cwd_path
+  -- Canonical path (symlinks resolved) so two spellings of the same
+  -- project share one rule set; the raw path is the fallback for paths
+  -- that no longer resolve.
+  return phi.fs.canonicalize(cwd_path) or cwd_path
 end
 
 local function load_store()
   local raw = phi.fs.readfile(store_path)
   if not raw then return {} end
-  return json_decode(raw) or {}
+  local decoded = phi.json.decode(raw)
+  if type(decoded) ~= "table" then return {} end
+  return decoded
 end
 
 local function save_store(entries)
-  return phi.fs.writefile(store_path, json_encode(entries))
+  local parent = store_path:match("^(.*)/[^/]+$")
+  if parent then phi.fs.mkdir_p(parent) end
+  return phi.fs.writefile(store_path, phi.json.encode(entries))
 end
 
 local function rules_for(store, cwd_path)
   return store[store_key(cwd_path)] or {}
 end
 
-local function append_rule(store, cwd_path, rule)
+--- Read-modify-write: reload the store from disk before mutating so a
+--- concurrent phi session's saved answers aren't clobbered by our stale
+--- startup snapshot. (Best effort — there's no cross-process lock.)
+local function append_rule(cwd_path, rule)
+  local store = load_store()
   local key = store_key(cwd_path)
   if not store[key] then store[key] = {} end
   table.insert(store[key], rule)
   save_store(store)
 end
 
-local function clear_rules(store, cwd_path)
-  local key = store_key(cwd_path)
-  store[key] = nil
+local function clear_rules(cwd_path)
+  local store = load_store()
+  store[store_key(cwd_path)] = nil
   save_store(store)
 end
 
@@ -278,20 +160,25 @@ end
 -- Gate state
 --------------------------------------------------------------------------------
 
--- Build config rules with defaults for missing fields.
+-- Build config rules with defaults for missing fields. A typo'd action
+-- must fail registration loudly, not silently weaken (or harden) the gate.
 local config_rules = {}
-for _, r in ipairs(config_rules_raw) do
+for i, r in ipairs(config_rules_raw) do
+  local action = r.action or "ask"
+  if not VALID_ACTIONS[action] then
+    error(("approvals: rule %d has unknown action '%s' (expected allow|deny|ask)")
+      :format(i, tostring(action)))
+  end
   table.insert(config_rules, {
     tool = r.tool or "*",
     pattern = r.pattern or "*",
-    action = r.action or "ask",
+    action = action,
     provenance = "config",
   })
 end
 
--- Load persisted rules.
-local store = load_store()
-local persisted = rules_for(store, cwd)
+-- Load persisted rules (startup snapshot; writes re-read the store).
+local persisted = rules_for(load_store(), cwd)
 local session_rules = {}
 
 --- All rules in evaluation order (later wins).
@@ -322,13 +209,13 @@ end
 local function always_allow(tool)
   local rule = { tool = tool, pattern = "*", action = "allow" }
   table.insert(persisted, rule)
-  append_rule(store, cwd, rule)
+  append_rule(cwd, rule)
 end
 
 local function reset()
   persisted = {}
   session_rules = {}
-  clear_rules(store, cwd)
+  clear_rules(cwd)
 end
 
 --------------------------------------------------------------------------------
@@ -336,13 +223,17 @@ end
 --------------------------------------------------------------------------------
 
 local function subject_preview(subject)
-  -- Count chars (not bytes). Lua's # gives bytes, but for ASCII this is fine.
-  -- For multi-byte safety, we use a simple byte-count heuristic (matches Rust's
-  -- char count closely enough for a preview).
+  -- ≤ N bytes is always ≤ N chars: fast path.
   if #subject <= SUBJECT_PREVIEW_CHARS then
     return subject
   end
-  return subject:sub(1, SUBJECT_PREVIEW_CHARS) .. "\n… (truncated)"
+  -- Cut on a character boundary — a byte-index sub() can split a UTF-8
+  -- sequence and hand the host an invalid string.
+  local cut = utf8.offset(subject, SUBJECT_PREVIEW_CHARS + 1)
+  if not cut then
+    return subject
+  end
+  return subject:sub(1, cut - 1) .. "\n… (truncated)"
 end
 
 local function block(reason)

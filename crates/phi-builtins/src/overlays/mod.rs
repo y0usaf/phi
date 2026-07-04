@@ -3,7 +3,7 @@
 //! (`phi_session` usage reports, model registry, archived sessions) and
 //! can't be expressed in Lua.
 //!
-//! The `phi:about` and `phi:help` overlays were ported to Lua
+//! The `phi:about` and `phi:help` overlays are Lua defaults
 //! (`crates/phi-builtins/defaults/about_overlay.lua`,
 //! `help_overlay.lua`) — they're pure rendering and serve as the tutorial
 //! overlays a user reads to learn the extension API. This extension keeps
@@ -14,10 +14,8 @@
 //! by name (`phi_ext::OVERLAY_USAGE` / `OVERLAY_MODEL` / `OVERLAY_ARCHIVE`)
 //! with a typed payload.
 
-mod about;
 mod archive;
 mod dialog;
-mod help;
 mod model;
 mod usage;
 

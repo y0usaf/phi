@@ -1570,6 +1570,7 @@ dependencies = [
  "phi-ai",
  "phi-builtins",
  "phi-ext",
+ "phi-lua",
  "phi-mux",
  "phi-rlm",
  "phi-session",

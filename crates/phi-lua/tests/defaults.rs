@@ -9,10 +9,22 @@ use phi_builtins::defaults;
 use phi_ext::RuntimeBuilder;
 use phi_lua::LuaExtension;
 
-/// Build a runtime from one embedded Lua source, with an optional preamble
-/// (used to inject globals like `_phi_model_names` before the source runs).
+/// Build a runtime from one embedded Lua source.
 fn build_one(name: &str, source: &str) -> std::sync::Arc<phi_ext::AppRuntime> {
-    let ext = LuaExtension::from_source(name, source.to_owned()).unwrap();
+    build_one_with(name, source, &[])
+}
+
+/// Build a runtime from one embedded Lua source with host-injected globals —
+/// the same `with_global` channel the session builder uses.
+fn build_one_with(
+    name: &str,
+    source: &str,
+    globals: &[(&str, serde_json::Value)],
+) -> std::sync::Arc<phi_ext::AppRuntime> {
+    let mut ext = LuaExtension::from_source(name, source.to_owned()).unwrap();
+    for (key, value) in globals {
+        ext = ext.with_global(key, value.clone());
+    }
     std::sync::Arc::new(
         RuntimeBuilder::new()
             .with_cwd(std::path::Path::new("."))
@@ -24,15 +36,19 @@ fn build_one(name: &str, source: &str) -> std::sync::Arc<phi_ext::AppRuntime> {
 
 // ── Session commands ─────────────────────────────────────────────────────
 
+/// Commands runtime with `_phi_model_names` injected the same way the
+/// session builder does (typed `with_global`, not source concatenation).
+fn commands_runtime(models: &[&str]) -> std::sync::Arc<phi_ext::AppRuntime> {
+    build_one_with(
+        "phi-commands",
+        defaults::COMMANDS_LUA,
+        &[("_phi_model_names", serde_json::json!(models))],
+    )
+}
+
 #[tokio::test]
 async fn defaults_commands_register_all_session_commands() {
-    // The session builder injects _phi_model_names before commands.lua;
-    // we do the same here.
-    let source = format!(
-        "_phi_model_names = {{\"anthropic/claude-opus-4\"}}\n{lua}",
-        lua = defaults::COMMANDS_LUA,
-    );
-    let rt = build_one("phi-commands", &source);
+    let rt = commands_runtime(&["anthropic/claude-opus-4"]);
 
     let names: Vec<String> = rt.list_commands().into_iter().map(|c| c.name).collect();
     for expected in [
@@ -48,11 +64,7 @@ async fn defaults_commands_register_all_session_commands() {
 
 #[tokio::test]
 async fn defaults_commands_model_with_arg_switches_without_arg_opens_picker() {
-    let source = format!(
-        "_phi_model_names = {{\"anthropic/claude-opus-4\"}}\n{lua}",
-        lua = defaults::COMMANDS_LUA,
-    );
-    let rt = build_one("phi-commands", &source);
+    let rt = commands_runtime(&["anthropic/claude-opus-4"]);
 
     // With argument: SwitchModel action.
     let out = rt.invoke_command_sync("model", "opus").unwrap().unwrap();
@@ -77,11 +89,7 @@ async fn defaults_commands_model_with_arg_switches_without_arg_opens_picker() {
 
 #[tokio::test]
 async fn defaults_commands_quit_and_exit_both_quit() {
-    let source = format!(
-        "_phi_model_names = {{}}\n{lua}",
-        lua = defaults::COMMANDS_LUA,
-    );
-    let rt = build_one("phi-commands", &source);
+    let rt = commands_runtime(&[]);
 
     for name in ["quit", "exit"] {
         let out = rt.invoke_command_sync(name, "").unwrap().unwrap();
@@ -91,11 +99,7 @@ async fn defaults_commands_quit_and_exit_both_quit() {
 
 #[tokio::test]
 async fn defaults_commands_login_logout_return_actions() {
-    let source = format!(
-        "_phi_model_names = {{}}\n{lua}",
-        lua = defaults::COMMANDS_LUA,
-    );
-    let rt = build_one("phi-commands", &source);
+    let rt = commands_runtime(&[]);
 
     let out = rt
         .invoke_command_sync("login", "anthropic")
@@ -119,11 +123,7 @@ async fn defaults_commands_login_logout_return_actions() {
 
 #[tokio::test]
 async fn defaults_commands_model_completions() {
-    let source = format!(
-        "_phi_model_names = {{\"anthropic/claude-opus-4\", \"openai/gpt-4o\"}}\n{lua}",
-        lua = defaults::COMMANDS_LUA,
-    );
-    let rt = build_one("phi-commands", &source);
+    let rt = commands_runtime(&["anthropic/claude-opus-4", "openai/gpt-4o"]);
 
     assert_eq!(
         rt.complete_command_arg("model").unwrap(),
@@ -460,4 +460,389 @@ async fn defaults_coding_tools_schemas_mark_required_fields() {
             .as_str()
             .is_some()
     );
+}
+
+// ── Drift guards: defaults must describe documented prelude helpers ─────
+
+/// Every tool renderer spec must describe a documented prelude helper —
+/// the roster the model reads must match what the UI can render.
+/// (`tool_render.lua` registers exactly these; the registration test above
+/// fails if one goes missing, this fails if one leaves the prelude.)
+#[tokio::test]
+async fn defaults_tool_render_specs_match_prelude_roster() {
+    let roster = phi_builtins::prelude::coding_tools_section();
+    for tool in [
+        "bash",
+        "read_file",
+        "write_file",
+        "edit_file",
+        "grep",
+        "find",
+        "ls",
+    ] {
+        assert!(
+            roster.contains(&format!("- {tool}(")),
+            "tool render spec `{tool}` is not a documented prelude helper — prelude drift"
+        );
+    }
+}
+
+#[tokio::test]
+async fn defaults_tool_render_categories_cover_the_summary_vocabulary() {
+    let rt = build_one("phi-tool-render", defaults::TOOL_RENDER_LUA);
+    let idx = rt.tool_render_index();
+    use phi_ext::ToolRenderCategory as C;
+    assert_eq!(idx.category("read_file"), C::Reads);
+    assert_eq!(idx.category("edit_file"), C::Edits);
+    assert_eq!(idx.category("write_file"), C::Edits);
+    assert_eq!(idx.category("bash"), C::Commands);
+    assert_eq!(idx.category("grep"), C::Searches);
+    assert_eq!(idx.category("find"), C::Searches);
+    assert_eq!(idx.category("ls"), C::Other);
+}
+
+/// The native tool names must stay tied to real, documented prelude
+/// functions — this one iterates what the Lua default actually registered.
+#[tokio::test]
+async fn defaults_coding_tools_are_documented_in_the_prelude_roster() {
+    let rt = build_one("phi-coding-tools", defaults::CODING_TOOLS_LUA);
+    let roster = phi_builtins::prelude::coding_tools_section();
+    for spec in rt.native_tool_specs() {
+        assert!(
+            roster.contains(&format!("- {}(", spec.name)),
+            "native tool `{}` is not a documented prelude helper — prompt/prelude drift",
+            spec.name
+        );
+    }
+}
+
+// ── Mux :open path handling ──────────────────────────────────────────────
+
+#[tokio::test]
+async fn defaults_mux_open_expands_home_prefix() {
+    let rt = build_one("phi-mux-commands", defaults::MUX_COMMANDS_LUA);
+    let home = std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from("~"));
+    let out = rt
+        .invoke_command_sync_in(phi_ext::CommandContext::Mux, "open", "~/project")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        out.actions,
+        vec![phi_ext::UiAction::OpenProject(home.join("project"))]
+    );
+}
+
+#[tokio::test]
+async fn defaults_mux_open_unterminated_quote_errors() {
+    let rt = build_one("phi-mux-commands", defaults::MUX_COMMANDS_LUA);
+    let err = rt
+        .invoke_command_sync_in(phi_ext::CommandContext::Mux, "open", "\"/tmp/half")
+        .unwrap_err();
+    assert!(err.to_string().contains("unterminated"), "{err}");
+}
+
+// ── Skills: discovery + system-prompt injection ──────────────────────────
+
+fn skills_runtime(dir: &std::path::Path, include_project: bool) -> phi_ext::AppRuntime {
+    let ext = LuaExtension::from_source("phi-skills", defaults::SKILLS_LUA.to_owned())
+        .unwrap()
+        .with_global(
+            "_phi_skills_cwd",
+            serde_json::json!(dir.display().to_string()),
+        )
+        .with_global("_phi_skills_extra_paths", serde_json::json!([]))
+        .with_global(
+            "_phi_skills_include_project",
+            serde_json::json!(include_project),
+        );
+    RuntimeBuilder::new()
+        .with_cwd(dir)
+        .register_extension(ext)
+        .build()
+        .unwrap()
+}
+
+/// End-to-end through the extension API: the block lands in the system
+/// prompt via `before_agent_start` → `system_prompt_append`, and repeated
+/// filtering never accumulates (each turn starts from the original).
+#[tokio::test]
+async fn defaults_skills_append_block_via_before_agent_start() {
+    let dir = tempfile::tempdir().unwrap();
+    let my_skill = dir.path().join(".phi").join("skills").join("my-skill");
+    std::fs::create_dir_all(&my_skill).unwrap();
+    std::fs::write(
+        my_skill.join("SKILL.md"),
+        "---\nname: my-skill\ndescription: Does cool things.\n---\n",
+    )
+    .unwrap();
+
+    let rt = skills_runtime(dir.path(), true);
+    let base = "BASE PROMPT".to_owned();
+    let filtered = rt
+        .filter_system_prompt("user prompt", base.clone())
+        .await
+        .unwrap();
+    assert!(filtered.starts_with("BASE PROMPT"));
+    assert!(filtered.contains("<available_skills>"));
+    assert!(filtered.contains("<name>my-skill</name>"));
+    assert!(filtered.contains("<description>Does cool things.</description>"));
+
+    // Second turn: same size, no accumulation.
+    let again = rt
+        .filter_system_prompt("user prompt", base.clone())
+        .await
+        .unwrap();
+    assert_eq!(filtered, again);
+}
+
+/// An untrusted project's `.phi/skills` must not be scanned.
+#[tokio::test]
+async fn defaults_skills_untrusted_project_dir_is_skipped() {
+    let dir = tempfile::tempdir().unwrap();
+    let my_skill = dir.path().join(".phi").join("skills").join("sneaky");
+    std::fs::create_dir_all(&my_skill).unwrap();
+    std::fs::write(
+        my_skill.join("SKILL.md"),
+        "---\nname: sneaky\ndescription: Should not load.\n---\n",
+    )
+    .unwrap();
+
+    let rt = skills_runtime(dir.path(), false);
+    let filtered = rt
+        .filter_system_prompt("user prompt", "BASE".to_owned())
+        .await
+        .unwrap();
+    assert!(!filtered.contains("sneaky"), "{filtered}");
+}
+
+// ── Approvals: the tool gate ─────────────────────────────────────────────
+
+fn approvals_ext(dir: &std::path::Path, rules: serde_json::Value) -> LuaExtension {
+    LuaExtension::from_source("phi-approvals", defaults::APPROVALS_LUA.to_owned())
+        .unwrap()
+        .with_global(
+            "_phi_approvals_cwd",
+            serde_json::json!(dir.display().to_string()),
+        )
+        .with_global("_phi_approvals_rules", rules)
+        .with_global(
+            "_phi_approvals_store_path",
+            serde_json::json!(dir.join("approvals.json").display().to_string()),
+        )
+}
+
+fn approvals_runtime(dir: &std::path::Path, rules: serde_json::Value) -> phi_ext::AppRuntime {
+    RuntimeBuilder::new()
+        .with_cwd(dir)
+        .register_extension(approvals_ext(dir, rules))
+        .build()
+        .unwrap()
+}
+
+fn tool_call(name: &str, args: serde_json::Value) -> phi_ext::LifecycleEvent {
+    phi_ext::LifecycleEvent {
+        kind: phi_ext::EventKind::ToolCall,
+        payload: phi_ext::EventPayload::ToolCall {
+            name: name.to_owned(),
+            args,
+        },
+    }
+}
+
+/// The store keys rules by canonical project path.
+fn store_rules(dir: &std::path::Path) -> Vec<serde_json::Value> {
+    let raw = std::fs::read_to_string(dir.join("approvals.json")).unwrap_or_default();
+    if raw.is_empty() {
+        return Vec::new();
+    }
+    let store: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    let key = dir.canonicalize().unwrap().display().to_string();
+    store
+        .get(&key)
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default()
+}
+
+#[tokio::test]
+async fn defaults_approvals_ask_without_ui_fails_closed() {
+    let dir = tempfile::tempdir().unwrap();
+    let rt = approvals_runtime(dir.path(), serde_json::json!([]));
+    let returns = rt
+        .dispatch(tool_call("bash", serde_json::json!({"cmd": "rm -rf /"})))
+        .await
+        .unwrap();
+    assert!(
+        matches!(&returns[..], [phi_ext::EventReturn::ToolBlock { reason }]
+            if reason.contains("no interactive UI")),
+        "expected fail-closed block, got {returns:?}"
+    );
+    // Reads are not gated by default.
+    let returns = rt
+        .dispatch(tool_call("read_file", serde_json::json!({"path": "x"})))
+        .await
+        .unwrap();
+    assert!(returns.is_empty());
+}
+
+#[tokio::test]
+async fn defaults_approvals_config_deny_blocks_without_prompting() {
+    let dir = tempfile::tempdir().unwrap();
+    let rt = approvals_runtime(
+        dir.path(),
+        serde_json::json!([{"tool": "bash", "pattern": "git push*", "action": "deny"}]),
+    );
+    let returns = rt
+        .dispatch(tool_call("bash", serde_json::json!({"cmd": "git push"})))
+        .await
+        .unwrap();
+    assert!(
+        matches!(&returns[..], [phi_ext::EventReturn::ToolBlock { reason }]
+            if reason.contains("denied by an approvals rule"))
+    );
+}
+
+#[tokio::test]
+async fn defaults_approvals_invalid_config_action_fails_registration() {
+    let dir = tempfile::tempdir().unwrap();
+    let result = RuntimeBuilder::new()
+        .with_cwd(dir.path())
+        .register_extension(approvals_ext(
+            dir.path(),
+            serde_json::json!([{"tool": "bash", "action": "alow"}]),
+        ))
+        .build();
+    assert!(result.is_err(), "typo'd action must not silently gate");
+}
+
+#[tokio::test]
+async fn defaults_approvals_prompt_flow_allow_once_and_always() {
+    let dir = tempfile::tempdir().unwrap();
+    let rt = approvals_runtime(dir.path(), serde_json::json!([]));
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    rt.connect_ui(tx);
+
+    let host = tokio::spawn(async move {
+        // Round 1: user picks "Allow once" (index 0).
+        let req = rx.recv().await.expect("prompt 1");
+        assert_eq!(req.prompt.title, "Allow bash?");
+        assert_eq!(req.prompt.body, "cargo test");
+        assert_eq!(req.prompt.options.len(), 3);
+        req.reply.send(Some(0)).unwrap();
+
+        // Round 2: user picks "Always allow bash" (index 1).
+        let req = rx.recv().await.expect("prompt 2");
+        req.reply.send(Some(1)).unwrap();
+
+        // Round 4 below dismisses (reply None).
+        let req = rx.recv().await.expect("prompt 4");
+        req.reply.send(None).unwrap();
+    });
+
+    let call = || tool_call("bash", serde_json::json!({"cmd": "cargo test"}));
+    // 1: allowed once — prompts.
+    assert!(rt.dispatch(call()).await.unwrap().is_empty());
+    // 2: "always allow" — prompts, persists.
+    assert!(rt.dispatch(call()).await.unwrap().is_empty());
+    // 3: covered by the persisted rule — no prompt consumed.
+    assert!(rt.dispatch(call()).await.unwrap().is_empty());
+    // The rule survives a store reload under the (canonical) project key.
+    assert_eq!(store_rules(dir.path()).len(), 1);
+
+    // 4: a differently-gated tool still prompts; dismissal denies.
+    let returns = rt
+        .dispatch(tool_call("edit_file", serde_json::json!({"path": "a.rs"})))
+        .await
+        .unwrap();
+    assert!(
+        matches!(&returns[..], [phi_ext::EventReturn::ToolBlock { reason }]
+            if reason.contains("denied"))
+    );
+    host.await.unwrap();
+}
+
+#[tokio::test]
+async fn defaults_approvals_command_lists_and_resets() {
+    let dir = tempfile::tempdir().unwrap();
+    let rt = approvals_runtime(dir.path(), serde_json::json!([]));
+    let listing = rt
+        .invoke_command_sync("approvals", "")
+        .unwrap()
+        .expect("registered")
+        .message
+        .unwrap();
+    assert!(listing.contains("[default] ask repl *"));
+    assert!(listing.contains("[default] ask bash *"));
+
+    // Persist an answer, then reset clears it.
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    rt.connect_ui(tx);
+    let host = tokio::spawn(async move {
+        let req = rx.recv().await.expect("prompt");
+        req.reply.send(Some(1)).unwrap();
+    });
+    assert!(
+        rt.dispatch(tool_call("bash", serde_json::json!({"cmd": "ls"})))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    host.await.unwrap();
+    let listing = rt
+        .invoke_command_sync("approvals", "")
+        .unwrap()
+        .unwrap()
+        .message
+        .unwrap();
+    assert!(listing.contains("[saved] allow bash *"));
+
+    rt.invoke_command_sync("approvals", "reset").unwrap();
+    let listing = rt
+        .invoke_command_sync("approvals", "")
+        .unwrap()
+        .unwrap()
+        .message
+        .unwrap();
+    assert!(!listing.contains("[saved]"));
+    assert!(store_rules(dir.path()).is_empty());
+}
+
+/// Read-modify-write: a concurrent session's saved answers survive our
+/// writes. The store is re-read at write time, not clobbered from the
+/// startup snapshot.
+#[tokio::test]
+async fn defaults_approvals_store_writes_keep_other_projects() {
+    let dir = tempfile::tempdir().unwrap();
+    let rt = approvals_runtime(dir.path(), serde_json::json!([]));
+
+    // After startup, another phi session persists an answer for a
+    // different project into the same store file.
+    std::fs::write(
+        dir.path().join("approvals.json"),
+        r#"{"/somewhere/else":[{"tool":"bash","pattern":"*","action":"allow"}]}"#,
+    )
+    .unwrap();
+
+    // Our session persists an "always allow" answer.
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    rt.connect_ui(tx);
+    let host = tokio::spawn(async move {
+        let req = rx.recv().await.expect("prompt");
+        req.reply.send(Some(1)).unwrap();
+    });
+    assert!(
+        rt.dispatch(tool_call("bash", serde_json::json!({"cmd": "ls"})))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    host.await.unwrap();
+
+    // Both projects' rules are in the store.
+    let raw = std::fs::read_to_string(dir.path().join("approvals.json")).unwrap();
+    let store: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    assert!(store.get("/somewhere/else").is_some(), "{store}");
+    assert_eq!(store_rules(dir.path()).len(), 1);
 }

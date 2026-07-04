@@ -242,27 +242,12 @@ pub async fn build_runtime(
         }
 
         // Session slash commands. The model completion list is injected as
-        // a Lua global (`_phi_model_names`) prepended to the source.
-        let model_names_lua = {
-            let mut s = String::from("_phi_model_names = {");
-            for (i, name) in model_names.iter().enumerate() {
-                if i > 0 {
-                    s.push(',');
-                }
-                s.push('"');
-                // Escape any embedded quotes (unlikely but safe).
-                s.push_str(&name.replace('\\', "\\\\").replace('"', "\\\""));
-                s.push('"');
-            }
-            s.push_str("}\n");
-            s
-        };
-        let commands_source = format!(
-            "{model_names_lua}{lua}",
-            model_names_lua = model_names_lua,
-            lua = phi_builtins::defaults::COMMANDS_LUA,
-        );
-        let commands_ext = phi_lua::LuaExtension::from_source("phi-commands", commands_source)?;
+        // a typed Lua global (`_phi_model_names`).
+        let commands_ext = phi_lua::LuaExtension::from_source(
+            "phi-commands",
+            phi_builtins::defaults::COMMANDS_LUA.to_owned(),
+        )?
+        .with_global("_phi_model_names", serde_json::json!(model_names));
         rt_builder = rt_builder.register_extension(commands_ext);
 
         // About and help overlays — the tutorial overlays (simplest and
@@ -279,32 +264,24 @@ pub async fn build_runtime(
         rt_builder = rt_builder.register_extension(help_ext);
 
         // Skills: SKILL.md discovery + system-prompt injection. Runtime
-        // data (cwd, extra paths, project trust) injected as Lua globals
-        // prepended to the source — the same pattern as _phi_model_names.
-        let skills_globals = {
-            let mut s = format!("_phi_skills_cwd = {cwd:?}\n", cwd = cwd.display());
-            s.push_str("_phi_skills_extra_paths = {");
-            for (i, path) in settings.skills.iter().enumerate() {
-                if i > 0 {
-                    s.push(',');
-                }
-                s.push('"');
-                s.push_str(&path.replace('\\', "\\\\").replace('"', "\\\""));
-                s.push('"');
-            }
-            s.push_str("}\n");
-            s.push_str(&format!(
-                "_phi_skills_include_project = {}\n",
-                if project_trusted { "true" } else { "false" }
-            ));
-            s
-        };
-        let skills_source = format!(
-            "{globals}{lua}",
-            globals = skills_globals,
-            lua = phi_builtins::defaults::SKILLS_LUA,
+        // data (cwd, extra paths, project trust) injected as typed Lua
+        // globals — the same channel as _phi_model_names.
+        let skills_ext = phi_lua::LuaExtension::from_source(
+            "phi-skills",
+            phi_builtins::defaults::SKILLS_LUA.to_owned(),
+        )?
+        .with_global(
+            "_phi_skills_cwd",
+            serde_json::json!(cwd.display().to_string()),
+        )
+        .with_global(
+            "_phi_skills_extra_paths",
+            serde_json::json!(settings.skills),
+        )
+        .with_global(
+            "_phi_skills_include_project",
+            serde_json::json!(project_trusted),
         );
-        let skills_ext = phi_lua::LuaExtension::from_source("phi-skills", skills_source)?;
         rt_builder = rt_builder.register_extension(skills_ext);
 
         // Tool approval gate (WS7.2, default off): config.lua's `approvals`
@@ -313,51 +290,27 @@ pub async fn build_runtime(
         // rules fail closed.
         let approvals = Config::load_approvals(cwd, project_trusted).unwrap_or_default();
         if approvals.enabled.unwrap_or(false) {
-            let approvals_globals = {
-                let mut s = format!("_phi_approvals_cwd = {cwd:?}\n", cwd = cwd.display());
-                s.push_str("_phi_approvals_rules = {");
-                if let Some(rules) = &approvals.rules {
-                    for (i, r) in rules.iter().enumerate() {
-                        if i > 0 {
-                            s.push(',');
-                        }
-                        s.push_str("{tool=\"");
-                        s.push_str(
-                            &r.tool
-                                .clone()
-                                .unwrap_or_else(|| "*".to_owned())
-                                .replace('\\', "\\\\")
-                                .replace('"', "\\\""),
-                        );
-                        s.push_str("\",pattern=\"");
-                        s.push_str(
-                            &r.pattern
-                                .clone()
-                                .unwrap_or_else(|| "*".to_owned())
-                                .replace('\\', "\\\\")
-                                .replace('"', "\\\""),
-                        );
-                        s.push_str("\",action=\"");
-                        s.push_str(
-                            &r.action
-                                .clone()
-                                .unwrap_or_else(|| "ask".to_owned())
-                                .replace('\\', "\\\\")
-                                .replace('"', "\\\""),
-                        );
-                        s.push_str("\"}");
-                    }
-                }
-                s.push_str("}\n");
-                s
-            };
-            let approvals_source = format!(
-                "{globals}{lua}",
-                globals = approvals_globals,
-                lua = phi_builtins::defaults::APPROVALS_LUA,
-            );
-            let approvals_ext =
-                phi_lua::LuaExtension::from_source("phi-approvals", approvals_source)?;
+            let rules: Vec<serde_json::Value> = approvals
+                .rules
+                .iter()
+                .flatten()
+                .map(|r| {
+                    serde_json::json!({
+                        "tool": r.tool.as_deref().unwrap_or("*"),
+                        "pattern": r.pattern.as_deref().unwrap_or("*"),
+                        "action": r.action.as_deref().unwrap_or("ask"),
+                    })
+                })
+                .collect();
+            let approvals_ext = phi_lua::LuaExtension::from_source(
+                "phi-approvals",
+                phi_builtins::defaults::APPROVALS_LUA.to_owned(),
+            )?
+            .with_global(
+                "_phi_approvals_cwd",
+                serde_json::json!(cwd.display().to_string()),
+            )
+            .with_global("_phi_approvals_rules", serde_json::Value::Array(rules));
             rt_builder = rt_builder.register_extension(approvals_ext);
         }
     }

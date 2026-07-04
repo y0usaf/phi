@@ -451,6 +451,18 @@ API (`phi-ext`/`phi-lua`/`phi-event`), never bypass it.
       attaches the native `ModelPickerPayload` (model list + single
       `OverlayResponder`, reply-on-drop preserved) for `OVERLAY_MODEL` and
       routes any other name generically to every focused view.
+- [x] **1.9 Defaults as embedded Lua.** (landed 2026-07-03; retro-added to
+      the plan) The builtin defaults are now *literally* user extensions:
+      commands, mux commands, tool renderers, coding tools, spinner/thinking
+      data, about/help overlays, skills, and approvals ship as Lua in
+      `phi-builtins/defaults/*.lua`, compiled in via `include_str!` and
+      loaded through `LuaExtension::from_source` — the same path user `.lua`
+      files take, registered first so a user's file can override. Honest
+      Rust exceptions (need native resources): catalog (728KB embedded
+      JSON), theme resolver + text effects, usage/model/archive overlays,
+      MCP. Primitives grown on the way: `phi.fs`, `dispatch = "python"` in
+      Lua `register_tool`, `LuaExtension::from_source`. Dogfood tests in
+      `phi-lua/tests/defaults.rs`.
 
 ### WS2 — Prune the surface
 
@@ -1096,6 +1108,63 @@ span into a REPL variable, hashline read-dedup stubs, exec-during-stream,
 timeout-to-background-job conversion, and steer-text merging. The problem is
 the turn protocol, not the engineering.
 
+### WS10 — Style packs: `/style` as the visual-surface acceptance test
+
+Goal: Phi can *look like* the other harnesses purely through configuration —
+`/style claude-code`, `/style codex`, `/style crush` (later `opencode`, …)
+swap the entire visual identity at runtime, and `/style phi` swaps it back.
+A style pack is an ordinary Lua extension bundling theme + spinner +
+thinking expressions + tool renderers + message/transcript chrome; the
+shipped packs live next to the WS1.9 embedded defaults
+(`phi-builtins/defaults/styles/*.lua`) and load through the same
+`LuaExtension::from_source` path. This is **presentation parity only** —
+the feature-parity non-goal below stands untouched.
+
+Why this is on-plan and not vanity: it's the visual counterpart of the
+Rule's corollary. WS1.6/1.9 proved the *behavioral* surface (commands,
+overlays, tools, events) is user-reachable; nothing yet proves the *visual*
+surface is. "Make Phi indistinguishable from crush at a glance" is a
+falsifiable acceptance test: every visual difference an imitation pack
+cannot express is, by definition, an API gap — fix the API
+(`phi-ext`/`phi-lua`/`phi-tui`), never special-case a pack. It also
+subsumes the still-open WS1.3(b): mimicking three real transcripts is a
+far better forcing function for the message-renderer design than inventing
+one in the abstract.
+
+- [ ] **10.1 Style-pack primitive + runtime switching.** Today every visual
+      registration is startup-time and last-write-wins; there is no
+      activatable bundle and no way to re-skin a running session. Decide the
+      mechanism deliberately (one declaration mechanism — doctrine 5): a
+      `register_style { name, … }` bundle whose members are the *existing*
+      registration shapes (theme, spinner, tool renderers, chrome), exactly
+      one style active at a time, host re-resolves visuals + repaints on
+      switch (both frontends; mux views re-theme per WS8.3's per-view
+      palette note). Persist the choice in config so it survives restarts.
+      Switching arrives as a `UiAction` from the command registry, not a
+      side channel.
+- [ ] **10.2 Inventory the gap by imitation.** Same method as WS1.1/1.6:
+      build the first pack (claude-code — closest to Phi's current look)
+      and let every un-expressible detail become the work list. Expected
+      gaps from eyeballing the refs, to be confirmed: transcript chrome
+      (claude-code's `⏺`/`⎿` gutter bullets and collapsed tool results;
+      crush's charm-style rounded borders, gradients, boxed tool panels;
+      codex's flat minimal prefixes), input-box and status-line styling,
+      welcome banner, tool-result collapse/expand presentation, and the
+      WS1.3(b) custom message renderers. Grow the *declarative* vocabulary
+      per WS1.3(a)'s decision — data, not closures on the hot render path.
+- [ ] **10.3 Ship the packs.** `claude-code`, `codex`, `crush` as pure Lua
+      in `defaults/styles/`; `opencode` as a stretch. The default remains
+      Phi's own style; packs contain zero core special-cases (a grep for
+      pack names outside `phi-builtins` should come up empty).
+- [ ] **10.4 Acceptance.** Run one fixed scripted session (prompt → a few
+      tool calls → prose answer) in Phi-with-pack and in the real harness
+      (`ref/` checkouts), side by side: transcript, tool cards, spinner/
+      status, and input area should be hard to tell apart at a glance.
+      Mechanical half: packs load through the user extension path, a
+      builtins-less build still boots with generic visuals, and `/style`
+      completion is registry-driven (a user's own pack shows up uninstalled
+      alongside the shipped ones).
+
 ---
 
 ## Non-goals (rejected explicitly — don't relitigate without a new decision)
@@ -1107,7 +1176,9 @@ the turn protocol, not the engineering.
   convenience can be a builtin extension later if demand appears.
 - **Embedded mega model catalog.** See WS3.2.
 - **Feature parity with claude-code/codex.** Phi competes on mux + RLM +
-  extensibility, not breadth.
+  extensibility, not breadth. *Presentation* parity (WS10 style packs) is in
+  scope precisely because it exercises extensibility — the line is: imitate
+  the look through the extension API, never import the feature set.
 
 ## Reference map (all under `ref/`, git-ignored checkouts)
 
@@ -1150,3 +1221,6 @@ Definition of done for the plan overall:
    end-of-task completions — and no `Role::User` scaffolding is injected on
    ordinary iterations (WS9.1/9.2). Transient provider errors never kill a
    run (WS9.5).
+9. `/style claude-code` (or `codex`, `crush`) re-skins a running session to
+   be hard to distinguish from the real harness at a glance — with every
+   pack a pure Lua extension and zero pack-specific code in core (WS10).

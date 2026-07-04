@@ -1,3 +1,17 @@
+/// Convert a JSON value to a Lua value with extension-friendly semantics:
+/// JSON `null` becomes Lua `nil` (not mlua's null sentinel), so idioms like
+/// `t.field or default` work on decoded data. Shared by `phi.json.decode`
+/// and [`LuaExtension::with_global`] injection so both channels agree.
+pub(super) fn json_to_lua(lua: &mlua::Lua, value: &serde_json::Value) -> mlua::Result<mlua::Value> {
+    use mlua::LuaSerdeExt as _;
+    lua.to_value_with(
+        value,
+        mlua::SerializeOptions::new()
+            .serialize_none_to_null(false)
+            .serialize_unit_to_null(false),
+    )
+}
+
 pub(super) fn setup_phi_global(lua: &mlua::Lua) -> mlua::Result<()> {
     let globals = lua.globals();
 
@@ -323,7 +337,45 @@ pub(super) fn setup_phi_global(lua: &mlua::Lua) -> mlua::Result<()> {
         lua.create_function(|_, path: String| Ok(std::fs::create_dir_all(&path).is_ok()))?;
     fs_table.set("mkdir_p", fs_mkdir_p)?;
 
+    let fs_canonicalize = lua.create_function(|_, path: String| {
+        Ok(std::fs::canonicalize(&path)
+            .ok()
+            .map(|p| p.to_string_lossy().into_owned()))
+    })?;
+    fs_table.set("canonicalize", fs_canonicalize)?;
+
     phi.set("fs", fs_table)?;
+
+    // phi.json — JSON encode/decode backed by serde_json, the same parser
+    // the host uses everywhere. Extensions that persist or exchange JSON
+    // (e.g. approvals) use these instead of hand-rolling a parser.
+    //
+    // - `phi.json.encode(value)` → string. Raises on values JSON can't
+    //   carry (functions, userdata). An empty table encodes as `{}`.
+    // - `phi.json.decode(s)` → value, or `nil, err` on malformed input.
+    //   JSON `null` decodes to Lua `nil` (so `t.field or default` works);
+    //   don't rely on nulls inside arrays.
+    let json_table = lua.create_table()?;
+
+    let json_encode = lua.create_function(|lua, value: mlua::Value| {
+        use mlua::LuaSerdeExt as _;
+        let json: serde_json::Value = lua
+            .from_value(value)
+            .map_err(|e| mlua::Error::runtime(format!("phi.json.encode: {e}")))?;
+        serde_json::to_string(&json)
+            .map_err(|e| mlua::Error::runtime(format!("phi.json.encode: {e}")))
+    })?;
+    json_table.set("encode", json_encode)?;
+
+    let json_decode = lua.create_function(|lua, s: String| {
+        match serde_json::from_str::<serde_json::Value>(&s) {
+            Ok(json) => Ok((Some(json_to_lua(lua, &json)?), None)),
+            Err(e) => Ok((None, Some(e.to_string()))),
+        }
+    })?;
+    json_table.set("decode", json_decode)?;
+
+    phi.set("json", json_table)?;
     globals.set("phi", phi)?;
     Ok(())
 }

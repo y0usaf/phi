@@ -1023,8 +1023,21 @@ mod tests {
         let runtime = Arc::new(
             phi_ext::RuntimeBuilder::new()
                 .with_cwd(&cwd)
-                .register_extension(phi_builtins::BuiltinCommandsExtension::new(model_names))
-                .register_extension(phi_builtins::ToolRenderExtension)
+                .register_extension(
+                    phi_lua::LuaExtension::from_source(
+                        "phi-commands",
+                        phi_builtins::defaults::COMMANDS_LUA.to_owned(),
+                    )
+                    .unwrap()
+                    .with_global("_phi_model_names", serde_json::json!(model_names)),
+                )
+                .register_extension(
+                    phi_lua::LuaExtension::from_source(
+                        "phi-tool-render",
+                        phi_builtins::defaults::TOOL_RENDER_LUA.to_owned(),
+                    )
+                    .unwrap(),
+                )
                 .build()
                 .unwrap(),
         );
@@ -1392,9 +1405,21 @@ mod tests {
     #[test]
     fn tool_identity_anchor_shown_once() {
         let p = InlinePalette::default_const();
-        // The per-tool shapes come from the builtin render specs — the same
-        // registry path the live UI resolves through `Ui::tool_render`.
-        let idx = phi_ext::ToolRenderIndex::new(phi_builtins::tool_render::specs());
+        // The per-tool shapes come from the shipping Lua default
+        // (`tool_render.lua`) registered through the extension API — the
+        // same registry path the live UI resolves through `Ui::tool_render`.
+        let rt = phi_ext::RuntimeBuilder::new()
+            .with_cwd(std::path::Path::new("."))
+            .register_extension(
+                phi_lua::LuaExtension::from_source(
+                    "phi-tool-render",
+                    phi_builtins::defaults::TOOL_RENDER_LUA.to_owned(),
+                )
+                .unwrap(),
+            )
+            .build()
+            .unwrap();
+        let idx = rt.tool_render_index();
         let read = tool_identity(
             idx.get("read_file"),
             "read_file",
@@ -2458,12 +2483,19 @@ match1
         );
     }
 
-    /// A command registry populated the same way production is: the built-in
-    /// commands extension registered through the public API.
+    /// A command registry populated the same way production is: the Lua
+    /// commands default registered through the public extension API.
     fn command_runtime() -> phi_ext::AppRuntime {
         phi_ext::RuntimeBuilder::new()
             .with_cwd(std::path::Path::new("."))
-            .register_extension(phi_builtins::BuiltinCommandsExtension::new(models()))
+            .register_extension(
+                phi_lua::LuaExtension::from_source(
+                    "phi-commands",
+                    phi_builtins::defaults::COMMANDS_LUA.to_owned(),
+                )
+                .unwrap()
+                .with_global("_phi_model_names", serde_json::json!(models())),
+            )
             .build()
             .unwrap()
     }

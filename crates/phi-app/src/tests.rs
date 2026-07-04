@@ -55,10 +55,22 @@ fn format_usage_summary_shows_breakdown_and_total() {
 }
 
 /// Tool display metadata resolved the same way the live printer does:
-/// the builtin render specs plus the core `repl` seed.
+/// the shipping Lua default (`tool_render.lua`) registered through the
+/// extension API, plus the core `repl` seed.
 #[cfg(feature = "builtins")]
 fn render_index() -> phi_ext::ToolRenderIndex {
-    phi_ext::ToolRenderIndex::new(phi_builtins::tool_render::specs())
+    let rt = phi_ext::RuntimeBuilder::new()
+        .with_cwd(std::path::Path::new("."))
+        .register_extension(
+            phi_lua::LuaExtension::from_source(
+                "phi-tool-render",
+                phi_builtins::defaults::TOOL_RENDER_LUA.to_owned(),
+            )
+            .unwrap(),
+        )
+        .build()
+        .unwrap();
+    rt.tool_render_index()
 }
 
 #[cfg(feature = "builtins")]

@@ -1040,3 +1040,168 @@ end, { timeout = 15 })
         .unwrap();
     assert!(returns.is_empty());
 }
+
+// ── phi.json + host-injected globals ────────────────────────────────────────
+
+/// `phi.json` round-trips through serde_json — the same parser the host
+/// uses — with `null` → `nil` decode semantics.
+#[tokio::test]
+async fn lua_phi_json_round_trips() {
+    let source = r#"
+phi.register_command("json-echo", {
+    description = "decode then re-encode the argument",
+    handler = function(args)
+        local v, err = phi.json.decode(args)
+        if err then error("decode failed: " .. err) end
+        return phi.json.encode(v)
+    end
+})
+phi.register_command("json-null-is-nil", {
+    description = "JSON null must decode to Lua nil",
+    handler = function()
+        local v = phi.json.decode('{"a":null,"b":1}')
+        if v.a == nil and v.b == 1 then return "ok" end
+        return "bad: " .. tostring(v.a)
+    end
+})
+phi.register_command("json-bad-input", {
+    description = "malformed JSON returns nil + err, not a crash",
+    handler = function()
+        local v, err = phi.json.decode('{"a":')
+        if v == nil and err ~= nil then return "ok" end
+        return "bad"
+    end
+})
+"#;
+    let rt = load_lua(source);
+
+    let out = rt
+        .invoke_command(
+            "json-echo",
+            r#"{"tool":"bash","n":2,"ok":true,"list":["a","b"]}"#,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let echoed: serde_json::Value = serde_json::from_str(&out.message.unwrap()).unwrap();
+    assert_eq!(
+        echoed,
+        serde_json::json!({"tool": "bash", "n": 2, "ok": true, "list": ["a", "b"]})
+    );
+
+    for cmd in ["json-null-is-nil", "json-bad-input"] {
+        let out = rt.invoke_command(cmd, "").await.unwrap().unwrap();
+        assert_eq!(out.message.as_deref(), Some("ok"), "{cmd}");
+    }
+}
+
+/// `phi.json.encode` raises a hard, named error on values JSON can't carry.
+#[tokio::test]
+async fn lua_phi_json_encode_rejects_functions() {
+    let source = r#"
+phi.register_command("json-encode-fn", {
+    description = "encoding a function must raise",
+    handler = function()
+        local ok, err = pcall(phi.json.encode, { f = function() end })
+        if not ok then return "raised" end
+        return "encoded?!"
+    end
+})
+"#;
+    let rt = load_lua(source);
+    let out = rt
+        .invoke_command("json-encode-fn", "")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out.message.as_deref(), Some("raised"));
+}
+
+/// `with_global` injects typed values (arrays, tables, booleans) that the
+/// source sees as real Lua values before it runs — the host→extension
+/// config channel the session builder uses for `_phi_*` globals.
+#[tokio::test]
+async fn lua_with_global_injects_typed_values() {
+    let source = r#"
+phi.register_command("read-globals", {
+    description = "echo the injected globals",
+    handler = function()
+        local parts = {
+            _g_str,
+            tostring(_g_flag),
+            tostring(#_g_list),
+            _g_list[1],
+            _g_table.inner,
+            tostring(_g_table.missing == nil),
+        }
+        return table.concat(parts, "|")
+    end
+})
+"#;
+    let ext = {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("globals_ext.lua");
+        std::fs::write(&path, source).unwrap();
+        std::mem::forget(dir);
+        LuaExtension::from_file(&path).unwrap()
+    }
+    .with_global("_g_str", serde_json::json!("hello"))
+    .with_global("_g_flag", serde_json::json!(true))
+    .with_global("_g_list", serde_json::json!(["a", "b", "c"]))
+    .with_global(
+        "_g_table",
+        serde_json::json!({"inner": "x", "missing": null}),
+    );
+    let rt = RuntimeBuilder::new()
+        .with_cwd(std::path::Path::new("."))
+        .register_extension(ext)
+        .build()
+        .unwrap();
+
+    let out = rt
+        .invoke_command("read-globals", "")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out.message.as_deref(), Some("hello|true|3|a|x|true"));
+}
+
+/// `phi.fs.canonicalize` resolves symlinks and returns nil for paths that
+/// don't resolve.
+#[tokio::test]
+async fn lua_phi_fs_canonicalize() {
+    let source = r#"
+phi.register_command("canon", {
+    description = "canonicalize the argument path",
+    handler = function(args)
+        local resolved = phi.fs.canonicalize(args)
+        if resolved then return resolved end
+        return "<nil>"
+    end
+})
+"#;
+    let rt = load_lua(source);
+
+    let dir = tempfile::tempdir().unwrap();
+    let real = dir.path().join("real");
+    std::fs::create_dir(&real).unwrap();
+    let link = dir.path().join("link");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+
+    let out = rt
+        .invoke_command("canon", &link.display().to_string())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        out.message.unwrap(),
+        real.canonicalize().unwrap().display().to_string()
+    );
+
+    let out = rt
+        .invoke_command("canon", "/definitely/not/a/path")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out.message.as_deref(), Some("<nil>"));
+}

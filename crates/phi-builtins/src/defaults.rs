@@ -12,17 +12,23 @@
 //!
 //! ## What's here (Lua)
 //!
-//! | File | Replaces | Why it's Lua |
-//! |------|----------|-------------|
-//! | `commands.lua` | `BuiltinCommandsExtension` | Pure `register_command` calls |
-//! | `mux_commands.lua` | `MuxCommandsExtension` | Same, `context = "mux"` |
-//! | `tool_render.lua` | `ToolRenderExtension` | Declarative `register_tool_renderer` |
-//! | `coding_tools.lua` | `CodingToolsExtension` | Declarative `register_tool` with `dispatch = "python"` |
-//! | `visual_data.lua` | spinner + thinking expressions from `DefaultVisualExtension` | Pure literal data (`register_spinner` / `register_thinking_expression`) |
-//! | `about_overlay.lua` | `about::spec()` | Simplest overlay — best tutorial |
-//! | `help_overlay.lua` | `help::spec()` | WS1.6-proven, draw-ops + scroll |
-//! | `skills.lua` | `SkillsExtension` | `phi.on("before_agent_start")` + `phi.fs` file discovery |
-//! | `approvals.lua` | `ApprovalsExtension` | `phi.on("tool_call")` + `phi.ui.ask` + `phi.fs` JSON persistence |
+//! The Rust extensions these replaced (`BuiltinCommandsExtension`,
+//! `SkillsExtension`, `ApprovalsExtension`, ...) are deleted; the Lua
+//! sources below are the only implementation, and the tests in
+//! `crates/phi-lua/tests/defaults.rs` drive them through the same
+//! `LuaExtension::from_source` path the session builder uses.
+//!
+//! | File | Why it's Lua |
+//! |------|-------------|
+//! | `commands.lua` | Pure `register_command` calls |
+//! | `mux_commands.lua` | Same, `context = "mux"` |
+//! | `tool_render.lua` | Declarative `register_tool_renderer` |
+//! | `coding_tools.lua` | Declarative `register_tool` with `dispatch = "python"` |
+//! | `visual_data.lua` | Pure literal data (`register_spinner` / `register_thinking_expression`) |
+//! | `about_overlay.lua` | Simplest overlay — best tutorial |
+//! | `help_overlay.lua` | WS1.6-proven, draw-ops + scroll |
+//! | `skills.lua` | `phi.on("before_agent_start")` + `phi.fs` file discovery |
+//! | `approvals.lua` | `phi.on("tool_call")` + `phi.ui.ask` + `phi.json`/`phi.fs` persistence |
 //!
 //! ## What stays Rust (and why)
 //!
