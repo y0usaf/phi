@@ -739,20 +739,31 @@ struct Ui {
     pub(super) transcript: Transcript,
     /// Finalized transcript blocks retained across frames.
     pub(super) transcript_entries: Vec<TranscriptEntry>,
-    /// Cached rendered transcript lines keyed by "tx:{i}". Rebuilt only when
-    /// entries change or the terminal width / expand toggles change — not
-    /// on every frame. This is the key performance fix: without it, draw()
-    /// re-renders every entry (markdown parsing, syntax highlighting, REPL
-    /// block construction) on every keystroke.
+    /// Cached rendered transcript lines keyed by "tx:{i}". New entries are
+    /// rendered incrementally and appended; a full rebuild happens only on
+    /// width / expand-toggle changes. This is the key performance fix:
+    /// without the cache, draw() re-renders every entry (markdown parsing,
+    /// syntax highlighting, REPL block construction) on every keystroke;
+    /// without the incremental append, on every new entry.
     pub(super) transcript_cache: Vec<(String, Vec<String>)>,
     /// Terminal width when the cache was built; mismatch invalidates it.
     pub(super) transcript_cache_width: usize,
-    /// (expand_tools, expand_thinking) when the cache was built.
-    pub(super) transcript_cache_expanded: (bool, bool),
-    /// Content generation of `transcript_cache`, bumped on every clear or
-    /// rebuild. Passed to `Transcript::render` so its durable-prefix cache
-    /// is invalidated exactly when cached entry content may have changed.
+    /// (expand_tools, expand_thinking, tools.tool_summary) when the cache
+    /// was built; any mismatch invalidates it.
+    pub(super) transcript_cache_expanded: (bool, bool, bool),
+    /// Content generation of `transcript_cache`, bumped whenever already
+    /// cached content may have changed (full invalidation, or a replaced
+    /// tool-summary card). Passed to `Transcript::render` so its
+    /// durable-prefix cache is invalidated exactly then.
     pub(super) transcript_generation: u64,
+    /// How many of `transcript_entries` have been rendered into
+    /// `transcript_cache`; the tail is rendered and appended on the next
+    /// draw.
+    pub(super) transcript_cache_entries: usize,
+    /// When the last cached entry belongs to a consolidated tool-summary
+    /// ReplBlock run, that run's start index — new ReplBlocks extend it
+    /// (replacing its summary card) instead of starting a new run.
+    pub(super) repl_run_start: Option<usize>,
     /// Rows of the in-flight depth-0 ```repl``` block (with everything nested in
     /// it), shown live and then committed to scrollback verbatim.
     pub(super) block: Vec<String>,
@@ -942,8 +953,10 @@ impl Ui {
             transcript_entries: Vec::new(),
             transcript_cache: Vec::new(),
             transcript_cache_width: 0,
-            transcript_cache_expanded: (false, false),
+            transcript_cache_expanded: (false, false, false),
             transcript_generation: 0,
+            transcript_cache_entries: 0,
+            repl_run_start: None,
             block: Vec::new(),
             block_active: false,
             block_errored: false,
@@ -3045,6 +3058,56 @@ match1
         // Second call should NOT add another blank line.
         ui.ensure_block_gap();
         assert_eq!(ui.block.len(), 2);
+    }
+
+    #[test]
+    fn incremental_cache_matches_full_rebuild_across_repl_runs() {
+        fn repl_block(code: &str) -> TranscriptEntry {
+            TranscriptEntry::ReplBlock(ReplBlockData {
+                code: code.to_owned(),
+                stdout: "ok".to_owned(),
+                stderr: String::new(),
+                tools: vec![session::ToolCall {
+                    name: "bash".to_owned(),
+                    args: serde_json::json!({"command": code}),
+                    result: "ok".to_owned(),
+                    full_output_path: None,
+                    error: None,
+                    duration_secs: 0.1,
+                    depth: 0,
+                }],
+                subcalls: Vec::new(),
+            })
+        }
+        // Entries arriving one flush at a time (as a turn emits them) must
+        // produce the same cache as a from-scratch rebuild — including the
+        // consolidated tool-summary card of a ReplBlock run that grows
+        // across flushes.
+        let entries = [
+            TranscriptEntry::UserMessage("hello".to_owned()),
+            repl_block("print(1)"),
+            repl_block("print(2)"),
+            TranscriptEntry::AssistantProse("done".to_owned()),
+            repl_block("print(3)"),
+        ];
+
+        let mut incremental = test_ui(80, 24);
+        incremental.tools.tool_summary = true;
+        for entry in &entries {
+            incremental.pending.push(entry.clone());
+            incremental.draw().unwrap();
+        }
+
+        let mut fresh = test_ui(80, 24);
+        fresh.tools.tool_summary = true;
+        fresh.pending.extend(entries.iter().cloned());
+        fresh.draw().unwrap();
+
+        assert_eq!(incremental.transcript_cache, fresh.transcript_cache);
+        assert_eq!(
+            incremental.transcript_cache_entries,
+            fresh.transcript_cache_entries
+        );
     }
 
     #[test]

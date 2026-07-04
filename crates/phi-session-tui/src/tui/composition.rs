@@ -30,58 +30,28 @@ impl Ui {
         let transcript_height = self.term.height().saturating_sub(chrome.len()).max(1);
         let live_blocks = self.current_live_transcript_blocks();
 
-        // Rebuild the render cache only when entries change or the
-        // terminal width / expand toggles change — not on every frame.
-        // Without this cache, every draw() re-renders the entire
+        // Keep the render cache current. It fully rebuilds only when the
+        // terminal width or expand toggles change (every cached entry is
+        // width-dependent); new entries are rendered incrementally and
+        // appended. Without the cache, every draw() re-renders the entire
         // transcript (markdown parsing, syntax highlighting, REPL block
-        // construction) on every keystroke, causing severe lag in long
-        // sessions.
+        // construction) on every keystroke — and without the incremental
+        // append, every *new entry* would, stalling long sessions on each
+        // completed tool call or message.
         let cur_width = self.term.width();
-        let cur_expanded = (self.expand_tools, self.expand_thinking);
-        if self.transcript_cache.is_empty()
-            || self.transcript_cache_width != cur_width
+        let cur_expanded = (
+            self.expand_tools,
+            self.expand_thinking,
+            self.tools.tool_summary,
+        );
+        if self.transcript_cache_width != cur_width
             || self.transcript_cache_expanded != cur_expanded
         {
             self.invalidate_transcript_cache();
-            let entries: Vec<TranscriptEntry> = self.transcript_entries.clone();
-            // When tool_summary is enabled, collect tools across consecutive
-            // ReplBlock entries and render a single consolidated summary card
-            // after the run, instead of per-block summaries.
-            let mut i = 0;
-            while i < entries.len() {
-                if self.tools.tool_summary && matches!(entries[i], TranscriptEntry::ReplBlock(..)) {
-                    // Count consecutive ReplBlock entries and collect their tools.
-                    let mut all_tools: Vec<session::ToolCall> = Vec::new();
-                    let mut repl_count: usize = 0;
-                    let run_start = i;
-                    while i < entries.len() && matches!(entries[i], TranscriptEntry::ReplBlock(..))
-                    {
-                        if let TranscriptEntry::ReplBlock(ref data) = entries[i] {
-                            all_tools.extend(data.tools.iter().cloned());
-                        }
-                        repl_count += 1;
-                        i += 1;
-                    }
-                    // Render the consolidated summary card for the run.
-                    let saved = self.block_active;
-                    self.block_active = false;
-                    let summary_lines = self.tool_summary_rows(&all_tools, repl_count);
-                    self.block_active = saved;
-                    if !summary_lines.is_empty() {
-                        self.transcript_cache
-                            .push((format!("tx:summary:{run_start}"), summary_lines));
-                    }
-                } else {
-                    let lines = self.render_entry(&entries[i]);
-                    if !lines.is_empty() {
-                        self.transcript_cache.push((format!("tx:{i}"), lines));
-                    }
-                    i += 1;
-                }
-            }
             self.transcript_cache_width = cur_width;
             self.transcript_cache_expanded = cur_expanded;
         }
+        self.extend_transcript_cache();
 
         let mut specs = Vec::with_capacity(self.transcript_cache.len() + live_blocks.len());
         for (key, lines) in &self.transcript_cache {
@@ -118,7 +88,75 @@ impl Ui {
     /// tells `Transcript::render` its durable-prefix assembly may be stale.
     pub(super) fn invalidate_transcript_cache(&mut self) {
         self.transcript_cache.clear();
+        self.transcript_cache_entries = 0;
+        self.repl_run_start = None;
         self.transcript_generation += 1;
+    }
+
+    /// Render entries not yet in the cache and append them. Append-only in
+    /// the common case, so a new entry costs one entry render — not a
+    /// re-render of the whole history. The one exception is the
+    /// consolidated tool-summary card of a still-growing ReplBlock run:
+    /// its content changes as the run extends, so the stale card is popped
+    /// and re-rendered, and the generation is bumped so `Transcript::render`
+    /// drops its durable assembly (same key, different content).
+    pub(super) fn extend_transcript_cache(&mut self) {
+        let total = self.transcript_entries.len();
+        let mut i = self.transcript_cache_entries;
+        while i < total {
+            if self.tools.tool_summary
+                && matches!(self.transcript_entries[i], TranscriptEntry::ReplBlock(..))
+            {
+                // The run may have started before the cache boundary (a
+                // turn appends its blocks one flush at a time); re-collect
+                // tools from the run's true start.
+                let run_start = self.repl_run_start.unwrap_or(i);
+                let mut run_end = i + 1;
+                while run_end < total
+                    && matches!(
+                        self.transcript_entries[run_end],
+                        TranscriptEntry::ReplBlock(..)
+                    )
+                {
+                    run_end += 1;
+                }
+                let mut all_tools: Vec<session::ToolCall> = Vec::new();
+                let mut repl_count: usize = 0;
+                for entry in &self.transcript_entries[run_start..run_end] {
+                    if let TranscriptEntry::ReplBlock(data) = entry {
+                        all_tools.extend(data.tools.iter().cloned());
+                        repl_count += 1;
+                    }
+                }
+                let summary_key = format!("tx:summary:{run_start}");
+                if self
+                    .transcript_cache
+                    .last()
+                    .is_some_and(|(key, _)| *key == summary_key)
+                {
+                    self.transcript_cache.pop();
+                    self.transcript_generation += 1;
+                }
+                let saved = self.block_active;
+                self.block_active = false;
+                let summary_lines = self.tool_summary_rows(&all_tools, repl_count);
+                self.block_active = saved;
+                if !summary_lines.is_empty() {
+                    self.transcript_cache.push((summary_key, summary_lines));
+                }
+                self.repl_run_start = Some(run_start);
+                i = run_end;
+            } else {
+                let entry = self.transcript_entries[i].clone();
+                let lines = self.render_entry(&entry);
+                if !lines.is_empty() {
+                    self.transcript_cache.push((format!("tx:{i}"), lines));
+                }
+                self.repl_run_start = None;
+                i += 1;
+            }
+        }
+        self.transcript_cache_entries = total;
     }
 
     pub(super) fn flush_pending_to_transcript(&mut self) {
@@ -126,9 +164,9 @@ impl Ui {
         if pending.is_empty() {
             return;
         }
+        // Appended entries are picked up incrementally by
+        // extend_transcript_cache() on the next draw — no invalidation.
         self.transcript_entries.extend(pending);
-        // Invalidate the render cache so new entries are rendered next draw().
-        self.invalidate_transcript_cache();
     }
 
     pub(super) fn clear_transcript(&mut self) {
