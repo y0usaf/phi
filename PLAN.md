@@ -1328,12 +1328,60 @@ one in the abstract.
       `repl_as_tool` (the repl container borrows the tool-card shape:
       `● Repl` verb anchor via the pack's `repl` renderer, code hanging
       2 cells under it, stdout/stderr behind a once-per-container `⎿`
-      gutter — live streaming and replay paths mirrored). Known
-      remaining deltas vs the ref: welcome banner (item 5's second
-      half), the "ready"/"queue a follow-up…" placeholder copy
+      gutter — live streaming and replay paths mirrored). **Pack-content
+      gaps** (zero Rust work — edit the Lua, not the API): `find`'s verb
+      says "Glob" but ref labels both grep and glob as "Search"
+      (`GlobTool/UI.tsx:12`); ~120 of ref's 186 spinner verbs are missing
+      (the pack carries ~65, a deliberate subset — fill to full if/when
+      the cadence feels thin); the 9 `syntax_*` theme roles exist and flow
+      to a real syntect highlighter (`generate_syntax_theme` →
+      `syntax_items` → `highlight_code`, 54 TextMate scopes mapped) but
+      the pack sets **zero** of them — code blocks render with phi's
+      default base16-ocean palette instead of claude-code's Monokai
+      (`MONOKAI_SCOPES` in `native-ts/color-diff/index.ts:190`); ~50 of
+      70 theme roles are unset (thinking levels, markdown chrome, tool
+      backgrounds, chrome meta, glyph roles — all consumed by
+      `apply_palette` `role!()` entries today, just not populated by the
+      pack). **API vocabulary gaps** (need Rust, then Lua can express —
+      per the WS10 method (§10.2): "every visual difference an imitation
+      pack cannot express is, by definition, an API gap"):
+      (e) diff color levels — phi has 2 of 6 (`md_diff_add`/`del` only;
+      no `diffAdded`/`diffRemoved`/dimmed roles, renderer has one level);
+      (f) `punctuation` syntax role — `SyntaxColors.punctuation` is
+      hardcoded to `foreground` with no `apply_palette` `role!()` entry;
+      (g) conditional `ToolRenderSpec.verb` — it's a single static
+      `Option<String>` but ref's `userFacingName()` is input-dependent
+      (FileEdit → "Update"/"Create"/"Updated plan", Bash → "SandboxedBash",
+      FileRead → "Reading Plan"/"Read agent output") — needs a declarative
+      rule vocabulary (data, not closures, per WS1.3a); (h) per-subagent
+      colors — phi has 1 `subcall_accent`, ref has 8 — need roles +
+      index-based renderer selection; (i) system-spinner color —
+      `SpinnerSpec` carries no color (comes from `theme.accent`), ref has
+      a second spinner color for system-level background work; (j)
+      `OverlayPalette` has 8 of 70 roles — overlays can't access
+      syntax/diff/thinking/warning colors; (k) `register_text_effect` is
+      Rust-only (`traits.rs:78`, not in `globals.rs`) — a pack can
+      *select* effects (`status_effect = "sweep"`) but can't *define* new
+      ones or parameterize the sweep color per surface; (l) syntax
+      scope-to-role mapping is hardcoded in Rust (`syntax_items()`,
+      `constants.rs:198-271`) — the Lua can set 9 colors but can't
+      change which TextMate scopes map to which roles or per-scope
+      italic/bold styling. The crush `border` member (below) and
+      WS1.3(b) message renderers are the other tracked vocabulary grows.
+      **Style-out-of-scope deltas** (acknowledged, not API gaps):
+      welcome banner (item 5's second half — a layout/content feature,
+      not a color role), "ready"/"queue a follow-up…" placeholder copy
       (host-owned), `user_padding` widening the user band by one row
       each side (session config, not style), and phi's header line
-      standing in for claude-code's footer info. Next: re-check 10.4's
+      standing in for claude-code's footer info line (structural, not
+      expressible via a style pack). **Feature gaps** (explicitly
+      non-goal per the non-goals section below: presentation parity, not feature parity —
+      these surfaces don't exist in phi, so the colors have nothing to
+      paint): permission/auto-accept/plan-mode UI (6 ref colors), rate-
+      limit bar (2), fast-mode indicator (2), mouse-selection highlight
+      (1), message-action menu (1), memory view (1), ultrathink rainbow
+      highlighting (7+7 shimmer) — each would need the feature built
+      first, then a color role as a side effect. Next: re-check 10.4's
       at-a-glance test, then add `codex`/`crush` (both are flat-chrome
       harnesses — codex is `{verb} {args}`-shaped with different glyphs;
       crush needs `container = card` plus its rounded borders, which may
