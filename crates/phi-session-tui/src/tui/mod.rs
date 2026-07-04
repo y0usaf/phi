@@ -712,6 +712,10 @@ struct Ui {
     pub(super) transcript_cache_width: usize,
     /// (expand_tools, expand_thinking) when the cache was built.
     pub(super) transcript_cache_expanded: (bool, bool),
+    /// Content generation of `transcript_cache`, bumped on every clear or
+    /// rebuild. Passed to `Transcript::render` so its durable-prefix cache
+    /// is invalidated exactly when cached entry content may have changed.
+    pub(super) transcript_generation: u64,
     /// Rows of the in-flight depth-0 ```repl``` block (with everything nested in
     /// it), shown live and then committed to scrollback verbatim.
     pub(super) block: Vec<String>,
@@ -901,6 +905,7 @@ impl Ui {
             transcript_cache: Vec::new(),
             transcript_cache_width: 0,
             transcript_cache_expanded: (false, false),
+            transcript_generation: 0,
             block: Vec::new(),
             block_active: false,
             block_errored: false,

@@ -42,7 +42,7 @@ impl Ui {
             || self.transcript_cache_width != cur_width
             || self.transcript_cache_expanded != cur_expanded
         {
-            self.transcript_cache.clear();
+            self.invalidate_transcript_cache();
             let entries: Vec<TranscriptEntry> = self.transcript_entries.clone();
             // When tool_summary is enabled, collect tools across consecutive
             // ReplBlock entries and render a single consolidated summary card
@@ -99,7 +99,9 @@ impl Ui {
             });
         }
 
-        let frame = self.transcript.render(transcript_height, &specs);
+        let frame = self
+            .transcript
+            .render(transcript_height, self.transcript_generation, &specs);
 
         let transcript_live_len = frame.live.len();
         let mut live = frame.live;
@@ -111,6 +113,14 @@ impl Ui {
         self.term.render(&frame.scrollback, &live, cursor)
     }
 
+    /// Drop the per-entry render cache and bump the content generation.
+    /// Every invalidation must go through here: the generation is what
+    /// tells `Transcript::render` its durable-prefix assembly may be stale.
+    pub(super) fn invalidate_transcript_cache(&mut self) {
+        self.transcript_cache.clear();
+        self.transcript_generation += 1;
+    }
+
     pub(super) fn flush_pending_to_transcript(&mut self) {
         let pending = std::mem::take(&mut self.pending);
         if pending.is_empty() {
@@ -118,13 +128,13 @@ impl Ui {
         }
         self.transcript_entries.extend(pending);
         // Invalidate the render cache so new entries are rendered next draw().
-        self.transcript_cache.clear();
+        self.invalidate_transcript_cache();
     }
 
     pub(super) fn clear_transcript(&mut self) {
         self.transcript.reset();
         self.transcript_entries.clear();
-        self.transcript_cache.clear();
+        self.invalidate_transcript_cache();
         self.pending.clear();
         self.block.clear();
         self.after_block.clear();
