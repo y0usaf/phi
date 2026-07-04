@@ -350,6 +350,7 @@ impl Ui {
             UiAction::StartLogin { provider } => self.start_login(&provider),
             UiAction::Logout { provider } => self.logout(&provider),
             UiAction::TrustProject { trusted } => self.set_project_trust(trusted),
+            UiAction::SwitchStyle { name } => self.switch_style(name.trim()),
             // Mux-host-owned effects: session commands never emit these.
             UiAction::OpenProject(_) | UiAction::RunHostAction { .. } => {
                 self.push_bar(0, "command action not supported in session".to_owned());
@@ -388,6 +389,64 @@ impl Ui {
                 }
             }
         }
+    }
+
+    /// The `/style` effect (WS10): activate a registered style pack,
+    /// persist the choice, and re-resolve every runtime-derived visual.
+    /// An empty name reports the available styles instead of switching.
+    fn switch_style(&mut self, name: &str) {
+        if name.is_empty() {
+            let active = self.runtime.active_style();
+            let styles = self.runtime.list_styles();
+            let mut lines = Vec::new();
+            if styles.is_empty() {
+                lines.push(self.note(&"no styles registered"));
+            }
+            for style in styles {
+                let marker = if active.as_deref() == Some(style.as_str()) {
+                    "  (active)"
+                } else {
+                    ""
+                };
+                lines.push(self.note(&format!("{style}{marker}")));
+            }
+            self.pending.push(TranscriptEntry::RawLines(lines));
+            return;
+        }
+        if let Err(e) = self.runtime.set_active_style(Some(name)) {
+            self.pending
+                .push(TranscriptEntry::RawLines(vec![self.err(&e)]));
+            return;
+        }
+        if let Err(e) = phi_session::style::StyleStore::load_default().set(Some(name)) {
+            // The switch still applied for this session; only persistence
+            // failed, so say exactly that.
+            self.pending.push(TranscriptEntry::RawLines(vec![
+                self.warn(&format!("style not persisted: {e:#}")),
+            ]));
+        }
+        self.apply_active_style();
+        self.pending.push(TranscriptEntry::RawLines(vec![
+            self.note(&format!("[style: {name}]")),
+        ]));
+    }
+
+    /// Re-resolve everything derived from the runtime's visual registries
+    /// and repaint the whole transcript — the same mechanics as a resize,
+    /// plus a cache flush because committed rows have the old palette's
+    /// colours baked in.
+    fn apply_active_style(&mut self) {
+        self.visual = VisualContext::from_runtime(Some(&self.runtime));
+        self.tool_render = self.runtime.tool_render_index();
+        if let Some(colors) = &self.terminal_colors {
+            self.palette = match self.runtime.active_theme() {
+                Some(spec) => InlinePalette::from_extension_theme(spec, colors),
+                None => InlinePalette::from_terminal_colors(colors),
+            };
+        }
+        let _ = self.term.clear_viewport();
+        self.transcript.reset();
+        self.transcript_cache_width = 0;
     }
 
     fn set_project_trust(&mut self, trusted: bool) {

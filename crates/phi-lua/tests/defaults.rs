@@ -372,6 +372,49 @@ async fn defaults_visual_data_registers_thinking_expression() {
     assert_eq!(expr.expression_interval_ms, 2000);
 }
 
+#[tokio::test]
+async fn defaults_visual_data_registers_phi_style() {
+    let rt = build_one("phi-visual-data", defaults::VISUAL_DATA_LUA);
+
+    // The `phi` default style is an empty bundle: activating it falls back
+    // to the base registrations, so "switch back to phi" restores the
+    // defaults without any special-casing.
+    assert_eq!(rt.list_styles(), vec!["phi"]);
+    rt.set_active_style(Some("phi")).unwrap();
+    assert_eq!(rt.active_spinner().unwrap().name, "phi:default");
+    assert_eq!(rt.active_thinking_expression().unwrap().name, "phi:default");
+}
+
+#[tokio::test]
+async fn defaults_style_commands_emit_switch_style() {
+    // /style (session) and :style (mux) both return the declarative
+    // SwitchStyle action; the hosts interpret and persist it.
+    let rt = commands_runtime(&[]);
+    let output = rt
+        .invoke_command("style", "crush")
+        .await
+        .unwrap()
+        .expect("style command registered");
+    assert_eq!(
+        output.actions,
+        vec![phi_ext::UiAction::SwitchStyle {
+            name: "crush".to_owned()
+        }]
+    );
+
+    let rt = build_one("phi-mux-commands", defaults::MUX_COMMANDS_LUA);
+    let output = rt
+        .invoke_command_sync_in(phi_ext::CommandContext::Mux, "style", "")
+        .unwrap()
+        .expect(":style command registered");
+    assert_eq!(
+        output.actions,
+        vec![phi_ext::UiAction::SwitchStyle {
+            name: String::new()
+        }]
+    );
+}
+
 // ── Coding tools (hybrid surface, dispatch = "python") ───────────────────
 
 #[tokio::test]

@@ -9,6 +9,7 @@
 pub mod archive;
 pub mod config;
 pub mod session;
+pub mod style;
 pub mod transcript;
 pub mod trust;
 pub mod usage;

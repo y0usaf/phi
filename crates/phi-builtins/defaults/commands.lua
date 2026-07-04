@@ -134,6 +134,20 @@ phi.register_command("exit", {
     end,
 })
 
+-- ── /style ──────────────────────────────────────────────────────────────
+-- With an argument: activate that style pack (persisted). Without: list
+-- the registered styles. Completion is not registry-driven yet — style
+-- packs register during the same runtime build as this command, so the
+-- names aren't known here (the /model gap, WS3.2; revisit for WS10.4).
+
+phi.register_command("style", {
+    description = "switch the visual style pack (no arg: list styles)",
+    args_hint = "[name]",
+    handler = function(args)
+        return { actions = { { type = "SwitchStyle", data = { name = trim(args) } } } }
+    end,
+})
+
 -- ── /trust ──────────────────────────────────────────────────────────────
 
 phi.register_command("trust", {

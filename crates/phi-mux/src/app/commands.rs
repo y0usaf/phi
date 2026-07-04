@@ -397,6 +397,7 @@ impl MuxApp {
                     );
                 }
             },
+            UiAction::SwitchStyle { name } => self.switch_style(vid, name.trim()),
             UiAction::NewSession
             | UiAction::OpenPicker(_)
             | UiAction::SwitchModel { .. }
@@ -410,6 +411,67 @@ impl MuxApp {
                 );
             }
         }
+    }
+
+    /// The `:style` effect (WS10): activate a style pack on the mux's
+    /// visual runtime, persist the choice, and re-derive the chrome
+    /// palette. Sessions own their own runtimes — a running session
+    /// re-skins via its `/style`, or on its next build. An empty name
+    /// reports the available styles.
+    fn switch_style(&mut self, vid: u64, name: &str) {
+        let Some(rt) = self.visual_runtime.as_deref() else {
+            self.set_note_on(vid, "no styles registered", StatusNoteKind::Error);
+            return;
+        };
+        if name.is_empty() {
+            let active = rt.active_style();
+            let styles: Vec<String> = rt
+                .list_styles()
+                .into_iter()
+                .map(|s| {
+                    if active.as_deref() == Some(s.as_str()) {
+                        format!("[{s}]")
+                    } else {
+                        s
+                    }
+                })
+                .collect();
+            let listing = if styles.is_empty() {
+                "no styles registered".to_owned()
+            } else {
+                format!("styles: {}", styles.join(" "))
+            };
+            self.set_note_on(vid, listing, StatusNoteKind::Ok);
+            return;
+        }
+        if let Err(e) = rt.set_active_style(Some(name)) {
+            self.set_note_on(vid, format!("{e:#}"), StatusNoteKind::Error);
+            return;
+        }
+        if let Err(e) = phi_session::style::StyleStore::load_default().set(Some(name)) {
+            self.set_note_on(
+                vid,
+                format!("style not persisted: {e:#}"),
+                StatusNoteKind::Error,
+            );
+        }
+        self.palette = match self
+            .visual_runtime
+            .as_deref()
+            .and_then(|rt| rt.active_theme())
+        {
+            Some(spec) => {
+                crate::ui::palette::ScenePalette::from_extension_theme(spec, &self.terminal_colors)
+            }
+            None => crate::ui::palette::ScenePalette::from_terminal_colors(&self.terminal_colors),
+        };
+        // Committed frames have the old palette baked in: force every view
+        // to repaint from scratch (the alt-screen-transition mechanics).
+        for view in self.views.values_mut() {
+            view.surface.invalidate();
+            view.renderer.invalidate();
+        }
+        self.set_note_on(vid, format!("style: {name}"), StatusNoteKind::Ok);
     }
 
     /// The `:open` effect: add `path` as a project and focus it. In daemon

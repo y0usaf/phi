@@ -29,3 +29,10 @@ phi.register_thinking_expression("phi:default", {
     tool_expression = "running...",
     expression_interval_ms = 2000,
 })
+
+-- ── Default style (WS10) ─────────────────────────────────────────────────
+-- Phi's own look as a switchable style pack. The bundle is deliberately
+-- empty: absent members fall back to the base registrations above (and the
+-- Rust theme resolver), so `/style phi` means "the defaults" and switching
+-- back from another pack restores them.
+phi.register_style("phi", {})

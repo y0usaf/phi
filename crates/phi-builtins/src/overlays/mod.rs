@@ -107,6 +107,9 @@ pub(crate) mod test_host {
         fn register_text_effect(&mut self, _e: phi_ext::TextEffectSpec) -> Result<()> {
             Ok(())
         }
+        fn register_style(&mut self, _s: phi_ext::StyleSpec) -> Result<()> {
+            Ok(())
+        }
         fn register_overlay(&mut self, overlay: OverlaySpec) -> Result<()> {
             let name = overlay.name.clone();
             self.overlays.insert(name, overlay);

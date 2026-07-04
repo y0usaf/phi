@@ -380,13 +380,14 @@ pub async fn run(setup: TuiSetup, mut io: SessionIo) -> Result<()> {
     };
     if let Some(colors) = colors {
         // Prefer an extension-registered theme (the built-in default theme is
-        // itself an extension), mirroring the mux's palette path. Without one
-        // (e.g. a build stripped of phi-builtins), derive straight from the
-        // terminal colors.
-        ui.palette = match ui.runtime.first_theme() {
+        // itself an extension), mirroring the mux's palette path — via the
+        // active style pack when one is set. Without one (e.g. a build
+        // stripped of phi-builtins), derive straight from the terminal colors.
+        ui.palette = match ui.runtime.active_theme() {
             Some(spec) => InlinePalette::from_extension_theme(spec, &colors),
             None => InlinePalette::from_terminal_colors(&colors),
         };
+        ui.terminal_colors = Some(colors);
     }
     // Resume when the session has any message entries, regardless of the
     // leaf pointer. A session navigated to root (leaf None) still has
@@ -797,6 +798,9 @@ struct Ui {
     /// Cached git branch for the footer, refreshed on a short TTL.
     pub(super) branch: Option<String>,
     pub(super) branch_at: std::time::Instant,
+    /// Terminal colours probed (or host-forwarded) at startup, kept so a
+    /// `/style` switch can re-derive the palette without re-probing.
+    pub(super) terminal_colors: Option<phi_tui::TerminalColors>,
 }
 
 /// Current git branch of `cwd` (or a short detached-HEAD hash), following a
@@ -922,6 +926,7 @@ impl Ui {
             usage,
             branch: None,
             branch_at: std::time::Instant::now() - Duration::from_secs(60),
+            terminal_colors: None,
         }
     }
 

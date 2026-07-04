@@ -28,17 +28,19 @@ pub struct VisualContext {
 impl VisualContext {
     /// Build a `VisualContext` from an extension runtime.
     ///
-    /// Takes the first registered spec of each kind. Extensions are
-    /// registered in order, so the first one is the "default" extension
-    /// visual.
+    /// Takes the spec in effect for each kind: the active style pack's
+    /// member when a style is active, else the first registered spec
+    /// (extensions register in order, so the first one is the "default"
+    /// extension visual). Rebuilt every frame, so a `:style` switch takes
+    /// effect on the next draw.
     pub fn from_runtime(runtime: Option<&phi_ext::AppRuntime>) -> Self {
         let runtime = match runtime {
             Some(rt) => rt,
             None => return Self::default(),
         };
         Self {
-            spinner: runtime.first_spinner().cloned(),
-            thinking_expression: runtime.first_thinking_expression().cloned(),
+            spinner: runtime.active_spinner().cloned(),
+            thinking_expression: runtime.active_thinking_expression().cloned(),
             text_effects: runtime
                 .list_text_effects()
                 .iter()

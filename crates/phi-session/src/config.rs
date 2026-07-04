@@ -93,6 +93,10 @@ shared_fields_struct! {
         /// ([`Config::load_approvals`]): a cloned repo must not be able to
         /// weaken the gate with its own allow rules.
         pub approvals: Option<ApprovalsConfig>,
+        /// Initial visual style pack (WS10), e.g. `style = "crush"`. A
+        /// choice persisted by `/style` (`style.json` in the data dir)
+        /// wins over this declarative default.
+        pub style: Option<String>,
     }
 }
 
@@ -417,6 +421,9 @@ shared_fields_struct! {
         /// Whether the builtin `coding-tools-native` extension registers
         /// (config.lua `coding_tools_native`, default off — WS9.3b).
         pub coding_tools_native: bool,
+        /// Initial style pack from config.lua `style` (WS10); the persisted
+        /// `/style` choice overrides it at runtime-boot time.
+        pub style: Option<String>,
     }
 }
 
@@ -472,6 +479,7 @@ impl Settings {
             },
             skills: config.skills.unwrap_or_default(),
             coding_tools_native: config.coding_tools_native.unwrap_or(false),
+            style: config.style,
         }
     }
 }

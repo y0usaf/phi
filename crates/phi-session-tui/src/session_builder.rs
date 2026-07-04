@@ -321,6 +321,14 @@ pub async fn build_runtime(
         rt_builder = rt_builder.register_boxed_extension(ext);
     }
     let runtime = Arc::new(rt_builder.build()?);
+    // Initial style pack (WS10): the persisted `/style` choice wins over
+    // config.lua's `style`. A stale name (pack uninstalled) degrades to the
+    // base visuals rather than failing the build.
+    if let Some(style) = phi_session::style::initial_style(settings.style.clone()) {
+        if let Err(e) = runtime.set_active_style(Some(&style)) {
+            eprintln!("Warning: {e:#}");
+        }
+    }
     runtime.boot().await?;
     runtime.start_session().await?;
 

@@ -1168,7 +1168,7 @@ subsumes the still-open WS1.3(b): mimicking three real transcripts is a
 far better forcing function for the message-renderer design than inventing
 one in the abstract.
 
-- [ ] **10.1 Style-pack primitive + runtime switching.** Today every visual
+- [x] **10.1 Style-pack primitive + runtime switching.** Today every visual
       registration is startup-time and last-write-wins; there is no
       activatable bundle and no way to re-skin a running session. Decide the
       mechanism deliberately (one declaration mechanism — doctrine 5): a
@@ -1179,6 +1179,48 @@ one in the abstract.
       palette note). Persist the choice in config so it survives restarts.
       Switching arrives as a `UiAction` from the command registry, not a
       side channel.
+      *Landed as (2026-07-04):* `StyleSpec` (`phi-ext/src/style_spec.rs`)
+      bundles the existing shapes **inline** — `Option<ThemeSpec>`,
+      `Option<SpinnerSpec>`, `Option<ThinkingExpressionSpec>`,
+      `Vec<ToolRenderSpec>` — deliberately not by-name references, so an
+      inactive pack's theme never leaks into the `first_theme()` fallback
+      order. Absent members fall through to the base registrations; the
+      shipped `phi` default style is literally the empty bundle
+      (`visual_data.lua`), so "switch back to phi" needs no special case.
+      Runtime state: `active_style: Mutex<Option<String>>` on `AppRuntime`
+      (the `connect_ui` interior-mutability precedent — the registry stays
+      immutable, which bundle is active does not); `set_active_style`
+      rejects unknown names listing the available ones, and the
+      `active_theme`/`active_spinner`/`active_thinking_expression`
+      accessors + a style-overlaying `tool_render_index()` replace the
+      `first_*` calls in both frontends' `VisualContext` and palette
+      paths. `UiAction::SwitchStyle { name }` (empty name = list styles)
+      is emitted by `/style` (`commands.lua`) and `:style`
+      (`mux_commands.lua`); the session TUI re-resolves palette (terminal
+      colours kept on `Ui` for re-derivation), visual context, and tool
+      render index, then repaints via the resize mechanics (clear
+      viewport + `transcript.reset()` + cache flush); the mux re-derives
+      `ScenePalette` and invalidates every view's surface+renderer (the
+      alt-screen-transition mechanics). Persistence: user-global
+      `style.json` (`phi_session::style::StyleStore`, the TrustStore
+      layout) written on switch; config.lua grew a declarative `style`
+      field, and `initial_style` (persisted-wins, approvals layering)
+      applies at every runtime build — session, one-shot, and mux visual
+      runtime. Lua parity shipped in the same change (WS1.6's lesson):
+      `phi.register_style{...}` reuses the exact member parsers of the
+      standalone registrations (now shared helpers in
+      `phi-lua/extension/mod.rs`); dogfood tests in `lua_api.rs` +
+      `defaults.rs`. Honest remainders: `/style` has no completion —
+      packs register during the same runtime build as the command, so a
+      static list can't know them (the WS3.2 /model gap; a dynamic
+      completion primitive is WS10.4's registry-driven-completion work);
+      in mux mode `/style` re-skins the issuing session and `:style` the
+      chrome — other *live* sessions re-theme on their next build (live
+      cross-runtime propagation rides WS8.3's per-view palette follow-up);
+      Lua style themes are static palettes (no resolver), same as
+      `register_theme`; text effects and message renderers aren't bundle
+      members yet — grow the vocabulary when WS10.2's pack inventory
+      demands it.
 - [ ] **10.2 Inventory the gap by imitation.** Same method as WS1.1/1.6:
       build the first pack (claude-code — closest to Phi's current look)
       and let every un-expressible detail become the work list. Expected

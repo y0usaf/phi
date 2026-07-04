@@ -79,6 +79,15 @@ host_action("cleanup", { "clean" }, "remove old archived sessions", "cleanup")
 host_action("refresh", {}, "refresh the current session", "refresh")
 host_action("reload", {}, "refresh all sessions", "reload")
 overlay_action("usage", {}, "show usage totals", "phi:usage")
+phi.register_command("style", {
+    description = "switch the visual style pack (no arg: list styles)",
+    args_hint = "[name]",
+    context = "mux",
+    handler = function(args)
+        local name = args:match("^%s*(.-)%s*$")
+        return { actions = { { type = "SwitchStyle", data = { name = name } } } }
+    end,
+})
 mux_action("quit", { "q" }, "", "quit the mux", { type = "Quit" })
 overlay_action("help", { "h" }, "show commands and keys", "phi:help")
 host_action("up", { "prevsession" }, "previous session", "session-prev")

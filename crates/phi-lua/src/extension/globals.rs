@@ -39,6 +39,8 @@ pub(super) fn setup_phi_global(lua: &mlua::Lua) -> mlua::Result<()> {
     let phi_registered_spinners = lua.create_table()?;
     let phi_thinking_expressions = lua.create_table()?;
     let phi_registered_thinking_expressions = lua.create_table()?;
+    let phi_styles = lua.create_table()?;
+    let phi_registered_styles = lua.create_table()?;
     let phi_overlays = lua.create_table()?;
     let phi_registered_overlays = lua.create_table()?;
     let phi_overlay_instances = lua.create_table()?;
@@ -71,6 +73,8 @@ pub(super) fn setup_phi_global(lua: &mlua::Lua) -> mlua::Result<()> {
         "_phi_registered_thinking_expressions",
         phi_registered_thinking_expressions,
     )?;
+    globals.set("_phi_styles", phi_styles)?;
+    globals.set("_phi_registered_styles", phi_registered_styles)?;
     globals.set("_phi_overlays", phi_overlays)?;
     globals.set("_phi_registered_overlays", phi_registered_overlays)?;
     globals.set("_phi_overlay_instances", phi_overlay_instances)?;
@@ -262,6 +266,26 @@ pub(super) fn setup_phi_global(lua: &mlua::Lua) -> mlua::Result<()> {
             Ok(())
         })?;
     phi.set("register_thinking_expression", register_thinking_expr_fn)?;
+
+    // phi.register_style(name, opts) — a style pack (WS10): a bundle of the
+    // existing visual shapes activated as a unit by `/style <name>`.
+    // opts: { theme = { foreground = {r,g,b}, ... },          -- palette table
+    //         spinner = { frames = {...}, frame_interval_ms = 80 },
+    //         thinking = { expressions = {...}, tool_expression = "...",
+    //                      expression_interval_ms = 2000 },
+    //         tool_renderers = { bash = { verb = "exec", ... }, ... } }
+    // Every member is optional; absent members fall back to the base
+    // registrations while the style is active.
+    let register_style_fn = lua.create_function(|lua, (name, opts): (String, mlua::Table)| {
+        let globals = lua.globals();
+        let styles: mlua::Table = globals.get("_phi_styles")?;
+        styles.set(name.as_str(), opts)?;
+        let reg: mlua::Table = globals.get("_phi_registered_styles")?;
+        let len = reg.raw_len();
+        reg.raw_set(len + 1, name)?;
+        Ok(())
+    })?;
+    phi.set("register_style", register_style_fn)?;
 
     // phi.register_overlay(name, opts)
     // opts: {

@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 
 use crate::{
     CommandContext, CommandSpec, EventHandlerRegistration, ExtensionHost, FlagSpec,
-    MessageRendererSpec, OverlaySpec, ProviderConfig, ShortcutSpec, SpinnerSpec, TextEffectSpec,
-    ThemeSpec, ThinkingExpressionSpec, ToolRenderSpec, ToolSpec,
+    MessageRendererSpec, OverlaySpec, ProviderConfig, ShortcutSpec, SpinnerSpec, StyleSpec,
+    TextEffectSpec, ThemeSpec, ThinkingExpressionSpec, ToolRenderSpec, ToolSpec,
 };
 use anyhow::{Result, bail};
 
@@ -26,6 +26,7 @@ pub(crate) struct RegistryHost {
     pub(crate) thinking_expressions: BTreeMap<String, ThinkingExpressionSpec>,
     pub(crate) text_effects: BTreeMap<String, TextEffectSpec>,
     pub(crate) overlays: BTreeMap<String, OverlaySpec>,
+    pub(crate) styles: BTreeMap<String, StyleSpec>,
 }
 
 impl ExtensionHost for RegistryHost {
@@ -140,6 +141,15 @@ impl ExtensionHost for RegistryHost {
             bail!("text effect '{}' is already registered", name);
         }
         self.text_effects.insert(name, effect);
+        Ok(())
+    }
+
+    fn register_style(&mut self, style: StyleSpec) -> Result<()> {
+        let name = style.name.clone();
+        if self.styles.contains_key(&name) {
+            bail!("style '{}' is already registered", name);
+        }
+        self.styles.insert(name, style);
         Ok(())
     }
 

@@ -9,10 +9,10 @@ use crate::{
     CommandContext, CommandInvocation, CommandOutput, CommandSpec, EventHandlerRegistration,
     EventKind, EventPayload, EventReturn, ExtensionContextRef, ExtensionManifest, ExtensionMode,
     FlagSpec, LifecycleEvent, MessageRendererSpec, OverlaySpec, ProviderConfig, ShortcutSpec,
-    SpinnerSpec, TextEffectSpec, ThemeSpec, ThinkingExpressionSpec, ToolRenderIndex,
+    SpinnerSpec, StyleSpec, TextEffectSpec, ThemeSpec, ThinkingExpressionSpec, ToolRenderIndex,
     ToolRenderSpec, ToolSpec,
 };
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, bail};
 
 use crate::snapshot::{
     EventHandlerSummary, RuntimeSnapshot, ThemeSummary, command_summary, flag_summary,
@@ -43,6 +43,12 @@ pub struct AppRuntime {
     pub(crate) thinking_expressions: BTreeMap<String, ThinkingExpressionSpec>,
     pub(crate) text_effects: BTreeMap<String, TextEffectSpec>,
     pub(crate) overlays: BTreeMap<String, OverlaySpec>,
+    pub(crate) styles: BTreeMap<String, StyleSpec>,
+    /// The active style pack (WS10). Interior-mutable like the UI handle:
+    /// the registry itself stays immutable after build, but which bundle is
+    /// active can change at runtime (`/style`), and hosts re-resolve their
+    /// visuals afterwards.
+    active_style: Mutex<Option<String>>,
     notifications: Mutex<Vec<String>>,
     status: TokioMutex<BTreeMap<String, String>>,
     session_name: TokioMutex<Option<String>>,
@@ -116,6 +122,7 @@ impl AppRuntime {
         thinking_expressions: BTreeMap<String, ThinkingExpressionSpec>,
         text_effects: BTreeMap<String, TextEffectSpec>,
         overlays: BTreeMap<String, OverlaySpec>,
+        styles: BTreeMap<String, StyleSpec>,
     ) -> Self {
         Self {
             cwd,
@@ -135,6 +142,8 @@ impl AppRuntime {
             thinking_expressions,
             text_effects,
             overlays,
+            styles,
+            active_style: Mutex::new(None),
             notifications: Mutex::new(Vec::new()),
             status: TokioMutex::new(BTreeMap::new()),
             session_name: TokioMutex::new(None),
@@ -934,10 +943,80 @@ impl AppRuntime {
     // ── Tool render specs ──────────────────────────────────────────────────────
 
     /// Snapshot of the registered tool display metadata, seeded with the
-    /// core `repl` spec. Frontends take this once (the registry is
-    /// immutable after build) and project it into their own rendering.
+    /// core `repl` spec and overlaid with the active style's specs (later
+    /// inserts win in the index). Frontends take this at startup and
+    /// re-take it after a style switch.
     pub fn tool_render_index(&self) -> ToolRenderIndex {
-        ToolRenderIndex::new(self.tool_renderers.values().cloned())
+        let base = self.tool_renderers.values().cloned();
+        match self.active_style_spec() {
+            Some(style) => ToolRenderIndex::new(base.chain(style.tool_renderers.iter().cloned())),
+            None => ToolRenderIndex::new(base),
+        }
+    }
+
+    // ── Visual: style accessors (WS10) ──────────────────────────────────
+
+    /// Get a registered style pack by name.
+    pub fn get_style(&self, name: &str) -> Option<&StyleSpec> {
+        self.styles.get(name)
+    }
+
+    /// List all registered style pack names.
+    pub fn list_styles(&self) -> Vec<String> {
+        self.styles.keys().cloned().collect()
+    }
+
+    /// The active style pack's name, if one is set.
+    pub fn active_style(&self) -> Option<String> {
+        self.active_style.lock().unwrap().clone()
+    }
+
+    /// Activate a style pack by name (`None` deactivates, falling back to
+    /// the base registrations). Unknown names error and leave the current
+    /// style untouched; hosts re-resolve their visuals after a successful
+    /// switch.
+    pub fn set_active_style(&self, name: Option<&str>) -> Result<()> {
+        if let Some(name) = name
+            && !self.styles.contains_key(name)
+        {
+            bail!(
+                "style '{}' is not registered (available: {})",
+                name,
+                self.list_styles().join(", ")
+            );
+        }
+        *self.active_style.lock().unwrap() = name.map(str::to_owned);
+        Ok(())
+    }
+
+    /// The active style's spec, when an active style is set and registered.
+    fn active_style_spec(&self) -> Option<&StyleSpec> {
+        let name = self.active_style.lock().unwrap().clone()?;
+        self.styles.get(&name)
+    }
+
+    /// The theme in effect: the active style's theme, else the first
+    /// registered theme.
+    pub fn active_theme(&self) -> Option<&ThemeSpec> {
+        self.active_style_spec()
+            .and_then(|s| s.theme.as_ref())
+            .or_else(|| self.first_theme())
+    }
+
+    /// The spinner in effect: the active style's spinner, else the first
+    /// registered spinner.
+    pub fn active_spinner(&self) -> Option<&SpinnerSpec> {
+        self.active_style_spec()
+            .and_then(|s| s.spinner.as_ref())
+            .or_else(|| self.first_spinner())
+    }
+
+    /// The thinking expressions in effect: the active style's, else the
+    /// first registered set.
+    pub fn active_thinking_expression(&self) -> Option<&ThinkingExpressionSpec> {
+        self.active_style_spec()
+            .and_then(|s| s.thinking_expression.as_ref())
+            .or_else(|| self.first_thinking_expression())
     }
 
     // ── Visual: theme accessors ──────────────────────────────────────────
@@ -2322,5 +2401,140 @@ mod tests {
             .expect("dispatch");
         host.await.unwrap();
         assert!(returns.is_empty(), "allowed call yields no ToolBlock");
+    }
+
+    // ── Styles (WS10) ───────────────────────────────────────────────────
+
+    /// An extension registering a base theme/spinner plus one style pack
+    /// bundling its own theme, spinner, and a tool renderer override.
+    struct StyledExt;
+    impl Extension for StyledExt {
+        fn manifest(&self) -> ExtensionManifest {
+            ExtensionManifest {
+                id: "test.styled".to_owned(),
+                name: "Styled".to_owned(),
+                version: "0".to_owned(),
+                description: "style pack test".to_owned(),
+            }
+        }
+        fn register(&self, host: &mut dyn ExtensionHost) -> anyhow::Result<()> {
+            let mut base_palette = std::collections::BTreeMap::new();
+            base_palette.insert("accent".to_owned(), crate::Rgb(1, 2, 3));
+            host.register_theme(crate::ThemeSpec::new("base", base_palette))?;
+            host.register_spinner(crate::SpinnerSpec::new(
+                "base",
+                vec!["-".to_owned(), "|".to_owned()],
+                80,
+            ))?;
+            host.register_tool_renderer(crate::ToolRenderSpec::new("bash").with_verb("run"))?;
+
+            let mut pack_palette = std::collections::BTreeMap::new();
+            pack_palette.insert("accent".to_owned(), crate::Rgb(9, 8, 7));
+            host.register_style(
+                crate::StyleSpec::new("crush")
+                    .with_theme(crate::ThemeSpec::new("crush:theme", pack_palette))
+                    .with_spinner(crate::SpinnerSpec::new(
+                        "crush:spinner",
+                        vec![".".to_owned()],
+                        120,
+                    ))
+                    .with_tool_renderers(vec![
+                        crate::ToolRenderSpec::new("bash").with_verb("exec"),
+                    ]),
+            )?;
+            // A minimal pack with no members: falls back to the base
+            // registrations entirely (the shipped `phi` default's shape).
+            host.register_style(crate::StyleSpec::new("bare"))?;
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn style_activation_overlays_and_falls_back() {
+        let rt = RuntimeBuilder::new()
+            .with_cwd(std::path::Path::new("."))
+            .register_extension(StyledExt)
+            .build()
+            .unwrap();
+
+        assert_eq!(rt.list_styles(), vec!["bare", "crush"]);
+        assert_eq!(rt.active_style(), None);
+
+        // No active style: active_* fall through to the base registrations.
+        assert_eq!(rt.active_theme().unwrap().name, "base");
+        assert_eq!(rt.active_spinner().unwrap().name, "base");
+        assert_eq!(
+            rt.tool_render_index().get("bash").unwrap().verb.as_deref(),
+            Some("run")
+        );
+
+        // Active style: bundled members win, tool renderers overlay.
+        rt.set_active_style(Some("crush")).unwrap();
+        assert_eq!(rt.active_style().as_deref(), Some("crush"));
+        assert_eq!(rt.active_theme().unwrap().name, "crush:theme");
+        assert_eq!(rt.active_spinner().unwrap().name, "crush:spinner");
+        assert_eq!(
+            rt.tool_render_index().get("bash").unwrap().verb.as_deref(),
+            Some("exec")
+        );
+        // Thinking expressions: the pack has none, so base fallback (none
+        // registered here) applies.
+        assert!(rt.active_thinking_expression().is_none());
+
+        // An empty bundle behaves exactly like no style at all.
+        rt.set_active_style(Some("bare")).unwrap();
+        assert_eq!(rt.active_theme().unwrap().name, "base");
+        assert_eq!(
+            rt.tool_render_index().get("bash").unwrap().verb.as_deref(),
+            Some("run")
+        );
+
+        // Deactivation restores the base view.
+        rt.set_active_style(None).unwrap();
+        assert_eq!(rt.active_style(), None);
+        assert_eq!(rt.active_theme().unwrap().name, "base");
+    }
+
+    #[test]
+    fn unknown_style_errors_and_preserves_active() {
+        let rt = RuntimeBuilder::new()
+            .with_cwd(std::path::Path::new("."))
+            .register_extension(StyledExt)
+            .build()
+            .unwrap();
+        rt.set_active_style(Some("crush")).unwrap();
+        let err = rt.set_active_style(Some("nope")).unwrap_err();
+        assert!(err.to_string().contains("not registered"), "{err}");
+        assert!(err.to_string().contains("crush"), "lists available: {err}");
+        assert_eq!(rt.active_style().as_deref(), Some("crush"));
+    }
+
+    #[test]
+    fn duplicate_style_registration_is_rejected() {
+        struct DupExt;
+        impl Extension for DupExt {
+            fn manifest(&self) -> ExtensionManifest {
+                ExtensionManifest {
+                    id: "test.dup".to_owned(),
+                    name: "Dup".to_owned(),
+                    version: "0".to_owned(),
+                    description: String::new(),
+                }
+            }
+            fn register(&self, host: &mut dyn ExtensionHost) -> anyhow::Result<()> {
+                host.register_style(crate::StyleSpec::new("same"))?;
+                host.register_style(crate::StyleSpec::new("same"))?;
+                Ok(())
+            }
+        }
+        let err = match RuntimeBuilder::new()
+            .with_cwd(std::path::Path::new("."))
+            .register_extension(DupExt)
+            .build()
+        {
+            Ok(_) => panic!("duplicate style registration must fail the build"),
+            Err(e) => e,
+        };
+        assert!(err.to_string().contains("already registered"), "{err}");
     }
 }

@@ -239,11 +239,12 @@ fn build_app(
     let visual_runtime = build_visual_runtime(cwd);
 
     // Derive the mux palette: if an extension registered a theme, use it
-    // (overlaid on the built-in derivation so missing roles fall back).
-    // Otherwise, use the built-in `generate_theme` path — the same gray
-    // ramp / ANSI mapping as before.
+    // (overlaid on the built-in derivation so missing roles fall back),
+    // via the active style pack when one is set. Otherwise, use the
+    // built-in `generate_theme` path — the same gray ramp / ANSI mapping
+    // as before.
     let palette = if let Some(rt) = &visual_runtime {
-        if let Some(theme_spec) = rt.first_theme() {
+        if let Some(theme_spec) = rt.active_theme() {
             ScenePalette::from_extension_theme(theme_spec, &terminal_colors)
         } else {
             ScenePalette::from_terminal_colors(&terminal_colors)
@@ -508,7 +509,20 @@ fn build_visual_runtime(cwd: &std::path::Path) -> Option<Arc<AppRuntime>> {
     }
 
     match rt_builder.build() {
-        Ok(rt) => Some(Arc::new(rt)),
+        Ok(rt) => {
+            // Initial style pack (WS10): the persisted `/style` choice wins
+            // over config.lua's `style`; a stale name degrades to base
+            // visuals.
+            let config_style = phi_session::config::Config::load(cwd)
+                .ok()
+                .and_then(|c| c.style);
+            if let Some(style) = phi_session::style::initial_style(config_style) {
+                if let Err(e) = rt.set_active_style(Some(&style)) {
+                    eprintln!("Warning: {e:#}");
+                }
+            }
+            Some(Arc::new(rt))
+        }
         Err(e) => {
             eprintln!("Warning: visual extension discovery failed: {e}");
             None

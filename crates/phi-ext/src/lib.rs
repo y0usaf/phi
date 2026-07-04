@@ -12,6 +12,7 @@ pub mod provider;
 pub mod runtime;
 pub mod shortcut;
 pub mod snapshot;
+pub mod style_spec;
 pub mod theme_spec;
 pub mod tool;
 pub mod tool_render;
@@ -51,6 +52,7 @@ pub use snapshot::{
     ShortcutSummary, SpinnerSummary, TextEffectSummary, ThemeSummary, ThinkingExpressionSummary,
     ToolSummary,
 };
+pub use style_spec::StyleSpec;
 pub use theme_spec::{TerminalColorsProbe, ThemeSpec};
 pub use tool::{
     ToolDispatch, ToolExposure, ToolHandler, ToolInvocation, ToolOutput, ToolParam, ToolSpec,

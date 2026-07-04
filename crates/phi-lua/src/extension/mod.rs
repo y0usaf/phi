@@ -6,7 +6,7 @@ use anyhow::Result;
 use phi_ext::{
     CommandInvocation, CommandOutput, CommandSpec, EventHandlerRegistration, ExtensionHost,
     ExtensionManifest, FlagSpec, FlagType, LifecycleEvent, MessageRendererSpec, ProviderConfig,
-    ProviderModelConfig, ShortcutSpec, SpinnerSpec, ThemeSpec, ThinkingExpressionSpec,
+    ProviderModelConfig, ShortcutSpec, SpinnerSpec, StyleSpec, ThemeSpec, ThinkingExpressionSpec,
     ToolDispatch, ToolExposure, ToolInvocation, ToolOutput, ToolParam, ToolRenderSpec, ToolSpec,
 };
 use std::collections::BTreeMap;
@@ -382,19 +382,8 @@ impl phi_ext::Extension for LuaExtension {
         let phi_tool_renderers_table: mlua::Table = globals.get("_phi_tool_renderers")?;
         let mut tool_renderers: Vec<ToolRenderSpec> = Vec::new();
         for name in &tool_renderer_names {
-            use mlua::LuaSerdeExt as _;
             let spec_table: mlua::Table = phi_tool_renderers_table.get(name.as_str())?;
-            // The tool name is the registration key, not a table field.
-            spec_table.set("tool", name.as_str())?;
-            // Spec tables deserialize straight into `ToolRenderSpec` so Lua
-            // gets the full declarative vocabulary without hand-mirrored
-            // reads; malformed specs are hard, named errors.
-            let spec: ToolRenderSpec =
-                lua.from_value(mlua::Value::Table(spec_table))
-                    .map_err(|e| {
-                        mlua::Error::runtime(format!("tool renderer '{name}': bad spec: {e}"))
-                    })?;
-            tool_renderers.push(spec);
+            tool_renderers.push(tool_render_spec_from_table(&lua, name, spec_table)?);
         }
 
         // ── Read registered message renderers ───────────────────────────────
@@ -413,15 +402,10 @@ impl phi_ext::Extension for LuaExtension {
         let mut themes: Vec<ThemeSpec> = Vec::new();
         for name in &theme_names {
             let theme_table: mlua::Table = phi_themes_table.get(name.as_str())?;
-            let mut palette = BTreeMap::new();
-            for pair in theme_table.pairs::<String, mlua::Table>() {
-                let (role, rgb_table) = pair?;
-                let r: u8 = rgb_table.get(1).unwrap_or(0);
-                let g: u8 = rgb_table.get(2).unwrap_or(0);
-                let b: u8 = rgb_table.get(3).unwrap_or(0);
-                palette.insert(role, phi_ext::Rgb(r, g, b));
-            }
-            themes.push(ThemeSpec::new(name.clone(), palette));
+            themes.push(ThemeSpec::new(
+                name.clone(),
+                palette_from_table(&theme_table)?,
+            ));
         }
 
         // ── Read registered spinners ───────────────────────────────────────
@@ -434,24 +418,7 @@ impl phi_ext::Extension for LuaExtension {
         let mut spinners: Vec<SpinnerSpec> = Vec::new();
         for name in &spinner_names {
             let sp_table: mlua::Table = phi_spinners_table.get(name.as_str())?;
-            let frame_interval_ms: u64 = sp_table.get("frame_interval_ms").unwrap_or(80);
-            let frames_table: mlua::Table = sp_table
-                .get("frames")
-                .unwrap_or_else(|_| lua.create_table().unwrap());
-            let mut frames: Vec<String> = Vec::new();
-            for pair in frames_table.pairs::<mlua::Value, String>() {
-                let (_, f) = pair?;
-                frames.push(f);
-            }
-            // Also handle array-style (1-indexed)
-            if frames.is_empty() {
-                for i in 1..=frames_table.raw_len() {
-                    if let Ok(f) = frames_table.get::<String>(i) {
-                        frames.push(f);
-                    }
-                }
-            }
-            spinners.push(SpinnerSpec::new(name.clone(), frames, frame_interval_ms));
+            spinners.push(spinner_from_table(&lua, name.clone(), &sp_table)?);
         }
 
         // ── Read registered thinking expressions ───────────────────────────
@@ -464,33 +431,51 @@ impl phi_ext::Extension for LuaExtension {
         let mut thinking_exprs: Vec<ThinkingExpressionSpec> = Vec::new();
         for name in &thinking_names {
             let te_table: mlua::Table = phi_thinking_table.get(name.as_str())?;
-            let tool_expression: String = te_table
-                .get("tool_expression")
-                .unwrap_or_else(|_| "working...".to_owned());
-            let expression_interval_ms: u64 =
-                te_table.get("expression_interval_ms").unwrap_or(2000);
-            let exprs_table: mlua::Table = te_table
-                .get("expressions")
-                .unwrap_or_else(|_| lua.create_table().unwrap());
-            let mut expressions: Vec<String> = Vec::new();
-            for pair in exprs_table.pairs::<mlua::Value, String>() {
-                let (_, e) = pair?;
-                expressions.push(e);
+            thinking_exprs.push(thinking_from_table(&lua, name.clone(), &te_table)?);
+        }
+
+        // ── Read registered styles (WS10) ──────────────────────────────────
+        // A style bundles the shapes parsed above; each member reuses the
+        // same parser as its standalone registration, so the vocabulary is
+        // identical in and out of a bundle.
+        let reg_styles: mlua::Table = globals.get("_phi_registered_styles")?;
+        let style_names: Vec<String> = (1..)
+            .map_while(|i| reg_styles.get::<Option<String>>(i).ok().flatten())
+            .collect();
+
+        let phi_styles_table: mlua::Table = globals.get("_phi_styles")?;
+        let mut styles: Vec<StyleSpec> = Vec::new();
+        for name in &style_names {
+            let st: mlua::Table = phi_styles_table.get(name.as_str())?;
+            let mut spec = StyleSpec::new(name.clone());
+            if let Some(theme_table) = st.get::<Option<mlua::Table>>("theme")? {
+                spec.theme = Some(ThemeSpec::new(
+                    format!("{name}:theme"),
+                    palette_from_table(&theme_table)?,
+                ));
             }
-            // Also handle array-style
-            if expressions.is_empty() {
-                for i in 1..=exprs_table.raw_len() {
-                    if let Ok(e) = exprs_table.get::<String>(i) {
-                        expressions.push(e);
-                    }
+            if let Some(sp_table) = st.get::<Option<mlua::Table>>("spinner")? {
+                spec.spinner = Some(spinner_from_table(
+                    &lua,
+                    format!("{name}:spinner"),
+                    &sp_table,
+                )?);
+            }
+            if let Some(te_table) = st.get::<Option<mlua::Table>>("thinking")? {
+                spec.thinking_expression = Some(thinking_from_table(
+                    &lua,
+                    format!("{name}:thinking"),
+                    &te_table,
+                )?);
+            }
+            if let Some(trs) = st.get::<Option<mlua::Table>>("tool_renderers")? {
+                for pair in trs.pairs::<String, mlua::Table>() {
+                    let (tool, spec_table) = pair?;
+                    spec.tool_renderers
+                        .push(tool_render_spec_from_table(&lua, &tool, spec_table)?);
                 }
             }
-            thinking_exprs.push(ThinkingExpressionSpec::new(
-                name.clone(),
-                expressions,
-                tool_expression,
-                expression_interval_ms,
-            ));
+            styles.push(spec);
         }
 
         // ── Read registered overlays ──────────────────────────────────────────
@@ -701,6 +686,11 @@ impl phi_ext::Extension for LuaExtension {
             host.register_thinking_expression(expr)?;
         }
 
+        // ── Register styles ─────────────────────────────────────────────────
+        for style in styles {
+            host.register_style(style)?;
+        }
+
         // ── Register overlays ──────────────────────────────────────────────
         for (name, description, toggle_key, fns) in lua_overlays {
             host.register_overlay(overlay::build_overlay_spec(
@@ -714,4 +704,99 @@ impl phi_ext::Extension for LuaExtension {
 
         Ok(())
     }
+}
+
+// ── Visual table parsers ────────────────────────────────────────────────
+// Shared by the standalone registrations (`phi.register_theme`/`_spinner`/
+// `_thinking_expression`/`_tool_renderer`) and style-pack members
+// (`phi.register_style`), so a shape means the same thing in and out of a
+// bundle.
+
+/// Parse a `{ role = {r,g,b}, ... }` palette table.
+fn palette_from_table(theme_table: &mlua::Table) -> mlua::Result<BTreeMap<String, phi_ext::Rgb>> {
+    let mut palette = BTreeMap::new();
+    for pair in theme_table.pairs::<String, mlua::Table>() {
+        let (role, rgb_table) = pair?;
+        let r: u8 = rgb_table.get(1).unwrap_or(0);
+        let g: u8 = rgb_table.get(2).unwrap_or(0);
+        let b: u8 = rgb_table.get(3).unwrap_or(0);
+        palette.insert(role, phi_ext::Rgb(r, g, b));
+    }
+    Ok(palette)
+}
+
+/// Parse a `{ frames = {...}, frame_interval_ms = 80 }` spinner table.
+fn spinner_from_table(
+    lua: &mlua::Lua,
+    name: String,
+    sp_table: &mlua::Table,
+) -> mlua::Result<SpinnerSpec> {
+    let frame_interval_ms: u64 = sp_table.get("frame_interval_ms").unwrap_or(80);
+    let frames_table: mlua::Table = sp_table
+        .get("frames")
+        .unwrap_or_else(|_| lua.create_table().unwrap());
+    let mut frames: Vec<String> = Vec::new();
+    for pair in frames_table.pairs::<mlua::Value, String>() {
+        let (_, f) = pair?;
+        frames.push(f);
+    }
+    // Also handle array-style (1-indexed)
+    if frames.is_empty() {
+        for i in 1..=frames_table.raw_len() {
+            if let Ok(f) = frames_table.get::<String>(i) {
+                frames.push(f);
+            }
+        }
+    }
+    Ok(SpinnerSpec::new(name, frames, frame_interval_ms))
+}
+
+/// Parse a `{ expressions = {...}, tool_expression = "...",
+/// expression_interval_ms = 2000 }` thinking-expression table.
+fn thinking_from_table(
+    lua: &mlua::Lua,
+    name: String,
+    te_table: &mlua::Table,
+) -> mlua::Result<ThinkingExpressionSpec> {
+    let tool_expression: String = te_table
+        .get("tool_expression")
+        .unwrap_or_else(|_| "working...".to_owned());
+    let expression_interval_ms: u64 = te_table.get("expression_interval_ms").unwrap_or(2000);
+    let exprs_table: mlua::Table = te_table
+        .get("expressions")
+        .unwrap_or_else(|_| lua.create_table().unwrap());
+    let mut expressions: Vec<String> = Vec::new();
+    for pair in exprs_table.pairs::<mlua::Value, String>() {
+        let (_, e) = pair?;
+        expressions.push(e);
+    }
+    // Also handle array-style
+    if expressions.is_empty() {
+        for i in 1..=exprs_table.raw_len() {
+            if let Ok(e) = exprs_table.get::<String>(i) {
+                expressions.push(e);
+            }
+        }
+    }
+    Ok(ThinkingExpressionSpec::new(
+        name,
+        expressions,
+        tool_expression,
+        expression_interval_ms,
+    ))
+}
+
+/// Deserialize a tool renderer spec table. The tool name is the
+/// registration key, not a table field; spec tables deserialize straight
+/// into `ToolRenderSpec` so Lua gets the full declarative vocabulary
+/// without hand-mirrored reads. Malformed specs are hard, named errors.
+fn tool_render_spec_from_table(
+    lua: &mlua::Lua,
+    name: &str,
+    spec_table: mlua::Table,
+) -> mlua::Result<ToolRenderSpec> {
+    use mlua::LuaSerdeExt as _;
+    spec_table.set("tool", name)?;
+    lua.from_value(mlua::Value::Table(spec_table))
+        .map_err(|e| mlua::Error::runtime(format!("tool renderer '{name}': bad spec: {e}")))
 }

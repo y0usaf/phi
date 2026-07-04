@@ -89,6 +89,11 @@ pub enum UiAction {
     /// Persist a project-trust decision for the current project. Takes
     /// effect for project-local extensions on the next session build.
     TrustProject { trusted: bool },
+    /// Activate a registered style pack (WS10) and persist the choice.
+    /// Empty name: report the available styles instead of switching. The
+    /// host re-resolves its visuals (palette, spinner, tool renderers) and
+    /// repaints.
+    SwitchStyle { name: String },
     /// Add the directory as a project in the mux sidebar and focus it — a
     /// genuinely mux-host-owned effect (workspace/project management).
     OpenProject(std::path::PathBuf),
