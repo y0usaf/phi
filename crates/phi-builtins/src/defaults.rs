@@ -29,6 +29,7 @@
 //! | `help_overlay.lua` | WS1.6-proven, draw-ops + scroll |
 //! | `skills.lua` | `phi.on("before_agent_start")` + `phi.fs` file discovery |
 //! | `approvals.lua` | `phi.on("tool_call")` + `phi.ui.ask` + `phi.json`/`phi.fs` persistence |
+//! | `styles/claude_code.lua` | Pure `register_style` bundle (WS10 style pack) |
 //!
 //! ## What stays Rust (and why)
 //!
@@ -75,3 +76,8 @@ pub const SKILLS_LUA: &str = include_str!("../defaults/skills.lua");
 /// allows, or asks the user. Uses `phi.on("tool_call")`, `phi.ui.ask`,
 /// and `phi.fs` for JSON persistence of "always allow" answers.
 pub const APPROVALS_LUA: &str = include_str!("../defaults/approvals.lua");
+
+/// The `claude-code` style pack (WS10.2): Claude Code's dark look as a
+/// `phi.register_style` bundle — theme, asterisk-morph spinner, gerund
+/// thinking verbs, and Bash/Read/Update/Search tool verbs.
+pub const STYLE_CLAUDE_CODE_LUA: &str = include_str!("../defaults/styles/claude_code.lua");

@@ -415,6 +415,70 @@ async fn defaults_style_commands_emit_switch_style() {
     );
 }
 
+// ── Style pack: claude-code (WS10.2) ─────────────────────────────────────
+
+#[tokio::test]
+async fn defaults_claude_code_style_registers_and_activates() {
+    let rt = build_one("phi-style-claude-code", defaults::STYLE_CLAUDE_CODE_LUA);
+
+    assert_eq!(rt.list_styles(), vec!["claude-code"]);
+    rt.set_active_style(Some("claude-code")).unwrap();
+
+    // Theme: claude orange accent, from ref/claude-code's darkTheme.
+    let theme = rt.active_theme().unwrap();
+    assert_eq!(
+        theme.palette.get("accent"),
+        Some(&phi_ext::Rgb(215, 119, 87))
+    );
+
+    // Spinner: the asterisk morph, ping-ponged at 120ms.
+    let spinner = rt.active_spinner().unwrap();
+    assert_eq!(spinner.frames.len(), 12);
+    assert_eq!(spinner.frame_interval_ms, 120);
+    assert_eq!(spinner.frames.first().map(String::as_str), Some("·"));
+    assert_eq!(spinner.frames[5], spinner.frames[6]); // ping-pong midpoint
+
+    // Thinking verbs: gerunds ending in the unicode ellipsis.
+    let think = rt.active_thinking_expression().unwrap();
+    assert!(think.expressions.iter().any(|e| e == "Clauding…"));
+    assert!(think.expressions.iter().all(|e| e.ends_with('…')));
+
+    // Tool renderers overlay the base index while the pack is active.
+    let idx = rt.tool_render_index();
+    assert_eq!(idx.get("bash").unwrap().verb.as_deref(), Some("Bash"));
+    assert_eq!(
+        idx.get("edit_file").unwrap().verb.as_deref(),
+        Some("Update")
+    );
+    assert_eq!(idx.get("grep").unwrap().verb.as_deref(), Some("Search"));
+
+    // Deactivating falls back to the base registrations.
+    rt.set_active_style(None).unwrap();
+    assert!(rt.tool_render_index().get("bash").is_none());
+}
+
+#[tokio::test]
+async fn defaults_claude_code_style_restyles_every_base_tool() {
+    // Every tool base tool_render.lua styles must be restyled by the pack,
+    // or that tool renders phi-style while the pack is active.
+    let rt = build_one("phi-style-claude-code", defaults::STYLE_CLAUDE_CODE_LUA);
+    let pack = rt.get_style("claude-code").unwrap();
+    for tool in [
+        "bash",
+        "read_file",
+        "write_file",
+        "edit_file",
+        "grep",
+        "find",
+        "ls",
+    ] {
+        assert!(
+            pack.tool_renderers.iter().any(|s| s.tool == tool),
+            "claude-code pack misses a renderer for base-styled tool `{tool}`"
+        );
+    }
+}
+
 // ── Coding tools (hybrid surface, dispatch = "python") ───────────────────
 
 #[tokio::test]

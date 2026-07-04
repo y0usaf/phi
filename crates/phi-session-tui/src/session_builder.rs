@@ -223,6 +223,15 @@ pub async fn build_runtime(
         )?;
         rt_builder = rt_builder.register_extension(visual_data_ext);
 
+        // Style packs (WS10): shipped imitations, inert until `/style`
+        // activates one. Pure `register_style` Lua — a user pack loading
+        // later can register under a different name and win the same way.
+        let claude_code_style_ext = phi_lua::LuaExtension::from_source(
+            "phi-style-claude-code",
+            phi_builtins::defaults::STYLE_CLAUDE_CODE_LUA.to_owned(),
+        )?;
+        rt_builder = rt_builder.register_extension(claude_code_style_ext);
+
         // Tool render metadata (last-write-wins, so a user spec can restyle).
         let tool_render_ext = phi_lua::LuaExtension::from_source(
             "phi-tool-render",

@@ -1221,7 +1221,7 @@ one in the abstract.
       `register_theme`; text effects and message renderers aren't bundle
       members yet — grow the vocabulary when WS10.2's pack inventory
       demands it.
-- [ ] **10.2 Inventory the gap by imitation.** Same method as WS1.1/1.6:
+- [x] **10.2 Inventory the gap by imitation.** Same method as WS1.1/1.6:
       build the first pack (claude-code — closest to Phi's current look)
       and let every un-expressible detail become the work list. Expected
       gaps from eyeballing the refs, to be confirmed: transcript chrome
@@ -1231,10 +1231,49 @@ one in the abstract.
       welcome banner, tool-result collapse/expand presentation, and the
       WS1.3(b) custom message renderers. Grow the *declarative* vocabulary
       per WS1.3(a)'s decision — data, not closures on the hot render path.
+      *Landed as (2026-07-04):* the pack —
+      `phi-builtins/defaults/styles/claude_code.lua`, values read off
+      `ref/claude-code` (darkTheme in `utils/theme.ts`, spinner chars +
+      120ms cadence in `components/Spinner/`, gerund verbs in
+      `constants/spinnerVerbs.ts`): claude-orange accent/shimmer theme
+      (monochrome anchors via white `path`/`string` roles), the
+      `·✢✳✶✻✽` asterisk-morph ping-pong spinner, ~60 whimsical thinking
+      gerunds, and Bash/Read/Write/Update/Search/Glob/List tool verbs.
+      Loaded via the same `from_source` path in both the session builder
+      and the mux visual runtime; dogfood tests in
+      `phi-lua/tests/defaults.rs` (activation + a drift test tying the
+      pack's renderer roster to base `tool_render.lua`'s). **Expressible
+      today** (worked first try): theme roles, spinner frames/cadence,
+      thinking word lists, tool verbs/anchors/categories/bodies.
+      **Gap inventory** (the work list for 10.3, worst first):
+      1. *Tool-card chrome:* phi renders bg-tinted block cards; claude-code
+         renders flat `⏺ Verb(args)` gutter lines with `⎿`-prefixed,
+         collapsed-by-default results ("… +42 lines"). Card shape, gutter
+         glyphs, and result collapse presentation are not vocabulary
+         members — the single biggest at-a-glance difference.
+      2. *Anchor format:* claude-code's `Verb(arg)` parenthesized form;
+         phi hardcodes `verb arg` with a space. Needs a small anchor
+         format/template member (data, per WS1.3a).
+      3. *Status-line semantics:* claude-code picks one random verb per
+         turn and keeps it, suffixed with elapsed time + token count;
+         phi cycles expressions on a fixed timer and the suffix is host-
+         owned. Pack approximates with a 15s interval.
+      4. *Text effects:* the verb's orange shimmer needs
+         gradient/shimmer effects as bundle members — confirmed needed by
+         a real pack (was already a WS10.1 honest remainder).
+      5. *Input box + welcome banner:* rounded promptBorder box, `❯`
+         prompt, startup banner — no styling surface at all.
+      6. *Custom message renderers* (WS1.3b) — still the right forcing
+         function, still open.
 - [ ] **10.3 Ship the packs.** `claude-code`, `codex`, `crush` as pure Lua
       in `defaults/styles/`; `opencode` as a stretch. The default remains
       Phi's own style; packs contain zero core special-cases (a grep for
       pack names outside `phi-builtins` should come up empty).
+      *Progress:* `claude-code` v1 shipped with 10.2 — it's a faithful
+      colours/spinner/verbs imitation but won't pass 10.4's at-a-glance
+      test until inventory items (1), (2), and (4) above close. Grow the
+      vocabulary first (chrome members, anchor format, effect members),
+      then re-touch the pack and add `codex`/`crush`.
 - [ ] **10.4 Acceptance.** Run one fixed scripted session (prompt → a few
       tool calls → prose answer) in Phi-with-pack and in the real harness
       (`ref/` checkouts), side by side: transcript, tool cards, spinner/
