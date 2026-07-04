@@ -19,6 +19,12 @@ pub(crate) fn subcall_title(model: &str, prompt_preview: &str, p: &InlinePalette
     )
 }
 
+/// Blink interval for the `blink_glyph` pending indicator, matching
+/// claude-code's `useBlink` (`BLINK_INTERVAL_MS = 600`): the glyph
+/// alternates visible/blank every interval — a visibility blink, not a
+/// color animation.
+pub(crate) const BLINK_INTERVAL_MS: u64 = 600;
+
 /// Format a running tool/subcall status line with an ANSI-aware shimmer sweep
 /// applied to the label, mirroring claude-code's glimmer shimmer for in-flight
 /// tool headers. The spinner glyph carries the working color (`spinner_fg`)

@@ -66,10 +66,18 @@ impl VisualContext {
     /// Resolve the thinking expression for a given elapsed time.
     ///
     /// Returns the extension expression if registered, otherwise falls
-    /// back to the built-in thinking expressions.
-    pub fn thinking_expression(&self, elapsed_ms: u64, tool_active: bool) -> String {
+    /// back to the built-in thinking expressions. `turn_seed` drives
+    /// per-turn selection ([`phi_ext::ExpressionSelection::PerTurn`]);
+    /// cycle-mode specs ignore it.
+    pub fn thinking_expression(
+        &self,
+        elapsed_ms: u64,
+        tool_active: bool,
+        turn_seed: u64,
+    ) -> String {
         if let Some(expr) = &self.thinking_expression {
-            expr.expression(elapsed_ms, tool_active).to_string()
+            expr.expression_at(elapsed_ms, tool_active, turn_seed)
+                .to_string()
         } else {
             phi_tui::thinking_expression(elapsed_ms, tool_active).to_string()
         }

@@ -156,11 +156,15 @@ impl Ui {
         }
         let mut body = Vec::new();
         // Header (same as begin_block)
-        body.push(format!("{}repl{}", &self.palette.tool_title_fg, RESET));
-        // Skip the blank separator line when REPL code is suppressed
-        // (repl_max_lines == 0): the header stands alone.
-        if self.tools.repl_max_lines > 0 {
-            body.push(String::new());
+        if self.chrome.repl_as_tool {
+            body.push(self.repl_anchor_row());
+        } else {
+            body.push(format!("{}repl{}", &self.palette.tool_title_fg, RESET));
+            // Skip the blank separator line when REPL code is suppressed
+            // (repl_max_lines == 0): the header stands alone.
+            if self.tools.repl_max_lines > 0 {
+                body.push(String::new());
+            }
         }
         // Code
         body.extend(self.repl_code_lines(0, &data.code, self.code_limit()));
@@ -208,36 +212,36 @@ impl Ui {
                 subcall.error.is_some(),
             ));
         }
-        // Output
+        // Output + stderr. Tool-card chrome (`repl_as_tool`) puts the `⎿`
+        // gutter on the first output row of the container — stdout or,
+        // when stdout is empty, stderr — and hangs everything after it,
+        // mirroring the live path's once-per-container gutter.
+        let gutter = format!(
+            "{}{}{RESET}",
+            &self.palette.text_ghost, self.chrome.result_prefix
+        );
+        let hang = self.chrome.result_continuation();
+        let mut gutter_used = false;
         let filtered = strip_tool_echoes(&data.stdout, &data.tools, 0);
-        let preview_rows = self.preview_rows_with_lang(0, &filtered, self.output_limit(), None);
-        if !preview_rows.is_empty() {
+        for text in [filtered.as_str(), data.stderr.as_str()] {
+            let preview_rows = self.preview_rows_with_lang(0, text, self.output_limit(), None);
+            if preview_rows.is_empty() {
+                continue;
+            }
             if self.tools.gap > 0 && body.last().is_some_and(|row| !row.is_empty()) {
                 body.push(String::new());
             }
-            let prefix = indent(0);
             let blank = indent(0);
             for line in &preview_rows {
                 if line.is_empty() {
                     body.push(blank.clone());
+                } else if !self.chrome.repl_as_tool {
+                    body.push(format!("{}{line}", indent(0)));
+                } else if gutter_used {
+                    body.push(format!("{hang}{line}"));
                 } else {
-                    body.push(format!("{prefix}{line}"));
-                }
-            }
-        }
-        // Stderr
-        let stderr_rows = self.preview_rows_with_lang(0, &data.stderr, self.output_limit(), None);
-        if !stderr_rows.is_empty() {
-            if self.tools.gap > 0 && body.last().is_some_and(|row| !row.is_empty()) {
-                body.push(String::new());
-            }
-            let prefix = indent(0);
-            let blank = indent(0);
-            for line in &stderr_rows {
-                if line.is_empty() {
-                    body.push(blank.clone());
-                } else {
-                    body.push(format!("{prefix}{line}"));
+                    gutter_used = true;
+                    body.push(format!("{gutter}{line}"));
                 }
             }
         }
@@ -310,27 +314,73 @@ impl Ui {
 
         // Thinking animation at the growing edge of the content — directly
         // where the next output will appear, not floating in the footer.
-        // The animation lives at the site of the reward: the equalizer +
+        // The animation lives at the site of the reward: the indicator +
         // expression sit right after the streaming prose (or where prose
-        // will materialize), gradient cyan→magenta with a light glint sweep.
-        // Hue changes are reserved for state changes (magenta = working,
-        // green = done), so the overlay is a foreground glint, not a color.
+        // will materialize). Chrome picks the shape: phi's stock look is
+        // the equalizer with the cyan→magenta gradient and a light glint
+        // sweep (hue changes reserved for state changes), claude-code's is
+        // the accent-coloured spinner glyph with a shimmer sweep over the
+        // verb (a uniform pulse while a tool runs).
         if self.running.is_some() {
             let elapsed = self.clock.now_ms();
             let tool_active = !self.open_tool_rows.is_empty() || !self.open_subcall_rows.is_empty();
-            let glyphs = equalizer_glyphs(elapsed);
-            let expression = self.visual.thinking_expression(elapsed, tool_active);
+            let expression =
+                self.visual
+                    .thinking_expression(elapsed, tool_active, self.run_started_ms);
             let p = &self.palette;
-            let text = format!("{glyphs} {expression}");
+            let effect = |text: &str| match self.chrome.status_effect {
+                phi_ext::StatusEffect::Gradient => {
+                    gradient_text_animated(text, p.spinner_accent, p.accent_2, p.glint, elapsed)
+                }
+                phi_ext::StatusEffect::Sweep if tool_active => {
+                    shimmer_flash_text(text, p.spinner_accent, p.shimmer_accent, elapsed)
+                }
+                phi_ext::StatusEffect::Sweep => {
+                    shimmer_sweep_text(text, p.spinner_accent, p.shimmer_accent, elapsed)
+                }
+            };
+            let mut line = match self.chrome.status_indicator {
+                // The spinner glyph stays plain accent — only the verb
+                // carries the effect (claude-code keeps its asterisk flat).
+                phi_ext::StatusIndicator::Spinner => format!(
+                    "{}{}{RESET} {}",
+                    &p.accent_fg,
+                    self.visual.spinner_frame(elapsed),
+                    effect(&expression)
+                ),
+                phi_ext::StatusIndicator::Equalizer => {
+                    effect(&format!("{} {expression}", equalizer_glyphs(elapsed)))
+                }
+            };
+            // Dim meta suffix (claude-code semantics): elapsed surfaces
+            // only past 30s — short turns stay quiet — tokens once > 0.
+            if self.chrome.status_meta {
+                let run_s = elapsed.saturating_sub(self.run_started_ms) / 1000;
+                let mut parts: Vec<String> = Vec::new();
+                if run_s > 30 {
+                    parts.push(if run_s < 60 {
+                        format!("{run_s}s")
+                    } else {
+                        format!("{}m {}s", run_s / 60, run_s % 60)
+                    });
+                }
+                if self.usage.total_tokens > 0 {
+                    parts.push(format!(
+                        "\u{2193} {} tokens",
+                        format_tokens(self.usage.total_tokens)
+                    ));
+                }
+                if !parts.is_empty() {
+                    line.push_str(&format!(
+                        " {}({}){RESET}",
+                        &p.text_tertiary,
+                        parts.join(" \u{00b7} ")
+                    ));
+                }
+            }
             blocks.push(TranscriptBlock {
                 key: "live:equalizer".to_owned(),
-                lines: vec![gradient_text_animated(
-                    &text,
-                    p.spinner_accent,
-                    p.accent_2,
-                    p.glint,
-                    elapsed,
-                )],
+                lines: vec![line],
                 finalized: false,
             });
         }
@@ -422,9 +472,12 @@ impl Ui {
         // Always render the statusbar first (separator + header), whether a
         // selector is open or not — like Pi's permanent footer. The rule is
         // a divider, not content: it uses the theme's border role, felt more
-        // than seen.
-        let sep = "\u{2500}".repeat(width);
-        lines.push(format!("{}{sep}{RESET}", &p.chrome_border));
+        // than seen. Ruled input chrome (claude-code's two-line box) keeps
+        // the top rule but moves the header below the box, so it reads as a
+        // footer instead.
+        let sep = format!("{}{}{RESET}", &p.chrome_border, "\u{2500}".repeat(width));
+        lines.push(sep.clone());
+        let input_ruled = self.chrome.input_ruled && self.selector.is_none();
 
         let current_dir = self
             .cwd
@@ -463,7 +516,9 @@ impl Ui {
         } else {
             format!("{agent}  {dir}  {model}")
         };
-        lines.push(header);
+        if !input_ruled {
+            lines.push(header.clone());
+        }
 
         // Render the selector (if open) or the editor underneath the
         // statusbar.  No box borders — minimalist like Pi.
@@ -499,6 +554,13 @@ impl Ui {
             } else {
                 "ready"
             };
+            // Chrome may swap the prompt glyph (claude-code's `❯`); the
+            // stock look keeps the Nerd Font chevron / ASCII fallback.
+            let prompt_glyph = self
+                .chrome
+                .input_prompt
+                .as_deref()
+                .unwrap_or_else(|| success_symbol());
             let editor_top = lines.len();
             let input_inner = width.saturating_sub(2).max(1);
             let mut input_cursor = None;
@@ -507,14 +569,13 @@ impl Ui {
                 let content = if absolute_row == 0 {
                     if line.is_empty() && self.editor.text().is_empty() {
                         format!(
-                            "{prompt_fg}{}{RESET} {}{placeholder}{RESET}",
-                            success_symbol(),
+                            "{prompt_fg}{prompt_glyph}{RESET} {}{placeholder}{RESET}",
                             &self.palette.text_ghost
                         )
                     } else if line.is_empty() {
-                        format!("{prompt_fg}{}{RESET} ", success_symbol())
+                        format!("{prompt_fg}{prompt_glyph}{RESET} ")
                     } else {
-                        format!("{prompt_fg}{}{RESET} {line}", success_symbol())
+                        format!("{prompt_fg}{prompt_glyph}{RESET} {line}")
                     }
                 } else {
                     format!("  {line}")
@@ -550,11 +611,23 @@ impl Ui {
             }
             cursor = input_cursor;
 
+            // Ruled input chrome: close the box with the bottom rule,
+            // claude-code style. The autocomplete popup hangs directly off
+            // the box (like the ref's suggestion list); the header follows
+            // it, re-reading as the footer line.
+            if input_ruled {
+                lines.push(sep);
+            }
+
             // (Braille spinner removed — the equalizer animation now lives
             // in the live transcript, above the separator line.)
 
             if let Some(popup) = &self.popup {
                 lines.extend(render_popup(popup, &self.palette));
+            }
+
+            if input_ruled {
+                lines.push(header);
             }
 
             // Quit confirmation: the first ctrl+c opens a 500ms window; the

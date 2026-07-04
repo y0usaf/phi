@@ -206,6 +206,74 @@ pub fn gradient_text_animated(
     out
 }
 
+// ── claude-code status shimmer ───────────────────────────────────────
+//
+// The reference effect (ref/claude-code GlimmerMessage +
+// SpinnerAnimationRow): the status verb is drawn in the base colour with a
+// single highlighted character (±1 neighbour) sweeping right-to-left at
+// 200 ms per column; the cycle is text width + 20 columns of runway so the
+// highlight fully exits before re-entering. While a tool runs the whole
+// verb pulses uniformly between base and highlight on a 2 s sine instead.
+
+/// Sweep step duration (ms per column) for [`shimmer_sweep_text`].
+pub const SWEEP_STEP_MS: u64 = 200;
+
+/// Runway columns added to the sweep cycle so the highlight exits fully.
+pub const SWEEP_RUNWAY: usize = 20;
+
+/// Sine period (ms) for the uniform pulse in [`shimmer_flash_text`].
+pub const FLASH_PERIOD_MS: u64 = 2000;
+
+/// Single-character highlight sweep over plain (ANSI-free) text: every
+/// char is `base`-coloured except a 3-char window centred on a position
+/// that travels right-to-left, which is drawn in `highlight`.
+pub fn shimmer_sweep_text(
+    text: &str,
+    base: crate::palette::Rgb,
+    highlight: crate::palette::Rgb,
+    elapsed_ms: u64,
+) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.is_empty() {
+        return String::new();
+    }
+    let width = chars.len();
+    let cycle = (width + SWEEP_RUNWAY) as i64;
+    let step = (elapsed_ms / SWEEP_STEP_MS) as i64 % cycle;
+    // Start half a runway past the right edge and travel leftward, so the
+    // highlight enters from the right and exits past the left edge.
+    let center = width as i64 + (SWEEP_RUNWAY / 2) as i64 - step;
+    let mut out = String::with_capacity(chars.len() * 16);
+    for (i, ch) in chars.iter().enumerate() {
+        let rgb = if (i as i64 - center).abs() <= 1 {
+            highlight
+        } else {
+            base
+        };
+        out.push_str(&crate::color_cap::fg_sequence(rgb));
+        out.push(*ch);
+    }
+    out.push_str("\x1b[0m");
+    out
+}
+
+/// Uniform pulse over plain (ANSI-free) text: the whole string blends
+/// between `base` and `highlight` on a [`FLASH_PERIOD_MS`] sine wave.
+pub fn shimmer_flash_text(
+    text: &str,
+    base: crate::palette::Rgb,
+    highlight: crate::palette::Rgb,
+    elapsed_ms: u64,
+) -> String {
+    if text.is_empty() {
+        return String::new();
+    }
+    let phase = (elapsed_ms % FLASH_PERIOD_MS) as f64 / FLASH_PERIOD_MS as f64;
+    let opacity = ((phase * std::f64::consts::TAU).sin() + 1.0) / 2.0;
+    let rgb = crate::fade_toward(base, highlight, (opacity * 255.0) as u8);
+    format!("{}{text}\x1b[0m", crate::color_cap::fg_sequence(rgb))
+}
+
 /// Full sweep cycle duration (ms). The shimmer highlight sweeps across
 /// the text and back in this time, regardless of text width. This is the
 /// key to **percentage-based sync**: because the position is a fraction of

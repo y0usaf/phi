@@ -17,6 +17,7 @@ phi.register_style("claude-code", {
         muted = { 153, 153, 153 }, -- inactive
         heading = { 255, 255, 255 }, -- md headers are bold plain text
         border = { 136, 136, 136 }, -- promptBorder
+        chrome_dir = { 255, 255, 255 }, -- prompt `❯` is plain text-colored
         accent = { 215, 119, 87 }, -- claude orange (spinner glyph)
         accent_2 = { 177, 185, 249 }, -- suggestion blue-purple
         running = { 235, 159, 127 }, -- claudeShimmer (shimmer accent)
@@ -46,10 +47,11 @@ phi.register_style("claude-code", {
     },
 
     -- ── Thinking: whimsical gerunds ──────────────────────────────────────
-    -- A representative slice of SPINNER_VERBS (~190 upstream). Claude Code
-    -- picks one random verb per turn and keeps it; Phi cycles on a timer —
-    -- a long interval approximates the per-turn feel (gap inventory).
+    -- A representative slice of SPINNER_VERBS (~190 upstream). Like Claude
+    -- Code, one verb is picked per turn (seeded by the run start) and held
+    -- for the whole run — tools included (Spinner.tsx useState initializer).
     thinking = {
+        selection = "per_turn",
         expressions = {
             "Accomplishing…", "Architecting…", "Baking…", "Boondoggling…",
             "Booping…", "Brewing…", "Calculating…", "Cerebrating…",
@@ -75,25 +77,57 @@ phi.register_style("claude-code", {
 
     -- ── Chrome: gutter bullets, flat transcript, collapsed results ───────
     -- The WS10.2 gap-inventory items (1) and (2), now vocabulary: the
-    -- `⏺ Verb(args)` anchor (constants/figures.ts BLACK_CIRCLE +
-    -- AssistantToolUseMessage's parenthesized args), the dim `  ⎿  ` result
-    -- gutter (MessageResponse, literally 5 chars), the `… +N lines
-    -- (ctrl+o to expand)` marker (utils/terminal.ts — phi's expand toggle
-    -- happens to be ctrl+o too), and no tinted block surface (claude-code
-    -- transcripts are flat; the bullets are the only structure).
+    -- `● Verb(args)` anchor (constants/figures.ts BLACK_CIRCLE — `⏺` only
+    -- on darwin, `●` everywhere else — + AssistantToolUseMessage's
+    -- parenthesized args), the dim `  ⎿  ` result gutter (MessageResponse,
+    -- literally 5 chars), the `… +N lines (ctrl+o to expand)` marker
+    -- (utils/terminal.ts — phi's expand toggle happens to be ctrl+o too),
+    -- and no tinted block surface (claude-code transcripts are flat; the
+    -- bullets are the only structure).
+    --
+    -- Second round (gap items 3–5 + message chrome): the status line is
+    -- the accent-coloured asterisk spinner with the verb's shimmer sweep
+    -- (GlimmerMessage: ±1-char highlight, right-to-left, uniform pulse
+    -- while a tool runs) and the dim `(elapsed · ↓ tokens)` suffix; the
+    -- input is the two-rule box with the `❯` prompt
+    -- (PromptInput borderLeft/Right=false); user turns are the ghost `❯ `
+    -- prefix over the userMessageBackground wash instead of phi's accent
+    -- bar (UserPromptMessage); assistant prose leads with the `●` dot
+    -- (AssistantTextMessage). In-flight calls blink the dot dim on a
+    -- 600ms interval over a dim `⎿  Running…` note (ToolUseLoader +
+    -- BashTool/UI's progress fallback), and the repl container borrows
+    -- the tool-card shape — claude-code has no repl concept, so it
+    -- renders as `● Repl` with hanging code and gutter output.
     chrome = {
         anchor_format = "{verb}({args})",
-        glyph_ok = "⏺",
-        glyph_failed = "⏺",
+        glyph_ok = "●",
+        glyph_failed = "●",
         result_prefix = "  ⎿  ",
         more_lines = "… +{n} lines (ctrl+o to expand)",
         container = "flat",
+        status_indicator = "spinner",
+        status_effect = "sweep",
+        status_meta = true,
+        input_prompt = "❯",
+        input_ruled = true,
+        user_prefix = "❯ ",
+        user_background = true,
+        assistant_prefix = "● ",
+        pending_indicator = "blink_glyph",
+        pending_note = "Running…",
+        repl_as_tool = true,
     },
 
     -- ── Tool renderers: claude-code verbs ────────────────────────────────
     -- Bash / Read / Write / Update / Search / Glob / List over the same
     -- prelude helpers; the chrome's anchor_format renders them `Verb(arg)`.
+    -- `repl` names the container itself: with `repl_as_tool` chrome its
+    -- anchor is `● Repl`, capitalized like every claude-code verb.
     tool_renderers = {
+        repl = {
+            verb = "Repl",
+            body = { kind = "code", key = "code", lang = "repl" },
+        },
         bash = {
             verb = "Bash",
             display_name = "Bash",

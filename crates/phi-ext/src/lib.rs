@@ -22,7 +22,9 @@ pub mod ui;
 pub mod visual;
 
 pub use builder::RuntimeBuilder;
-pub use chrome_spec::{ChromeContainer, ChromeSpec};
+pub use chrome_spec::{
+    ChromeContainer, ChromeSpec, PendingIndicator, StatusEffect, StatusIndicator,
+};
 pub use command::{
     ArgCompletionFn, CommandContext, CommandHandler, CommandInfo, CommandInvocation, CommandOutput,
     CommandSpec, PickerKind, UiAction,
@@ -69,7 +71,9 @@ pub use ui::{UiAskOutcome, UiHandle, UiPrompt, UiPromptOption, UiPromptRequest};
 pub use visual::{Rgb, StyledSpan, StyledText};
 
 // Re-export animation spec types
-pub use animation_spec::{SpinnerSpec, TextEffectSpec, ThinkingExpressionSpec};
+pub use animation_spec::{
+    ExpressionSelection, SpinnerSpec, TextEffectSpec, ThinkingExpressionSpec,
+};
 
 // Re-export extension context types from phi-event
 pub use phi_event::{ExtensionContextRef, ExtensionMode};

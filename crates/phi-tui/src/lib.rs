@@ -33,12 +33,14 @@ pub use markdown::{
 pub use palette::{Rgb, TerminalColors, detect_terminal_colors};
 pub use selector::{Selector, SelectorItem, SelectorOutcome, SelectorStyle};
 pub use spinner::{
-    DEFAULT_TOOL_EXPRESSION, EQUALIZER_BAR_COUNT, EQUALIZER_BARS, SHIMMER_BLEND_PEAK,
-    SHIMMER_CYCLE_MS, SHIMMER_FRAME_MS, SHIMMER_MIN_WINDOW, SHIMMER_TRIANGLE_BLEND,
-    SHIMMER_TRIANGLE_STEPS, SHIMMER_WINDOW_FRAC, SPINNER_FRAME_MS, SPINNER_FRAMES, Spinner,
-    THINKING_ANIMATION_FRAME_MS, THINKING_EXPRESSION_MS, THINKING_EXPRESSIONS, equalizer_glyphs,
-    gradient_text, gradient_text_animated, shimmer_ansi, shimmer_triangle_blend,
-    shimmer_triangle_intensity, spinner_frame_at, spinner_frame_index, thinking_expression,
+    DEFAULT_TOOL_EXPRESSION, EQUALIZER_BAR_COUNT, EQUALIZER_BARS, FLASH_PERIOD_MS,
+    SHIMMER_BLEND_PEAK, SHIMMER_CYCLE_MS, SHIMMER_FRAME_MS, SHIMMER_MIN_WINDOW,
+    SHIMMER_TRIANGLE_BLEND, SHIMMER_TRIANGLE_STEPS, SHIMMER_WINDOW_FRAC, SPINNER_FRAME_MS,
+    SPINNER_FRAMES, SWEEP_RUNWAY, SWEEP_STEP_MS, Spinner, THINKING_ANIMATION_FRAME_MS,
+    THINKING_EXPRESSION_MS, THINKING_EXPRESSIONS, equalizer_glyphs, gradient_text,
+    gradient_text_animated, shimmer_ansi, shimmer_flash_text, shimmer_sweep_text,
+    shimmer_triangle_blend, shimmer_triangle_intensity, spinner_frame_at, spinner_frame_index,
+    thinking_expression,
 };
 pub use symbols::{
     ARROW, ARROW_LEFT, BULLET, CHECK, CROSS, DOT, ELLIPSIS, FOCUS_MARKER, GUTTER_BAR, RULE, SLASH,

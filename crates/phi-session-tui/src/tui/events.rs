@@ -579,6 +579,10 @@ impl Ui {
         let _ = self.store.begin_exchange();
         let cancel = CancellationToken::new();
         self.running = Some(cancel.clone());
+        // Also the per-turn seed for thinking expressions: a wall-clock
+        // start time varies turn to turn, which is all "random verb per
+        // turn" needs.
+        self.run_started_ms = self.clock.now_ms();
         // Add a keep-alive interest for the active run: the equalizer,
         // thinking expressions, spinner frames, and tool header shimmer
         // all derive their phase from clock.now_ms() while a run is in
@@ -1002,16 +1006,7 @@ impl Ui {
             &self.palette,
         );
         let elapsed = self.clock.now_ms();
-        if let Some((start, len)) = self.push_status(
-            depth + 1,
-            running_status_text_shimmer(
-                &label,
-                &self.visual.spinner_frame(elapsed),
-                &self.palette.working_fg.clone(),
-                self.palette.working_shimmer,
-                elapsed,
-            ),
-        ) {
+        if let Some((start, len)) = self.push_running_status(depth + 1, &label, elapsed) {
             self.open_tool_rows.insert(
                 key,
                 OpenToolRow {
@@ -1136,16 +1131,7 @@ impl Ui {
                 self.begin_tool_block();
             }
             let elapsed = self.clock.now_ms();
-            if let Some((start, len)) = self.push_status(
-                depth,
-                running_status_text_shimmer(
-                    &label,
-                    &self.visual.spinner_frame(elapsed),
-                    &self.palette.working_fg.clone(),
-                    self.palette.working_shimmer,
-                    elapsed,
-                ),
-            ) {
+            if let Some((start, len)) = self.push_running_status(depth, &label, elapsed) {
                 self.open_subcall_rows.push_back(OpenSubcallRow {
                     depth,
                     prompt_preview: prompt_preview.clone(),

@@ -781,12 +781,25 @@ fn thinking_from_table(
             }
         }
     }
-    Ok(ThinkingExpressionSpec::new(
-        name,
-        expressions,
-        tool_expression,
-        expression_interval_ms,
-    ))
+    // Selection mode: `"cycle"` (default, timer-cycled) or `"per_turn"`
+    // (one expression held for the whole turn, claude-code style).
+    let selection = match te_table
+        .get::<Option<String>>("selection")
+        .unwrap_or_default()
+        .as_deref()
+    {
+        None | Some("cycle") => phi_ext::ExpressionSelection::Cycle,
+        Some("per_turn") => phi_ext::ExpressionSelection::PerTurn,
+        Some(other) => {
+            return Err(mlua::Error::runtime(format!(
+                "thinking expression '{name}': bad selection '{other}' (expected \"cycle\" or \"per_turn\")"
+            )));
+        }
+    };
+    Ok(
+        ThinkingExpressionSpec::new(name, expressions, tool_expression, expression_interval_ms)
+            .with_selection(selection),
+    )
 }
 
 /// Deserialize a style's `chrome` member straight into `ChromeSpec` —

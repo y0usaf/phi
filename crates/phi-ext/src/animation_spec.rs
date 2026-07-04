@@ -46,17 +46,32 @@ impl SpinnerSpec {
 
 // ── Thinking expressions ───────────────────────────────────────────────
 
-/// Thinking expressions cycled while the agent is working.
+/// How a thinking expression is chosen from the list.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ExpressionSelection {
+    /// Phi's stock behaviour: cycle through the list on a timer, showing
+    /// `tool_expression` while a tool runs.
+    #[default]
+    Cycle,
+    /// claude-code's behaviour: pick one expression per turn (seeded by
+    /// the host's turn seed) and keep it for the whole run — including
+    /// while tools run.
+    PerTurn,
+}
+
+/// Thinking expressions shown while the agent is working.
 ///
-/// Each phrase is shown for `expression_interval_ms` milliseconds before
-/// cycling to the next. When `tool_active` is true, `tool_expression`
-/// is shown instead.
+/// With [`ExpressionSelection::Cycle`], each phrase is shown for
+/// `expression_interval_ms` milliseconds before cycling to the next, and
+/// `tool_expression` is shown while `tool_active`. With
+/// [`ExpressionSelection::PerTurn`], one phrase is held for the whole turn.
 #[derive(Clone, Debug)]
 pub struct ThinkingExpressionSpec {
     pub name: String,
     pub expressions: Vec<String>,
     pub tool_expression: String,
     pub expression_interval_ms: u64,
+    pub selection: ExpressionSelection,
 }
 
 impl ThinkingExpressionSpec {
@@ -71,18 +86,38 @@ impl ThinkingExpressionSpec {
             expressions,
             tool_expression: tool_expression.into(),
             expression_interval_ms,
+            selection: ExpressionSelection::default(),
         }
     }
 
+    pub fn with_selection(mut self, selection: ExpressionSelection) -> Self {
+        self.selection = selection;
+        self
+    }
+
     /// Return the thinking expression for the given elapsed time.
+    /// Equivalent to [`Self::expression_at`] with a zero turn seed.
     pub fn expression(&self, elapsed_ms: u64, tool_active: bool) -> &str {
-        if tool_active {
+        self.expression_at(elapsed_ms, tool_active, 0)
+    }
+
+    /// Return the thinking expression for the given elapsed time and turn
+    /// seed. `turn_seed` is any host value that changes once per turn
+    /// (e.g. the run's start timestamp); it only matters for
+    /// [`ExpressionSelection::PerTurn`].
+    pub fn expression_at(&self, elapsed_ms: u64, tool_active: bool, turn_seed: u64) -> &str {
+        if self.expressions.is_empty() {
             return &self.tool_expression;
         }
-        if self.expressions.is_empty() || self.expression_interval_ms == 0 {
-            return &self.tool_expression;
-        }
-        let idx = (elapsed_ms / self.expression_interval_ms) as usize % self.expressions.len();
+        let idx = match self.selection {
+            ExpressionSelection::PerTurn => (turn_seed as usize) % self.expressions.len(),
+            ExpressionSelection::Cycle => {
+                if tool_active || self.expression_interval_ms == 0 {
+                    return &self.tool_expression;
+                }
+                (elapsed_ms / self.expression_interval_ms) as usize % self.expressions.len()
+            }
+        };
         self.expressions
             .get(idx)
             .map(|s| s.as_str())

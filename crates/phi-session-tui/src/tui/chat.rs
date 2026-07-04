@@ -2,44 +2,78 @@ use super::*;
 
 impl Ui {
     pub(super) fn assistant_card_lines(&self, text: &str) -> Vec<String> {
-        let rendered = render_markdown(text, self.markdown_width(), &self.palette.markdown);
-        // pi-style: no header, no background — assistant prose is bare text
-        // separated from siblings by a spacer provided by the caller.
+        // pi-style by default: no header, no background — assistant prose is
+        // bare text separated from siblings by a spacer provided by the
+        // caller. Chrome may add a prefix on the first content line
+        // (claude-code's `⏺ `); the body hangs at the prefix width.
+        let prefix = self.chrome.assistant_prefix.as_deref().unwrap_or("");
+        let hang = " ".repeat(prefix.chars().count());
+        let rendered = render_markdown(
+            text,
+            self.markdown_width().saturating_sub(hang.len()),
+            &self.palette.markdown,
+        );
+        let mut first_content = true;
         rendered
             .into_iter()
             .map(|line| {
                 if line.is_empty() {
                     String::new()
                 } else {
-                    format!("{fg}{line}{RESET}", fg = &self.palette.assistant_fg)
+                    let head = if first_content { prefix } else { hang.as_str() };
+                    first_content = false;
+                    format!("{fg}{head}{line}{RESET}", fg = &self.palette.assistant_fg)
                 }
             })
             .collect()
     }
 
     pub(super) fn user_card_lines(&self, text: &str) -> Vec<String> {
-        let rendered = render_markdown(text, self.markdown_width(), &self.palette.markdown);
-        // Crush-style voice marker: a colored left-gutter bar on every line
-        // instead of a background wash. The accent bar is the role signal;
-        // the reading surface stays flat. `user_padding` extends the bar
-        // above/below the text. OSC 133 zone markers wrap first/last lines.
-        let bar = format!("{}\u{258C}{RESET}", &self.palette.accent_fg);
+        // Two chrome shapes for the user turn. Stock (crush-style): a
+        // colored left-gutter bar on every line instead of a background
+        // wash — the accent bar is the role signal, the reading surface
+        // stays flat. claude-code-style: a ghost `❯ ` prefix on the first
+        // row, continuations flowing flush beneath it (matching ink's
+        // inline wrap), optionally washed full-width with the theme's
+        // user_message_bg. `user_padding` extends the bar/wash above and
+        // below the text. OSC 133 zone markers wrap first/last lines.
+        let prefix = self.chrome.user_prefix.as_deref();
+        let prefix_w = prefix.map(|p| p.chars().count()).unwrap_or(0);
+        let rendered = render_markdown(
+            text,
+            self.markdown_width().saturating_sub(prefix_w),
+            &self.palette.markdown,
+        );
+        let pad_row = match prefix {
+            Some(_) => String::new(),
+            None => format!("{}\u{258C}{RESET}", &self.palette.accent_fg),
+        };
         let mut body: Vec<String> = Vec::with_capacity(rendered.len() + 2);
         for _ in 0..self.tools.user_padding {
-            body.push(bar.clone());
+            body.push(pad_row.clone());
         }
-        for line in rendered {
-            if line.is_empty() {
-                body.push(bar.clone());
-            } else {
-                body.push(format!(
-                    "{bar} {fg}{line}{RESET}",
+        for (i, line) in rendered.into_iter().enumerate() {
+            body.push(match prefix {
+                Some(p) if i == 0 => format!(
+                    "{ghost}{p}{RESET}{fg}{line}{RESET}",
+                    ghost = &self.palette.text_ghost,
                     fg = &self.palette.user_fg
-                ));
-            }
+                ),
+                Some(_) if line.is_empty() => String::new(),
+                Some(_) => format!("{fg}{line}{RESET}", fg = &self.palette.user_fg),
+                None if line.is_empty() => pad_row.clone(),
+                None => format!("{pad_row} {fg}{line}{RESET}", fg = &self.palette.user_fg),
+            });
         }
         for _ in 0..self.tools.user_padding {
-            body.push(bar.clone());
+            body.push(pad_row.clone());
+        }
+        if self.chrome.user_background {
+            let width = self.panel_width();
+            body = body
+                .iter()
+                .map(|row| fill_bg(row, &self.palette.user_bg, width))
+                .collect();
         }
         // OSC 133 zones bracket the CONTENT lines, not the padding bars —
         // shell integrations locate the semantic start of user input from
@@ -93,6 +127,13 @@ impl Ui {
     }
 
     pub(super) fn repl_code_lines(&self, depth: usize, body: &str, max: usize) -> Vec<String> {
+        // Tool-card chrome hangs the code 2 cells under the container's
+        // glyph anchor, exactly like a bash card's multi-line body.
+        let hang = if self.block_active && self.chrome.repl_as_tool {
+            2
+        } else {
+            0
+        };
         let trimmed = body.trim_end();
         let mut rows = Vec::new();
         if !trimmed.is_empty() && max > 0 {
@@ -100,6 +141,7 @@ impl Ui {
                 self.box_width()
                     .saturating_sub(2)
                     .saturating_sub(indent_width(depth))
+                    .saturating_sub(hang)
                     .max(1)
             } else {
                 self.card_body_width(depth)
@@ -120,7 +162,7 @@ impl Ui {
             }
         }
         let prefix = if self.block_active {
-            indent(depth)
+            format!("{}{}", indent(depth), " ".repeat(hang))
         } else {
             result_prefix(depth)
         };
@@ -193,13 +235,80 @@ impl Ui {
         render_boxed_padded(&wrapped, bg, self.box_width(), self.tools.tool_padding)
     }
 
-    pub(super) fn push_status(&mut self, depth: usize, text: String) -> Option<(usize, usize)> {
+    /// Rows for an in-flight tool/subcall, shaped by the chrome's pending
+    /// indicator. Stock: spinner glyph + shimmer-swept label in the tinted
+    /// pending box. claude-code (`blink_glyph`): the status glyph blinking
+    /// dim on a 600ms interval (ToolUseLoader's useBlink — glyph ↔ blank,
+    /// no color animation) over the plain label, plus the optional dim
+    /// result-gutter note (`⎿  Running…`).
+    pub(super) fn running_status_rows(
+        &self,
+        depth: usize,
+        label: &str,
+        now_ms: u64,
+    ) -> Vec<String> {
+        match self.chrome.pending_indicator {
+            phi_ext::PendingIndicator::SpinnerShimmer => self.status_rows(
+                depth,
+                &running_status_text_shimmer(
+                    label,
+                    &self.visual.spinner_frame(now_ms),
+                    &self.palette.working_fg,
+                    self.palette.working_shimmer,
+                    now_ms,
+                ),
+            ),
+            phi_ext::PendingIndicator::BlinkGlyph => {
+                let content_width = self.box_width().saturating_sub(2).max(1);
+                let glyph_w = self.chrome.glyph_ok.chars().count().max(1);
+                let glyph = if (now_ms / BLINK_INTERVAL_MS) % 2 == 0 {
+                    self.chrome.glyph_ok.clone()
+                } else {
+                    " ".repeat(glyph_w)
+                };
+                let hang = " ".repeat(glyph_w + 1);
+                let anchor_width = content_width.saturating_sub(glyph_w + 1).max(1);
+                let mut rows: Vec<String> = Vec::new();
+                for (i, line) in wrap_ansi(label, anchor_width).into_iter().enumerate() {
+                    if i == 0 {
+                        rows.push(format!("{}{glyph}{RESET} {line}", &self.palette.muted_fg));
+                    } else {
+                        rows.push(format!("{hang}{line}"));
+                    }
+                }
+                if let Some(note) = &self.chrome.pending_note {
+                    rows.push(format!(
+                        "{}{}{RESET}{}{note}{RESET}",
+                        &self.palette.text_ghost,
+                        self.chrome.result_prefix,
+                        &self.palette.text_tertiary
+                    ));
+                }
+                if self.chrome.is_flat() {
+                    return rows;
+                }
+                let bg = if self.block_active {
+                    &self.palette.tool_pending_bg_nested
+                } else {
+                    &self.palette.tool_pending_bg
+                };
+                render_boxed_padded(&rows, bg, self.box_width(), self.tools.tool_padding)
+            }
+        }
+    }
+
+    pub(super) fn push_running_status(
+        &mut self,
+        depth: usize,
+        label: &str,
+        now_ms: u64,
+    ) -> Option<(usize, usize)> {
         if self.block_active {
             self.ensure_block_gap();
         } else if depth == 0 {
             self.ensure_pending_gap();
         }
-        let rows = self.status_rows(depth, &text);
+        let rows = self.running_status_rows(depth, label, now_ms);
         let start = if self.block_active {
             Some(self.block.len())
         } else {
@@ -255,13 +364,11 @@ impl Ui {
         if !self.block_active {
             return;
         }
+        // State arc (stock chrome): magenta while working, green on
+        // completion — the hue cross at the finish line is what makes
+        // "done" legible at a glance. Blink-glyph chrome animates by
+        // visibility instead; both resolve inside `running_status_rows`.
         let now_ms = self.clock.now_ms();
-        let spinner = self.visual.spinner_frame(now_ms);
-        let elapsed = now_ms;
-        // State arc: magenta while working, green on completion. The hue
-        // cross at the finish line is what makes "done" legible at a glance.
-        let shimmer = self.palette.working_shimmer;
-        let spinner_fg = self.palette.working_fg.clone();
 
         let mut tool_ids: Vec<((usize, u64), usize)> = self
             .open_tool_rows
@@ -276,16 +383,7 @@ impl Ui {
             let new_len = self.replace_block_rows(
                 row.start,
                 row.len,
-                self.status_rows(
-                    row.depth,
-                    &running_status_text_shimmer(
-                        &row.label,
-                        &spinner,
-                        &spinner_fg,
-                        shimmer,
-                        elapsed,
-                    ),
-                ),
+                self.running_status_rows(row.depth, &row.label, now_ms),
             );
             if let Some(open) = self.open_tool_rows.get_mut(&id) {
                 open.len = new_len;
@@ -306,16 +404,7 @@ impl Ui {
             let new_len = self.replace_block_rows(
                 row.start,
                 row.len,
-                self.status_rows(
-                    row.depth,
-                    &running_status_text_shimmer(
-                        &row.label,
-                        &spinner,
-                        &spinner_fg,
-                        shimmer,
-                        elapsed,
-                    ),
-                ),
+                self.running_status_rows(row.depth, &row.label, now_ms),
             );
             if let Some(open) = self.open_subcall_rows.get_mut(idx) {
                 open.len = new_len;
@@ -444,12 +533,38 @@ impl Ui {
         self.block_errored = false;
         self.block_active = true;
         self.tool_block = false;
-        self.push_row(format!("{}repl{}", &self.palette.tool_title_fg, RESET));
-        // Skip the blank separator line when REPL code is suppressed
-        // (repl_max_lines == 0): the header stands alone.
-        if self.tools.repl_max_lines > 0 {
-            self.push_row(String::new());
+        if self.chrome.repl_as_tool {
+            // Tool-card chrome: the container header is a glyph + verb
+            // anchor like any tool card; the code hangs directly under it.
+            let row = self.repl_anchor_row();
+            self.push_row(row);
+        } else {
+            self.push_row(format!("{}repl{}", &self.palette.tool_title_fg, RESET));
+            // Skip the blank separator line when REPL code is suppressed
+            // (repl_max_lines == 0): the header stands alone.
+            if self.tools.repl_max_lines > 0 {
+                self.push_row(String::new());
+            }
         }
+        self.block_out_gutter = false;
+    }
+
+    /// Anchor row for the repl container under tool-card chrome
+    /// (`repl_as_tool`): status glyph + the repl render spec's verb
+    /// (`repl` stock; a pack may rename it). The glyph carries the success
+    /// color from the start — the container is neutral surface, failures
+    /// are signaled by the glyphs and error text inside (same doctrine as
+    /// the card surface).
+    pub(super) fn repl_anchor_row(&self) -> String {
+        let verb = self
+            .tool_render
+            .get("repl")
+            .and_then(|s| s.verb.as_deref())
+            .unwrap_or("repl");
+        format!(
+            "{}{}{RESET} {}{verb}{RESET}",
+            &self.palette.success_fg, self.chrome.glyph_ok, &self.palette.tool_title_fg
+        )
     }
 
     /// Open a bare live container for a tool that runs outside any repl
@@ -558,11 +673,18 @@ impl Ui {
         // For non-code output (stdout/stderr), apply tool_output_fg to match
         // the styling used by tool_result_rows for tool output (fix #4).
         // Inside an active REPL block, use the box inner content width so flat
-        // output aligns with child card widths (fix #5).
+        // output aligns with child card widths (fix #5). Tool-card chrome
+        // hangs repl output behind the result gutter, so the gutter width
+        // comes off the wrap budget.
         let wrap_width = if self.block_active {
             self.box_width()
                 .saturating_sub(2)
                 .saturating_sub(indent_width(depth))
+                .saturating_sub(if self.repl_output_gutter(depth) {
+                    self.chrome.result_continuation().len()
+                } else {
+                    0
+                })
                 .max(1)
         } else {
             self.card_body_width(depth)
@@ -590,6 +712,13 @@ impl Ui {
         rows
     }
 
+    /// Whether repl-level output rows (depth 0, inside a repl container,
+    /// not a bare tool container) carry the tool-card result gutter —
+    /// the `repl_as_tool` chrome's `⎿` shape.
+    pub(super) fn repl_output_gutter(&self, depth: usize) -> bool {
+        self.block_active && depth == 0 && !self.tool_block && self.chrome.repl_as_tool
+    }
+
     pub(super) fn push_preview_with_lang(
         &mut self,
         depth: usize,
@@ -605,6 +734,28 @@ impl Ui {
             self.ensure_block_gap();
         } else if depth == 0 {
             self.ensure_pending_gap();
+        }
+        if self.repl_output_gutter(depth) {
+            // First output row of the block carries the `⎿` gutter;
+            // everything after (including later streamed chunks) hangs at
+            // the same width, so the gutter appears once per container.
+            let gutter = format!(
+                "{}{}{RESET}",
+                &self.palette.text_ghost, self.chrome.result_prefix
+            );
+            let hang = self.chrome.result_continuation();
+            for line in &rows {
+                let row = if line.is_empty() {
+                    String::new()
+                } else if self.block_out_gutter {
+                    format!("{hang}{line}")
+                } else {
+                    self.block_out_gutter = true;
+                    format!("{gutter}{line}")
+                };
+                self.push_row(row);
+            }
+            return;
         }
         let prefix = if self.block_active {
             indent(depth)

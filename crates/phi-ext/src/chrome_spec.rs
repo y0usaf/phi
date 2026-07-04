@@ -1,4 +1,5 @@
-//! Declarative transcript tool chrome (WS10.3 vocabulary growth).
+//! Declarative transcript + status + input chrome (WS10.3 vocabulary
+//! growth).
 //!
 //! A [`ChromeSpec`] describes the presentation *around* tool calls that
 //! [`crate::ToolRenderSpec`] deliberately doesn't: the anchor's verb/args
@@ -9,6 +10,14 @@
 //! bg-tinted card surface or lie flat in the transcript. These were the
 //! top of the WS10.2 gap inventory — the at-a-glance differences a style
 //! pack could not express.
+//!
+//! The second growth round covers the rest of that inventory: how a user
+//! turn is marked (gutter bar vs prefix glyph + background wash), the
+//! assistant prose prefix (claude-code's `⏺`), the live status line's
+//! indicator/effect/meta suffix, and the input area's prompt glyph and
+//! two-rule box. Chrome remains the styling surface for *singular* UI
+//! surfaces — there is one transcript, one status line, one input box —
+//! so all of these are members here, not new registration kinds.
 //!
 //! Like `ToolRenderSpec`, this is **pure data** (WS1.3a rationale): the
 //! anchor feeds the in-flight status line, which re-renders every
@@ -38,6 +47,42 @@ pub enum ChromeContainer {
     Flat,
 }
 
+/// Indicator drawn at the head of the live status line.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StatusIndicator {
+    /// Phi's stock look: the 5-bar sine equalizer.
+    #[default]
+    Equalizer,
+    /// The style's spinner frames (claude-code's asterisk morph), coloured
+    /// with the theme's accent role.
+    Spinner,
+}
+
+/// Text effect applied to the live status line's thinking expression.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StatusEffect {
+    /// Phi's stock look: accent→accent_2 gradient with a glint sweep.
+    #[default]
+    Gradient,
+    /// claude-code's shimmer: accent-coloured text with a single-character
+    /// highlight sweeping across it (uniform pulse while a tool runs).
+    Sweep,
+}
+
+/// Presentation of an in-flight tool/subcall row.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PendingIndicator {
+    /// Phi's stock look: spinner glyph + shimmer sweep over the label.
+    #[default]
+    SpinnerShimmer,
+    /// claude-code's ToolUseLoader: the status glyph blinks (glyph ↔ blank
+    /// on a 600ms interval), dim, over a plain (un-shimmered) label.
+    BlinkGlyph,
+}
+
 /// Declarative transcript chrome for tool presentation. See the module
 /// docs for why this is data, not hooks.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -61,6 +106,41 @@ pub struct ChromeSpec {
     /// (claude-code: `"… +{n} lines (ctrl+o to expand)"`).
     pub more_lines: String,
     pub container: ChromeContainer,
+    /// Live status-line indicator (equalizer bars vs the style's spinner).
+    pub status_indicator: StatusIndicator,
+    /// Live status-line text effect on the thinking expression.
+    pub status_effect: StatusEffect,
+    /// Append a dim `(elapsed · ↓ tokens)` suffix to the status line
+    /// (claude-code's semantics: elapsed shown past 30s, tokens once > 0).
+    pub status_meta: bool,
+    /// Editor prompt glyph override (claude-code: `"❯"`). `None` keeps the
+    /// frontend's stock glyph. Must render one column wide — the cursor
+    /// math assumes glyph + space = 2 cells.
+    pub input_prompt: Option<String>,
+    /// Rule the input area top *and* bottom (claude-code's two-line input
+    /// box); the chrome header moves below the box, reading as a footer.
+    pub input_ruled: bool,
+    /// User-turn marker override: `Some(prefix)` replaces the accent
+    /// gutter bar with a ghost-coloured prefix glyph on the first row
+    /// (claude-code: `"❯ "`); continuation rows hang at the same width.
+    /// `None` keeps the stock bar.
+    pub user_prefix: Option<String>,
+    /// Wash user-turn rows full-width with the theme's `user_message_bg`
+    /// role (claude-code's gray band).
+    pub user_background: bool,
+    /// Assistant prose prefix (claude-code: `"⏺ "`); continuation rows
+    /// hang at the prefix width. `None` keeps stock bare prose.
+    pub assistant_prefix: Option<String>,
+    /// In-flight tool/subcall row presentation.
+    pub pending_indicator: PendingIndicator,
+    /// Result-gutter note under an in-flight call (claude-code: dim
+    /// `"Running…"` on the `⎿` row). `None` shows no note.
+    pub pending_note: Option<String>,
+    /// Render the repl execution container like a tool card: status glyph
+    /// + verb anchor instead of the bare `repl` title, code hanging under
+    /// the anchor, stdout/stderr behind the result gutter — claude-code
+    /// has no repl concept, so the container borrows the tool shape.
+    pub repl_as_tool: bool,
 }
 
 impl Default for ChromeSpec {
@@ -72,6 +152,17 @@ impl Default for ChromeSpec {
             result_prefix: "  ".to_owned(),
             more_lines: "… ({n} more lines)".to_owned(),
             container: ChromeContainer::Card,
+            status_indicator: StatusIndicator::default(),
+            status_effect: StatusEffect::default(),
+            status_meta: false,
+            input_prompt: None,
+            input_ruled: false,
+            user_prefix: None,
+            user_background: false,
+            assistant_prefix: None,
+            pending_indicator: PendingIndicator::default(),
+            pending_note: None,
+            repl_as_tool: false,
         }
     }
 }
@@ -122,6 +213,17 @@ mod tests {
         assert_eq!(c.format_more_lines(4), "… (4 more lines)");
         assert_eq!(c.result_continuation(), "  ");
         assert!(!c.is_flat());
+        assert_eq!(c.status_indicator, StatusIndicator::Equalizer);
+        assert_eq!(c.status_effect, StatusEffect::Gradient);
+        assert!(!c.status_meta);
+        assert!(c.input_prompt.is_none());
+        assert!(!c.input_ruled);
+        assert!(c.user_prefix.is_none());
+        assert!(!c.user_background);
+        assert!(c.assistant_prefix.is_none());
+        assert_eq!(c.pending_indicator, PendingIndicator::SpinnerShimmer);
+        assert!(c.pending_note.is_none());
+        assert!(!c.repl_as_tool);
     }
 
     #[test]
@@ -142,6 +244,38 @@ mod tests {
         assert_eq!(c.format_more_lines(2), "… (2 more lines)");
         assert_eq!(c.result_continuation(), "     ");
         assert!(c.is_flat());
+    }
+
+    #[test]
+    fn claude_shaped_table_deserializes_new_members() {
+        let c: ChromeSpec = serde_json::from_value(serde_json::json!({
+            "status_indicator": "spinner",
+            "status_effect": "sweep",
+            "status_meta": true,
+            "input_prompt": "❯",
+            "input_ruled": true,
+            "user_prefix": "❯ ",
+            "user_background": true,
+            "assistant_prefix": "● ",
+            "pending_indicator": "blink_glyph",
+            "pending_note": "Running…",
+            "repl_as_tool": true,
+        }))
+        .unwrap();
+        assert_eq!(c.status_indicator, StatusIndicator::Spinner);
+        assert_eq!(c.status_effect, StatusEffect::Sweep);
+        assert!(c.status_meta);
+        assert_eq!(c.input_prompt.as_deref(), Some("❯"));
+        assert!(c.input_ruled);
+        assert_eq!(c.user_prefix.as_deref(), Some("❯ "));
+        assert!(c.user_background);
+        assert_eq!(c.assistant_prefix.as_deref(), Some("● "));
+        assert_eq!(c.pending_indicator, PendingIndicator::BlinkGlyph);
+        assert_eq!(c.pending_note.as_deref(), Some("Running…"));
+        assert!(c.repl_as_tool);
+        // Omitted members keep the stock look.
+        assert_eq!(c.container, ChromeContainer::Card);
+        assert_eq!(c.format_anchor("read", Some("a")), "read a");
     }
 
     #[test]

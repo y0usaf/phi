@@ -1267,17 +1267,37 @@ one in the abstract.
          builds styled verb/args segments and composes through it (all
          branches: code-bodied, anchored, fallback `name key=value`);
          argless calls collapse to the bare verb, so `()` never dangles.
-      3. *Status-line semantics:* claude-code picks one random verb per
-         turn and keeps it, suffixed with elapsed time + token count;
-         phi cycles expressions on a fixed timer and the suffix is host-
-         owned. Pack approximates with a 15s interval.
-      4. *Text effects:* the verb's orange shimmer needs
-         gradient/shimmer effects as bundle members — confirmed needed by
-         a real pack (was already a WS10.1 honest remainder).
-      5. *Input box + welcome banner:* rounded promptBorder box, `❯`
-         prompt, startup banner — no styling surface at all.
+      3. *Status-line semantics:* **closed (2026-07-04)** —
+         `ThinkingExpressionSpec.selection = cycle|per_turn` (per-turn
+         holds one verb for the whole run, tools included, seeded by the
+         host's `run_started_ms`; Lua: `thinking.selection`), plus
+         `ChromeSpec.status_meta` for the dim `(elapsed · ↓ tokens)`
+         suffix (claude-code thresholds: elapsed past 30s, tokens once
+         > 0 — data from the host's usage, semantics from the chrome).
+      4. *Text effects:* **closed (2026-07-04)** for the status line —
+         `ChromeSpec.status_indicator = equalizer|spinner` (spinner mode
+         draws the style's spinner frames in the accent role) and
+         `status_effect = gradient|sweep` (`sweep` is claude-code's
+         GlimmerMessage: `phi_tui::shimmer_sweep_text`, a ±1-char
+         highlight sweeping right-to-left at 200ms/col with a 20-col
+         runway, pulsing uniformly via `shimmer_flash_text` while a tool
+         runs; base = accent, highlight = running role). Enum data, not
+         closures — the `TextEffectSpec` handler surface stays unused on
+         the tick path per WS1.3a.
+      5. *Input box + welcome banner:* input box **closed (2026-07-04)**
+         — `ChromeSpec.input_prompt` (glyph override, stock = Nerd Font
+         chevron) and `input_ruled` (claude-code's two-rule box:
+         top rule, editor, bottom rule, header re-reads as the footer
+         line; selectors keep the stock layout). Welcome banner still
+         open.
       6. *Custom message renderers* (WS1.3b) — still the right forcing
-         function, still open.
+         function, still open. Meanwhile the *message chrome* half is
+         vocabulary: `ChromeSpec.user_prefix` (ghost prefix replaces the
+         accent gutter bar; continuations flow flush beneath, matching
+         ink's inline wrap), `user_background` (full-width
+         `user_message_bg` wash — the role the theme already carried,
+         now consumed via `InlinePalette.user_bg`), `assistant_prefix`
+         (claude-code's `⏺ ` dot, body hangs at prefix width).
       *Chrome consumption is session-TUI only, deliberately:* the plain
       CLI (`phi -p` event printing) keeps its own panel presentation —
       WS1.3a's doctrine is that frontends keep their presentation
@@ -1293,9 +1313,28 @@ one in the abstract.
       and (2) closed 2026-07-04 (`ChromeSpec`) and the pack now carries
       `chrome = { "⏺", "  ⎿  ", "{verb}({args})", "… +{n} lines (ctrl+o
       to expand)", flat }` — phi's expand toggle already *is* ctrl+o, so
-      the marker text is literal claude-code. Remaining before 10.4's
-      at-a-glance test: item (4) effect members (verb shimmer), then
-      re-touch the pack and add `codex`/`crush` (both are flat-chrome
+      the marker text is literal claude-code. Items (3)–(5) closed later
+      the same day (first 1:1 pass against the ref): the pack now also
+      carries `status_indicator = "spinner"`, `status_effect = "sweep"`,
+      `status_meta`, `input_prompt = "❯"`, `input_ruled`, `user_prefix =
+      "❯ "`, `user_background`, `assistant_prefix = "● "`, and
+      `thinking.selection = "per_turn"` — the asterisk-morph status line
+      with the shimmering held verb, the two-rule input box, the gray
+      user band with the ghost `❯`, and the `●` prose dot (BLACK_CIRCLE
+      is `⏺` only on darwin; the pack targets `●`). Third pass (same
+      day): `pending_indicator = "blink_glyph"` + `pending_note =
+      "Running…"` (ToolUseLoader's 600ms visibility blink over the dim
+      gutter note — in-flight rows animate by blink, not shimmer) and
+      `repl_as_tool` (the repl container borrows the tool-card shape:
+      `● Repl` verb anchor via the pack's `repl` renderer, code hanging
+      2 cells under it, stdout/stderr behind a once-per-container `⎿`
+      gutter — live streaming and replay paths mirrored). Known
+      remaining deltas vs the ref: welcome banner (item 5's second
+      half), the "ready"/"queue a follow-up…" placeholder copy
+      (host-owned), `user_padding` widening the user band by one row
+      each side (session config, not style), and phi's header line
+      standing in for claude-code's footer info. Next: re-check 10.4's
+      at-a-glance test, then add `codex`/`crush` (both are flat-chrome
       harnesses — codex is `{verb} {args}`-shaped with different glyphs;
       crush needs `container = card` plus its rounded borders, which may
       grow a border member).

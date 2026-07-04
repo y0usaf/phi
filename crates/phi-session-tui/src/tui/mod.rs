@@ -23,8 +23,8 @@ use phi_tui::{
     Editor, EditorAction, LiveCursor, RawModeGuard, Selector, SelectorItem, SelectorOutcome,
     SelectorStyle, Terminal, TerminalColors, detect_terminal_colors, equalizer_glyphs, fill_bg,
     fuzzy_filter, gradient_text, gradient_text_animated, highlight_code, highlight_diff_line,
-    highlight_output, render_markdown, shimmer_ansi, strip_ansi, visible_width, wrap_ansi,
-    wrap_ansi_locate,
+    highlight_output, render_markdown, shimmer_ansi, shimmer_flash_text, shimmer_sweep_text,
+    strip_ansi, visible_width, wrap_ansi, wrap_ansi_locate,
 };
 
 use crate::files::FileSearcher;
@@ -648,6 +648,9 @@ struct Ui {
     pub(super) palette: InlinePalette,
     /// Cancel token of the in-flight turn, if any.
     pub(super) running: Option<CancellationToken>,
+    /// Clock timestamp of the current run's start: the status line's
+    /// elapsed-time meta and the per-turn thinking-expression seed.
+    pub(super) run_started_ms: u64,
     /// In-flight /login flow, if any. The editor feeds it pasted codes.
     pub(super) login: Option<LoginState>,
     /// Slash command autocomplete, shown below the editor.
@@ -721,6 +724,10 @@ struct Ui {
     /// as the last open activity row resolves. Repl (`CodeExecStart`) and
     /// shell (`send_shell`) blocks keep this false: their own flows commit.
     pub(super) tool_block: bool,
+    /// Whether the active block already emitted its `⎿` output gutter row
+    /// (`repl_as_tool` chrome): the first streamed output row carries the
+    /// gutter, later chunks hang. Reset by `begin_block`.
+    pub(super) block_out_gutter: bool,
     /// Code of the in-flight depth-0 agent ```repl``` block, stashed at
     /// `CodeExecStart` and persisted to the session store at `CodeExecEnd`.
     pub(super) live_code: Option<String>,
@@ -872,6 +879,7 @@ impl Ui {
             clock: phi_tui::AnimationClock::with_baseline_keep_alive(),
             palette: InlinePalette::default_const(),
             running: None,
+            run_started_ms: 0,
             login: None,
             popup: None,
             selector: None,
@@ -897,6 +905,7 @@ impl Ui {
             block_active: false,
             block_errored: false,
             tool_block: false,
+            block_out_gutter: false,
             live_code: None,
             pending_prose: String::new(),
             live_prose: String::new(),
@@ -1571,6 +1580,7 @@ mod tests {
             result_prefix: "  ⎿  ".to_owned(),
             more_lines: "… +{n} lines (ctrl+o to expand)".to_owned(),
             container: phi_ext::ChromeContainer::Flat,
+            ..Default::default()
         };
         // Anchored tool: parenthesized args; argless call collapses to the
         // bare verb (no dangling `()`).
@@ -1628,6 +1638,148 @@ mod tests {
         assert!(
             committed.iter().all(|l| !l.contains("\x1b[48;")),
             "flat chrome must not paint a block background: {committed:?}"
+        );
+    }
+
+    // Chrome round two: message + input chrome. The claude-code shape — a
+    // ghost `❯ ` prefix over a background wash instead of the accent gutter
+    // bar, a `⏺ ` dot leading assistant prose, and the two-rule input box —
+    // all expressed as pure ChromeSpec data.
+    #[test]
+    fn chrome_reskins_messages_and_input() {
+        let mut ui = test_ui(80, 24);
+        ui.chrome = phi_ext::ChromeSpec {
+            input_prompt: Some("❯".to_owned()),
+            input_ruled: true,
+            user_prefix: Some("❯ ".to_owned()),
+            user_background: true,
+            assistant_prefix: Some("⏺ ".to_owned()),
+            ..Default::default()
+        };
+
+        // User turn: prefix on the first content row, no gutter bar, every
+        // row washed with the user background.
+        let user = ui.user_card_lines("hello there");
+        assert!(
+            user.iter().all(|l| !l.contains('\u{258C}')),
+            "prefix chrome must drop the gutter bar: {user:?}"
+        );
+        let content: Vec<&String> = user
+            .iter()
+            .filter(|l| !phi_tui::strip_ansi(l).trim().is_empty())
+            .collect();
+        assert!(
+            phi_tui::strip_ansi(content[0]).starts_with("❯ hello there"),
+            "{user:?}"
+        );
+        assert!(
+            user.iter().all(|l| l.contains("\x1b[48;")),
+            "user background chrome must wash every row: {user:?}"
+        );
+
+        // Assistant prose: dot on the first content line, hang indent after.
+        let prose = ui.assistant_card_lines("first paragraph\n\nsecond paragraph");
+        let plain: Vec<String> = prose.iter().map(|l| phi_tui::strip_ansi(l)).collect();
+        let non_empty: Vec<&String> = plain.iter().filter(|l| !l.trim().is_empty()).collect();
+        assert!(non_empty[0].starts_with("⏺ first paragraph"), "{plain:?}");
+        assert!(non_empty[1].starts_with("  second paragraph"), "{plain:?}");
+
+        // Input chrome: `❯` prompt, and the box closes with a second rule
+        // followed by the header-as-footer.
+        let (lines, _) = ui.chrome_lines();
+        let plain: Vec<String> = lines.iter().map(|l| phi_tui::strip_ansi(l)).collect();
+        let rules: Vec<usize> = plain
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| l.chars().all(|c| c == '─') && !l.is_empty())
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(rules.len(), 2, "two-rule input box: {plain:?}");
+        let editor_row = rules[0] + 1;
+        assert!(plain[editor_row].starts_with("❯ "), "{plain:?}");
+        assert_eq!(rules[1], editor_row + 1, "bottom rule hugs the editor");
+        assert!(
+            plain[rules[1] + 1].contains("phi"),
+            "header follows the box as footer: {plain:?}"
+        );
+
+        // Stock chrome keeps the bar/bare-prose/single-rule look.
+        ui.chrome = phi_ext::ChromeSpec::default();
+        let user = ui.user_card_lines("hello there");
+        assert!(user.iter().any(|l| l.contains('\u{258C}')), "{user:?}");
+        assert!(user.iter().all(|l| !l.contains("\x1b[48;")), "{user:?}");
+        let prose = ui.assistant_card_lines("first paragraph");
+        assert!(
+            phi_tui::strip_ansi(&prose[0]).starts_with("first paragraph"),
+            "{prose:?}"
+        );
+    }
+
+    // Chrome round three: in-flight blink + repl-as-tool. The claude-code
+    // pending shape (dim blinking dot over a `⎿  Running…` note instead of
+    // the spinner/shimmer status) and the repl container borrowing the
+    // tool-card shape (`● repl` anchor, hanging code, gutter output).
+    #[test]
+    fn chrome_blinks_pending_and_reskins_repl() {
+        let mut ui = test_ui(80, 24);
+        ui.chrome = phi_ext::ChromeSpec {
+            glyph_ok: "●".to_owned(),
+            result_prefix: "  ⎿  ".to_owned(),
+            container: phi_ext::ChromeContainer::Flat,
+            pending_indicator: phi_ext::PendingIndicator::BlinkGlyph,
+            pending_note: Some("Running…".to_owned()),
+            repl_as_tool: true,
+            ..Default::default()
+        };
+
+        // Blink: glyph visible on even 600ms intervals, blank on odd; the
+        // note row rides the result gutter in both phases.
+        let visible = ui.running_status_rows(1, "Bash(cargo test)", 0);
+        let plain: Vec<String> = visible.iter().map(|l| phi_tui::strip_ansi(l)).collect();
+        assert!(plain[0].starts_with("● Bash(cargo test)"), "{plain:?}");
+        assert_eq!(plain[1], "  ⎿  Running…", "{plain:?}");
+        let hidden = ui.running_status_rows(1, "Bash(cargo test)", 600);
+        let plain: Vec<String> = hidden.iter().map(|l| phi_tui::strip_ansi(l)).collect();
+        assert!(plain[0].starts_with("  Bash(cargo test)"), "{plain:?}");
+
+        // Repl container as tool card: glyph + verb anchor (the render
+        // index's repl verb — stock `repl`), code hanging 2 cells under
+        // it, stdout behind the gutter on its first row only.
+        ui.block_active = true;
+        let data = ReplBlockData {
+            code: "print(1 + 1)".to_owned(),
+            stdout: "2\nbye\n".to_owned(),
+            stderr: String::new(),
+            tools: Vec::new(),
+            subcalls: Vec::new(),
+        };
+        let rows = ui.render_repl_block_from_data(&data);
+        ui.block_active = false;
+        let plain: Vec<String> = rows.iter().map(|l| phi_tui::strip_ansi(l)).collect();
+        assert!(plain[0].starts_with("● repl"), "{plain:?}");
+        assert!(
+            plain.iter().any(|l| l.starts_with("  print(1 + 1)")),
+            "{plain:?}"
+        );
+        assert!(plain.iter().any(|l| l.starts_with("  ⎿  2")), "{plain:?}");
+        assert!(plain.iter().any(|l| l.starts_with("     bye")), "{plain:?}");
+        assert!(
+            plain.iter().all(|l| !l.contains("repl\u{a0}")) && plain[0] != "repl",
+            "bare repl title must be replaced: {plain:?}"
+        );
+
+        // Stock chrome keeps the spinner/shimmer status and the bare title.
+        ui.chrome = phi_ext::ChromeSpec::default();
+        let stock = ui.running_status_rows(1, "Bash(cargo test)", 0);
+        let plain: Vec<String> = stock.iter().map(|l| phi_tui::strip_ansi(l)).collect();
+        assert!(plain.iter().all(|l| !l.contains("Running…")), "{plain:?}");
+        ui.block_active = true;
+        let rows = ui.render_repl_block_from_data(&data);
+        ui.block_active = false;
+        let plain: Vec<String> = rows.iter().map(|l| phi_tui::strip_ansi(l)).collect();
+        assert!(
+            plain.iter().any(|l| l.trim_start().starts_with("repl")),
+            "{plain:?}"
         );
     }
 

@@ -438,10 +438,16 @@ async fn defaults_claude_code_style_registers_and_activates() {
     assert_eq!(spinner.frames.first().map(String::as_str), Some("·"));
     assert_eq!(spinner.frames[5], spinner.frames[6]); // ping-pong midpoint
 
-    // Thinking verbs: gerunds ending in the unicode ellipsis.
+    // Thinking verbs: gerunds ending in the unicode ellipsis, one picked
+    // per turn and held for the whole run — tools included.
     let think = rt.active_thinking_expression().unwrap();
     assert!(think.expressions.iter().any(|e| e == "Clauding…"));
     assert!(think.expressions.iter().all(|e| e.ends_with('…')));
+    assert_eq!(think.selection, phi_ext::ExpressionSelection::PerTurn);
+    let seeded = think.expression_at(0, false, 42);
+    assert_eq!(think.expression_at(120_000, false, 42), seeded);
+    assert_eq!(think.expression_at(0, true, 42), seeded);
+    assert_ne!(think.expression_at(0, false, 43), seeded);
 
     // Tool renderers overlay the base index while the pack is active.
     let idx = rt.tool_render_index();
@@ -458,14 +464,34 @@ async fn defaults_claude_code_style_registers_and_activates() {
         chrome.format_anchor("Read", Some("src/main.rs")),
         "Read(src/main.rs)"
     );
-    assert_eq!(chrome.glyph_ok, "⏺");
-    assert_eq!(chrome.glyph_failed, "⏺");
+    // BLACK_CIRCLE is `⏺` only on darwin — `●` everywhere else.
+    assert_eq!(chrome.glyph_ok, "●");
+    assert_eq!(chrome.glyph_failed, "●");
     assert_eq!(chrome.result_prefix, "  ⎿  ");
     assert_eq!(
         chrome.format_more_lines(42),
         "… +42 lines (ctrl+o to expand)"
     );
     assert!(chrome.is_flat());
+
+    // Chrome round two: status line, input box, and message chrome.
+    assert_eq!(chrome.status_indicator, phi_ext::StatusIndicator::Spinner);
+    assert_eq!(chrome.status_effect, phi_ext::StatusEffect::Sweep);
+    assert!(chrome.status_meta);
+    assert_eq!(chrome.input_prompt.as_deref(), Some("❯"));
+    assert!(chrome.input_ruled);
+    assert_eq!(chrome.user_prefix.as_deref(), Some("❯ "));
+    assert!(chrome.user_background);
+    assert_eq!(chrome.assistant_prefix.as_deref(), Some("● "));
+    // In-flight calls blink the dot over a `Running…` note; the repl
+    // container borrows the tool-card shape with a capitalized verb.
+    assert_eq!(
+        chrome.pending_indicator,
+        phi_ext::PendingIndicator::BlinkGlyph
+    );
+    assert_eq!(chrome.pending_note.as_deref(), Some("Running…"));
+    assert!(chrome.repl_as_tool);
+    assert_eq!(idx.get("repl").unwrap().verb.as_deref(), Some("Repl"));
 
     // Deactivating falls back to the base registrations.
     rt.set_active_style(None).unwrap();

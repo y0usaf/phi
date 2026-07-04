@@ -27,6 +27,9 @@ pub struct InlinePalette {
     pub num_fg: String,
     /// User-echo text.
     pub user_fg: String,
+    /// User-turn background wash (theme `user_message_bg`); only painted
+    /// when the active chrome asks for it (claude-code's gray band).
+    pub user_bg: String,
     /// Muted text.
     pub muted_fg: String,
     /// Secondary text — one luminance step below primary (tool output bodies).
@@ -115,6 +118,7 @@ impl InlinePalette {
             string_fg: s("\x1b[38;2;150;190;150m"),
             num_fg: s("\x1b[38;2;170;150;230m"),
             user_fg: s("\x1b[38;2;190;200;215m"),
+            user_bg: s("\x1b[48;2;55;55;55m"),
             muted_fg: s("\x1b[38;2;120;128;148m"),
             text_secondary: s("\x1b[38;2;177;180;190m"),
             text_tertiary: s("\x1b[38;2;130;134;146m"),
@@ -164,6 +168,7 @@ impl InlinePalette {
             string_fg: fg_escape(t.string),
             num_fg: fg_escape(t.number),
             user_fg: fg_escape(t.user_fg),
+            user_bg: bg_escape(t.user_message_bg),
             muted_fg: fg_escape(t.muted),
             text_secondary: fg_escape(t.text_secondary),
             text_tertiary: fg_escape(t.text_tertiary),
