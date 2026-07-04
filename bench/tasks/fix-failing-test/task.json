@@ -1,0 +1,5 @@
+{
+  "prompt": "The tests in test_stats.py fail. Find and fix the bug in stats.py so `python3 -m unittest` passes. Do not modify test_stats.py.",
+  "timeout": 300,
+  "immutable": ["test_stats.py"]
+}

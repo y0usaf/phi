@@ -169,6 +169,7 @@ pub async fn run(
             "stop": result.stop,
             "iterations": result.iterations,
             "duration": result.duration.as_secs_f64(),
+            "usage": result.usage,
         });
         println!("{}", result_json);
     } else {

@@ -1,5 +1,6 @@
 /target
-/result
+/result*
 /.direnv
 /ref
 __pycache__/
+/bench/results/

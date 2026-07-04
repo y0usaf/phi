@@ -1010,7 +1010,24 @@ around them and the shape of the tool surface on top of them.
         prelude functions are the implementation, so hashline cache,
         read-before-edit, and spill hold on both surfaces. A drift test
         ties every native name to the `coding_tools_section()` roster.
-        The measurement run stays open.
+        *Measurement harness landed (2026-07-04):* `bench/run.py` + a fixed
+        8-task suite (`bench/tasks/`, objective out-of-workdir checkers,
+        immutable-file hashing, reference solutions self-tested by
+        `bench/validate.py`). Variants toggle `coding_tools_native` via an
+        isolated per-variant `XDG_CONFIG_HOME` (auth/data dir untouched);
+        metrics come from `--output ndjson` — the result line now includes
+        `usage` (tokens/cost) alongside iterations/duration, and the runner
+        folds the WS9.6 `IterationEnd {model, exec, dispatch}` split.
+        Smoke-validated end-to-end (gemini-2.5-flash via openrouter: 4/4
+        pass across both variants; native-exposure toggle probe-confirmed).
+        Finding worth keeping: openrouter/qwen3-coder mangles tool-arg
+        JSON server-side (Python-repr fragments arrive inside valid
+        `code` strings), killing runs in *both* variants via loop
+        detection — provider-side, not a phi bug (malformed-args handling
+        verified: `unwrap_or_default` → synthetic error result). **The
+        measurement run itself stays open**: full suite, `--reps ≥ 3`, on
+        ≥ 2 models the user actually runs daily (needs the user's
+        model/spend call) — no data, no default change.
       - (c) *REPL-preserving mitigations* worth doing regardless of the
         experiment's outcome: few-shot examples of idiomatic helper
         composition in the coding system prompt, and leaning on hashline
