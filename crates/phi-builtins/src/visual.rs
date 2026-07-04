@@ -1,29 +1,39 @@
-//! Built-in visual extension: registers Phi's default spinner,
-//! thinking expressions, and a declarative default theme so that
-//! the "out-of-the-box" look is itself an extension.
+//! Built-in visual extension: registers Phi's default theme and text
+//! effects so that the "out-of-the-box" look is itself an extension.
+//!
+//! The spinner and thinking expressions have been moved to Lua
+//! (`crates/phi-builtins/defaults/visual_data.lua`) — they're pure literal
+//! data. This extension keeps only what needs native Rust: the theme
+//! resolver (calls `phi_tui::generate_theme()`) and text effects (call
+//! `phi_tui::gradient_text()` / `shimmer_ansi()` / `equalizer_glyphs()`).
 //!
 //! When the mux TUI discovers extensions, this built-in is always
-//! present. An extension that registers a theme or spinner with the
-//! same name will be rejected (duplicate registration), so third-party
-//! extensions should use distinct names. An extension that registers
-//! a theme with a different name will appear alongside this one; the
-//! mux uses the first registered theme (which is the built-in unless
-//! a config extension is loaded first).
+//! present. An extension that registers a theme with the same name will
+//! be rejected (duplicate registration), so third-party extensions should
+//! use distinct names. An extension that registers a theme with a different
+//! name will appear alongside this one; the mux uses the first registered
+//! theme (which is the built-in unless a config extension is loaded first).
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use anyhow::Result;
 use phi_ext::{
-    Extension, ExtensionHost, ExtensionManifest, Rgb, SpinnerSpec, TerminalColorsProbe,
-    TextEffectSpec, ThemeSpec, ThinkingExpressionSpec,
+    Extension, ExtensionHost, ExtensionManifest, Rgb, TerminalColorsProbe, TextEffectSpec,
+    ThemeSpec,
 };
 
-/// The built-in visual extension.
+/// The built-in visual extension (theme + text effects only).
+///
+/// The spinner and thinking expressions have been moved to Lua
+/// (`crates/phi-builtins/defaults/visual_data.lua`) — they're pure literal
+/// data (`register_spinner` / `register_thinking_expression`), so they're
+/// the same Lua a user would write. This extension keeps only what needs
+/// native Rust: the theme resolver (calls `phi_tui::generate_theme()`) and
+/// the text effects (call `phi_tui::gradient_text()` / `shimmer_ansi()` /
+/// `equalizer_glyphs()`).
 ///
 /// Registers:
-/// - `phi:default` spinner (braille dot frames, 80ms interval)
-/// - `phi:default` thinking expressions (7 phrases, 2s interval)
 /// - `phi:default` theme (a resolver that derives the full palette
 ///   from the terminal's actual OSC-reported colours at resolve time,
 ///   matching opencode's auto-theming approach)
@@ -37,40 +47,11 @@ impl Extension for DefaultVisualExtension {
             id: "phi:default-visual".to_string(),
             name: "Phi Default Visual".to_string(),
             version: "0.1.0".to_string(),
-            description: "Built-in default spinner, thinking expressions, theme, and text effects"
-                .to_string(),
+            description: "Built-in default theme and text effects".to_string(),
         }
     }
 
     fn register(&self, host: &mut dyn ExtensionHost) -> Result<()> {
-        // -- Default spinner (braille dots) --
-        // The frames and interval are `phi-tui`'s built-in constants: the
-        // extension registration is the same animation, just routed through
-        // the registry so it can be replaced like any third-party spinner.
-        host.register_spinner(SpinnerSpec::new(
-            "phi:default",
-            phi_tui::SPINNER_FRAMES
-                .iter()
-                .map(|f| (*f).to_string())
-                .collect(),
-            phi_tui::SPINNER_FRAME_MS,
-        ))?;
-
-        // -- Default thinking expressions --
-        // One or two quiet words each: the gradient animation carries the
-        // visual weight, the label is just a status word.
-        host.register_thinking_expression(ThinkingExpressionSpec::new(
-            "phi:default",
-            vec![
-                "thinking...".to_string(),
-                "reasoning...".to_string(),
-                "pondering...".to_string(),
-                "working...".to_string(),
-            ],
-            "running...",
-            2000,
-        ))?;
-
         // -- Default theme (resolver-based, adapts to the terminal) --
         //
         // Unlike a static palette baked from `default_terminal_colors()`,
@@ -677,33 +658,24 @@ mod tests {
     use super::DefaultVisualExtension;
 
     #[test]
-    fn default_visual_extension_registers_spinner() {
+    fn default_visual_extension_no_longer_registers_spinner() {
+        // The spinner moved to Lua (`visual_data.lua`). The Rust extension
+        // only registers the theme + text effects now.
         let rt = RuntimeBuilder::new()
             .register_extension(DefaultVisualExtension)
             .build()
             .unwrap();
-
-        let spinner = rt.first_spinner().unwrap();
-        assert_eq!(spinner.name, "phi:default");
-        assert_eq!(spinner.frames.len(), 10);
-        assert_eq!(spinner.frame_interval_ms, 80);
-        assert_eq!(spinner.frame_at(0), "\u{280B}");
+        assert!(rt.first_spinner().is_none());
     }
 
     #[test]
-    fn default_visual_extension_registers_thinking_expressions() {
+    fn default_visual_extension_no_longer_registers_thinking_expressions() {
+        // Thinking expressions moved to Lua (`visual_data.lua`).
         let rt = RuntimeBuilder::new()
             .register_extension(DefaultVisualExtension)
             .build()
             .unwrap();
-
-        let expr = rt.first_thinking_expression().unwrap();
-        assert_eq!(expr.name, "phi:default");
-        assert_eq!(expr.expressions.len(), 4);
-        assert_eq!(expr.tool_expression, "running...");
-        assert_eq!(expr.expression_interval_ms, 2000);
-        assert_eq!(expr.expression(0, false), "thinking...");
-        assert_eq!(expr.expression(0, true), "running...");
+        assert!(rt.first_thinking_expression().is_none());
     }
 
     #[test]
@@ -845,15 +817,15 @@ mod tests {
     }
 
     #[test]
-    fn runtime_lists_all_visual_specs() {
+    fn runtime_lists_theme_and_text_effects_only() {
+        // Spinner + thinking expressions moved to Lua (`visual_data.lua`).
         let rt = RuntimeBuilder::new()
             .register_extension(DefaultVisualExtension)
             .build()
             .unwrap();
-
         assert_eq!(rt.list_themes(), vec!["phi:default"]);
-        assert_eq!(rt.list_spinners(), vec!["phi:default"]);
-        assert_eq!(rt.list_thinking_expressions(), vec!["phi:default"]);
+        assert!(rt.list_spinners().is_empty());
+        assert!(rt.list_thinking_expressions().is_empty());
         assert_eq!(
             rt.list_text_effects(),
             vec![

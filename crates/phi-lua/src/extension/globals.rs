@@ -108,8 +108,12 @@ pub(super) fn setup_phi_global(lua: &mlua::Lua) -> mlua::Result<()> {
     // phi.register_tool(name, opts)
     // opts: { description = "...", params = {...}, handler = function(input) ... end,
     //         expose = "repl"|"native"|"both" (default "repl"),
+    //         dispatch = "handler"|"python" (default "handler"),
     //         input_schema = { ... } (optional JSON Schema for the native
     //         tool definition; derived from params when absent) }
+    // dispatch = "python" means the tool is implemented by a same-named
+    // prelude function (no Lua handler needed); the runtime dispatches
+    // native calls into the REPL env via `__phi_native_call__`.
     let register_tool_fn = lua.create_function(|lua, (name, opts): (String, mlua::Table)| {
         let globals = lua.globals();
         let tools: mlua::Table = globals.get("_phi_tools")?;
@@ -280,6 +284,46 @@ pub(super) fn setup_phi_global(lua: &mlua::Lua) -> mlua::Result<()> {
     })?;
     phi.set("register_overlay", register_overlay_fn)?;
 
+    // phi.fs — filesystem helpers (portable, no io.popen hacks).
+    // Extensions that need file discovery (e.g. skills) use these instead
+    // of shell-out tricks. Wraps std::fs in a thin Lua-callable layer.
+    let fs_table = lua.create_table()?;
+
+    let fs_readfile =
+        lua.create_function(|_, path: String| Ok(std::fs::read_to_string(&path).ok()))?;
+    fs_table.set("readfile", fs_readfile)?;
+
+    let fs_writefile = lua.create_function(|_, (path, content): (String, String)| {
+        Ok(std::fs::write(&path, &content).is_ok())
+    })?;
+    fs_table.set("writefile", fs_writefile)?;
+
+    let fs_exists =
+        lua.create_function(|_, path: String| Ok(std::path::Path::new(&path).exists()))?;
+    fs_table.set("exists", fs_exists)?;
+
+    let fs_isdir =
+        lua.create_function(|_, path: String| Ok(std::path::Path::new(&path).is_dir()))?;
+    fs_table.set("isdir", fs_isdir)?;
+
+    let fs_readdir = lua.create_function(|_, path: String| {
+        let mut entries: Vec<String> = match std::fs::read_dir(&path) {
+            Ok(rd) => rd
+                .flatten()
+                .map(|e| e.file_name().to_string_lossy().to_string())
+                .collect(),
+            Err(_) => return Ok(None), // nil for missing dirs
+        };
+        entries.sort();
+        Ok(Some(entries))
+    })?;
+    fs_table.set("readdir", fs_readdir)?;
+
+    let fs_mkdir_p =
+        lua.create_function(|_, path: String| Ok(std::fs::create_dir_all(&path).is_ok()))?;
+    fs_table.set("mkdir_p", fs_mkdir_p)?;
+
+    phi.set("fs", fs_table)?;
     globals.set("phi", phi)?;
     Ok(())
 }

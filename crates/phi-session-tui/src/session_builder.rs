@@ -183,34 +183,15 @@ pub async fn build_runtime(
     // bare core boots with no builtin extensions registered (WS1.5).
     #[cfg(feature = "builtins")]
     {
+        // Rust extensions that need native resources (catalog data, phi_tui
+        // theme derivation + text effects, phi_session usage/model/archive
+        // data, MCP). These honest exceptions stay in Rust; the rest are
+        // Lua defaults (see below).
         rt_builder = rt_builder.register_extension(phi_builtins::CatalogExtension);
+        // Theme resolver + text effects (the spinner + thinking expressions
+        // moved to Lua — `visual_data.lua` below).
         rt_builder = rt_builder.register_extension(phi_builtins::DefaultVisualExtension);
-        // Display metadata for the prelude coding tools (WS1.3a). Registered
-        // before user extensions so a later spec for the same tool wins
-        // (tool renderer registration is last-write-wins).
-        rt_builder = rt_builder.register_extension(phi_builtins::ToolRenderExtension);
-        rt_builder =
-            rt_builder.register_extension(phi_builtins::BuiltinCommandsExtension::new(model_names));
-        rt_builder = rt_builder.register_extension(phi_builtins::SkillsExtension::new(
-            cwd,
-            settings.skills.clone(),
-            project_trusted,
-        ));
-        // Hybrid tool surface (WS9.3b, default off): the prelude coding
-        // helpers additionally surface as provider-level tool definitions.
-        if settings.coding_tools_native {
-            rt_builder = rt_builder.register_extension(phi_builtins::CodingToolsExtension);
-        }
-        // Tool approval gate (WS7.2, default off): config.lua's `approvals`
-        // table, project layer trust-gated like `mcp` (a cloned repo must not
-        // weaken the gate with its own allow rules). Registered in every
-        // mode; hosts that never `connect_ui` (one-shot `phi -p`) make `ask`
-        // rules fail closed.
-        let approvals = Config::load_approvals(cwd, project_trusted).unwrap_or_default();
-        if approvals.enabled.unwrap_or(false) {
-            rt_builder = rt_builder
-                .register_extension(phi_builtins::ApprovalsExtension::new(cwd, approvals));
-        }
+        rt_builder = rt_builder.register_extension(phi_builtins::DefaultOverlayExtension);
         // MCP servers from config.lua's `mcp` table (project entries only
         // when trusted — they spawn processes). Connect failures degrade to
         // warnings inside `connect`; a session never fails to build because
@@ -219,6 +200,165 @@ pub async fn build_runtime(
         if !mcp_servers.is_empty() {
             rt_builder = rt_builder
                 .register_extension(phi_builtins::McpExtension::connect(mcp_servers).await);
+        }
+        // ── Lua defaults ───────────────────────────────────────────────
+        // The session slash commands, tool display metadata, coding tools
+        // (hybrid surface), visual data (spinner + thinking expressions),
+        // skills, approvals, and the about/help overlays ship as embedded
+        // Lua — the same `.lua` a user would write, compiled in via
+        // `include_str!`. Registered before user extensions so a user's
+        // `.lua` can override (tool renderers and providers are
+        // last-write-wins; commands/overlays bail on duplicate, so a user
+        // who wants to replace a builtin command must not use the builtin's
+        // name — the API grows to support that in a future milestone).
+
+        // Visual data: spinner + thinking expressions (pure literal data).
+        // Registered before DefaultVisualExtension so the Rust theme
+        // resolver (which registers "phi:default" theme) doesn't conflict —
+        // the spinner and thinking expression names are also "phi:default"
+        // but they're different registries.
+        let visual_data_ext = phi_lua::LuaExtension::from_source(
+            "phi-visual-data",
+            phi_builtins::defaults::VISUAL_DATA_LUA.to_owned(),
+        )?;
+        rt_builder = rt_builder.register_extension(visual_data_ext);
+
+        // Tool render metadata (last-write-wins, so a user spec can restyle).
+        let tool_render_ext = phi_lua::LuaExtension::from_source(
+            "phi-tool-render",
+            phi_builtins::defaults::TOOL_RENDER_LUA.to_owned(),
+        )?;
+        rt_builder = rt_builder.register_extension(tool_render_ext);
+
+        // Coding tools as native tool definitions (hybrid surface, WS9.3b).
+        // The prelude coding helpers surface as provider-level tool
+        // definitions with `dispatch = "python"`.
+        if settings.coding_tools_native {
+            let coding_tools_ext = phi_lua::LuaExtension::from_source(
+                "phi-coding-tools",
+                phi_builtins::defaults::CODING_TOOLS_LUA.to_owned(),
+            )?;
+            rt_builder = rt_builder.register_extension(coding_tools_ext);
+        }
+
+        // Session slash commands. The model completion list is injected as
+        // a Lua global (`_phi_model_names`) prepended to the source.
+        let model_names_lua = {
+            let mut s = String::from("_phi_model_names = {");
+            for (i, name) in model_names.iter().enumerate() {
+                if i > 0 {
+                    s.push(',');
+                }
+                s.push('"');
+                // Escape any embedded quotes (unlikely but safe).
+                s.push_str(&name.replace('\\', "\\\\").replace('"', "\\\""));
+                s.push('"');
+            }
+            s.push_str("}\n");
+            s
+        };
+        let commands_source = format!(
+            "{model_names_lua}{lua}",
+            model_names_lua = model_names_lua,
+            lua = phi_builtins::defaults::COMMANDS_LUA,
+        );
+        let commands_ext = phi_lua::LuaExtension::from_source("phi-commands", commands_source)?;
+        rt_builder = rt_builder.register_extension(commands_ext);
+
+        // About and help overlays — the tutorial overlays (simplest and
+        // WS1.6-proven, respectively).
+        let about_ext = phi_lua::LuaExtension::from_source(
+            "phi-about-overlay",
+            phi_builtins::defaults::ABOUT_OVERLAY_LUA.to_owned(),
+        )?;
+        rt_builder = rt_builder.register_extension(about_ext);
+        let help_ext = phi_lua::LuaExtension::from_source(
+            "phi-help-overlay",
+            phi_builtins::defaults::HELP_OVERLAY_LUA.to_owned(),
+        )?;
+        rt_builder = rt_builder.register_extension(help_ext);
+
+        // Skills: SKILL.md discovery + system-prompt injection. Runtime
+        // data (cwd, extra paths, project trust) injected as Lua globals
+        // prepended to the source — the same pattern as _phi_model_names.
+        let skills_globals = {
+            let mut s = format!("_phi_skills_cwd = {cwd:?}\n", cwd = cwd.display());
+            s.push_str("_phi_skills_extra_paths = {");
+            for (i, path) in settings.skills.iter().enumerate() {
+                if i > 0 {
+                    s.push(',');
+                }
+                s.push('"');
+                s.push_str(&path.replace('\\', "\\\\").replace('"', "\\\""));
+                s.push('"');
+            }
+            s.push_str("}\n");
+            s.push_str(&format!(
+                "_phi_skills_include_project = {}\n",
+                if project_trusted { "true" } else { "false" }
+            ));
+            s
+        };
+        let skills_source = format!(
+            "{globals}{lua}",
+            globals = skills_globals,
+            lua = phi_builtins::defaults::SKILLS_LUA,
+        );
+        let skills_ext = phi_lua::LuaExtension::from_source("phi-skills", skills_source)?;
+        rt_builder = rt_builder.register_extension(skills_ext);
+
+        // Tool approval gate (WS7.2, default off): config.lua's `approvals`
+        // table, project layer trust-gated like `mcp`. Registered in every
+        // mode; hosts that never `connect_ui` (one-shot `phi -p`) make `ask`
+        // rules fail closed.
+        let approvals = Config::load_approvals(cwd, project_trusted).unwrap_or_default();
+        if approvals.enabled.unwrap_or(false) {
+            let approvals_globals = {
+                let mut s = format!("_phi_approvals_cwd = {cwd:?}\n", cwd = cwd.display());
+                s.push_str("_phi_approvals_rules = {");
+                if let Some(rules) = &approvals.rules {
+                    for (i, r) in rules.iter().enumerate() {
+                        if i > 0 {
+                            s.push(',');
+                        }
+                        s.push_str("{tool=\"");
+                        s.push_str(
+                            &r.tool
+                                .clone()
+                                .unwrap_or_else(|| "*".to_owned())
+                                .replace('\\', "\\\\")
+                                .replace('"', "\\\""),
+                        );
+                        s.push_str("\",pattern=\"");
+                        s.push_str(
+                            &r.pattern
+                                .clone()
+                                .unwrap_or_else(|| "*".to_owned())
+                                .replace('\\', "\\\\")
+                                .replace('"', "\\\""),
+                        );
+                        s.push_str("\",action=\"");
+                        s.push_str(
+                            &r.action
+                                .clone()
+                                .unwrap_or_else(|| "ask".to_owned())
+                                .replace('\\', "\\\\")
+                                .replace('"', "\\\""),
+                        );
+                        s.push_str("\"}");
+                    }
+                }
+                s.push_str("}\n");
+                s
+            };
+            let approvals_source = format!(
+                "{globals}{lua}",
+                globals = approvals_globals,
+                lua = phi_builtins::defaults::APPROVALS_LUA,
+            );
+            let approvals_ext =
+                phi_lua::LuaExtension::from_source("phi-approvals", approvals_source)?;
+            rt_builder = rt_builder.register_extension(approvals_ext);
         }
     }
     for ext in config_exts {

@@ -1,9 +1,15 @@
-//! The `phi:help` overlay — the host's keybinding/command reference (port
-//! of the mux's hardwired `overlays/help.rs`).
+//! The `phi:help` overlay — reference Rust implementation.
+//!
+//! The live default is now `crates/phi-builtins/defaults/help_overlay.lua`;
+//! this module stays as a test fixture and documentation of the Rust overlay
+//! pattern (draw-context rendering, typed payloads, scroll math). Kept under
+//! `#[allow(dead_code)]` because the overlay is no longer registered by
+//! `DefaultOverlayExtension`.
 //!
 //! The host supplies the content as a [`HelpPayload`] built at open time,
 //! so live keymap overrides are reflected; the overlay owns scrolling and
 //! rendering.
+#![allow(dead_code)]
 
 use std::sync::Arc;
 
@@ -197,10 +203,9 @@ fn render(ctx: &mut dyn DrawContext, state: &mut OverlayState) {
 
 #[cfg(test)]
 mod tests {
-    use super::super::test_host::registered_overlays;
+    use super::spec;
     use phi_ext::{
-        HelpEntry, HelpPayload, OVERLAY_HELP, OverlayKey, OverlayKeyCode, OverlayKeyModifiers,
-        OverlayOutcome,
+        HelpEntry, HelpPayload, OverlayKey, OverlayKeyCode, OverlayKeyModifiers, OverlayOutcome,
     };
 
     fn payload() -> Box<HelpPayload> {
@@ -218,8 +223,7 @@ mod tests {
 
     #[test]
     fn help_overlay_closes_on_esc_q_and_ctrl_g() {
-        let overlays = registered_overlays();
-        let overlay = overlays.get(OVERLAY_HELP).unwrap();
+        let overlay = spec();
 
         for (code, control) in [
             (OverlayKeyCode::Esc, false),
@@ -243,8 +247,7 @@ mod tests {
 
     #[test]
     fn help_overlay_opens_without_payload() {
-        let overlays = registered_overlays();
-        let overlay = overlays.get(OVERLAY_HELP).unwrap();
+        let overlay = spec();
         let mut state = (overlay.init_state)(None);
         let key = OverlayKey {
             code: OverlayKeyCode::Down,

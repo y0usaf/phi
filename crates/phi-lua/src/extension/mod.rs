@@ -37,6 +37,21 @@ impl LuaExtension {
             source: std::fs::read_to_string(path)?,
         })
     }
+
+    /// Build a Lua extension from inline source. Used by `phi-builtins` to
+    /// ship default extensions as embedded Lua (`include_str!`) — the
+    /// defaults are the same `.lua` a user would write, compiled into the
+    /// binary for zero-startup-cost, readable in the repo for zero-cost
+    /// learning.
+    ///
+    /// `name` becomes the manifest id (`lua:{name}`) and the Lua chunk name
+    /// for error messages; it does not need a file on disk.
+    pub fn from_source(name: &str, source: String) -> Result<Self> {
+        Ok(Self {
+            path: PathBuf::from(format!("{name}.lua")),
+            source,
+        })
+    }
 }
 
 impl phi_ext::Extension for LuaExtension {
@@ -160,13 +175,14 @@ impl phi_ext::Extension for LuaExtension {
             .collect();
 
         /// One tool registration read from Lua:
-        /// (name, description, params, expose, input_schema).
+        /// (name, description, params, expose, input_schema, dispatch).
         type LuaToolReg = (
             String,
             String,
             Vec<ToolParam>,
             ToolExposure,
             Option<serde_json::Value>,
+            ToolDispatch,
         );
         let phi_tools_table: mlua::Table = globals.get("_phi_tools")?;
         let mut tools: Vec<LuaToolReg> = Vec::new();
@@ -235,7 +251,29 @@ impl phi_ext::Extension for LuaExtension {
                 None => Vec::new(),
             };
 
-            tools.push((name.clone(), description, params, expose, input_schema));
+            // Dispatch: "python" dispatches into the REPL env's prelude
+            // functions via `__phi_native_call__` (no Lua handler needed);
+            // default is a Handler that round-trips through the Lua thread.
+            let dispatch = match tool_table
+                .get::<String>("dispatch")
+                .unwrap_or_default()
+                .as_str()
+            {
+                "python" => ToolDispatch::Python,
+                _ => ToolDispatch::Handler(Arc::new(|_inv: ToolInvocation| {
+                    Err(anyhow::anyhow!(
+                        "tool handler not set (no `handler` function)"
+                    ))
+                })),
+            };
+            tools.push((
+                name.clone(),
+                description,
+                params,
+                expose,
+                input_schema,
+                dispatch,
+            ));
         }
 
         // ── Read registered shortcuts ────────────────────────────────────────
@@ -536,30 +574,39 @@ impl phi_ext::Extension for LuaExtension {
         }
 
         // ── Register tools ──────────────────────────────────────────────────
-        for (tool_name, description, params, expose, input_schema) in tools {
-            let tx4 = Arc::clone(&tx);
-            let name4 = tool_name.clone();
+        for (tool_name, description, params, expose, input_schema, dispatch) in tools {
+            // When dispatch is "python", the tool is implemented by a same-named
+            // prelude function — no Lua handler needed. Otherwise, a handler
+            // round-trips through the Lua thread.
+            let dispatch = match dispatch {
+                ToolDispatch::Python => ToolDispatch::Python,
+                _ => {
+                    let tx4 = Arc::clone(&tx);
+                    let name4 = tool_name.clone();
+                    ToolDispatch::Handler(Arc::new(move |inv: ToolInvocation| {
+                        let (rtx, rrx) = std::sync::mpsc::sync_channel(1);
+                        tx4.send(LuaMsg::InvokeTool {
+                            name: name4.clone(),
+                            input: inv.input,
+                            reply: rtx,
+                        })
+                        .map_err(|e| anyhow::anyhow!("lua send: {e}"))?;
+                        let content_opt = rrx
+                            .recv_timeout(Duration::from_secs(10))
+                            .map_err(|e| anyhow::anyhow!("lua recv: {e}"))??;
+                        Ok(ToolOutput {
+                            content: content_opt.unwrap_or_default(),
+                        })
+                    }))
+                }
+            };
             host.register_tool(ToolSpec {
                 name: tool_name,
                 description,
                 params,
                 expose,
                 input_schema,
-                dispatch: ToolDispatch::Handler(Arc::new(move |inv: ToolInvocation| {
-                    let (rtx, rrx) = std::sync::mpsc::sync_channel(1);
-                    tx4.send(LuaMsg::InvokeTool {
-                        name: name4.clone(),
-                        input: inv.input,
-                        reply: rtx,
-                    })
-                    .map_err(|e| anyhow::anyhow!("lua send: {e}"))?;
-                    let content_opt = rrx
-                        .recv_timeout(Duration::from_secs(10))
-                        .map_err(|e| anyhow::anyhow!("lua recv: {e}"))??;
-                    Ok(ToolOutput {
-                        content: content_opt.unwrap_or_default(),
-                    })
-                })),
+                dispatch,
             })?;
         }
 

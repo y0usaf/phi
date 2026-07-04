@@ -1,5 +1,12 @@
-//! The `phi:about` overlay — a simple info panel demonstrating the
-//! extension overlay pipeline. Toggled by `Ctrl+?`, closes on Esc/Enter/q.
+//! The `phi:about` overlay — reference Rust implementation.
+//!
+//! The live default is now `crates/phi-builtins/defaults/about_overlay.lua`;
+//! this module stays as a test fixture and documentation of the Rust overlay
+//! pattern. Kept under `#[allow(dead_code)]` because the overlay is no longer
+//! registered by `DefaultOverlayExtension`.
+//!
+//! Toggled by `Ctrl+?`, closes on Esc/Enter/q.
+#![allow(dead_code)]
 
 use std::sync::Arc;
 
@@ -95,13 +102,12 @@ fn handle_key(
 
 #[cfg(test)]
 mod tests {
-    use super::super::test_host::registered_overlays;
+    use super::spec;
     use phi_ext::{OverlayKey, OverlayKeyCode, OverlayKeyModifiers, OverlayOutcome};
 
     #[test]
     fn about_overlay_handle_key_closes_on_esc_and_enter() {
-        let overlays = registered_overlays();
-        let overlay = overlays.get("phi:about").unwrap();
+        let overlay = spec();
         let mut state = (overlay.init_state)(None);
 
         for code in [OverlayKeyCode::Esc, OverlayKeyCode::Enter] {
@@ -118,8 +124,7 @@ mod tests {
 
     #[test]
     fn about_overlay_handle_key_none_on_random_char() {
-        let overlays = registered_overlays();
-        let overlay = overlays.get("phi:about").unwrap();
+        let overlay = spec();
         let mut state = (overlay.init_state)(None);
 
         let key = OverlayKey {

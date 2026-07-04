@@ -7,6 +7,8 @@ pub mod coding_tools;
 #[cfg(feature = "builtins")]
 pub mod commands;
 #[cfg(feature = "builtins")]
+pub mod defaults;
+#[cfg(feature = "builtins")]
 pub mod mcp;
 #[cfg(feature = "builtins")]
 pub mod mux_commands;

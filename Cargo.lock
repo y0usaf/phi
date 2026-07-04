@@ -1639,6 +1639,7 @@ dependencies = [
  "anyhow",
  "directories",
  "mlua",
+ "phi-builtins",
  "phi-ext",
  "serde_json",
  "tempfile",

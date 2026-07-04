@@ -465,9 +465,40 @@ fn build_visual_runtime(cwd: &std::path::Path) -> Option<Arc<AppRuntime>> {
     // builtin extensions; overlays and visuals degrade gracefully (WS1.5).
     #[cfg(feature = "builtins")]
     {
+        // Rust extensions that need native resources (phi_tui theme
+        // derivation + text effects, phi_session usage/model/archive data).
+        // The mux colon commands, visual data (spinner + thinking
+        // expressions), and the about/help overlays ship as Lua defaults —
+        // the same `.lua` a user would write.
         rt_builder = rt_builder.register_extension(phi_builtins::DefaultVisualExtension);
         rt_builder = rt_builder.register_extension(phi_builtins::DefaultOverlayExtension);
-        rt_builder = rt_builder.register_extension(phi_builtins::MuxCommandsExtension);
+        // Visual data: spinner + thinking expressions (Lua default).
+        let visual_data = phi_lua::LuaExtension::from_source(
+            "phi-visual-data",
+            phi_builtins::defaults::VISUAL_DATA_LUA.to_owned(),
+        )
+        .ok()?;
+        rt_builder = rt_builder.register_extension(visual_data);
+        // Mux colon commands (Lua default).
+        let mux_cmds = phi_lua::LuaExtension::from_source(
+            "phi-mux-commands",
+            phi_builtins::defaults::MUX_COMMANDS_LUA.to_owned(),
+        )
+        .ok()?;
+        rt_builder = rt_builder.register_extension(mux_cmds);
+        // About and help overlays (Lua defaults — the tutorial overlays).
+        let about_ext = phi_lua::LuaExtension::from_source(
+            "phi-about-overlay",
+            phi_builtins::defaults::ABOUT_OVERLAY_LUA.to_owned(),
+        )
+        .ok()?;
+        rt_builder = rt_builder.register_extension(about_ext);
+        let help_ext = phi_lua::LuaExtension::from_source(
+            "phi-help-overlay",
+            phi_builtins::defaults::HELP_OVERLAY_LUA.to_owned(),
+        )
+        .ok()?;
+        rt_builder = rt_builder.register_extension(help_ext);
     }
     for ext in config_exts {
         rt_builder = rt_builder.register_boxed_extension(ext);

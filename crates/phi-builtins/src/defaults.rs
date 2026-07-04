@@ -1,0 +1,71 @@
+//! Phi's default extensions, shipped as embedded Lua source.
+//!
+//! Per The Rule (PLAN.md): built-in features are implemented through the same
+//! public extension API user extensions use. These defaults go further — they
+//! ARE user extensions, written in the same Lua a user would write, compiled
+//! into the binary via `include_str!` for zero startup cost, readable in the
+//! repo (`crates/phi-builtins/defaults/`) for zero-cost learning.
+//!
+//! The Rust wiring (`session_builder`, mux `app/mod.rs`) loads each source
+//! via `phi_lua::LuaExtension::from_source` and registers it as a boxed
+//! extension — the same path user `.lua` files take.
+//!
+//! ## What's here (Lua)
+//!
+//! | File | Replaces | Why it's Lua |
+//! |------|----------|-------------|
+//! | `commands.lua` | `BuiltinCommandsExtension` | Pure `register_command` calls |
+//! | `mux_commands.lua` | `MuxCommandsExtension` | Same, `context = "mux"` |
+//! | `tool_render.lua` | `ToolRenderExtension` | Declarative `register_tool_renderer` |
+//! | `coding_tools.lua` | `CodingToolsExtension` | Declarative `register_tool` with `dispatch = "python"` |
+//! | `visual_data.lua` | spinner + thinking expressions from `DefaultVisualExtension` | Pure literal data (`register_spinner` / `register_thinking_expression`) |
+//! | `about_overlay.lua` | `about::spec()` | Simplest overlay — best tutorial |
+//! | `help_overlay.lua` | `help::spec()` | WS1.6-proven, draw-ops + scroll |
+//! | `skills.lua` | `SkillsExtension` | `phi.on("before_agent_start")` + `phi.fs` file discovery |
+//! | `approvals.lua` | `ApprovalsExtension` | `phi.on("tool_call")` + `phi.ui.ask` + `phi.fs` JSON persistence |
+//!
+//! ## What stays Rust (and why)
+//!
+//! | Builtin | Reason |
+//! |---------|--------|
+//! | `CatalogExtension` | 728 KB embedded JSON via `include_str!` + `OnceLock` |
+//! | `DefaultVisualExtension` (theme + text effects only) | Calls `phi_tui::generate_theme()`, `phi_tui::gradient_text()`, etc. |
+//! | `usage`/`model`/`archive` overlays | Depend on `phi_session` data / complex rendering |
+//! | `McpExtension` | Async tokio + reqwest + SSE |
+//!
+//! These honest exceptions are themselves teachable: they show what the
+//! extension API can't carry (yet) and why.
+
+/// Session slash commands (`/model`, `/help`, `/quit`, ...).
+pub const COMMANDS_LUA: &str = include_str!("../defaults/commands.lua");
+
+/// Mux colon commands (`:open`, `:archive`, `:quit`, ...).
+pub const MUX_COMMANDS_LUA: &str = include_str!("../defaults/mux_commands.lua");
+
+/// Tool display metadata for the prelude coding helpers.
+pub const TOOL_RENDER_LUA: &str = include_str!("../defaults/tool_render.lua");
+
+/// Coding tools as native tool definitions (hybrid surface, WS9.3b).
+/// Registers bash/read_file/write_file/edit_file/grep/find/ls with
+/// `expose = "both"` + `dispatch = "python"`.
+pub const CODING_TOOLS_LUA: &str = include_str!("../defaults/coding_tools.lua");
+
+/// Default spinner (braille dots) and thinking expressions.
+/// The theme resolver and text effects stay in Rust (`DefaultVisualExtension`).
+pub const VISUAL_DATA_LUA: &str = include_str!("../defaults/visual_data.lua");
+
+/// The `phi:about` info panel (toggled by Ctrl+?).
+pub const ABOUT_OVERLAY_LUA: &str = include_str!("../defaults/about_overlay.lua");
+
+/// The `phi:help` keybinding/command reference.
+pub const HELP_OVERLAY_LUA: &str = include_str!("../defaults/help_overlay.lua");
+
+/// SKILL.md discovery + `<available_skills>` system-prompt injection.
+/// Uses `phi.fs.readdir`/`phi.fs.readfile` for discovery and
+/// `phi.on("before_agent_start")` for injection.
+pub const SKILLS_LUA: &str = include_str!("../defaults/skills.lua");
+
+/// Tool approval gate: evaluates tool calls against a ruleset and blocks,
+/// allows, or asks the user. Uses `phi.on("tool_call")`, `phi.ui.ask`,
+/// and `phi.fs` for JSON persistence of "always allow" answers.
+pub const APPROVALS_LUA: &str = include_str!("../defaults/approvals.lua");

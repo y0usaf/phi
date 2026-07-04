@@ -1,12 +1,18 @@
 //! Built-in overlay extension: the mux's usage table, model picker, and
-//! help reference, plus a simple "about" panel — all registered through
-//! the same `register_overlay` API user extensions use.
+//! archived-session browser — the overlays that need host-side data
+//! (`phi_session` usage reports, model registry, archived sessions) and
+//! can't be expressed in Lua.
+//!
+//! The `phi:about` and `phi:help` overlays were ported to Lua
+//! (`crates/phi-builtins/defaults/about_overlay.lua`,
+//! `help_overlay.lua`) — they're pure rendering and serve as the tutorial
+//! overlays a user reads to learn the extension API. This extension keeps
+//! only the data-dependent ones.
 //!
 //! Per The Rule (PLAN.md): these are extension-shaped features, so they
 //! live here and go through `phi_ext::OverlaySpec`. The host opens them
-//! either by toggle key or programmatically by name
-//! (`phi_ext::OVERLAY_USAGE` / `OVERLAY_MODEL` / `OVERLAY_HELP`) with a
-//! typed payload.
+//! by name (`phi_ext::OVERLAY_USAGE` / `OVERLAY_MODEL` / `OVERLAY_ARCHIVE`)
+//! with a typed payload.
 
 mod about;
 mod archive;
@@ -18,16 +24,16 @@ mod usage;
 use anyhow::Result;
 use phi_ext::{Extension, ExtensionHost, ExtensionManifest};
 
-/// The built-in overlay extension.
+/// The built-in overlay extension (data-dependent overlays only).
 ///
 /// Registers:
-/// - `phi:about` — info panel toggled by `Ctrl+?`.
 /// - `phi:usage` — usage totals table (opened via `:usage` / `/usage`).
 /// - `phi:model` — model picker (opened with a [`phi_ext::ModelPickerPayload`]).
-/// - `phi:help` — keybinding/command reference (opened with a
-///   [`phi_ext::HelpPayload`]).
 /// - `phi:archive` — archived-session browser/restorer (opened via
 ///   `:archive`).
+///
+/// `phi:about` and `phi:help` are Lua defaults
+/// (`crates/phi-builtins/defaults/`).
 pub struct DefaultOverlayExtension;
 
 impl Extension for DefaultOverlayExtension {
@@ -36,15 +42,13 @@ impl Extension for DefaultOverlayExtension {
             id: "phi:default-overlay".to_string(),
             name: "Phi Default Overlay".to_string(),
             version: "0.1.0".to_string(),
-            description: "Built-in overlays: about, usage, model picker, help".to_string(),
+            description: "Built-in overlays: usage, model picker, archive".to_string(),
         }
     }
 
     fn register(&self, host: &mut dyn ExtensionHost) -> Result<()> {
-        host.register_overlay(about::spec())?;
         host.register_overlay(usage::spec())?;
         host.register_overlay(model::spec())?;
-        host.register_overlay(help::spec())?;
         host.register_overlay(archive::spec())?;
         Ok(())
     }
@@ -122,25 +126,24 @@ pub(crate) mod test_host {
 #[cfg(test)]
 mod tests {
     use super::test_host::registered_overlays;
-    use phi_ext::{OVERLAY_ARCHIVE, OVERLAY_HELP, OVERLAY_MODEL, OVERLAY_USAGE};
+    use phi_ext::{OVERLAY_ARCHIVE, OVERLAY_MODEL, OVERLAY_USAGE};
 
     #[test]
-    fn registers_all_builtin_overlays() {
+    fn registers_data_dependent_overlays() {
         let overlays = registered_overlays();
-        assert!(overlays.contains_key("phi:about"));
         assert!(overlays.contains_key(OVERLAY_USAGE));
         assert!(overlays.contains_key(OVERLAY_MODEL));
-        assert!(overlays.contains_key(OVERLAY_HELP));
         assert!(overlays.contains_key(OVERLAY_ARCHIVE));
+        // about and help are Lua defaults now — not registered here.
+        assert!(!overlays.contains_key("phi:about"));
+        assert!(!overlays.contains_key(phi_ext::OVERLAY_HELP));
     }
 
     #[test]
-    fn only_about_has_a_toggle_key() {
+    fn data_overlays_have_no_toggle_key() {
         let overlays = registered_overlays();
-        assert_eq!(overlays["phi:about"].toggle_key.as_deref(), Some("ctrl+?"));
         assert_eq!(overlays[OVERLAY_USAGE].toggle_key, None);
         assert_eq!(overlays[OVERLAY_MODEL].toggle_key, None);
-        assert_eq!(overlays[OVERLAY_HELP].toggle_key, None);
         assert_eq!(overlays[OVERLAY_ARCHIVE].toggle_key, None);
     }
 }

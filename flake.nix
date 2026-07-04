@@ -35,14 +35,16 @@
           craneLib = crane.mkLib pkgs;
 
           # crane's default filter strips non-Rust files; we need .py and .json
-          # for include_str!() macros in phi-repl, phi-ai, and phi-builtins
+          # for include_str!() macros in phi-repl, phi-ai, and phi-builtins,
+          # and .lua for the embedded Lua defaults in phi-builtins.
           src = pkgs.lib.cleanSourceWith {
             src = ./.;
             filter =
               path: type:
               (craneLib.filterCargoSources path type)
               || (lib.hasSuffix ".py" path)
-              || (lib.hasSuffix ".json" path);
+              || (lib.hasSuffix ".json" path)
+              || (lib.hasSuffix ".lua" path);
           };
 
           # Clear rustup env vars so nix's rustc-wrapper doesn't pick up
