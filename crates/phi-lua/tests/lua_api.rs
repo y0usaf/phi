@@ -94,6 +94,58 @@ end)
 }
 
 #[tokio::test]
+async fn lua_agent_end_summary_reaches_extension() {
+    // WS7.3 validation: the bounded subagent completion report crosses the
+    // bridge — a Lua extension consumes `payload.summary` from agent_end.
+    // The handler echoes the fields back so the assertion sees exactly what
+    // Lua saw.
+    let source = r#"
+phi.on("agent_end", function(payload)
+    local data = payload.data or payload
+    return {
+        system_prompt_append = data.stop_cause .. "|" .. (data.summary or "<none>")
+    }
+end)
+"#;
+    let rt = load_lua(source);
+
+    let returns = rt
+        .dispatch(LifecycleEvent {
+            kind: EventKind::AgentEnd,
+            payload: phi_ext::EventPayload::AgentEnd {
+                stop_cause: "Answer".to_owned(),
+                summary: Some("checked 3 files; no issues".to_owned()),
+            },
+        })
+        .await
+        .unwrap();
+    match &returns[0] {
+        EventReturn::SystemPromptMod { append, .. } => {
+            assert_eq!(append.as_deref(), Some("Answer|checked 3 files; no issues"));
+        }
+        other => panic!("expected SystemPromptMod, got {other:?}"),
+    }
+
+    // Absent summary crosses as nil, not as an empty string.
+    let returns = rt
+        .dispatch(LifecycleEvent {
+            kind: EventKind::AgentEnd,
+            payload: phi_ext::EventPayload::AgentEnd {
+                stop_cause: "Failed".to_owned(),
+                summary: None,
+            },
+        })
+        .await
+        .unwrap();
+    match &returns[0] {
+        EventReturn::SystemPromptMod { append, .. } => {
+            assert_eq!(append.as_deref(), Some("Failed|<none>"));
+        }
+        other => panic!("expected SystemPromptMod, got {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn lua_register_flag_works() {
     let source = r#"
 phi.register_flag("verbose", {

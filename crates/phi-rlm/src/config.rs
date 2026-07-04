@@ -106,6 +106,10 @@ pub enum StopCause {
 #[derive(Clone, Debug)]
 pub struct RlmCompletion {
     pub response: String,
+    /// Bounded (≤4K chars) model-authored report set via `answer['summary']`
+    /// (WS7.3). `None` when the model never set one; consumers derive their
+    /// own bounded head of `response` if they need an always-present value.
+    pub summary: Option<String>,
     pub usage: Usage,
     pub usage_by_model: Vec<UsageBreakdown>,
     pub iterations: usize,

@@ -139,6 +139,7 @@ mod tests {
             stderr: stderr.into(),
             vars: vars.iter().map(|s| (*s).to_owned()).collect(),
             final_answer: None,
+            final_summary: None,
             duration: Duration::ZERO,
             truncated: false,
         }

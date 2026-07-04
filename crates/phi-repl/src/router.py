@@ -3,8 +3,8 @@
 Frames from host: setup, exec {id, code, timeout?}, subcall_result
 {id, text|value|error}, answer_state {id}, shutdown.
 Frames to host: ready {error?}, exec_result {id, stdout, stderr, vars,
-final_answer, truncated}, subcall {id, kind, ...}, answer_state {id, content,
-ready}, tool_event {phase, name, call_id, ...}, fatal {error}.
+final_answer, final_summary, truncated}, subcall {id, kind, ...}, answer_state
+{id, content, ready}, tool_event {phase, name, call_id, ...}, fatal {error}.
 
 The main thread reads stdin and dispatches; setup/exec run on a single worker
 thread so subcall round-trips (which block the worker) can still be served.
@@ -345,7 +345,8 @@ class Env:
             payload["preamble"] = str(preamble)
         frame = _subcall(payload)
         if frame.get("error") is not None:
-            return {"text": "Error: %s" % frame["error"], "stop": "failed", "iterations": 0, "ok": False}
+            err = "Error: %s" % frame["error"]
+            return {"text": err, "summary": err, "stop": "failed", "iterations": 0, "ok": False}
         # The host returns a dict via frame["value"]; return it verbatim,
         # spilling an oversized 'text' field to a tmp file.
         value = frame.get("value", frame.get("text", ""))
@@ -479,8 +480,29 @@ class Env:
             "stderr": stderr,
             "vars": self._var_names(),
             "final_answer": final,
+            "final_summary": self._current_summary(),
             "truncated": t_out or t_err,
         }
+
+    def _current_summary(self):
+        """The model-authored report in ``answer['summary']``, if any.
+
+        Read from the live answer dict on every exec (rather than captured on
+        ``ready``) so a summary set before a prose finish still reaches the
+        host — the summary is a standing declaration, valid regardless of how
+        the run ends. Bounding happens host-side; a spilled value submits its
+        full text, same rule as ``_capture_answer``.
+        """
+        current = self.locals.get("answer")
+        if not isinstance(current, dict):
+            return None
+        summary = current.get("summary")
+        if summary is None:
+            return None
+        if isinstance(summary, SubagentResult):
+            summary = summary.full_result
+        summary = str(summary)
+        return summary if summary.strip() else None
 
 
 _exec_queue = queue.Queue()

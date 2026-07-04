@@ -27,7 +27,7 @@ use crate::prompts::{
 };
 
 use super::super::TurnState;
-use super::super::helpers::{dispatch_await, dispatch_event};
+use super::super::helpers::{bound_summary, dispatch_await, dispatch_event};
 use super::super::state::RunState;
 use super::super::subcalls::{EngineSubcalls, Outcome};
 
@@ -118,6 +118,7 @@ fn error_result(stderr: String, duration: std::time::Duration) -> ReplResult {
         stderr,
         vars: Vec::new(),
         final_answer: None,
+        final_summary: None,
         duration,
         truncated: false,
     }
@@ -413,6 +414,10 @@ impl Rlm {
     ) -> Outcome {
         let start = Instant::now();
         let mut best_partial: Option<String> = None;
+        // Latest bounded `answer['summary']` seen this run (WS7.3). A standing
+        // declaration, not tied to `answer['ready']`: it rides out on whichever
+        // model-finish path ends the run (answer, prose, default answer).
+        let mut run_summary: Option<String> = None;
         let mut consecutive_errors = 0usize;
         let mut consecutive_empty = 0usize;
         let mut iterations = 0usize;
@@ -673,6 +678,7 @@ impl Rlm {
                                         stderr: String::new(),
                                         vars: Vec::new(),
                                         final_answer: None,
+                                        final_summary: None,
                                         duration: exec_start.elapsed(),
                                         truncated: false,
                                     },
@@ -789,6 +795,13 @@ impl Rlm {
             };
             dispatch_time += exec_dispatch;
             let exec_time: std::time::Duration = blocks.iter().map(|b| b.result.duration).sum();
+            if let Some(s) = blocks
+                .iter()
+                .rev()
+                .find_map(|b| b.result.final_summary.as_deref())
+            {
+                run_summary = bound_summary(s);
+            }
             let completion = match completion {
                 Ok(completion) => completion,
                 Err(e) => {
@@ -797,6 +810,7 @@ impl Rlm {
                         Some(partial) => Outcome {
                             stop: StopCause::Failed,
                             response: partial,
+                            summary: None,
                             error: Some(message),
                             iterations,
                         },
@@ -894,6 +908,7 @@ impl Rlm {
                 return Outcome {
                     stop: StopCause::Answer,
                     response: answer,
+                    summary: run_summary,
                     error: None,
                     iterations,
                 };
@@ -1119,6 +1134,7 @@ impl Rlm {
                 return Outcome {
                     stop: StopCause::Prose,
                     response: final_answer,
+                    summary: run_summary,
                     error: None,
                     iterations,
                 };
@@ -1163,6 +1179,7 @@ impl Rlm {
                 return Outcome {
                     stop: StopCause::Prose,
                     response: prose,
+                    summary: run_summary,
                     error: None,
                     iterations,
                 };
@@ -1182,6 +1199,7 @@ impl Rlm {
                     Some(partial) => Outcome {
                         stop: StopCause::Failed,
                         response: partial,
+                        summary: None,
                         error: Some(message),
                         iterations,
                     },
@@ -1246,6 +1264,7 @@ impl Rlm {
                 Outcome {
                     stop: StopCause::DefaultAnswer,
                     response: completion.text,
+                    summary: run_summary,
                     error: None,
                     iterations,
                 }
@@ -1256,6 +1275,7 @@ impl Rlm {
                     Some(partial) => Outcome {
                         stop: StopCause::Failed,
                         response: partial,
+                        summary: None,
                         error: Some(message),
                         iterations,
                     },

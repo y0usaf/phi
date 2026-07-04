@@ -785,9 +785,29 @@ Build these as extensions *because* they stress the API, in this order of value:
       unapplied by the engine, so edit-before-approve isn't expressible
       yet; dispatch stays fail-open on timeout for ordinary handlers (the
       gate protects itself via its raised budget).
-- [ ] **7.3 Structured subagent reports.** Extend the `subagent` return
+- [x] **7.3 Structured subagent reports.** Extend the `subagent` return
       contract with a bounded summary field (jcode bounds completion reports to
       4K chars) — engine-side, but validated by an extension consuming it.
+      *Landed as:* the subagent dict grew `'summary'` — always present,
+      always ≤4,000 chars (`bound_summary` in `engine/helpers.rs`, jcode's
+      4K bound with an explicit truncation marker, enforced host-side and
+      never trusted to the child). Model-authored path: the child sets
+      `answer['summary']` at any point — a *standing declaration* read from
+      the live answer dict on every exec (`final_summary` on the REPL wire),
+      so it survives a WS9.1 prose finish, not just `answer['ready']`;
+      bounded at capture in `run_loop` and carried on the model-finish stop
+      paths (answer/prose/default-answer; limit/cancel/failed stay `None`)
+      through `Outcome` → `RlmCompletion.summary`. Fallback: a child that
+      never set one gets `summary` derived from the bounded head of `text`,
+      so the parent can always print `r['summary']` safely while `r['text']`
+      may be spilled. The extension half (the item's acceptance):
+      `EventPayload::AgentEnd` grew `summary` (serde-default, flows to Lua
+      untouched) and `lua_agent_end_summary_reaches_extension` consumes it
+      from a Lua handler; integration tests cover authored passthrough,
+      prose-finish survival + derived fallback, and exact-4K truncation.
+      Prompt docs updated: subagent dict shape in `DEFAULT_REPL_TOOLS` and
+      an `answer['summary']` instruction on the answer bullet (jcode's
+      report-instruction analog, shared prompt so children see it).
 
 ### WS8 — Mux client/server (canonical daemon, thin clients)
 

@@ -678,11 +678,12 @@ impl AppRuntime {
         Ok(())
     }
 
-    pub async fn on_agent_end(&self, stop_cause: &str) -> Result<()> {
+    pub async fn on_agent_end(&self, stop_cause: &str, summary: Option<String>) -> Result<()> {
         self.dispatch(LifecycleEvent {
             kind: EventKind::AgentEnd,
             payload: EventPayload::AgentEnd {
                 stop_cause: stop_cause.to_owned(),
+                summary,
             },
         })
         .await?;

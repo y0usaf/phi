@@ -11,7 +11,7 @@ use serde_json::json;
 use crate::lm_core::ContextPayload;
 use crate::lm_core::LmHandler;
 
-use super::helpers::{prompt_preview, truncate_preview};
+use super::helpers::{bound_summary, prompt_preview, truncate_preview};
 use super::rlm::Rlm;
 use super::state::RunState;
 use crate::config::{RlmEvent, StopCause};
@@ -114,8 +114,8 @@ impl EngineSubcalls {
     /// timeout; its usage rolls up into the parent's handler.
     ///
     /// Returns `SubcallResponse::Json` in both paths so the REPL always sees
-    /// the structured dict `{'text', 'stop', 'iterations', 'ok'}`. The
-    /// depth-cap path sets `stop='fallback'` so the caller can distinguish
+    /// the structured dict `{'text', 'summary', 'stop', 'iterations', 'ok'}`.
+    /// The depth-cap path sets `stop='fallback'` so the caller can distinguish
     /// "ran without a REPL" from a child that finished normally.
     async fn recurse(
         &self,
@@ -135,6 +135,7 @@ impl EngineSubcalls {
             return match flat {
                 Ok(SubcallResponse::Text(text)) => Ok(SubcallResponse::Json(json!({
                     "text": text,
+                    "summary": bound_summary(&text).unwrap_or_default(),
                     "stop": "fallback",
                     "iterations": 0,
                     "ok": true,
@@ -154,11 +155,13 @@ impl EngineSubcalls {
                 // Return the structured dict so callers can branch on r['ok'] without
                 // a TypeError — a plain SubcallResponse::Text would arrive as a bare
                 // string rather than the expected {'text', 'stop', 'iterations', 'ok'}.
+                let err = format!(
+                    "Error: Budget exhausted (spent ${:.6} of ${:.6})",
+                    usage.cost.total, max_budget
+                );
                 return Ok(SubcallResponse::Json(json!({
-                    "text": format!(
-                        "Error: Budget exhausted (spent ${:.6} of ${:.6})",
-                        usage.cost.total, max_budget
-                    ),
+                    "text": err,
+                    "summary": err,
                     "stop": "failed",
                     "iterations": 0,
                     "ok": false,
@@ -170,12 +173,14 @@ impl EngineSubcalls {
             let elapsed = self.run.started().elapsed();
             if elapsed >= max_timeout {
                 // Same structured dict contract as the budget path above.
+                let err = format!(
+                    "Error: Timeout exhausted ({:.1}s of {:.1}s)",
+                    elapsed.as_secs_f64(),
+                    max_timeout.as_secs_f64()
+                );
                 return Ok(SubcallResponse::Json(json!({
-                    "text": format!(
-                        "Error: Timeout exhausted ({:.1}s of {:.1}s)",
-                        elapsed.as_secs_f64(),
-                        max_timeout.as_secs_f64()
-                    ),
+                    "text": err,
+                    "summary": err,
                     "stop": "failed",
                     "iterations": 0,
                     "ok": false,
@@ -243,8 +248,19 @@ impl EngineSubcalls {
         // so callers can branch on r['stop'] == 'limit_errors' etc.
         let stop_str = stop_cause_str(&completion.stop);
         let ok = stop_is_ok(&completion.stop) && completion.error.is_none();
+        // 'summary' is always present and always bounded (WS7.3): the child's
+        // own `answer['summary']` report when it set one (already bounded at
+        // capture), else the bounded head of 'text'. Unlike 'text' — which
+        // may exceed the spill threshold and turn into a SubagentResult — the
+        // summary is safe to print or keep in the caller's context.
+        let summary = completion
+            .summary
+            .clone()
+            .or_else(|| bound_summary(&completion.response))
+            .unwrap_or_default();
         Ok(SubcallResponse::Json(json!({
             "text": completion.response,
+            "summary": summary,
             "stop": stop_str,
             "iterations": completion.iterations,
             "ok": ok,
@@ -332,6 +348,11 @@ impl SubcallHandler for EngineSubcalls {
 pub struct Outcome {
     pub stop: StopCause,
     pub response: String,
+    /// Bounded model-authored report (`answer['summary']`, WS7.3), already
+    /// normalized via `bound_summary` at capture. Carried on the completion
+    /// paths that reach the model's own finish (answer/prose/default-answer);
+    /// limit/cancel/failed paths leave it `None`.
+    pub summary: Option<String>,
     pub error: Option<String>,
     pub iterations: usize,
 }
@@ -341,6 +362,7 @@ impl Outcome {
         Self {
             stop: StopCause::Failed,
             response: message.clone(),
+            summary: None,
             error: Some(message),
             iterations,
         }

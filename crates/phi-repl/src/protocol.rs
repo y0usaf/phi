@@ -20,6 +20,8 @@ pub(crate) enum DriverFrame {
         #[serde(default)]
         final_answer: Option<String>,
         #[serde(default)]
+        final_summary: Option<String>,
+        #[serde(default)]
         truncated: bool,
     },
     Subcall {

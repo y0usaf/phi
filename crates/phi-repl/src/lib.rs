@@ -65,6 +65,11 @@ pub struct ReplResult {
     pub vars: Vec<String>,
     /// Captured when the model flipped `answer["ready"] = True` this exec.
     pub final_answer: Option<String>,
+    /// The model-authored report in `answer["summary"]`, read from the live
+    /// answer dict on every exec (WS7.3) — present whenever a non-empty
+    /// summary is set, regardless of how the run later ends. Unbounded here;
+    /// the engine bounds it before it reaches any consumer.
+    pub final_summary: Option<String>,
     pub duration: Duration,
     pub truncated: bool,
 }

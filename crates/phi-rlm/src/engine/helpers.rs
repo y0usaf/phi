@@ -30,6 +30,32 @@ pub fn prompt_preview(text: &str, max: usize) -> String {
     truncate_preview(&flat, max)
 }
 
+/// Bound for a subagent completion report (WS7.3). jcode bounds swarm
+/// completion reports to 4,000 chars (`MAX_SWARM_COMPLETION_REPORT_CHARS`);
+/// the point is that a summary is always safe to embed in the caller's
+/// context, unlike `text`, which may be arbitrarily large (and spilled).
+pub const MAX_SUMMARY_CHARS: usize = 4_000;
+
+/// Normalize a summary to the bound: trimmed, `None` when empty, truncated
+/// with an explicit marker when oversized — never silently. Applied engine-
+/// side to both model-authored summaries (`answer['summary']`) and derived
+/// fallbacks, so every consumer (subagent dict, `AgentEnd`) sees a bounded
+/// value regardless of what the child wrote.
+pub fn bound_summary(text: &str) -> Option<String> {
+    let text = text.trim();
+    if text.is_empty() {
+        return None;
+    }
+    if text.chars().count() <= MAX_SUMMARY_CHARS {
+        return Some(text.to_owned());
+    }
+    let marker = "\n\n[summary truncated at 4000 chars; see 'text' for the full result]";
+    let keep = MAX_SUMMARY_CHARS.saturating_sub(marker.chars().count());
+    let mut out: String = text.chars().take(keep).collect();
+    out.push_str(marker);
+    Some(out)
+}
+
 pub fn usage_breakdowns_for_model(model: String, usage: Usage) -> Vec<UsageBreakdown> {
     if usage.total_tokens == 0
         && usage.input == 0
@@ -129,6 +155,7 @@ pub fn push_repl_turns(
             stderr: repl.stderr.clone(),
             vars: Vec::new(),
             final_answer: None,
+            final_summary: None,
             duration: std::time::Duration::ZERO,
             truncated: false,
         },
@@ -239,5 +266,30 @@ mod tests {
         assert!(!history[0].tool_calls.is_empty());
         // The tool result message.
         assert_eq!(history[1].role, Role::Tool);
+    }
+
+    #[test]
+    fn bound_summary_trims_and_rejects_empty() {
+        assert_eq!(bound_summary("  report  ").as_deref(), Some("report"));
+        assert_eq!(bound_summary(""), None);
+        assert_eq!(bound_summary("   \n\t "), None);
+    }
+
+    #[test]
+    fn bound_summary_passes_at_bound_truncates_over() {
+        let exact = "x".repeat(MAX_SUMMARY_CHARS);
+        assert_eq!(bound_summary(&exact).as_deref(), Some(exact.as_str()));
+
+        let over = "x".repeat(MAX_SUMMARY_CHARS + 1);
+        let bounded = bound_summary(&over).unwrap();
+        assert_eq!(bounded.chars().count(), MAX_SUMMARY_CHARS);
+        assert!(bounded.ends_with("full result]"));
+    }
+
+    #[test]
+    fn bound_summary_is_char_safe_on_multibyte_text() {
+        let over = "é".repeat(MAX_SUMMARY_CHARS + 100);
+        let bounded = bound_summary(&over).unwrap();
+        assert_eq!(bounded.chars().count(), MAX_SUMMARY_CHARS);
     }
 }

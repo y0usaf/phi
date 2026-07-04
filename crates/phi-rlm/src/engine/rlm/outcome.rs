@@ -27,6 +27,7 @@ impl Rlm {
                 kind: EventKind::AgentEnd,
                 payload: EventPayload::AgentEnd {
                     stop_cause: format!("{:?}", outcome.stop),
+                    summary: outcome.summary.clone(),
                 },
             },
         );
@@ -38,6 +39,7 @@ impl Rlm {
         });
         RlmCompletion {
             response: outcome.response,
+            summary: outcome.summary,
             usage: handler.usage(),
             usage_by_model: handler.usage_by_model(),
             iterations: outcome.iterations,
@@ -62,6 +64,7 @@ impl Rlm {
                 kind: EventKind::AgentEnd,
                 payload: EventPayload::AgentEnd {
                     stop_cause: format!("{:?}", outcome.stop),
+                    summary: outcome.summary.clone(),
                 },
             },
         );
@@ -73,6 +76,7 @@ impl Rlm {
         });
         RlmCompletion {
             response: outcome.response,
+            summary: outcome.summary,
             usage: handler.usage_since(usage_before),
             usage_by_model: handler.usage_by_model_since(usage_by_model_before),
             iterations: outcome.iterations,
@@ -97,6 +101,7 @@ impl Rlm {
         Outcome {
             stop: StopCause::Limit(kind),
             response: best_partial.unwrap_or_else(|| format!("Error: {detail}")),
+            summary: None,
             error: Some(detail),
             iterations,
         }
@@ -110,6 +115,7 @@ impl Rlm {
         Outcome {
             stop: StopCause::Cancelled,
             response: best_partial.unwrap_or_else(|| "Execution cancelled".to_owned()),
+            summary: None,
             error: Some("Execution cancelled".to_owned()),
             iterations,
         }

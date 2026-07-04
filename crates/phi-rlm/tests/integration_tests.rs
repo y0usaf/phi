@@ -1353,6 +1353,115 @@ async fn subagent_returns_structured_dict_with_stop_and_ok() {
 }
 
 #[tokio::test]
+async fn subagent_summary_is_child_authored_when_set() {
+    // WS7.3: a child that sets answer['summary'] delivers it to the parent
+    // as r['summary'], verbatim (it's under the 4K bound). The summary is a
+    // standing declaration — here it rides out on the answer path.
+    let root = Arc::new(ScriptedLm::new(
+        "root-model",
+        &[
+            // Parent iter 1: delegate.
+            "```repl\nr = subagent('do a thing')\n```",
+            // Child iter 1: report + answer.
+            "```repl\nanswer['summary'] = 'checked 3 files; no issues'\nanswer['content'] = 'long detailed answer'\nanswer['ready'] = True\n```",
+            // Parent iter 2: inspect summary and text.
+            "```repl\nanswer['content'] = r['summary'] + '|' + r['text']\nanswer['ready'] = True\n```",
+        ],
+    ));
+    let config = RlmConfig {
+        max_rlm_depth: 2,
+        ..RlmConfig::default()
+    };
+    let engine = rlm(config, root, quiet_sub());
+    let result = engine
+        .completion(
+            ContextPayload::Str("ctx".into()),
+            None,
+            &CancellationToken::new(),
+        )
+        .await;
+    assert_eq!(result.stop, StopCause::Answer, "{:?}", result.error);
+    assert_eq!(
+        result.response,
+        "checked 3 files; no issues|long detailed answer"
+    );
+}
+
+#[tokio::test]
+async fn subagent_summary_survives_prose_finish_and_derives_when_unset() {
+    // WS7.3, both halves of the contract in one run:
+    // (a) a summary set before a *prose* finish still reaches the parent —
+    //     it is not tied to answer['ready'];
+    // (b) a child that never sets one gets a derived summary (bounded head
+    //     of text — equal to text when text is short).
+    let root = Arc::new(ScriptedLm::new(
+        "root-model",
+        &[
+            // Parent iter 1: delegate twice.
+            "```repl\na = subagent('task one')\nb = subagent('task two')\n```",
+            // Child A iter 1: declare the summary, keep working.
+            "```repl\nanswer['summary'] = 'report from child A'\nprint('working')\n```",
+            // Child A iter 2: finish with prose (WS9.1 path).
+            "full prose answer from child A",
+            // Child B iter 1: prose finish, no summary ever set.
+            "short answer from B",
+            // Parent iter 2: inspect both.
+            "```repl\nanswer['content'] = a['summary'] + '|' + b['summary'] + '|' + b['text']\nanswer['ready'] = True\n```",
+        ],
+    ));
+    let config = RlmConfig {
+        max_rlm_depth: 2,
+        ..RlmConfig::default()
+    };
+    let engine = rlm(config, root, quiet_sub());
+    let result = engine
+        .completion(
+            ContextPayload::Str("ctx".into()),
+            None,
+            &CancellationToken::new(),
+        )
+        .await;
+    assert_eq!(result.stop, StopCause::Answer, "{:?}", result.error);
+    assert_eq!(
+        result.response,
+        "report from child A|short answer from B|short answer from B"
+    );
+}
+
+#[tokio::test]
+async fn subagent_summary_is_bounded_at_4k() {
+    // WS7.3: an oversized child-authored summary is truncated engine-side
+    // with an explicit marker — the bound is enforced by the host, never
+    // trusted to the model (jcode's normalize_completion_report).
+    let root = Arc::new(ScriptedLm::new(
+        "root-model",
+        &[
+            "```repl\nr = subagent('big report')\n```",
+            // Child: a 6,000-char summary.
+            "```repl\nanswer['summary'] = 'x' * 6000\nanswer['content'] = 'done'\nanswer['ready'] = True\n```",
+            "```repl\nanswer['content'] = '%d|%s' % (len(r['summary']), 'truncated' in r['summary'])\nanswer['ready'] = True\n```",
+        ],
+    ));
+    let config = RlmConfig {
+        max_rlm_depth: 2,
+        ..RlmConfig::default()
+    };
+    let engine = rlm(config, root, quiet_sub());
+    let result = engine
+        .completion(
+            ContextPayload::Str("ctx".into()),
+            None,
+            &CancellationToken::new(),
+        )
+        .await;
+    assert_eq!(result.stop, StopCause::Answer, "{:?}", result.error);
+    assert_eq!(
+        result.response, "4000|True",
+        "summary must be exactly the 4K bound with the truncation marker"
+    );
+}
+
+#[tokio::test]
 async fn subagent_depth_cap_returns_fallback_stop() {
     // At max_rlm_depth the engine degrades to a flat one-shot; the dict
     // must carry stop='fallback' and ok=True (error-free flat completion).

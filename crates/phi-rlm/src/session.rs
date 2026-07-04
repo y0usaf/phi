@@ -169,6 +169,7 @@ impl RlmSession {
                                     Outcome {
                                         stop: StopCause::Handled,
                                         response: String::new(),
+                                        summary: None,
                                         error: None,
                                         iterations: 0,
                                     },

@@ -85,6 +85,10 @@ pub enum EventPayload {
     AgentStart,
     AgentEnd {
         stop_cause: String,
+        /// Bounded (≤4K chars) model-authored completion report set via
+        /// `answer['summary']` (WS7.3); `None` when the run didn't set one.
+        #[serde(default)]
+        summary: Option<String>,
     },
 
     // ── Turn lifecycle ────────────────────────────────────────────────────────

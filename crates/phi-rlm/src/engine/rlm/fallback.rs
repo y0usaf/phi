@@ -60,6 +60,7 @@ impl Rlm {
         });
         RlmCompletion {
             response,
+            summary: None,
             usage,
             usage_by_model,
             iterations: 0,

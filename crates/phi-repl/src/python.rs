@@ -393,6 +393,7 @@ impl ReplEnv for PythonRepl {
                 stderr,
                 vars,
                 final_answer,
+                final_summary,
                 truncated,
                 ..
             } => Ok(ReplResult {
@@ -400,6 +401,7 @@ impl ReplEnv for PythonRepl {
                 stderr,
                 vars,
                 final_answer,
+                final_summary,
                 duration: start.elapsed(),
                 truncated,
             }),
@@ -504,6 +506,29 @@ mod tests {
         let state = repl.answer_state().await.unwrap();
         assert!(state.ready);
         assert_eq!(state.content, "done");
+        repl.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn answer_summary_crosses_on_every_exec() {
+        let mut repl = started(EnvSetup::default()).await;
+        let r = repl.exec("x = 1", EXEC_TIMEOUT).await.unwrap();
+        assert_eq!(r.final_summary, None);
+        // A summary is a standing declaration: reported from the exec that
+        // sets it onward, independent of answer['ready'].
+        let r = repl
+            .exec("answer['summary'] = 'did the thing'", EXEC_TIMEOUT)
+            .await
+            .unwrap();
+        assert_eq!(r.final_summary.as_deref(), Some("did the thing"));
+        let r = repl.exec("y = 2", EXEC_TIMEOUT).await.unwrap();
+        assert_eq!(r.final_summary.as_deref(), Some("did the thing"));
+        // Whitespace-only summaries are treated as unset.
+        let r = repl
+            .exec("answer['summary'] = '  '", EXEC_TIMEOUT)
+            .await
+            .unwrap();
+        assert_eq!(r.final_summary, None);
         repl.shutdown().await;
     }
 
