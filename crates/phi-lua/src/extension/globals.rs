@@ -41,6 +41,8 @@ pub(super) fn setup_phi_global(lua: &mlua::Lua) -> mlua::Result<()> {
     let phi_registered_thinking_expressions = lua.create_table()?;
     let phi_styles = lua.create_table()?;
     let phi_registered_styles = lua.create_table()?;
+    let phi_agents = lua.create_table()?;
+    let phi_registered_agents = lua.create_table()?;
     let phi_overlays = lua.create_table()?;
     let phi_registered_overlays = lua.create_table()?;
     let phi_overlay_instances = lua.create_table()?;
@@ -75,6 +77,8 @@ pub(super) fn setup_phi_global(lua: &mlua::Lua) -> mlua::Result<()> {
     )?;
     globals.set("_phi_styles", phi_styles)?;
     globals.set("_phi_registered_styles", phi_registered_styles)?;
+    globals.set("_phi_agents", phi_agents)?;
+    globals.set("_phi_registered_agents", phi_registered_agents)?;
     globals.set("_phi_overlays", phi_overlays)?;
     globals.set("_phi_registered_overlays", phi_registered_overlays)?;
     globals.set("_phi_overlay_instances", phi_overlay_instances)?;
@@ -286,6 +290,28 @@ pub(super) fn setup_phi_global(lua: &mlua::Lua) -> mlua::Result<()> {
         Ok(())
     })?;
     phi.set("register_style", register_style_fn)?;
+
+    // phi.register_agent(name, opts) — an agent profile (WS1): a bundle of
+    // agent-defining knobs activated as a unit by `/agent <name>`.
+    // opts: { system_prompt = "...",           -- full identity text (optional)
+    //         orchestrator = true|false,        -- delegate-by-default (optional)
+    //         tools = { { name = "bash", exposure = "native" }, ... },
+    //         env = { repl_tool = false, context = false },
+    //         turn = { stop = "prose", parallel_tools = false },
+    //         subagent_defaults = "rlm" }
+    // Every member is optional; absent members fall back to the engine
+    // defaults while the agent is active. The shipped default is the empty
+    // bundle (`register_agent("rlm", {})`).
+    let register_agent_fn = lua.create_function(|lua, (name, opts): (String, mlua::Table)| {
+        let globals = lua.globals();
+        let agents: mlua::Table = globals.get("_phi_agents")?;
+        agents.set(name.as_str(), opts)?;
+        let reg: mlua::Table = globals.get("_phi_registered_agents")?;
+        let len = reg.raw_len();
+        reg.raw_set(len + 1, name)?;
+        Ok(())
+    })?;
+    phi.set("register_agent", register_agent_fn)?;
 
     // phi.register_overlay(name, opts)
     // opts: {

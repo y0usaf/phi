@@ -94,6 +94,12 @@ pub enum UiAction {
     /// host re-resolves its visuals (palette, spinner, tool renderers) and
     /// repaints.
     SwitchStyle { name: String },
+    /// Activate a registered agent profile (WS1) and persist the choice.
+    /// Empty name: report the available agents instead of switching. The
+    /// host re-resolves the agent's knobs (system prompt, tool surface, turn
+    /// protocol) and applies them to the next turn — switching mid-session
+    /// starts a fresh turn context, it does not rewrite history.
+    SwitchAgent { name: String },
     /// Add the directory as a project in the mux sidebar and focus it — a
     /// genuinely mux-host-owned effect (workspace/project management).
     OpenProject(std::path::PathBuf),

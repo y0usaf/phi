@@ -153,6 +153,22 @@ phi.register_command("style", {
     end,
 })
 
+-- ── /agent ──────────────────────────────────────────────────────────────
+-- With an argument: activate that agent profile (persisted). Without: list
+-- the registered agents. Completion uses _phi_agent_names, injected by the
+-- Rust side (session_builder) before this source executes — the same
+-- pattern as _phi_model_names and _phi_style_names.
+local agent_completions = _phi_agent_names or {}
+
+phi.register_command("agent", {
+    description = "switch the agent profile (no arg: list agents)",
+    args_hint = "[name]",
+    completions = agent_completions,
+    handler = function(args)
+        return { actions = { { type = "SwitchAgent", data = { name = trim(args) } } } }
+    end,
+})
+
 -- ── /trust ──────────────────────────────────────────────────────────────
 
 phi.register_command("trust", {

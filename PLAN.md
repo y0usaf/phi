@@ -249,7 +249,7 @@ into its defaults; it becomes expressive enough that their *shape* is a
 config file. Parity-as-configuration is the differentiator;
 parity-as-feature-set stays rejected.
 
-- [ ] **1.1 Agent-profile primitive.** `register_agent { name, … }` — the
+- [x] **1.1 Agent-profile primitive.** `register_agent { name, … }` — the
       WS2.1 pattern (doctrine 5; `StyleSpec`'s inline-bundle precedent,
       `phi-ext/src/style_spec.rs`): a declarative bundle of the
       agent-defining knobs — `system_prompt` (full text or a named shipped
@@ -268,6 +268,33 @@ parity-as-feature-set stays rejected.
       (skills), but identity *selection* moves out of host code (today
       `CODING_IDENTITY` vs orchestrator addendum is chosen host-side in
       `phi_rlm::prompts`).
+      *Landed as (WS1.1 slice, 2026-07-05):* `AgentSpec` in
+      `phi-ext/src/agent_spec.rs` mirrors `StyleSpec` — a declarative
+      bundle whose members (`system_prompt`, `orchestrator`, `tools`,
+      `env`, `turn`, `subagent_defaults`) are all optional and fall
+      through to the engine defaults. `register_agent` on
+      `ExtensionHost`; `AppRuntime` stores agents + `active_agent` +
+      `set_active_agent` (interior-mutable, exactly like styles).
+      `UiAction::SwitchAgent { name }`; `/agent` command in
+      `commands.lua` (mirrors `/style`); config.lua `agent` field +
+      `Settings.agent`; `AgentStore` persistence
+      (`phi-session/src/agent.rs`, the `StyleStore` layout). The shipped
+      `rlm` default agent is the empty bundle (`defaults/agents/rlm.lua`,
+      loaded via `from_source`); its absent `system_prompt` falls through
+      to `CODING_IDENTITY` in `build_rlm_config` (session TUI) and
+      `oneshot.rs` (one-shot), so today's behavior is the default profile
+      rather than a hardwire. An agent that sets `system_prompt` overrides
+      `CODING_IDENTITY`; a `.phi/SYSTEM.md` override still wins. Lua
+      parity: `phi.register_agent(name, opts)` in `globals.rs`; the
+      bridge collects + registers agents (`mod.rs`). The `tools`/`env`/
+      `turn` members are defined on `AgentSpec` but not yet consumed by
+      the engine — they are forward-compatible slots for WS1.2/1.3. Six
+      tests cover activation, unknown-name rejection, duplicate
+      registration, and serde round-trips. **Remaining for the 1.1+1.2
+      refactor:** WS1.2 (demote `repl` to a default-profile tool via
+      `env.repl_tool`) and the `--agent` CLI flag (config-only today,
+      matching `--style`). Runtime `/agent` switching applies on the
+      next session build (the note says so), not mid-turn.
 - [ ] **1.2 Demote `repl` to a default-profile tool.** `register_tools`
       (`phi-rlm/src/engine/rlm/core.rs:200`) hardcodes
       `repl_tool_definition()` ahead of the registry, and the Python env

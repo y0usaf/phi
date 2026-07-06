@@ -249,6 +249,16 @@ pub async fn build_runtime(
         )?;
         rt_builder = rt_builder.register_extension(crush_style_ext);
 
+        // Agent packs (WS1): the shipped `rlm` default profile — the empty
+        // bundle, so today's behavior is the default profile rather than a
+        // hardwire. Inert until `/agent` activates one; a user extension can
+        // register a different agent and `/agent` to it.
+        let rlm_agent_ext = phi_lua::LuaExtension::from_source(
+            "phi-agent-rlm",
+            phi_builtins::defaults::AGENT_RLM_LUA.to_owned(),
+        )?;
+        rt_builder = rt_builder.register_extension(rlm_agent_ext);
+
         // Tool render metadata (last-write-wins, so a user spec can restyle).
         let tool_render_ext = phi_lua::LuaExtension::from_source(
             "phi-tool-render",
@@ -277,7 +287,8 @@ pub async fn build_runtime(
         .with_global(
             "_phi_style_names",
             serde_json::json!(["phi", "claude-code", "codex", "crush"]),
-        );
+        )
+        .with_global("_phi_agent_names", serde_json::json!(["rlm"]));
         rt_builder = rt_builder.register_extension(commands_ext);
 
         // About and help overlays — the tutorial overlays (simplest and
@@ -359,6 +370,14 @@ pub async fn build_runtime(
             eprintln!("Warning: {e:#}");
         }
     }
+    // Initial agent profile (WS1): the persisted `/agent` choice wins over
+    // config.lua's `agent`. A stale name (profile uninstalled) degrades to
+    // the engine defaults rather than failing the build.
+    if let Some(agent) = phi_session::agent::initial_agent(settings.agent.clone()) {
+        if let Err(e) = runtime.set_active_agent(Some(&agent)) {
+            eprintln!("Warning: {e:#}");
+        }
+    }
     runtime.boot().await?;
     runtime.start_session().await?;
 
@@ -414,22 +433,31 @@ fn build_rlm_config(
 
     let (prompt_override, append_prompt) = phi_rlm::discover_prompt_overrides(cwd, project_trusted);
 
-    // Coding-session prompt shape (WS9.4): the coding identity replaces the
-    // long-context-QA RLM identity (unless a .phi/SYSTEM.md override wins),
-    // and the orchestrator addendum is off — delegation guidance lives in
-    // the identity, claude-code-shaped. The old user_prologue restated the
-    // identity as a user message; the system prompt now owns it.
+    // Agent profile (WS1): the active agent's `system_prompt` and
+    // `orchestrator` override the engine defaults when set. A `.phi/SYSTEM.md`
+    // override still wins over the agent's prompt. When no agent is active or
+    // the agent's `system_prompt` is absent, fall through to the coding
+    // identity (today's behavior, so bare core boots). The orchestrator
+    // likewise falls through to `false` (coding sessions) when the agent
+    // doesn't set it.
+    let agent_prompt = runtime.active_agent_system_prompt().map(str::to_owned);
+    let agent_orchestrator = runtime.active_agent_orchestrator();
+    let system_prompt = prompt_override
+        .or(agent_prompt)
+        .or_else(|| Some(phi_rlm::CODING_IDENTITY.to_owned()));
+    let orchestrator = agent_orchestrator.unwrap_or(false);
+
     RlmConfig {
         max_rlm_depth: settings.max_rlm_depth,
         max_iterations: settings.max_iterations,
         max_concurrent_subcalls: settings.max_concurrent_subcalls,
-        custom_system_prompt: prompt_override.or_else(|| Some(phi_rlm::CODING_IDENTITY.to_owned())),
+        custom_system_prompt: system_prompt,
         append_system_prompt: append_prompt,
         setup_code: Some(setup_code),
         tools_section: Some(coding_tools_section()),
         env_info: Some(env_info_block(cwd, shell)),
         cwd: Some(cwd.display().to_string()),
-        orchestrator: false,
+        orchestrator,
         ..RlmConfig::default()
     }
 }

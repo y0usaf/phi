@@ -408,7 +408,8 @@ impl MuxApp {
             | UiAction::SwitchModel { .. }
             | UiAction::StartLogin { .. }
             | UiAction::Logout { .. }
-            | UiAction::TrustProject { .. } => {
+            | UiAction::TrustProject { .. }
+            | UiAction::SwitchAgent { .. } => {
                 self.set_note_on(
                     vid,
                     "command action not supported in mux",

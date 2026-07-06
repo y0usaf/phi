@@ -44,11 +44,17 @@ pub struct AppRuntime {
     pub(crate) text_effects: BTreeMap<String, TextEffectSpec>,
     pub(crate) overlays: BTreeMap<String, OverlaySpec>,
     pub(crate) styles: BTreeMap<String, StyleSpec>,
+    pub(crate) agents: BTreeMap<String, crate::AgentSpec>,
     /// The active style pack (WS10). Interior-mutable like the UI handle:
     /// the registry itself stays immutable after build, but which bundle is
     /// active can change at runtime (`/style`), and hosts re-resolve their
     /// visuals afterwards.
     active_style: Mutex<Option<String>>,
+    /// The active agent profile (WS1). Interior-mutable like the active style:
+    /// the registry stays immutable after build, but which profile is active
+    /// can change at runtime (`/agent`), and the host re-resolves agent knobs
+    /// (system prompt, tool surface, turn protocol) afterwards.
+    active_agent: Mutex<Option<String>>,
     notifications: Mutex<Vec<String>>,
     status: TokioMutex<BTreeMap<String, String>>,
     session_name: TokioMutex<Option<String>>,
@@ -123,6 +129,7 @@ impl AppRuntime {
         text_effects: BTreeMap<String, TextEffectSpec>,
         overlays: BTreeMap<String, OverlaySpec>,
         styles: BTreeMap<String, StyleSpec>,
+        agents: BTreeMap<String, crate::AgentSpec>,
     ) -> Self {
         Self {
             cwd,
@@ -143,7 +150,9 @@ impl AppRuntime {
             text_effects,
             overlays,
             styles,
+            agents,
             active_style: Mutex::new(None),
+            active_agent: Mutex::new(None),
             notifications: Mutex::new(Vec::new()),
             status: TokioMutex::new(BTreeMap::new()),
             session_name: TokioMutex::new(None),
@@ -1026,6 +1035,64 @@ impl AppRuntime {
         self.active_style_spec()
             .and_then(|s| s.chrome.clone())
             .unwrap_or_default()
+    }
+
+    // ── Agent profile accessors (WS1) ────────────────────────────────
+
+    /// Get a registered agent profile by name.
+    pub fn get_agent(&self, name: &str) -> Option<&crate::AgentSpec> {
+        self.agents.get(name)
+    }
+
+    /// List all registered agent profile names.
+    pub fn list_agents(&self) -> Vec<String> {
+        self.agents.keys().cloned().collect()
+    }
+
+    /// The active agent profile's name, if one is set.
+    pub fn active_agent(&self) -> Option<String> {
+        self.active_agent.lock().unwrap().clone()
+    }
+
+    /// Activate an agent profile by name (`None` deactivates, falling back
+    /// to the engine defaults). Unknown names error and leave the current
+    /// profile untouched; the host re-resolves agent knobs after a successful
+    /// switch.
+    pub fn set_active_agent(&self, name: Option<&str>) -> Result<()> {
+        if let Some(name) = name
+            && !self.agents.contains_key(name)
+        {
+            bail!(
+                "agent '{}' is not registered (available: {})",
+                name,
+                self.list_agents().join(", ")
+            );
+        }
+        *self.active_agent.lock().unwrap() = name.map(str::to_owned);
+        Ok(())
+    }
+
+    /// The active agent's spec, when an agent is set and registered.
+    fn active_agent_spec(&self) -> Option<&crate::AgentSpec> {
+        let name = self.active_agent.lock().unwrap().clone()?;
+        self.agents.get(&name)
+    }
+
+    /// The system-prompt identity in effect: the active agent's
+    /// `system_prompt`, if one is set and the agent carries one. `None` when
+    /// no agent is active or the active agent's `system_prompt` is absent —
+    /// the caller falls back to its own default identity (today's behavior,
+    /// so bare core boots).
+    pub fn active_agent_system_prompt(&self) -> Option<&str> {
+        self.active_agent_spec()
+            .and_then(|a| a.system_prompt.as_deref())
+    }
+
+    /// The orchestrator flag in effect: the active agent's `orchestrator`
+    /// value, if one is set. `None` when no agent is active or the agent's
+    /// `orchestrator` is absent — the caller falls back to its own default.
+    pub fn active_agent_orchestrator(&self) -> Option<bool> {
+        self.active_agent_spec().and_then(|a| a.orchestrator)
     }
 
     // ── Visual: theme accessors ──────────────────────────────────────────
@@ -2551,6 +2618,103 @@ mod tests {
             .build()
         {
             Ok(_) => panic!("duplicate style registration must fail the build"),
+            Err(e) => e,
+        };
+        assert!(err.to_string().contains("already registered"), "{err}");
+    }
+
+    #[test]
+    fn agent_activation_overlays_and_falls_back() {
+        struct AgentExt;
+        impl Extension for AgentExt {
+            fn manifest(&self) -> ExtensionManifest {
+                ExtensionManifest {
+                    id: "test.agent".to_owned(),
+                    name: "Agent".to_owned(),
+                    version: "0".to_owned(),
+                    description: String::new(),
+                }
+            }
+            fn register(&self, host: &mut dyn ExtensionHost) -> anyhow::Result<()> {
+                host.register_agent(
+                    crate::AgentSpec::new("rlm").with_system_prompt("You are an RLM."),
+                )?;
+                host.register_agent(crate::AgentSpec::new("bare"))?;
+                Ok(())
+            }
+        }
+        let rt = RuntimeBuilder::new()
+            .with_cwd(std::path::Path::new("."))
+            .register_extension(AgentExt)
+            .build()
+            .unwrap();
+        assert_eq!(rt.list_agents(), vec!["bare", "rlm"]);
+        assert_eq!(rt.active_agent(), None);
+        // No agent active: system_prompt falls through (None).
+        assert_eq!(rt.active_agent_system_prompt(), None);
+
+        rt.set_active_agent(Some("rlm")).unwrap();
+        assert_eq!(rt.active_agent().as_deref(), Some("rlm"));
+        assert_eq!(rt.active_agent_system_prompt(), Some("You are an RLM."));
+
+        // Deactivate: falls back to None.
+        rt.set_active_agent(None).unwrap();
+        assert_eq!(rt.active_agent(), None);
+        assert_eq!(rt.active_agent_system_prompt(), None);
+    }
+
+    #[test]
+    fn unknown_agent_errors_and_preserves_active() {
+        struct AgentExt;
+        impl Extension for AgentExt {
+            fn manifest(&self) -> ExtensionManifest {
+                ExtensionManifest {
+                    id: "test.agent2".to_owned(),
+                    name: "Agent2".to_owned(),
+                    version: "0".to_owned(),
+                    description: String::new(),
+                }
+            }
+            fn register(&self, host: &mut dyn ExtensionHost) -> anyhow::Result<()> {
+                host.register_agent(crate::AgentSpec::new("rlm"))?;
+                Ok(())
+            }
+        }
+        let rt = RuntimeBuilder::new()
+            .with_cwd(std::path::Path::new("."))
+            .register_extension(AgentExt)
+            .build()
+            .unwrap();
+        rt.set_active_agent(Some("rlm")).unwrap();
+        let err = rt.set_active_agent(Some("nope")).unwrap_err();
+        assert!(err.to_string().contains("not registered"), "{err}");
+        assert_eq!(rt.active_agent().as_deref(), Some("rlm"));
+    }
+
+    #[test]
+    fn duplicate_agent_registration_is_rejected() {
+        struct DupExt;
+        impl Extension for DupExt {
+            fn manifest(&self) -> ExtensionManifest {
+                ExtensionManifest {
+                    id: "test.dup.agent".to_owned(),
+                    name: "DupAgent".to_owned(),
+                    version: "0".to_owned(),
+                    description: String::new(),
+                }
+            }
+            fn register(&self, host: &mut dyn ExtensionHost) -> anyhow::Result<()> {
+                host.register_agent(crate::AgentSpec::new("same"))?;
+                host.register_agent(crate::AgentSpec::new("same"))?;
+                Ok(())
+            }
+        }
+        let err = match RuntimeBuilder::new()
+            .with_cwd(std::path::Path::new("."))
+            .register_extension(DupExt)
+            .build()
+        {
+            Ok(_) => panic!("duplicate agent registration must fail the build"),
             Err(e) => e,
         };
         assert!(err.to_string().contains("already registered"), "{err}");

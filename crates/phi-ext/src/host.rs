@@ -27,6 +27,7 @@ pub(crate) struct RegistryHost {
     pub(crate) text_effects: BTreeMap<String, TextEffectSpec>,
     pub(crate) overlays: BTreeMap<String, OverlaySpec>,
     pub(crate) styles: BTreeMap<String, StyleSpec>,
+    pub(crate) agents: BTreeMap<String, crate::AgentSpec>,
 }
 
 impl ExtensionHost for RegistryHost {
@@ -150,6 +151,15 @@ impl ExtensionHost for RegistryHost {
             bail!("style '{}' is already registered", name);
         }
         self.styles.insert(name, style);
+        Ok(())
+    }
+
+    fn register_agent(&mut self, agent: crate::AgentSpec) -> Result<()> {
+        let name = agent.name.clone();
+        if self.agents.contains_key(&name) {
+            bail!("agent '{}' is already registered", name);
+        }
+        self.agents.insert(name, agent);
         Ok(())
     }
 

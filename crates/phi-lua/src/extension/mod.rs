@@ -481,6 +481,29 @@ impl phi_ext::Extension for LuaExtension {
             styles.push(spec);
         }
 
+        // ── Read registered agents ───────────────────────────────────────────
+        let reg_agents: mlua::Table = globals.get("_phi_registered_agents")?;
+        let agent_names: Vec<String> = (1..)
+            .map_while(|i| reg_agents.get::<Option<String>>(i).ok().flatten())
+            .collect();
+
+        let phi_agents_table: mlua::Table = globals.get("_phi_agents")?;
+        let mut agents: Vec<phi_ext::AgentSpec> = Vec::new();
+        for name in &agent_names {
+            let ag: mlua::Table = phi_agents_table.get(name.as_str())?;
+            let mut spec = phi_ext::AgentSpec::new(name.clone());
+            if let Some(prompt) = ag.get::<Option<String>>("system_prompt")? {
+                spec.system_prompt = Some(prompt);
+            }
+            if let Some(orch) = ag.get::<Option<bool>>("orchestrator")? {
+                spec.orchestrator = Some(orch);
+            }
+            if let Some(sub) = ag.get::<Option<String>>("subagent_defaults")? {
+                spec.subagent_defaults = Some(sub);
+            }
+            agents.push(spec);
+        }
+
         // ── Read registered overlays ──────────────────────────────────────────
         let reg_overlays: mlua::Table = globals.get("_phi_registered_overlays")?;
         let overlay_names: Vec<String> = (1..)
@@ -692,6 +715,11 @@ impl phi_ext::Extension for LuaExtension {
         // ── Register styles ─────────────────────────────────────────────────
         for style in styles {
             host.register_style(style)?;
+        }
+
+        // ── Register agents ─────────────────────────────────────────────────
+        for agent in agents {
+            host.register_agent(agent)?;
         }
 
         // ── Register overlays ──────────────────────────────────────────────

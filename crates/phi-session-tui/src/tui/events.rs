@@ -363,6 +363,7 @@ impl Ui {
             UiAction::Logout { provider } => self.logout(&provider),
             UiAction::TrustProject { trusted } => self.set_project_trust(trusted),
             UiAction::SwitchStyle { name } => self.switch_style(name.trim()),
+            UiAction::SwitchAgent { name } => self.switch_agent(name.trim()),
             // Mux-host-owned effects: session commands never emit these.
             UiAction::OpenProject(_) | UiAction::RunHostAction { .. } => {
                 self.push_bar(0, "command action not supported in session".to_owned());
@@ -460,6 +461,45 @@ impl Ui {
         let _ = self.term.clear_viewport();
         self.transcript.reset();
         self.transcript_cache_width = 0;
+    }
+
+    /// The `/agent` effect (WS1): activate a registered agent profile and
+    /// persist the choice. An empty name reports the available agents. The
+    /// active agent's knobs (system prompt, tool surface, turn protocol)
+    /// apply on the next session build — switching mid-session starts a
+    /// fresh turn context, it does not rewrite history.
+    fn switch_agent(&mut self, name: &str) {
+        if name.is_empty() {
+            let active = self.runtime.active_agent();
+            let agents = self.runtime.list_agents();
+            let mut lines = Vec::new();
+            if agents.is_empty() {
+                lines.push(self.note(&"no agents registered"));
+            }
+            for agent in agents {
+                let marker = if active.as_deref() == Some(agent.as_str()) {
+                    "  (active)"
+                } else {
+                    ""
+                };
+                lines.push(self.note(&format!("{agent}{marker}")));
+            }
+            self.pending.push(TranscriptEntry::RawLines(lines));
+            return;
+        }
+        if let Err(e) = self.runtime.set_active_agent(Some(name)) {
+            self.pending
+                .push(TranscriptEntry::RawLines(vec![self.err(&e)]));
+            return;
+        }
+        if let Err(e) = phi_session::agent::AgentStore::load_default().set(Some(name)) {
+            self.pending.push(TranscriptEntry::RawLines(vec![
+                self.warn(&format!("agent not persisted: {e:#}")),
+            ]));
+        }
+        self.pending.push(TranscriptEntry::RawLines(vec![
+            self.note(&format!("[agent: {name} — active on next session build]")),
+        ]));
     }
 
     fn set_project_trust(&mut self, trusted: bool) {

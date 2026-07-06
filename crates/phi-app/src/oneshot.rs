@@ -77,17 +77,30 @@ pub async fn run(
     // coding runs (WS9.4): coding identity, no orchestrator addendum — its
     // delegate-by-default stance multiplies latency and degrades output on
     // coding tasks. The old user_prologue restated the identity as a user
-    // message; the system prompt now owns it.
     let qa_run = args.context.is_some();
+    // Agent profile (WS1): the active agent's `system_prompt` and
+    // `orchestrator` override the engine defaults when set. When no agent is
+    // active or the agent's fields are absent, fall through to the coding/QA
+    // identity split (today's behavior, so bare core boots).
+    let agent_prompt = runtime.active_agent_system_prompt().map(str::to_owned);
+    let agent_orchestrator = runtime.active_agent_orchestrator();
+    let system_prompt = if qa_run {
+        // QA runs keep the RLM identity unless the agent overrides.
+        agent_prompt.or(None)
+    } else {
+        // Coding runs use CODING_IDENTITY unless the agent overrides.
+        agent_prompt.or_else(|| Some(phi_rlm::CODING_IDENTITY.to_owned()))
+    };
+    let orchestrator = agent_orchestrator.unwrap_or(qa_run);
     let config = RlmConfig {
         max_rlm_depth: settings.max_rlm_depth,
         max_iterations: settings.max_iterations,
         max_concurrent_subcalls: settings.max_concurrent_subcalls,
-        custom_system_prompt: (!qa_run).then(|| phi_rlm::CODING_IDENTITY.to_owned()),
+        custom_system_prompt: system_prompt,
         setup_code: Some(CODING_PRELUDE.to_owned()),
         tools_section: Some(coding_tools_section()),
         cwd: Some(cwd.display().to_string()),
-        orchestrator: qa_run,
+        orchestrator,
         ..RlmConfig::default()
     };
 

@@ -78,6 +78,7 @@ impl RuntimeBuilder {
             host.text_effects,
             host.overlays,
             host.styles,
+            host.agents,
         ))
     }
 }

@@ -6,6 +6,7 @@
 //! boundary here guarantees a session behaves identically whether or not it
 //! runs under the mux.
 
+pub mod agent;
 pub mod archive;
 pub mod config;
 pub mod session;

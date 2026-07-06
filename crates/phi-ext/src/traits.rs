@@ -67,6 +67,15 @@ pub trait ExtensionHost {
     /// fall back to the base registrations while the style is active.
     fn register_style(&mut self, style: crate::StyleSpec) -> Result<()>;
 
+    // ── Agent packs ─────────────────────────────────────────────────────
+    /// Register a named agent profile: a bundle of agent-defining knobs
+    /// (system prompt, tool roster, turn protocol, execution env) activated
+    /// as a unit via `AppRuntime::set_active_agent`. Members are optional
+    /// and fall back to the engine defaults while the agent is active, so the
+    /// shipped default agent is the bundle carrying today's values and a
+    /// builtins-less build degrades to the engine's built-in identity.
+    fn register_agent(&mut self, agent: crate::AgentSpec) -> Result<()>;
+
     // ── Visual: animations ───────────────────────────────────────────────
     /// Register a named spinner (frame array + interval).
     fn register_spinner(&mut self, spinner: crate::SpinnerSpec) -> Result<()>;

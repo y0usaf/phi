@@ -296,6 +296,12 @@ crate phi_event
 ```
 
 crate phi_ext
+├── mod agent_spec: pub
+│   ├── struct AgentEnv: pub
+│   ├── struct AgentSpec: pub
+│   ├── struct AgentToolEntry: pub
+│   ├── struct AgentTurn: pub
+│   └── enum ToolExposureOverride: pub
 ├── mod animation_spec: pub
 │   ├── enum ExpressionSelection: pub
 │   ├── struct SpinnerSpec: pub
@@ -654,6 +660,9 @@ crate phi_rlm
 ```
 
 crate phi_session
+├── mod agent: pub
+│   ├── struct AgentState: pub(self)
+│   └── struct AgentStore: pub
 ├── mod archive: pub
 │   └── struct ArchivedSession: pub
 ├── mod config: pub

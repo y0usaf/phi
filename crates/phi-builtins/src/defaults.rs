@@ -91,3 +91,8 @@ pub const STYLE_CODEX_LUA: &str = include_str!("../defaults/styles/codex.lua");
 /// `phi.register_style` bundle — Charmtone Pantera palette, `●`/`✓`/`×`
 /// tool glyphs, and `::: ` editor prompt.
 pub const STYLE_CRUSH_LUA: &str = include_str!("../defaults/styles/crush.lua");
+/// The shipped `rlm` default agent profile (WS1): the empty bundle —
+/// today's behavior with no special case. Every member falls through to
+/// the engine defaults, so a builtins-less build keeps the built-in
+/// identity.
+pub const AGENT_RLM_LUA: &str = include_str!("../defaults/agents/rlm.lua");
