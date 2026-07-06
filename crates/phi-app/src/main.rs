@@ -150,6 +150,10 @@ async fn run(args: Args, storage: Arc<AuthStorage>, registry: Arc<Registry>) -> 
             // Daemon sessions can never prompt on stdin; undecided
             // projects get a notice, same as the in-terminal mux.
             trust_prompt: false,
+            // WS8.3: seeded from the first attaching client's shell; later
+            // attaches overwrite (last wins) so sessions spawned for a
+            // newcomer report that client's shell, not the daemon's own.
+            shell: None,
         };
         return mux::remote::server::run(shared, mux_config, cwd).await;
     }
@@ -187,16 +191,18 @@ async fn run(args: Args, storage: Arc<AuthStorage>, registry: Arc<Registry>) -> 
                     storage,
                     registry,
                     trust_prompt: false,
+                    shell: None,
                 };
                 return mux::app::run(shared, mux_config, cwd).await;
             }
             // Client/server mode: ensure the daemon is up, then attach this
             // terminal as a thin client. Note: the daemon builds sessions
             // from its own (config-file) settings; per-invocation CLI
-            // overrides like --model apply only to the daemon-spawning run
-            // via config, not to an already-running daemon.
+            // WS8.3: per-invocation --model now reaches a running daemon
+            // via the Attach handshake (the daemon applies it to new
+            // sessions for this client's projects).
             mux::remote::daemon::ensure_running()?;
-            return mux::remote::client::run(cwd, args.project.clone()).await;
+            return mux::remote::client::run(cwd, args.project.clone(), args.model.clone()).await;
         }
     }
 
@@ -208,6 +214,7 @@ async fn run(args: Args, storage: Arc<AuthStorage>, registry: Arc<Registry>) -> 
             registry,
             // Standalone TUI builds its session before raw mode: safe to ask.
             trust_prompt: true,
+            shell: None,
         };
         let setup = session_builder::build_session(&cwd, &shared, None).await?;
         return tui::run(setup, tui::SessionIo::standalone(cwd)).await;

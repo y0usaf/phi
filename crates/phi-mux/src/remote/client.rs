@@ -21,7 +21,7 @@ use phi_session_tui::tui;
 
 /// Attach to the mux daemon and mirror it on this terminal until the
 /// daemon exits, the user detaches, or the connection drops.
-pub async fn run(cwd: PathBuf, projects: Vec<String>) -> Result<()> {
+pub async fn run(cwd: PathBuf, projects: Vec<String>, model: Option<String>) -> Result<()> {
     // The client owns the tty now, so it owns crash recovery too: restore
     // cooked mode on panics and fatal signals.
     std::panic::set_hook(Box::new(|info| {
@@ -55,6 +55,13 @@ pub async fn run(cwd: PathBuf, projects: Vec<String>) -> Result<()> {
             cwd,
             projects,
             terminal_colors,
+            model,
+            // WS8.3: report this terminal's shell so daemon sessions
+            // describe the attaching client's environment, not the first
+            // spawner's.
+            shell: std::env::var("SHELL")
+                .or_else(|_| std::env::var("COMSPEC"))
+                .ok(),
         },
     )
     .await?;

@@ -28,8 +28,15 @@ pub struct SharedResources {
     /// mode) can prompt; the mux and one-shot modes fall back to
     /// untrusted-with-notice.
     pub trust_prompt: bool,
+    /// WS8.3: the shell to report in the session's `# Environment` prompt
+    /// block. `None` (standalone TUI, one-shot, local mux) reads the
+    /// process env as before; the daemon sets this from the last
+    /// attaching client's `$SHELL`/`$COMSPEC` so sessions spawned for a
+    /// later client report *that* client's shell, not the first
+    /// spawner's. Last-attach-wins matches the `--model` and re-theme
+    /// precedents.
+    pub shell: Option<String>,
 }
-
 /// Resolved project-trust state for one session build.
 pub struct ProjectTrust {
     pub trusted: bool,
@@ -396,6 +403,7 @@ fn build_rlm_config(
     settings: &Settings,
     runtime: &phi_ext::AppRuntime,
     project_trusted: bool,
+    shell: Option<&str>,
 ) -> RlmConfig {
     let ext_stubs = runtime.extension_prelude_stubs();
     let setup_code = if ext_stubs.is_empty() {
@@ -419,7 +427,7 @@ fn build_rlm_config(
         append_system_prompt: append_prompt,
         setup_code: Some(setup_code),
         tools_section: Some(coding_tools_section()),
-        env_info: Some(env_info_block(cwd)),
+        env_info: Some(env_info_block(cwd, shell)),
         cwd: Some(cwd.display().to_string()),
         orchestrator: false,
         ..RlmConfig::default()
@@ -575,6 +583,7 @@ pub async fn build_session(
         storage,
         registry,
         trust_prompt,
+        shell,
     } = shared;
     let settings = Settings::resolve(cli_args, Config::load(cwd)?, true);
 
@@ -589,7 +598,7 @@ pub async fn build_session(
     let (registry, provider_notices) =
         registry_with_extension_providers(registry, &runtime, storage);
     let models = resolve_models(&settings, &registry, storage).await?;
-    let config = build_rlm_config(cwd, &settings, &runtime, trust.trusted);
+    let config = build_rlm_config(cwd, &settings, &runtime, trust.trusted, shell.as_deref());
     let (root, sub) = build_providers(&registry, storage, &models, settings.max_tokens);
 
     // Wire the extension runtime into the providers so provider
@@ -706,12 +715,20 @@ pub fn workspace_context(cwd: &Path) -> String {
 /// by construction: the caller stores the result in `RlmConfig::env_info` and
 /// the prompt is rebuilt deterministically each turn from it, so this is not
 /// recomputed per turn (only on session build / cwd change).
-pub fn env_info_block(cwd: &Path) -> String {
+pub fn env_info_block(cwd: &Path, shell: Option<&str>) -> String {
     let is_git = is_git_repo(cwd);
     let platform = std::env::consts::OS;
-    let shell = std::env::var("SHELL")
-        .or_else(|_| std::env::var("COMSPEC"))
-        .unwrap_or_else(|_| "unknown".to_owned());
+    // WS8.3: the daemon reports the last attaching client's shell instead
+    // of its own (first spawner's) process env; standalone/one-shot/local
+    // pass `None` and read the process env as before.
+    let shell = shell
+        .map(str::to_owned)
+        .or_else(|| {
+            std::env::var("SHELL")
+                .or_else(|_| std::env::var("COMSPEC"))
+                .ok()
+        })
+        .unwrap_or_else(|| "unknown".to_owned());
     let os_version = os_version();
     format!(
         "# Environment\n\
@@ -773,7 +790,7 @@ mod env_info_tests {
 
     #[test]
     fn env_info_block_lists_cwd_git_platform_shell_os() {
-        let block = env_info_block(Path::new("/home/y0usaf/Dev/phi"));
+        let block = env_info_block(Path::new("/home/y0usaf/Dev/phi"), None);
         assert!(block.starts_with("# Environment\n"));
         assert!(block.contains("Primary working directory: /home/y0usaf/Dev/phi"));
         assert!(block.contains("Is a git repository:"));
@@ -785,6 +802,18 @@ mod env_info_tests {
         assert!(!block.contains("Fast mode"));
     }
 
+    #[test]
+    fn env_info_block_uses_daemon_shell_override() {
+        // WS8.3: a daemon-supplied shell (the attaching client's $SHELL)
+        // wins over the process env so a later client's sessions report
+        // that client's shell, not the first spawner's.
+        let block = env_info_block(Path::new("/tmp"), Some("/usr/bin/fish"));
+        assert!(block.contains("Shell: /usr/bin/fish"));
+        // `None` falls back to the process env (may be "unknown" in a
+        // sandbox, but the field is always present).
+        let fallback = env_info_block(Path::new("/tmp"), None);
+        assert!(fallback.contains("Shell:"));
+    }
     #[test]
     fn is_git_repo_detects_repository_root() {
         // Use a temp dir with a .git marker so the test does not depend on

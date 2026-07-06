@@ -30,6 +30,11 @@ pub struct AttachInfo {
     pub cwd: PathBuf,
     pub projects: Vec<String>,
     pub terminal_colors: Option<TerminalColors>,
+    /// WS8.3: per-invocation `--model` override from the attaching client.
+    pub model: Option<String>,
+    /// WS8.3: the attaching client's shell, applied to the daemon's shared
+    /// resources so new sessions report it in the `# Environment` block.
+    pub shell: Option<String>,
 }
 
 /// Fan-in events from all client connections into the mux main loop.
@@ -268,12 +273,16 @@ async fn handle_connection(
                 cwd,
                 projects,
                 terminal_colors,
+                model,
+                shell,
             }) => AttachInfo {
                 cols,
                 rows,
                 cwd,
                 projects,
                 terminal_colors,
+                model,
+                shell,
             },
             Ok(ClientMsg::Kill) => {
                 let _ = events_tx.send(RemoteEvent::Kill);

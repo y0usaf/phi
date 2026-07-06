@@ -111,7 +111,7 @@ pub async fn run(shared: SharedResources, mux_config: MuxConfig, cwd: PathBuf) -
 /// handshake (`seed_id` is that client's registry id — its `Attached` event
 /// was consumed by the caller, so its view is created here).
 pub async fn run_server(
-    shared: SharedResources,
+    mut shared: SharedResources,
     mux_config: MuxConfig,
     cwd: PathBuf,
     seed_id: u64,
@@ -123,6 +123,13 @@ pub async fn run_server(
 
     let mut projects = shared.projects.clone();
     projects.push(seed.cwd.display().to_string());
+    // WS8.3: the first (seed) client's handshake is consumed by the daemon
+    // boot wait loop, so it never reaches the `Attached` handler that applies
+    // later clients' shell. Apply it here so the very first sessions report
+    // the seed client's `$SHELL`, not the daemon spawner's.
+    if let Some(shell) = &seed.shell {
+        shared.shell = Some(shell.clone());
+    }
     let ws = build_workspace(&cwd, &projects);
 
     let terminal_colors = seed

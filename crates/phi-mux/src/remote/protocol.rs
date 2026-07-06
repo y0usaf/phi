@@ -22,6 +22,15 @@ pub enum ClientMsg {
         cwd: PathBuf,
         projects: Vec<String>,
         terminal_colors: Option<TerminalColors>,
+        /// WS8.3: per-invocation `--model` override reaching a running
+        /// daemon. `None` keeps the daemon's configured model; `Some` is
+        /// applied to new sessions spawned for this client's projects.
+        model: Option<String>,
+        /// WS8.3: the client's `$SHELL` (or `$COMSPEC` on Windows) so the
+        /// daemon's sessions report the attaching client's shell in the
+        /// `# Environment` prompt block instead of the first spawner's.
+        /// `None` leaves the daemon's own env as the fallback.
+        shell: Option<String>,
     },
     /// A parsed terminal event (key/mouse/paste/focus), serialized verbatim.
     /// The client owns the tty and its quirks (kitty protocol etc.); the

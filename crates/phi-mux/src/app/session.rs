@@ -273,7 +273,56 @@ impl MuxApp {
                     .unwrap_or_default();
                 self.views
                     .insert(id, MuxView::new(focus, (info.cols, info.rows)));
+                // WS8.3: a later-attaching client's cwd joins the sidebar
+                // (the handshake already carries it). add_project is a
+                // no-op when the project already exists, so the first
+                // spawner's cwd (seeded at boot) isn't duplicated.
+                if info.cwd.is_dir() {
+                    let path = PathBuf::from(persisted::normalize_path(&info.cwd));
+                    self.workspace.add_project(path);
+                    self.sync_watchers();
+                }
                 self.schedule_size_recompute();
+                // WS8.3: re-theme on attach. A later-attaching client's
+                // terminal colors re-derive the mux palette so the sidebar
+                // and statusbar match the newcomer's terminal theme
+                // (tmux-attach feel: the last client's colors win for the
+                // whole daemon, since the daemon renders one frame for all
+                // clients). Per-view palettes would need per-view rendering;
+                // this is the daemon-level approximation that matches how
+                // tmux adopts the attaching client's colors.
+                if let Some(tc) = &info.terminal_colors {
+                    if tc != &self.terminal_colors {
+                        self.terminal_colors = tc.clone();
+                        self.palette = if let Some(rt) = &self.visual_runtime {
+                            if let Some(theme_spec) = rt.active_theme() {
+                                ScenePalette::from_extension_theme(theme_spec, tc)
+                            } else {
+                                ScenePalette::from_terminal_colors(tc)
+                            }
+                        } else {
+                            ScenePalette::from_terminal_colors(tc)
+                        };
+                    }
+                }
+                // WS8.3: per-invocation --model reaching a running daemon.
+                // The last attaching client's model override wins for new
+                // session builds (the daemon's shared cli_args feeds every
+                // `build_session` call; matching the re-theme's "last
+                // client wins" approximation). A `None` model leaves the
+                // daemon's configured model untouched.
+                if let Some(model) = &info.model {
+                    self.shared.cli_args.model = Some(model.clone());
+                }
+                // WS8.3: the last attaching client's shell wins for new
+                // session builds, so a session spawned for a later client
+                // reports that client's `$SHELL` in the `# Environment`
+                // prompt block (the daemon's own env was the first spawner's).
+                // A `None` shell leaves the daemon's fallback (its own env)
+                // untouched, matching the model override's contract.
+                if let Some(shell) = &info.shell {
+                    self.shared.shell = Some(shell.clone());
+                }
                 self.ensure_focused_session(id).await;
             }
             RemoteEvent::Detached { id } => {
