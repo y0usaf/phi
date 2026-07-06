@@ -111,10 +111,15 @@ pub(super) fn setup_phi_global(lua: &mlua::Lua) -> mlua::Result<()> {
     // phi.register_command(name, opts)
     // opts: { description = "...", args_hint = "...", context = "session"|"mux",
     //         aliases = { "..." }, completions = { "..." },
+    //         skill = true|false (default false),
     //         handler = function(args) ... end }
+    // `skill = true` marks a skill-backed command: a name collision with an
+    // already-registered command is a soft skip (warn + continue) rather than
+    // a build-breaking error.
     // The handler returns a string (shorthand for { message = ... }) or a
     // table { message = "...", actions = { { type = "Quit" },
-    // { type = "OpenOverlay", data = { name = "phi:usage" } }, ... } } —
+    // { type = "OpenOverlay", data = { name = "phi:usage" } },
+    // { type = "SendPrompt", data = { text = "..." } }, ... } } —
     // the same declarative UiAction vocabulary builtin commands use.
     let register_command_fn = lua.create_function(|lua, (name, opts): (String, mlua::Table)| {
         let globals = lua.globals();

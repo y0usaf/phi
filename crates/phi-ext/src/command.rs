@@ -107,6 +107,14 @@ pub enum UiAction {
     /// known names (e.g. `"refresh"`, `"session-next"`) onto its own
     /// behaviors; unknown names produce an error note.
     RunHostAction { name: String },
+    /// Inject `text` as a user message and immediately start a model turn —
+    /// the "prompt-type" command effect. This is the host side of skill
+    /// slash commands: a `/skill-name` handler returns the SKILL.md body as
+    /// a `SendPrompt`, and the session TUI routes it through the same
+    /// `send_prompt` path as a typed prompt. The mux host (which has no
+    /// active session turn) reports it as unsupported, like the other
+    /// session-only actions.
+    SendPrompt { text: String },
 }
 
 /// Pickers a frontend is expected to provide. Only genuinely host-owned

@@ -853,6 +853,24 @@ API (`phi-ext`/`phi-lua`/`phi-event`), never bypass it.
       `phi-session`'s config schema (`config.rs:78-81`), consumed only by the
       builtin. Symptom of a missing primitive: extension-owned config
       sections. Fold into whatever WS4.8 decides, or accept and document.
+      *Follow-on (2026-07-05): skills as slash commands.* Each discovered
+      skill is also registered as a `/<skill-name>` session command whose
+      handler returns a `SendPrompt` action (the SKILL.md body,
+      frontmatter stripped, skill directory prefixed, user args appended)
+      — the Claude-Code dual-entry design: a skill is both model-invoked
+      (via the `<available_skills>` system-prompt index) and
+      user-invoked (via the slash command), same `send_prompt` path as a
+      typed prompt (steers into a running turn instead of racing a second
+      one). API growth, not hardwiring: a new `UiAction::SendPrompt`
+      variant in `phi-ext` (consumed by the session TUI; the mux host
+      reports it unsupported, like the other session-only actions) and a
+      `skill = true` flag on `phi.register_command` that makes a name
+      collision with a built-in command a soft skip (warn + continue)
+      rather than a build-breaking error, so a skill named `help` doesn't
+      break the session build. All in `skills.lua` (the builtin extension)
+      + the Lua bridge; zero core changes beyond the `SendPrompt`
+      variant. Four tests cover slash-command registration, argument
+      appending, frontmatter stripping, and the builtin-collision skip.
 - [x] **4.5 Acceptance (made mechanical, 2026-07-02):** `phi-session-tui`
       contains zero hardcoded command strings (✓ done); `phi-mux` contains
       zero hardwired overlay feature logic (✓ done — WS4.7 closed both the

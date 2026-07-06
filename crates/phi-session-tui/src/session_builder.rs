@@ -218,6 +218,9 @@ pub async fn build_runtime(
         // last-write-wins; commands/overlays bail on duplicate, so a user
         // who wants to replace a builtin command must not use the builtin's
         // name — the API grows to support that in a future milestone).
+        // Skill commands (registered by skills.lua with `skill = true`) are
+        // exempt: a name collision with a built-in is a soft skip, not a
+        // build-breaking error.
 
         // Visual data: spinner + thinking expressions (pure literal data).
         // Registered before DefaultVisualExtension so the Rust theme

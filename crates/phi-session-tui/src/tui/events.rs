@@ -368,6 +368,16 @@ impl Ui {
             UiAction::OpenProject(_) | UiAction::RunHostAction { .. } => {
                 self.push_bar(0, "command action not supported in session".to_owned());
             }
+            // A prompt-type command (skill slash command): inject the text
+            // as a user message and start a turn. When a turn is already in
+            // flight, steer into it instead of racing a second turn.
+            UiAction::SendPrompt { text } => {
+                if self.running.is_some() {
+                    self.steer_mid_run(&text);
+                } else {
+                    self.send_prompt(&text, cmd_tx);
+                }
+            }
         }
         false
     }

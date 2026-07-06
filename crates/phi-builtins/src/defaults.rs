@@ -27,7 +27,7 @@
 //! | `visual_data.lua` | Pure literal data (`register_spinner` / `register_thinking_expression`) |
 //! | `about_overlay.lua` | Simplest overlay — best tutorial |
 //! | `help_overlay.lua` | WS1.6-proven, draw-ops + scroll |
-//! | `skills.lua` | `phi.on("before_agent_start")` + `phi.fs` file discovery |
+//! | `skills.lua` | `phi.on("before_agent_start")` + `phi.fs` discovery + `phi.register_command` (skill slash commands) |
 //! | `approvals.lua` | `phi.on("tool_call")` + `phi.ui.ask` + `phi.json`/`phi.fs` persistence |
 //! | `styles/claude_code.lua` | Pure `register_style` bundle (WS10 style pack) |
 //! | `styles/codex.lua` | Pure `register_style` bundle — Codex CLI imitation (WS10.3) |
@@ -69,9 +69,11 @@ pub const ABOUT_OVERLAY_LUA: &str = include_str!("../defaults/about_overlay.lua"
 /// The `phi:help` keybinding/command reference.
 pub const HELP_OVERLAY_LUA: &str = include_str!("../defaults/help_overlay.lua");
 
-/// SKILL.md discovery + `<available_skills>` system-prompt injection.
-/// Uses `phi.fs.readdir`/`phi.fs.readfile` for discovery and
-/// `phi.on("before_agent_start")` for injection.
+/// SKILL.md discovery + `<available_skills>` system-prompt injection +
+/// slash command registration. Uses `phi.fs.readdir`/`phi.fs.readfile`
+/// for discovery, `phi.on("before_agent_start")` for injection, and
+/// `phi.register_command` (with `skill = true`) to expose each skill as
+/// `/<skill-name>` — the handler returns a `SendPrompt` action.
 pub const SKILLS_LUA: &str = include_str!("../defaults/skills.lua");
 
 /// Tool approval gate: evaluates tool calls against a ruleset and blocks,

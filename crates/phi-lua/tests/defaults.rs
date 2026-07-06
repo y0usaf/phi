@@ -962,6 +962,193 @@ async fn defaults_skills_untrusted_project_dir_is_skipped() {
     assert!(!filtered.contains("sneaky"), "{filtered}");
 }
 
+/// A skill under `<cwd>/.claude/skills/<name>/SKILL.md` is discovered when
+/// its directory is listed in config.lua's `skills` field (extra paths),
+/// even though `.claude` is not a Phi default scan location.
+#[tokio::test]
+async fn defaults_skills_extra_path_claude_skills_dir() {
+    let dir = tempfile::tempdir().unwrap();
+    let skill = dir.path().join(".claude").join("skills").join("next");
+    std::fs::create_dir_all(&skill).unwrap();
+    std::fs::write(
+        skill.join("SKILL.md"),
+        "---\nname: next\ndescription: Continue the plan.\n---\nbody\n",
+    )
+    .unwrap();
+
+    let ext = LuaExtension::from_source("phi-skills", defaults::SKILLS_LUA.to_owned())
+        .unwrap()
+        .with_global(
+            "_phi_skills_cwd",
+            serde_json::json!(dir.path().display().to_string()),
+        )
+        .with_global(
+            "_phi_skills_extra_paths",
+            serde_json::json!([format!("{}/.claude/skills", dir.path().display())]),
+        )
+        .with_global("_phi_skills_include_project", serde_json::json!(false));
+    let rt = RuntimeBuilder::new()
+        .with_cwd(dir.path())
+        .register_extension(ext)
+        .build()
+        .unwrap();
+    let filtered = rt
+        .filter_system_prompt("user prompt", "BASE".to_owned())
+        .await
+        .unwrap();
+    assert!(filtered.contains("<name>next</name>"), "{filtered}");
+    assert!(filtered.contains("<description>Continue the plan.</description>"));
+}
+
+/// A single SKILL.md file path in the `skills` field is also accepted.
+#[tokio::test]
+async fn defaults_skills_extra_path_single_md_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let skill = dir.path().join(".claude").join("skills").join("next");
+    std::fs::create_dir_all(&skill).unwrap();
+    std::fs::write(
+        skill.join("SKILL.md"),
+        "---\nname: next\ndescription: Continue the plan.\n---\nbody\n",
+    )
+    .unwrap();
+
+    let ext = LuaExtension::from_source("phi-skills", defaults::SKILLS_LUA.to_owned())
+        .unwrap()
+        .with_global(
+            "_phi_skills_cwd",
+            serde_json::json!(dir.path().display().to_string()),
+        )
+        .with_global(
+            "_phi_skills_extra_paths",
+            serde_json::json!([format!(
+                "{}/.claude/skills/next/SKILL.md",
+                dir.path().display()
+            )]),
+        )
+        .with_global("_phi_skills_include_project", serde_json::json!(false));
+    let rt = RuntimeBuilder::new()
+        .with_cwd(dir.path())
+        .register_extension(ext)
+        .build()
+        .unwrap();
+    let filtered = rt
+        .filter_system_prompt("user prompt", "BASE".to_owned())
+        .await
+        .unwrap();
+    assert!(filtered.contains("<name>next</name>"), "{filtered}");
+}
+
+/// Each discovered skill is registered as a slash command whose handler
+/// returns a `SendPrompt` action containing the SKILL.md body (frontmatter
+/// stripped, skill directory prefixed).
+#[tokio::test]
+async fn defaults_skills_register_slash_commands() {
+    let dir = tempfile::tempdir().unwrap();
+    let skill = dir.path().join(".phi").join("skills").join("deploy");
+    std::fs::create_dir_all(&skill).unwrap();
+    std::fs::write(
+        skill.join("SKILL.md"),
+        "---\nname: deploy\ndescription: Deploy the app.\n---\n# Deploy\n\nRun the deploy script.\n",
+    )
+    .unwrap();
+
+    let rt = skills_runtime(dir.path(), true);
+
+    // The skill appears as a registered session command.
+    let names: Vec<String> = rt.list_commands().into_iter().map(|c| c.name).collect();
+    assert!(names.contains(&"deploy".to_owned()), "{names:?}");
+
+    // Invoking it returns a SendPrompt with the body (frontmatter stripped).
+    let out = rt.invoke_command_sync("deploy", "").unwrap().unwrap();
+    assert_eq!(out.actions.len(), 1);
+    match &out.actions[0] {
+        phi_ext::UiAction::SendPrompt { text } => {
+            assert!(text.contains("# Deploy"), "{text}");
+            assert!(text.contains("Run the deploy script"), "{text}");
+            // Frontmatter must be stripped.
+            assert!(!text.contains("name: deploy"), "{text}");
+            // Skill directory is prefixed.
+            assert!(text.starts_with("Skill directory: "), "{text}");
+        }
+        other => panic!("expected SendPrompt, got {other:?}"),
+    }
+}
+
+/// User-supplied arguments after the command name are appended to the
+/// injected prompt.
+#[tokio::test]
+async fn defaults_skills_command_appends_arguments() {
+    let dir = tempfile::tempdir().unwrap();
+    let skill = dir.path().join(".phi").join("skills").join("lint");
+    std::fs::create_dir_all(&skill).unwrap();
+    std::fs::write(
+        skill.join("SKILL.md"),
+        "---\nname: lint\ndescription: Run linters.\n---\nLint everything.\n",
+    )
+    .unwrap();
+
+    let rt = skills_runtime(dir.path(), true);
+    let out = rt
+        .invoke_command_sync("lint", "fix --verbose")
+        .unwrap()
+        .unwrap();
+    match &out.actions[0] {
+        phi_ext::UiAction::SendPrompt { text } => {
+            assert!(text.contains("Arguments: fix --verbose"), "{text}");
+        }
+        other => panic!("expected SendPrompt, got {other:?}"),
+    }
+}
+
+/// A skill whose name collides with a built-in command does not break the
+/// build — the skill command is silently skipped (built-in wins).
+#[tokio::test]
+async fn defaults_skills_name_collision_with_builtin_is_skipped() {
+    let dir = tempfile::tempdir().unwrap();
+    let skill = dir.path().join(".phi").join("skills").join("help");
+    std::fs::create_dir_all(&skill).unwrap();
+    std::fs::write(
+        skill.join("SKILL.md"),
+        "---\nname: help\ndescription: A skill named help.\n---\nbody\n",
+    )
+    .unwrap();
+
+    // Load skills AND commands together — the way the session builder does.
+    let skills_ext = LuaExtension::from_source("phi-skills", defaults::SKILLS_LUA.to_owned())
+        .unwrap()
+        .with_global(
+            "_phi_skills_cwd",
+            serde_json::json!(dir.path().display().to_string()),
+        )
+        .with_global("_phi_skills_extra_paths", serde_json::json!([]))
+        .with_global("_phi_skills_include_project", serde_json::json!(true));
+
+    let commands_ext = LuaExtension::from_source("phi-commands", defaults::COMMANDS_LUA.to_owned())
+        .unwrap()
+        .with_global(
+            "_phi_model_names",
+            serde_json::json!(["anthropic/claude-sonnet-4"]),
+        )
+        .with_global("_phi_style_names", serde_json::json!(["phi"]));
+
+    let rt = RuntimeBuilder::new()
+        .with_cwd(dir.path())
+        .register_extension(commands_ext)
+        .register_extension(skills_ext)
+        .build()
+        .unwrap();
+
+    // Built-in "help" still resolves to the help overlay, not the skill.
+    let out = rt.invoke_command_sync("help", "").unwrap().unwrap();
+    assert_eq!(
+        out.actions,
+        vec![phi_ext::UiAction::OpenOverlay {
+            name: phi_ext::OVERLAY_HELP.to_owned(),
+            payload: None,
+        }]
+    );
+}
+
 // ── Approvals: the tool gate ─────────────────────────────────────────────
 
 fn approvals_ext(dir: &std::path::Path, rules: serde_json::Value) -> LuaExtension {

@@ -138,7 +138,11 @@ impl phi_ext::Extension for LuaExtension {
             .collect();
 
         /// One command registration read from Lua:
-        /// (name, description, args_hint, context, aliases, completions).
+        /// (name, description, args_hint, context, aliases, completions, skill).
+        /// `skill` marks a skill-backed slash command: a name collision with
+        /// an already-registered command is a soft skip (warn + continue)
+        /// rather than a hard error, so a skill named "help" doesn't break
+        /// the session build.
         type LuaCommandReg = (
             String,
             String,
@@ -146,6 +150,7 @@ impl phi_ext::Extension for LuaExtension {
             phi_ext::CommandContext,
             Vec<String>,
             Option<Vec<String>>,
+            bool,
         );
         let phi_commands_table: mlua::Table = globals.get("_phi_commands")?;
         let mut commands: Vec<LuaCommandReg> = Vec::new();
@@ -186,6 +191,7 @@ impl phi_ext::Extension for LuaExtension {
                 context,
                 aliases,
                 completions,
+                cmd_table.get::<bool>("skill").unwrap_or(false),
             ));
         }
 
@@ -569,12 +575,12 @@ impl phi_ext::Extension for LuaExtension {
                 }),
             })?;
         }
-
         // ── Register commands ──────────────────────────────────────────────
-        for (cmd_name, description, args_hint, context, aliases, completions) in commands {
+        for (cmd_name, description, args_hint, context, aliases, completions, skill) in commands {
             let tx3 = Arc::clone(&tx);
             let name3 = cmd_name.clone();
-            host.register_command(CommandSpec {
+            let warn_name = cmd_name.clone();
+            let spec = CommandSpec {
                 name: cmd_name,
                 description,
                 args_hint,
@@ -602,7 +608,20 @@ impl phi_ext::Extension for LuaExtension {
                 }),
                 context,
                 aliases,
-            })?;
+            };
+            if let Err(e) = host.register_command(spec) {
+                // Skill commands are best-effort: a name collision with a
+                // built-in command (e.g. a skill named "help") is a soft
+                // skip, not a build-breaking error. Non-skill commands
+                // propagate the error as before.
+                if skill && e.to_string().contains("already registered") {
+                    eprintln!(
+                        "warning: skill command '{warn_name}' collides with an existing command, skipping"
+                    );
+                } else {
+                    return Err(e);
+                }
+            }
         }
 
         // ── Register tools ──────────────────────────────────────────────────

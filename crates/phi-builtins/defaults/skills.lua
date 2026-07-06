@@ -4,7 +4,11 @@
 -- parses their YAML frontmatter (name + description), and appends an
 -- <available_skills> block to the system prompt on every before_agent_start
 -- event. The model reads the full SKILL.md on-demand when a task matches
--- (progressive disclosure).
+-- (progressive disclosure). Each skill is also registered as a slash
+-- command (`/<skill-name>`) whose handler injects the SKILL.md body as a
+-- prompt and starts a model turn — skills are both model-invoked (via the
+-- system-prompt index) and user-invoked (via the slash command), the same
+-- dual-entry design as Claude Code.
 --
 -- ## Runtime globals (injected before this source runs)
 --
@@ -296,6 +300,65 @@ end
 local skills_block = nil
 if #skills > 0 then
   skills_block = available_skills_block(skills)
+end
+
+--------------------------------------------------------------------------------
+-- Slash command registration (skills as commands)
+--------------------------------------------------------------------------------
+
+-- Strip YAML frontmatter (--- ... ---) from SKILL.md content, returning
+-- the body that follows. If the frontmatter is malformed or missing, the
+-- full content is returned unchanged.
+local function strip_frontmatter(content)
+  content = content:match("^%s*(.*)") or content
+  if content:sub(1, 3) ~= "---" then return content end
+  local rest = content:sub(4)
+  rest = rest:match("^\n(.*)") or rest
+  local end_pos = rest:find("\n%-%-%-")
+  if not end_pos then return content end
+  local body = rest:sub(end_pos + 1)
+  -- Strip the leading newline left by the closing ---.
+  body = body:match("^\n(.*)") or body
+  return body
+end
+
+-- Build the prompt injected when the user types `/<skill-name>`. Mirrors
+-- Claude Code's getPromptForCommand: the SKILL.md body prefixed with the
+-- skill's base directory, plus any user-supplied arguments appended.
+local function skill_prompt(skill, args)
+  local raw = phi.fs.readfile(skill.path)
+  local body = raw and strip_frontmatter(raw) or ""
+  -- Derive the skill's directory from its path (parent of SKILL.md).
+  local skill_dir = skill.path:match("^(.*)/[^/]+$") or ""
+  local prompt = body
+  if skill_dir ~= "" then
+    prompt = "Skill directory: " .. skill_dir .. "\n\n" .. prompt
+  end
+  local trimmed_args = (args or ""):match("^%s*(.-)%s*$") or ""
+  if trimmed_args ~= "" then
+    prompt = prompt .. "\n\nArguments: " .. trimmed_args
+  end
+  return prompt
+end
+
+-- Register one slash command per skill so `/<skill-name>` works the same
+-- way as describing the task. The `skill = true` flag tells the bridge to
+-- skip (not crash) on name collisions with built-in commands. The command
+-- handler returns a `SendPrompt` action: the TUI injects the prompt and
+-- starts a model turn, same path as a typed prompt.
+for _, s in ipairs(skills) do
+  local skill = s  -- capture per-iteration
+  phi.register_command(skill.name, {
+    description = skill.description,
+    skill = true,
+    handler = function(args)
+      local prompt = skill_prompt(skill, args)
+      if prompt == "" then
+        return { message = "skill '" .. skill.name .. "' is empty or unreadable" }
+      end
+      return { actions = { { type = "SendPrompt", data = { text = prompt } } } }
+    end,
+  })
 end
 
 --------------------------------------------------------------------------------
