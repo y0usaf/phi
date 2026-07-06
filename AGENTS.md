@@ -68,6 +68,15 @@ If tests pass and the binary builds, `nix run` will be instant because the Nix s
 - **Formatting**: `cargo fmt` for Rust, `nix fmt` for Nix files
 - **Crates**: all under `crates/`, auto-discovered via `members = ["crates/*"]`
 - **Non-Rust files in src**: the Nix source filter includes `.py` and `.json` files (needed for `include_str!()` macros in `phi-repl`, `phi-ai`, and `phi-builtins`). If you add new non-Rust file types that are `include_str!`'d, update the filter in `flake.nix`.
+- **Keybindings**: no hardcoded key checks for remappable shortcuts. Every
+  single-stroke shortcut in the session TUI (`phi-session-tui`) and the mux
+  (`phi-mux`) is a named, data-driven `Keymap` binding overridable from
+  `config.lua` (`[keybinds]` / `mux.keybinds`). Add a new shortcut by
+  declaring a `BindingSpec` (action, name, default binding, description) and
+  dispatching through `lookup_session_action` / `Keymap::lookup` — never a
+  fresh `KeyCode` match. Stateful shortcuts (double-Esc, double-Ctrl+C,
+  Tab interrupt, Enter submit) are the documented exception: they depend on
+  multi-keystroke timing or editor state, not a single stroke.
 
 ## Architecture
 

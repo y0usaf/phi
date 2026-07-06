@@ -94,10 +94,6 @@ impl Ui {
                     self.cancel_login();
                     return false;
                 }
-                if key.code == KeyCode::Up && key.modifiers.contains(KeyModifiers::ALT) {
-                    self.restore_queued();
-                    return false;
-                }
                 let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
                 if key.code == KeyCode::Char('c') && ctrl {
                     let now = std::time::Instant::now();
@@ -127,24 +123,33 @@ impl Ui {
                     }
                     return false;
                 }
-                if let KeyCode::Char('p' | 'P') = key.code
-                    && ctrl
-                {
-                    self.cycle_model(key.modifiers.contains(KeyModifiers::SHIFT));
-                    return false;
-                }
-                if key.code == KeyCode::Char('l') && ctrl {
-                    if !self.request_host_model_modal(true) {
-                        self.open_model_selector(true);
+                // WS6.3: remappable single-stroke shortcuts. The 7 actions
+                // whose defaults (alt+up, ctrl+p/l/t/g/o, shift+tab) can be
+                // overridden from config.lua's `[keybinds]` table route
+                // through one keymap lookup here. Stateful shortcuts
+                // (double-Esc, double-Ctrl+C, Tab interrupt, Enter
+                // submit/login) stay hardcoded below — they depend on
+                // multi-keystroke timing or editor state, not a single
+                // stroke. An unbound key falls through to the editor.
+                if let Some(action) = super::keymap::lookup_session_action(&self.keymap, &key) {
+                    match action {
+                        super::keymap::SessionAction::RestoreQueued => self.restore_queued(),
+                        super::keymap::SessionAction::CycleModel => {
+                            // Shift reverses the cycle direction (both
+                            // ctrl+p and shift+ctrl+p bind to this action; the
+                            // direction comes from the raw key's shift flag).
+                            self.cycle_model(key.modifiers.contains(KeyModifiers::SHIFT));
+                        }
+                        super::keymap::SessionAction::ModelPicker => {
+                            if !self.request_host_model_modal(true) {
+                                self.open_model_selector(true);
+                            }
+                        }
+                        super::keymap::SessionAction::ToggleThinking => self.toggle_thinking(),
+                        super::keymap::SessionAction::ExternalEdit => self.external_edit = true,
+                        super::keymap::SessionAction::CycleThinkingLevel => self.cycle_thinking(),
+                        super::keymap::SessionAction::ToggleTools => self.toggle_tools(),
                     }
-                    return false;
-                }
-                if key.code == KeyCode::Char('t') && ctrl {
-                    self.toggle_thinking();
-                    return false;
-                }
-                if key.code == KeyCode::Char('g') && ctrl {
-                    self.external_edit = true;
                     return false;
                 }
                 if key.code == KeyCode::Tab && self.login.is_none() {
@@ -156,14 +161,6 @@ impl Ui {
                     if self.running.is_some() && self.editor.is_empty() {
                         self.cancel_run();
                     }
-                    return false;
-                }
-                if key.code == KeyCode::BackTab {
-                    self.cycle_thinking();
-                    return false;
-                }
-                if key.code == KeyCode::Char('o') && ctrl {
-                    self.toggle_tools();
                     return false;
                 }
                 if key.code == KeyCode::Enter
@@ -511,6 +508,21 @@ impl Ui {
         self.pending.push(TranscriptEntry::RawLines(vec![
             self.note(&"      esc esc session tree (empty editor)"),
         ]));
+        // Extension-registered shortcuts (WS6.3: surface `list_shortcuts`
+        // so a registered shortcut is visible in /help rather than silently
+        // dropped — the API no longer falsely signals coverage with zero
+        // consumers).
+        let shortcuts = self.runtime.list_shortcuts();
+        if !shortcuts.is_empty() {
+            self.pending.push(TranscriptEntry::RawLines(vec![
+                self.note(&"extension shortcuts:"),
+            ]));
+            for (key, desc) in shortcuts {
+                self.pending.push(TranscriptEntry::RawLines(vec![
+                    self.note(&format!("  {key:<18}{desc}")),
+                ]));
+            }
+        }
     }
 
     fn reset_session(&mut self, cmd_tx: &mpsc::UnboundedSender<Cmd>) {

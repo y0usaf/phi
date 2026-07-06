@@ -7,6 +7,7 @@ pub mod clock;
 pub mod color_cap;
 pub mod editor;
 pub mod fuzzy;
+pub mod keymap;
 #[cfg(feature = "markdown")]
 pub mod markdown;
 pub mod palette;

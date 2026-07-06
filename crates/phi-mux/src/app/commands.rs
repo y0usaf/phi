@@ -169,8 +169,13 @@ impl MuxApp {
             .as_ref()
             .map(|rt| rt.list_commands_in(phi_ext::CommandContext::Mux))
             .unwrap_or_default();
+        let shortcuts = self
+            .visual_runtime
+            .as_ref()
+            .map(|rt| rt.list_shortcuts())
+            .unwrap_or_default();
         let payload = phi_ext::HelpPayload {
-            entries: help_entries(&self.keymap, &commands),
+            entries: help_entries(&self.keymap, &commands, &shortcuts),
         };
         self.toggle_extension_overlay(vid, phi_ext::OVERLAY_HELP, Some(Box::new(payload)));
     }
@@ -659,7 +664,11 @@ impl MuxApp {
 /// Mux-context commands. The content is host data (mux commands + current
 /// keybindings); the overlay itself is registered by `phi-builtins` and
 /// renders whatever entries it's handed.
-fn help_entries(keymap: &Keymap, commands: &[phi_ext::CommandInfo]) -> Vec<phi_ext::HelpEntry> {
+fn help_entries(
+    keymap: &Keymap<AppAction>,
+    commands: &[phi_ext::CommandInfo],
+    shortcuts: &[(String, String)],
+) -> Vec<phi_ext::HelpEntry> {
     use phi_ext::HelpEntry;
     fn item(keys: &str, description: &str) -> HelpEntry {
         HelpEntry::Item {
@@ -727,6 +736,17 @@ fn help_entries(keymap: &Keymap, commands: &[phi_ext::CommandInfo]) -> Vec<phi_e
         item("home/end g/G", "jump top / bottom"),
         item("esc q ctrl+c", "close"),
     ]);
+    // Extension-registered shortcuts (WS6.3): surface `list_shortcuts`
+    // so registered shortcuts appear in the help overlay rather than
+    // being silently dropped — the API no longer falsely signals coverage
+    // with zero consumers.
+    if !shortcuts.is_empty() {
+        entries.push(HelpEntry::Blank);
+        entries.push(HelpEntry::Heading("Extension shortcuts".to_owned()));
+        for (key, desc) in shortcuts {
+            entries.push(item(key, desc));
+        }
+    }
     entries
 }
 

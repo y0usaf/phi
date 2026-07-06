@@ -41,6 +41,7 @@ mod chat;
 mod composition;
 mod editor;
 mod events;
+mod keymap;
 mod navigation;
 /// Truecolor ANSI escapes for the inline TUI's transcript/chrome rendering,
 /// derived from the host terminal's reported colors when available. Mirrors
@@ -125,6 +126,9 @@ pub struct TuiSetup {
 pub struct UiSetup {
     pub max_iterations: usize,
     pub tools: phi_session::config::ToolsSettings,
+    /// Inline session TUI keybinding overrides (WS6.3), action name →
+    /// binding string. `None` keeps the hardcoded defaults.
+    pub keybinds: Option<std::collections::HashMap<String, String>>,
     pub storage: Arc<AuthStorage>,
     pub registry: Arc<Registry>,
     /// Root model handle; /model swaps it in place.
@@ -864,6 +868,13 @@ struct Ui {
     /// Terminal colours probed (or host-forwarded) at startup, kept so a
     /// `/style` switch can re-derive the palette without re-probing.
     pub(super) terminal_colors: Option<phi_tui::TerminalColors>,
+    /// Remappable single-stroke session shortcuts (WS6.3): the 7 actions
+    /// whose defaults (alt+up, ctrl+p/l/t/g/o, shift+tab) can be overridden
+    /// from config.lua's `[keybinds]` table. Stateful shortcuts (double-Esc
+    /// tree, double-Ctrl+C quit, Tab interrupt, Enter submit/login) stay
+    /// hardcoded in `events.rs` — they depend on multi-keystroke timing or
+    /// editor state, not a single stroke.
+    pub(super) keymap: phi_tui::keymap::Keymap<keymap::SessionAction>,
 }
 
 /// Current git branch of `cwd` (or a short detached-HEAD hash), following a
@@ -901,8 +912,13 @@ impl Ui {
             root_lm,
             sub_lm,
             store,
-            ..
+            keybinds,
+            max_iterations: _,
         } = setup;
+        // WS6.3: build the remappable single-stroke keymap from config
+        // overrides (config.lua `[keybinds]`); unknown/invalid bindings
+        // fall back to each action's defaults.
+        let keymap = keymap::session_keymap(keybinds.as_ref().unwrap_or(&Default::default()));
         let model_names = registry
             .supported_models()
             .map(|m| format!("{}/{}", m.provider, m.id))
@@ -997,6 +1013,7 @@ impl Ui {
             branch: None,
             branch_at: std::time::Instant::now() - Duration::from_secs(60),
             terminal_colors: None,
+            keymap,
         }
     }
 
@@ -1136,6 +1153,7 @@ mod tests {
                     tool_summary: false,
                 },
                 storage,
+                keybinds: None,
                 registry,
                 root_lm,
                 sub_lm,

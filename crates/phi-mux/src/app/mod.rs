@@ -30,7 +30,7 @@ use crate::grid::ansi::HardwareCursor;
 use crate::grid::layout::{CellLayout, SIDEBAR_WIDTH_DEFAULT, compute_cell_layout};
 use crate::grid::selection::{SelectionPoint, selected_text};
 use crate::grid::theme;
-use crate::keys::{AppAction, KeyStroke, Keymap, KeymapMatch};
+use crate::keys::{ACTION_SPECS, AppAction, KeyStroke, Keymap, KeymapMatch};
 use crate::persisted::{self as persisted, PersistedState};
 use crate::remote::protocol::ServerMsg;
 use crate::remote::server::{AttachInfo, ClientRegistry, RemoteEvent};
@@ -262,7 +262,10 @@ fn build_app(
         shared,
         workspace: ws.workspace,
         views: BTreeMap::from([(seed_client, MuxView::new(ws.focus, size))]),
-        keymap: Keymap::from_overrides(mux_config.keybinds.as_ref().unwrap_or(&Default::default())),
+        keymap: Keymap::from_overrides(
+            mux_config.keybinds.as_ref().unwrap_or(&Default::default()),
+            ACTION_SPECS,
+        ),
         sidebar_width: mux_config.sidebar_width.unwrap_or(SIDEBAR_WIDTH_DEFAULT),
         extension_overlays: visual_runtime
             .as_ref()
@@ -348,7 +351,7 @@ struct MuxApp {
     /// Per-client view state, keyed by client id (0 = the synthetic local
     /// client). Views are created on attach and removed on detach.
     views: BTreeMap<u64, MuxView>,
-    keymap: Keymap,
+    keymap: Keymap<AppAction>,
     sidebar_width: u16,
     /// Extension-registered overlay specs, cloned from the visual runtime.
     extension_overlays: Vec<OverlaySpec>,

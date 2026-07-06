@@ -97,6 +97,11 @@ shared_fields_struct! {
         /// choice persisted by `/style` (`style.json` in the data dir)
         /// wins over this declarative default.
         pub style: Option<String>,
+        /// Inline session TUI keybinding overrides (WS6.3), action name →
+        /// binding string, e.g. `toggle_tools = "ctrl+b"`. Unknown/invalid
+        /// bindings fall back to defaults. Mux chrome keybinds live under
+        /// `mux.keybinds`. Consumed by the session TUI, not by core.
+        pub keybinds: Option<HashMap<String, String>>,
     }
 }
 
@@ -326,7 +331,9 @@ impl Config {
             max_errors,
             max_concurrent_subcalls,
             skills,
-            coding_tools_native
+            coding_tools_native,
+            style,
+            keybinds
         );
         // MCP servers merge per name: a project entry overrides the
         // same-named global entry wholesale, others coexist.
@@ -424,6 +431,8 @@ shared_fields_struct! {
         /// Initial style pack from config.lua `style` (WS10); the persisted
         /// `/style` choice overrides it at runtime-boot time.
         pub style: Option<String>,
+        /// Inline session TUI keybinding overrides (WS6.3). None = defaults.
+        pub keybinds: Option<HashMap<String, String>>,
     }
 }
 
@@ -480,6 +489,7 @@ impl Settings {
             skills: config.skills.unwrap_or_default(),
             coding_tools_native: config.coding_tools_native.unwrap_or(false),
             style: config.style,
+            keybinds: config.keybinds,
         }
     }
 }
