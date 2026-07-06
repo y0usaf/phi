@@ -52,10 +52,13 @@ impl Transcript {
     /// finalized block's lines are immutable for its key and the prefix is
     /// append-only. Callers must bump it whenever previously supplied
     /// content may have changed (re-render at a new width, expand toggles,
-    /// consolidated cards). A bump rebuilds the assembly while preserving
-    /// commit progress. As a safety net, a prefix that diverges from the
-    /// cache (key or line-count mismatch, shrunk block list) also triggers
-    /// a rebuild, so a missed bump self-heals on any structural change.
+    /// consolidated cards). A bump rebuilds the assembly; commit progress is
+    /// *content-addressed* — preserved only up to the first row where the new
+    /// durable prefix differs from the old one, so changed rows re-emit and
+    /// the commit point never lands in the live region (WS6.4). As a safety
+    /// net, a prefix that diverges from the cache (key or line-count mismatch,
+    /// shrunk block list) also triggers a rebuild, so a missed bump self-heals
+    /// on any structural change.
     pub fn render<'a>(
         &mut self,
         _viewport_height: usize,
@@ -74,26 +77,66 @@ impl Transcript {
                 .iter()
                 .zip(blocks)
                 .all(|((key, len), block)| block.key == key && block.lines.len() == *len);
-        if !cache_valid {
-            self.durable.clear();
+
+        // Content-addressed commit progress (WS6.4). On a cache miss the
+        // durable prefix is reassembled from scratch. `committed_rows` is a
+        // row count into the *old* assembly; if the new assembly's content
+        // diverges from the old one at row K, every row from K on is new
+        // content and must re-emit as scrollback — a stale commit point
+        // pointing past K would silently swallow the new rows (and, when
+        // live content keeps the total above the stale count, the live
+        // region too). So we build the new assembly, then keep commit
+        // progress only up to the first row where old and new differ (and
+        // never above the new durable boundary). The fast path — same
+        // generation and the (key, len) fingerprint still matches — keeps
+        // the append-only assembly and skips the divergence scan: the
+        // fingerprint guarantees no finalized block's row count changed, so
+        // the committed prefix is byte-identical to the cache.
+        if cache_valid {
+            // Append newly finalized blocks to the durable assembly. Stripped
+            // contributions never end blank, so exactly one blank separator
+            // goes between visible blocks.
+            for block in &blocks[self.durable_blocks.len()..prefix_len] {
+                let contribution = strip_plain_blank_edges(block.lines);
+                self.durable_blocks
+                    .push((block.key.to_owned(), block.lines.len()));
+                if contribution.is_empty() {
+                    continue;
+                }
+                if !self.durable.is_empty() {
+                    self.durable.push(String::new());
+                }
+                self.durable.extend_from_slice(contribution);
+            }
+        } else {
+            // Rebuild: assemble the new durable prefix into a fresh buffer,
+            // then clamp commit progress to the common content prefix with
+            // the old assembly (content-addressed).
+            let old = std::mem::take(&mut self.durable);
             self.durable_blocks.clear();
             self.generation = generation;
-        }
-
-        // Append newly finalized blocks to the durable assembly. Stripped
-        // contributions never end blank, so exactly one blank separator goes
-        // between visible blocks.
-        for block in &blocks[self.durable_blocks.len()..prefix_len] {
-            let contribution = strip_plain_blank_edges(block.lines);
-            self.durable_blocks
-                .push((block.key.to_owned(), block.lines.len()));
-            if contribution.is_empty() {
-                continue;
+            for block in &blocks[..prefix_len] {
+                let contribution = strip_plain_blank_edges(block.lines);
+                self.durable_blocks
+                    .push((block.key.to_owned(), block.lines.len()));
+                if contribution.is_empty() {
+                    continue;
+                }
+                if !self.durable.is_empty() {
+                    self.durable.push(String::new());
+                }
+                self.durable.extend_from_slice(contribution);
             }
-            if !self.durable.is_empty() {
-                self.durable.push(String::new());
-            }
-            self.durable.extend_from_slice(contribution);
+            // Keep commit progress only up to the first diverging row: rows
+            // at and past it are new content that must re-emit. Cap at the
+            // new durable length so the commit point never lands in the live
+            // region (live rows are never committed).
+            let common = old
+                .iter()
+                .zip(self.durable.iter())
+                .take_while(|(a, b)| a == b)
+                .count();
+            self.committed_rows = self.committed_rows.min(common).min(self.durable.len());
         }
 
         // Assemble the live region fresh each frame: every block from the
@@ -148,6 +191,18 @@ impl Transcript {
         } else {
             live_rows.split_off(skip - live_sep)
         };
+
+        // WS6.4 invariant: the commit point never enters the live region.
+        // `committed_rows` counts durable-prefix rows already emitted as
+        // terminal scrollback; live (non-finalized) rows are repaintable and
+        // must never be treated as already-emitted. The content-addressed
+        // clamp above enforces this; this assert catches any regression.
+        debug_assert!(
+            self.committed_rows <= durable_end,
+            "commit point {} past durable boundary {}",
+            self.committed_rows,
+            durable_end
+        );
 
         Frame {
             scrollback,
