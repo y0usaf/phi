@@ -194,11 +194,26 @@ impl Rlm {
     }
 
     /// Register the per-turn tool list on the root model: the engine-owned
-    /// `repl` tool (always — bare core must boot), plus every native-exposed
-    /// tool from the extension registry (WS9.3a). Called before each run so
-    /// the list tracks registry state.
+    /// `repl` tool (unless the active agent's `env.repl_tool` is `Some(false)`,
+    /// WS1.2 — the pi-shaped profile hides the REPL surface), plus every
+    /// native-exposed tool from the extension registry (WS9.3a). Called
+    /// before each run so the list tracks registry state. Bare core (no
+    /// agent active, or the agent leaves `env` empty) keeps the `repl` tool —
+    /// today's behavior, so bare core boots.
     pub fn register_tools(&self) {
-        let mut tools = vec![repl_tool_definition()];
+        // The `repl` tool is engine-owned. The active agent's `env.repl_tool`
+        // knob controls whether it appears in the model's surface: `None` or
+        // `Some(true)` = inherit (on, today's behavior); `Some(false)` = hide
+        // it (the pi-shaped flat tool-call loop has no REPL surface).
+        let repl_enabled = self
+            .runtime
+            .as_ref()
+            .and_then(|rt| rt.active_agent_repl_tool())
+            .unwrap_or(true);
+        let mut tools = Vec::new();
+        if repl_enabled {
+            tools.push(repl_tool_definition());
+        }
         if let Some(rt) = &self.runtime {
             for spec in rt.native_tool_specs() {
                 // `repl` is engine-registered; a registry tool can't shadow it.
@@ -336,6 +351,23 @@ impl Rlm {
             ContextPayload::Str(s) => (None, Some(s)),
             ContextPayload::Json(v) => (Some(v), None),
         };
+        // The active agent's `env.context` knob controls whether the
+        // `context` / `context_0` variables are injected into the REPL env
+        // (WS1.2). `None` or `Some(true)` = inherit (inject, today's
+        // behavior); `Some(false)` = skip injection (the pi-shaped profile
+        // has no context-variable scaffold). The payload is still threaded
+        // to `QueryMetadata` for the user prompt either way — this gate is
+        // only about the REPL-side `context` variable, not the prompt.
+        let context_enabled = self
+            .runtime
+            .as_ref()
+            .and_then(|rt| rt.active_agent_context())
+            .unwrap_or(true);
+        let (context, context_str) = if context_enabled {
+            (context, context_str)
+        } else {
+            (None, None)
+        };
         let mut env = PythonEnvFactory {
             python: self.python.clone(),
         }
@@ -433,6 +465,15 @@ impl Rlm {
         // In-loop compaction state (successful count + failure breaker).
         let mut compaction = super::compaction::CompactionState::default();
 
+        // Whether the engine-owned `repl` tool is exposed this run (WS1.2).
+        // Mirrors `register_tools`: `None`/`Some(true)` = on, `Some(false)` =
+        // hidden. A hallucinated `repl` call when the tool is hidden falls
+        // through to the unknown-tool path (synthetic error), not the REPL.
+        let repl_enabled = self
+            .runtime
+            .as_ref()
+            .and_then(|rt| rt.active_agent_repl_tool())
+            .unwrap_or(true);
         let iteration_limit = self.iteration_limit();
         let mut i = 0usize;
         // Steer text queued by save_point in the previous tool-call turn. Carried
@@ -558,7 +599,7 @@ impl Rlm {
                     // are skipped here — the banking pass below pushes a
                     // synthetic error tool_result for them so the provider
                     // always sees one result per tool_use.
-                    let route = if name == "repl" {
+                    let route = if name == "repl" && repl_enabled {
                         match arguments.get("code").and_then(|v| v.as_str()) {
                             Some(code) => ToolRoute::Repl(code.to_owned()),
                             None => continue,

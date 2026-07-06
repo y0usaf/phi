@@ -291,10 +291,10 @@ parity-as-feature-set stays rejected.
       the engine — they are forward-compatible slots for WS1.2/1.3. Six
       tests cover activation, unknown-name rejection, duplicate
       registration, and serde round-trips. **Remaining for the 1.1+1.2
-      refactor:** WS1.2 (demote `repl` to a default-profile tool via
-      `env.repl_tool`) and the `--agent` CLI flag (config-only today,
-      matching `--style`). Runtime `/agent` switching applies on the
-      next session build (the note says so), not mid-turn.
+      refactor:** the `--agent` CLI flag (config-only today, matching
+      `--style`); the `env.repl_tool`/`env.context` knobs landed in the
+      WS1.2 slice below. Runtime `/agent` switching applies on the next
+      session build (the note says so), not mid-turn.
 - [ ] **1.2 Demote `repl` to a default-profile tool.** `register_tools`
       (`phi-rlm/src/engine/rlm/core.rs:200`) hardcodes
       `repl_tool_definition()` ahead of the registry, and the Python env
@@ -310,6 +310,28 @@ parity-as-feature-set stays rejected.
       first Python-dispatch invocation, never for profiles whose roster is
       pure `Handler`. `answer`-dict protocol and scaffold restore gate on
       `env.repl_tool` (they're meaningless without the REPL surface).
+      *Landed as (WS1.2 slice — model-visible surface, 2026-07-05):* the
+      two surface knobs are wired into the engine. `AppRuntime` exposes
+      `active_agent_env` / `active_agent_repl_tool` / `active_agent_context`
+      (fall-through accessors mirroring `active_agent_system_prompt`).
+      `register_tools` gates `repl_tool_definition()` on
+      `env.repl_tool` (default on — bare core boots); `start_env` gates
+      `context` / `context_0` injection on `env.context` (the payload
+      still reaches the user prompt; only the REPL-side variable is
+      gated); the exec-loop route check (`name == "repl" && repl_enabled`)
+      stops a hallucinated `repl` call from routing to the REPL when the
+      tool is hidden (it falls through to the unknown-tool synthetic-error
+      path). Lua parity: the bridge collects the `env = { repl_tool = …,
+      context = … }` block into `AgentSpec.env`; `AgentSpec::with_env` /
+      `AgentEnv::no_repl_tool` / `AgentEnv::no_context` builders for
+      programmatic use. Four engine tests cover repl-hidden, repl-default,
+      context-skipped, context-default; one serde round-trip covers the env
+      block. **Remaining for 1.2:** the lazy Python subprocess (boot on
+      first Python-dispatch, skip for pure-`Handler` rosters) and the
+      `answer`-dict / scaffold-restore gate on `env.repl_tool`. Both are
+      engine-internal optimizations/invariants, not model-surface changes —
+      the pi pack (WS1.5) is unblocked by this slice because its
+      `repl_tool = false` / `context = false` already takes effect.
 - [ ] **1.3 Turn-protocol knobs, not user-supplied loops.** The loop stays
       one engine-owned `run_loop` parameterized by profile policy —
       loop-as-arbitrary-extension-code remains deferred until the knob

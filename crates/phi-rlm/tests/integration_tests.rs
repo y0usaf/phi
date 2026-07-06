@@ -2107,3 +2107,200 @@ async fn register_tools_includes_native_registry_tools() {
     assert_eq!(greet.input_schema["properties"]["who"]["type"], "string");
     assert_eq!(greet.input_schema["required"][0], "who");
 }
+
+// ── WS1.2: agent env knobs (repl_tool / context) ─────────────────────────────
+
+/// A test extension that registers an agent profile with a given env block.
+struct AgentExt {
+    name: &'static str,
+    env: Option<phi_ext::AgentEnv>,
+}
+
+impl phi_ext::Extension for AgentExt {
+    fn manifest(&self) -> phi_ext::ExtensionManifest {
+        phi_ext::ExtensionManifest {
+            id: format!("test.agent-{}", self.name),
+            name: format!("Agent{}", self.name),
+            version: "0".to_owned(),
+            description: "WS1.2 test agent".to_owned(),
+        }
+    }
+    fn register(&self, host: &mut dyn phi_ext::ExtensionHost) -> anyhow::Result<()> {
+        let mut spec = phi_ext::AgentSpec::new(self.name);
+        if let Some(env) = &self.env {
+            spec = spec.with_env(env.clone());
+        }
+        host.register_agent(spec)
+    }
+}
+
+/// Build a runtime with the native tools plus an agent profile, then activate
+/// the agent. The native tools let us observe whether `repl` is still in the
+/// per-turn tool list alongside them.
+fn agent_runtime(name: &'static str, env: Option<phi_ext::AgentEnv>) -> Arc<phi_ext::AppRuntime> {
+    let rt = Arc::new(
+        phi_ext::RuntimeBuilder::new()
+            .with_cwd(std::path::Path::new("."))
+            .register_extension(NativeToolsExt)
+            .register_extension(AgentExt { name, env })
+            .build()
+            .expect("build runtime"),
+    );
+    rt.set_active_agent(Some(name)).expect("activate agent");
+    rt
+}
+
+/// `env.repl_tool = false` removes the engine-owned `repl` tool from the
+/// model's per-turn surface; the native registry tools remain. This is the
+/// pi-shaped profile's flat tool-call loop (no REPL surface).
+#[tokio::test]
+async fn register_tools_omits_repl_when_agent_env_repl_tool_false() {
+    struct CapturingLm(Mutex<Vec<phi_ai::ToolDefinition>>);
+    #[async_trait]
+    impl LanguageModel for CapturingLm {
+        fn name(&self) -> String {
+            "capturing".to_owned()
+        }
+        fn set_tools(&self, tools: Vec<phi_ai::ToolDefinition>) {
+            *self.0.lock().unwrap() = tools;
+        }
+        async fn complete(
+            &self,
+            _prompt: &[ChatMessage],
+            _cancel: &tokio_util::sync::CancellationToken,
+        ) -> Result<Completion, String> {
+            Err("unused".into())
+        }
+    }
+
+    let root = Arc::new(CapturingLm(Mutex::new(Vec::new())));
+    let engine = Rlm::new(
+        RlmConfig::default(),
+        root.clone(),
+        quiet_sub(),
+        "python3".to_owned(),
+    )
+    .with_runtime(agent_runtime(
+        "pi",
+        Some(phi_ext::AgentEnv {
+            repl_tool: Some(false),
+            context: Some(false),
+        }),
+    ));
+    engine.register_tools();
+
+    let tools = root.0.lock().unwrap().clone();
+    let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+    // `repl` is gone; the native registry tools remain.
+    assert!(
+        !names.contains(&"repl"),
+        "repl tool should be hidden: {names:?}"
+    );
+    assert_eq!(names, vec!["greet", "shout"]);
+}
+
+/// The default (no agent active, or an agent with an empty env) keeps the
+/// `repl` tool — today's behavior, so bare core boots. This is the fall-
+/// through guarantee: `None`/absent knobs inherit the engine default.
+#[tokio::test]
+async fn register_tools_keeps_repl_for_default_agent() {
+    struct CapturingLm(Mutex<Vec<phi_ai::ToolDefinition>>);
+    #[async_trait]
+    impl LanguageModel for CapturingLm {
+        fn name(&self) -> String {
+            "capturing".to_owned()
+        }
+        fn set_tools(&self, tools: Vec<phi_ai::ToolDefinition>) {
+            *self.0.lock().unwrap() = tools;
+        }
+        async fn complete(
+            &self,
+            _prompt: &[ChatMessage],
+            _cancel: &tokio_util::sync::CancellationToken,
+        ) -> Result<Completion, String> {
+            Err("unused".into())
+        }
+    }
+
+    let root = Arc::new(CapturingLm(Mutex::new(Vec::new())));
+    // An agent with an empty env block — both knobs absent → inherit (on).
+    let engine = Rlm::new(
+        RlmConfig::default(),
+        root.clone(),
+        quiet_sub(),
+        "python3".to_owned(),
+    )
+    .with_runtime(agent_runtime("rlm", None));
+    engine.register_tools();
+
+    let tools = root.0.lock().unwrap().clone();
+    let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+    assert_eq!(names, vec!["repl", "greet", "shout"]);
+}
+
+/// `env.context = false` skips `context` / `context_0` injection into the
+/// REPL env: a `repl` call that references `context_0` raises a NameError
+/// instead of printing the payload. The payload still reaches the user
+/// prompt (this gate is only about the REPL-side variable).
+#[tokio::test]
+async fn env_context_false_skips_context_injection() {
+    let root = Arc::new(ScriptedLm::new(
+        "root-model",
+        &[
+            // Probe whether context_0 is defined in the REPL namespace.
+            "Probe.\n```repl\ntry:\n    context_0\n    print('HAS_CONTEXT')\nexcept NameError:\n    print('NO_CONTEXT')\n```",
+            // Second turn: accept the probe result as the answer.
+            "done",
+        ],
+    ));
+    let engine = rlm(RlmConfig::default(), root.clone(), quiet_sub()).with_runtime(agent_runtime(
+        "pi",
+        Some(phi_ext::AgentEnv {
+            repl_tool: None,
+            context: Some(false),
+        }),
+    ));
+    let result = engine
+        .completion(
+            ContextPayload::Str("the context payload".into()),
+            Some("Probe the env."),
+            &CancellationToken::new(),
+        )
+        .await;
+    assert_eq!(result.stop, StopCause::Prose, "{:?}", result.error);
+    // The repl tool result for turn 1 must report NO_CONTEXT (context_0 absent).
+    let results = tool_results(&root.recorded_prompts()[1]);
+    assert!(
+        results.iter().any(|r| r.contains("NO_CONTEXT")),
+        "context_0 should be absent from the REPL env, got: {results:?}"
+    );
+}
+
+/// Sanity: with the default agent (context inherited/on), `context_0` IS
+/// injected — the same probe prints HAS_CONTEXT. This guards against the
+/// gate accidentally inverting.
+#[tokio::test]
+async fn default_agent_injects_context() {
+    let root = Arc::new(ScriptedLm::new(
+        "root-model",
+        &[
+            "Probe.\n```repl\ntry:\n    context_0\n    print('HAS_CONTEXT')\nexcept NameError:\n    print('NO_CONTEXT')\n```",
+            "done",
+        ],
+    ));
+    let engine = rlm(RlmConfig::default(), root.clone(), quiet_sub())
+        .with_runtime(agent_runtime("rlm", None));
+    let result = engine
+        .completion(
+            ContextPayload::Str("the context payload".into()),
+            Some("Probe the env."),
+            &CancellationToken::new(),
+        )
+        .await;
+    assert_eq!(result.stop, StopCause::Prose, "{:?}", result.error);
+    let results = tool_results(&root.recorded_prompts()[1]);
+    assert!(
+        results.iter().any(|r| r.contains("HAS_CONTEXT")),
+        "context_0 should be present in the REPL env, got: {results:?}"
+    );
+}

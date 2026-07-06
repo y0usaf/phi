@@ -57,6 +57,24 @@ pub struct AgentEnv {
     pub context: Option<bool>,
 }
 
+impl AgentEnv {
+    /// Hide the `repl` tool from the model's surface (the pi-shaped profile).
+    pub fn no_repl_tool() -> Self {
+        Self {
+            repl_tool: Some(false),
+            context: None,
+        }
+    }
+
+    /// Skip `context` / `context_0` injection into the REPL env.
+    pub fn no_context() -> Self {
+        Self {
+            repl_tool: None,
+            context: Some(false),
+        }
+    }
+}
+
 /// The turn-protocol block (WS1.3). Each knob is optional and falls through
 /// to the engine default when absent — so the shipped `rlm` profile leaves
 /// this empty and the pi/codex profiles set the knobs they differ on.
@@ -149,6 +167,15 @@ impl AgentSpec {
         self.subagent_defaults = Some(profile.into());
         self
     }
+
+    /// Set the execution-environment block (WS1.2). Convenience for tests
+    /// and for Rust extensions building an agent programmatically; Lua
+    /// extensions set `env = { repl_tool = ..., context = ... }` and the
+    /// bridge collects it.
+    pub fn with_env(mut self, env: AgentEnv) -> Self {
+        self.env = Some(env);
+        self
+    }
 }
 
 #[cfg(test)]
@@ -184,5 +211,23 @@ mod tests {
         // env and turn should be absent (not null) when not set
         assert!(json.get("env").map(|v| v.is_null()).unwrap_or(true));
         assert!(json.get("turn").map(|v| v.is_null()).unwrap_or(true));
+    }
+
+    #[test]
+    fn env_round_trips_repl_tool_and_context() {
+        let spec = AgentSpec::new("pi")
+            .with_system_prompt("flat tool-call loop")
+            .with_env(AgentEnv {
+                repl_tool: Some(false),
+                context: Some(false),
+            });
+        let json = serde_json::to_string(&spec).unwrap();
+        assert!(json.contains("\"env\""), "{json}");
+        assert!(json.contains("\"repl_tool\":false"), "{json}");
+        assert!(json.contains("\"context\":false"), "{json}");
+        let back: AgentSpec = serde_json::from_str(&json).unwrap();
+        let env = back.env.expect("env survived round-trip");
+        assert_eq!(env.repl_tool, Some(false));
+        assert_eq!(env.context, Some(false));
     }
 }

@@ -504,6 +504,20 @@ impl phi_ext::Extension for LuaExtension {
             if let Some(orch) = ag.get::<Option<bool>>("orchestrator")? {
                 spec.orchestrator = Some(orch);
             }
+            // env block (WS1.2): { repl_tool = false, context = false }.
+            // Each knob is optional; absent knobs fall through to the engine
+            // default (on). Collected here so the engine can consume them;
+            // the tools/turn blocks are forward-compatible slots (WS1.3).
+            if let Some(env) = ag.get::<Option<mlua::Table>>("env")? {
+                let mut agent_env = phi_ext::AgentEnv::default();
+                if let Some(repl_tool) = env.get::<Option<bool>>("repl_tool")? {
+                    agent_env.repl_tool = Some(repl_tool);
+                }
+                if let Some(context) = env.get::<Option<bool>>("context")? {
+                    agent_env.context = Some(context);
+                }
+                spec.env = Some(agent_env);
+            }
             if let Some(sub) = ag.get::<Option<String>>("subagent_defaults")? {
                 spec.subagent_defaults = Some(sub);
             }

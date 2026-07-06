@@ -1095,6 +1095,30 @@ impl AppRuntime {
         self.active_agent_spec().and_then(|a| a.orchestrator)
     }
 
+    /// The active agent's execution-environment block (WS1.2), if one is
+    /// set. `None` when no agent is active or the agent carries no `env`
+    /// block — the caller falls back to the engine defaults (both knobs on,
+    /// today's behavior, so bare core boots).
+    pub fn active_agent_env(&self) -> Option<&crate::AgentEnv> {
+        self.active_agent_spec().and_then(|a| a.env.as_ref())
+    }
+
+    /// The `repl_tool` knob in effect: the active agent's `env.repl_tool`,
+    /// if set. `None` = inherit (the `repl` tool is exposed, today's
+    /// behavior). `Some(false)` = hide the `repl` tool from the model's
+    /// surface and skip its routing (WS1.2 — the pi-shaped profile).
+    pub fn active_agent_repl_tool(&self) -> Option<bool> {
+        self.active_agent_env().and_then(|e| e.repl_tool)
+    }
+
+    /// The `context` knob in effect: the active agent's `env.context`, if
+    /// set. `None` = inherit (inject `context` / `context_0`, today's
+    /// behavior). `Some(false)` = skip `context` / `context_0` injection
+    /// (WS1.2 — the pi-shaped profile has no context-variable scaffold).
+    pub fn active_agent_context(&self) -> Option<bool> {
+        self.active_agent_env().and_then(|e| e.context)
+    }
+
     // ── Visual: theme accessors ──────────────────────────────────────────
 
     /// Get a registered theme by name.
