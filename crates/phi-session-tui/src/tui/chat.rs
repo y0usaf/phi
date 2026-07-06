@@ -1110,7 +1110,17 @@ impl Ui {
 
     pub(super) fn push_repl_block(&mut self, depth: usize, text: &str, max: usize) {
         if self.block_active {
-            self.ensure_block_gap();
+            // The repl-as-tool container (`repl_as_tool` chrome) is one
+            // card: the `● Repl` header pushed by `begin_block` and the
+            // code that hangs directly under it. A blank separator here
+            // would split the card — the header is the block's only row
+            // right after `begin_block`, so skip the gap in that case.
+            // Nested repls (depth > 0) push into an already-populated
+            // block and still want the separator from prior content.
+            let just_opened = self.chrome.repl_as_tool && self.block.len() == 1;
+            if !just_opened {
+                self.ensure_block_gap();
+            }
         } else if depth == 0 {
             self.ensure_pending_gap();
         }

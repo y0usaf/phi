@@ -3004,6 +3004,42 @@ match1
             "no gap between two tool cards: {plain:?}"
         );
     }
+    #[test]
+    fn repl_as_tool_header_has_no_gap_to_code() {
+        // The repl-as-tool container (`repl_as_tool` chrome) is one card:
+        // the `● Repl` header and the code hanging directly under it. The
+        // live path opens the block with `begin_block` (pushing the header)
+        // then pushes the code via `push_repl_block`; a blank separator
+        // between header and code would split the card (claude-code hangs
+        // content flush under the tool name). Mirrors the replay path,
+        // which never gaps header↔code.
+        let mut ui = test_ui(80, 24);
+        ui.chrome = phi_ext::ChromeSpec {
+            glyph_ok: "●".to_owned(),
+            container: phi_ext::ChromeContainer::Flat,
+            repl_as_tool: true,
+            ..Default::default()
+        };
+        ui.begin_block();
+        ui.push_repl_block(0, "print(1 + 1)", usize::MAX);
+
+        let plain: Vec<String> = ui.block.iter().map(|l| phi_tui::strip_ansi(l)).collect();
+        let header_idx = plain
+            .iter()
+            .position(|l| l.starts_with("● repl"))
+            .expect("repl header in block");
+        let code_idx = plain
+            .iter()
+            .position(|l| l.contains("print(1 + 1)"))
+            .expect("code in block");
+        // The code must be the row directly under the header — no blank
+        // line between them.
+        assert_eq!(
+            code_idx,
+            header_idx + 1,
+            "repl-as-tool header must be flush to its code: {plain:?}"
+        );
+    }
 
     #[test]
     fn block_gap_between_top_level_blocks() {
