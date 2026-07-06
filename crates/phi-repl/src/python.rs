@@ -37,6 +37,14 @@ pub struct PythonRepl {
     setup: Option<EnvSetup>,
     proc: Option<Proc>,
     next_id: u64,
+    /// When true, [`ReplEnv::start`] stores the setup but defers spawning the
+    /// subprocess until the first `exec` / `answer_state` call (lazy boot,
+    /// WS1.2). A profile whose roster is pure `Handler` tools never spawns at
+    /// all — the env's process is never started, never killed. The first
+    /// Python-dispatch invocation (`repl` or a `dispatch: Python` tool) pays
+    /// the one-time spawn cost. `false` (the default) spawns eagerly in
+    /// `start`, matching the pre-lazy behavior.
+    lazy: bool,
 }
 
 struct Proc {
@@ -61,7 +69,15 @@ impl PythonRepl {
             setup: None,
             proc: None,
             next_id: 0,
+            lazy: false,
         }
+    }
+
+    /// Defer the subprocess spawn until the first `exec` / `answer_state`
+    /// (lazy boot, WS1.2). A pure-`Handler` roster then never spawns.
+    pub fn lazy(mut self, lazy: bool) -> Self {
+        self.lazy = lazy;
+        self
     }
 
     async fn send(stdin: &Arc<Mutex<ChildStdin>>, frame: &Value) -> std::io::Result<()> {
@@ -361,10 +377,21 @@ impl ReplEnv for PythonRepl {
     async fn start(&mut self, setup: EnvSetup) -> Result<(), ReplError> {
         self.setup = Some(setup);
         self.kill_current().await;
+        // Lazy boot (WS1.2): defer the subprocess spawn until the first
+        // `exec` / `answer_state`. A profile whose roster is pure `Handler`
+        // tools then never spawns. Eager mode (the default) spawns now,
+        // matching the pre-lazy behavior.
+        if self.lazy {
+            return Ok(());
+        }
         self.spawn().await
     }
 
     async fn exec(&mut self, code: &str, timeout: Duration) -> Result<ReplResult, ReplError> {
+        // Lazy boot: spawn on first use if `start` deferred it.
+        if self.proc.is_none() {
+            self.spawn().await?;
+        }
         let start = Instant::now();
         self.next_id += 1;
         let id = self.next_id;
@@ -410,6 +437,10 @@ impl ReplEnv for PythonRepl {
     }
 
     async fn answer_state(&mut self) -> Result<AnswerState, ReplError> {
+        // Lazy boot: spawn on first use if `start` deferred it.
+        if self.proc.is_none() {
+            self.spawn().await?;
+        }
         self.next_id += 1;
         let id = self.next_id;
         let proc = self.proc.as_mut().ok_or(ReplError::NotStarted)?;

@@ -193,6 +193,20 @@ impl Rlm {
         self
     }
 
+    /// Whether the engine-owned `repl` tool is exposed this run (WS1.2).
+    /// The active agent's `env.repl_tool` knob controls it: `None` or
+    /// `Some(true)` = inherit (on, today's behavior — bare core boots);
+    /// `Some(false)` = hide the `repl` tool from the model's surface and skip
+    /// its routing (the pi-shaped flat tool-call loop has no REPL surface).
+    /// One source of truth for `register_tools`, the exec-loop route check,
+    /// the answer-dict completion gate, and the lazy-subprocess decision.
+    pub fn repl_enabled(&self) -> bool {
+        self.runtime
+            .as_ref()
+            .and_then(|rt| rt.active_agent_repl_tool())
+            .unwrap_or(true)
+    }
+
     /// Register the per-turn tool list on the root model: the engine-owned
     /// `repl` tool (unless the active agent's `env.repl_tool` is `Some(false)`,
     /// WS1.2 — the pi-shaped profile hides the REPL surface), plus every
@@ -201,15 +215,9 @@ impl Rlm {
     /// agent active, or the agent leaves `env` empty) keeps the `repl` tool —
     /// today's behavior, so bare core boots.
     pub fn register_tools(&self) {
-        // The `repl` tool is engine-owned. The active agent's `env.repl_tool`
-        // knob controls whether it appears in the model's surface: `None` or
-        // `Some(true)` = inherit (on, today's behavior); `Some(false)` = hide
-        // it (the pi-shaped flat tool-call loop has no REPL surface).
-        let repl_enabled = self
-            .runtime
-            .as_ref()
-            .and_then(|rt| rt.active_agent_repl_tool())
-            .unwrap_or(true);
+        // The `repl` tool is engine-owned. `repl_enabled()` is the single
+        // source of truth for whether it appears in the model's surface.
+        let repl_enabled = self.repl_enabled();
         let mut tools = Vec::new();
         if repl_enabled {
             tools.push(repl_tool_definition());
@@ -368,8 +376,15 @@ impl Rlm {
         } else {
             (None, None)
         };
+        // Lazy Python subprocess (WS1.2): when the `repl` tool is hidden the
+        // env's process is not spawned until the first Python-dispatch
+        // invocation (`repl` or a `dispatch: Python` tool). A pure-`Handler`
+        // roster then never spawns a `python3` process at all. Bare core
+        // (repl on) keeps the eager spawn — today's behavior.
+        let lazy = !self.repl_enabled();
         let mut env = PythonEnvFactory {
             python: self.python.clone(),
+            lazy,
         }
         .create(subcalls);
         let setup = EnvSetup {
@@ -466,14 +481,12 @@ impl Rlm {
         let mut compaction = super::compaction::CompactionState::default();
 
         // Whether the engine-owned `repl` tool is exposed this run (WS1.2).
-        // Mirrors `register_tools`: `None`/`Some(true)` = on, `Some(false)` =
-        // hidden. A hallucinated `repl` call when the tool is hidden falls
-        // through to the unknown-tool path (synthetic error), not the REPL.
-        let repl_enabled = self
-            .runtime
-            .as_ref()
-            .and_then(|rt| rt.active_agent_repl_tool())
-            .unwrap_or(true);
+        // `repl_enabled()` is the single source of truth (mirrors
+        // `register_tools` and `start_env`'s lazy-subprocess decision). A
+        // hallucinated `repl` call when the tool is hidden falls through to
+        // the unknown-tool path (synthetic error), not the REPL; the
+        // answer-dict completion gate below also keys off this.
+        let repl_enabled = self.repl_enabled();
         let iteration_limit = self.iteration_limit();
         let mut i = 0usize;
         // Steer text queued by save_point in the previous tool-call turn. Carried
@@ -919,7 +932,18 @@ impl Rlm {
                 return self.limit_outcome(LimitKind::Tokens, detail, best_partial, iterations);
             }
 
-            let final_answer = blocks.iter().find_map(|b| b.result.final_answer.clone());
+            // The answer-dict completion path (`answer['ready']` → final_answer)
+            // is gated on the `repl` surface (WS1.2): it's meaningless without
+            // the REPL — the model can't author `answer['ready']` when the
+            // `repl` tool is hidden, so a Python-dispatch tool setting it
+            // (an implementation detail, not a model intent) must not end the
+            // run. Only the prose / `<task_complete>` / default-answer paths
+            // complete a no-REPL run.
+            let final_answer = if repl_enabled {
+                blocks.iter().find_map(|b| b.result.final_answer.clone())
+            } else {
+                None
+            };
             if !response.trim().is_empty() {
                 best_partial = Some(response.clone());
             }

@@ -280,18 +280,23 @@ pub(crate) trait EnvFactory: Send + Sync {
 
 pub(crate) struct PythonEnvFactory {
     pub python: String,
+    /// Defer the subprocess spawn until the first Python-dispatch invocation
+    /// (lazy boot, WS1.2). Set when the active agent hides the `repl` tool —
+    /// a pure-`Handler` roster then never spawns a `python3` process.
+    pub lazy: bool,
 }
 
 impl Default for PythonEnvFactory {
     fn default() -> Self {
         Self {
             python: "python3".into(),
+            lazy: false,
         }
     }
 }
 
 impl EnvFactory for PythonEnvFactory {
     fn create(&self, handler: Arc<dyn SubcallHandler>) -> Box<dyn ReplEnv> {
-        Box::new(PythonRepl::with_python(self.python.clone(), handler))
+        Box::new(PythonRepl::with_python(self.python.clone(), handler).lazy(self.lazy))
     }
 }

@@ -2304,3 +2304,109 @@ async fn default_agent_injects_context() {
         "context_0 should be present in the REPL env, got: {results:?}"
     );
 }
+
+// ── WS1.2: lazy subprocess + answer-dict gate ───────────────────────────────
+
+/// A pure-`Handler` roster with `env.repl_tool = false` (the pi-shaped profile)
+/// never spawns the `python3` subprocess: the run completes via Handler tools
+/// + prose without ever booting the REPL. We prove it by pointing the engine
+/// at a nonexistent interpreter — with eager boot `start_env` would fail
+/// immediately ("failed to start REPL environment"); with lazy boot the bad
+/// path is never reached because no Python-dispatch invocation occurs.
+#[tokio::test]
+async fn lazy_subprocess_never_boots_for_pure_handler_roster() {
+    let root = Arc::new(ScriptedLm::new(
+        "root-model",
+        &[
+            "Greeting.\n```tool:greet\n{\"who\": \"world\"}\n```",
+            "done",
+        ],
+    ));
+    // A deliberately invalid interpreter path — only reachable if spawned.
+    let engine = Rlm::new(
+        RlmConfig::default(),
+        root.clone(),
+        quiet_sub(),
+        "/nonexistent/phi-no-such-python".to_owned(),
+    )
+    .with_runtime(agent_runtime(
+        "pi",
+        Some(phi_ext::AgentEnv {
+            repl_tool: Some(false),
+            context: Some(false),
+        }),
+    ));
+    let result = engine
+        .completion(
+            ContextPayload::Str("ctx".into()),
+            Some("Greet the world."),
+            &CancellationToken::new(),
+        )
+        .await;
+    assert_eq!(result.stop, StopCause::Prose, "{:?}", result.error);
+    assert!(
+        result.error.is_none(),
+        "unexpected error: {:?}",
+        result.error
+    );
+    // The Handler tool ran and its result was banked.
+    let results = tool_results(&root.recorded_prompts()[1]);
+    assert!(
+        results.iter().any(|r| r.contains("Hello, world!")),
+        "greet Handler tool should have run: {results:?}"
+    );
+}
+
+/// The answer-dict completion path (`answer['ready']` → `StopCause::Answer`)
+/// is gated on the `repl` surface (WS1.2): with `env.repl_tool = false` a
+/// Python-dispatch tool that flips `answer['ready']` must NOT end the run —
+/// the model can't author `answer['ready']` without the `repl` tool, so the
+/// dict is meaningless. Only prose / `<task_complete>` / default-answer paths
+/// complete a no-REPL run. Here a Python-dispatch `shout` sets
+/// `answer['ready'] = True`; the run must continue to the prose turn instead
+/// of stopping at the tool turn with `StopCause::Answer`.
+#[tokio::test]
+async fn answer_dict_gate_skips_ready_when_repl_hidden() {
+    let root = Arc::new(ScriptedLm::new(
+        "root-model",
+        &["Shouting.\n```tool:shout\n{\"text\": \"hi\"}\n```", "done"],
+    ));
+    // `shout` is Python-dispatched; define it to flip the answer dict, so we
+    // can observe whether the engine honors the gate.
+    let config = RlmConfig {
+        setup_code: Some(
+            "def shout(text):\n    answer['ready'] = True\n    answer['content'] = 'cheated'\n    return str(text).upper()".to_owned(),
+        ),
+        ..RlmConfig::default()
+    };
+    let engine = Rlm::new(config, root.clone(), quiet_sub(), "python3".to_owned()).with_runtime(
+        agent_runtime(
+            "pi",
+            Some(phi_ext::AgentEnv {
+                repl_tool: Some(false),
+                context: None,
+            }),
+        ),
+    );
+    let result = engine
+        .completion(
+            ContextPayload::Str("ctx".into()),
+            Some("Shout it."),
+            &CancellationToken::new(),
+        )
+        .await;
+    // The gate held: the run did NOT stop at the tool turn with Answer.
+    assert_ne!(
+        result.stop,
+        StopCause::Answer,
+        "answer-dict fired with repl hidden"
+    );
+    assert_eq!(result.stop, StopCause::Prose, "{:?}", result.error);
+    assert_eq!(result.response, "done");
+    // Both turns ran (the tool turn was banked, then the prose turn ended it).
+    assert_eq!(
+        root.recorded_prompts().len(),
+        2,
+        "run should have continued past the answer-dict-flipping tool turn"
+    );
+}

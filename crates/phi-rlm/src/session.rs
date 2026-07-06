@@ -199,7 +199,12 @@ impl RlmSession {
                 start,
             );
         }
-        if !fresh_env {
+        if !fresh_env && self.rlm.repl_enabled() {
+            // Scaffold-restore gate (WS1.2): the answer-dict reset is
+            // meaningless without the REPL surface (the model can't author
+            // `answer['ready']` when the `repl` tool is hidden), and skipping
+            // it keeps a pure-`Handler` pi-profile session from booting the
+            // subprocess just to clear a dict it never sees.
             let env = self.env.as_mut().expect("env started above");
             let _ = env
                 .exec(

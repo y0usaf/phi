@@ -295,7 +295,7 @@ parity-as-feature-set stays rejected.
       `--style`); the `env.repl_tool`/`env.context` knobs landed in the
       WS1.2 slice below. Runtime `/agent` switching applies on the next
       session build (the note says so), not mid-turn.
-- [ ] **1.2 Demote `repl` to a default-profile tool.** `register_tools`
+- [x] **1.2 Demote `repl` to a default-profile tool.** `register_tools`
       (`phi-rlm/src/engine/rlm/core.rs:200`) hardcodes
       `repl_tool_definition()` ahead of the registry, and the Python env
       boots unconditionally. Fix: the profile's `env` block controls the
@@ -332,6 +332,39 @@ parity-as-feature-set stays rejected.
       engine-internal optimizations/invariants, not model-surface changes —
       the pi pack (WS1.5) is unblocked by this slice because its
       `repl_tool = false` / `context = false` already takes effect.
+      *Landed as (WS1.2 slice — engine invariants, 2026-07-05):* the two
+      remaining engine-internal items close the item. **Lazy Python
+      subprocess:** `PythonRepl` gains a `lazy` flag (builder `lazy(bool)`);
+      when set, `start` stores the setup but defers the `python3` spawn
+      until the first `exec` / `answer_state` (auto-spawn on `proc.is_none()`);
+      `shutdown` is a no-op when never spawned. `PythonEnvFactory` carries the
+      flag, and `start_env` sets `lazy = !repl_enabled()` — so a profile that
+      hides the `repl` tool defers the subprocess, and a pure-`Handler` roster
+      (no `repl`, no `dispatch: Python` tool) never spawns a `python3`
+      process at all. Bare core (repl on) keeps the eager spawn — today's
+      behavior. **Answer-dict / scaffold-restore gate:** a single
+      `Rlm::repl_enabled()` helper is now the one source of truth for
+      `register_tools`, the exec-loop route check, `start_env`'s lazy
+      decision, and the two new gates. In `run_loop`, the `final_answer` →
+      `StopCause::Answer` completion path is skipped when `repl` is hidden
+      (the model can't author `answer['ready']` without the REPL surface, so
+      a Python-dispatch tool flipping the dict must not end the run — only
+      prose / `<task_complete>` / default-answer paths complete a no-REPL
+      run). In `RlmSession::send`, the warm-send `answer['content']='';
+      answer['ready']=False` reset exec is gated on `repl_enabled()` (the
+      scaffold-restore gate — meaningless without the REPL, and skipping it
+      keeps a pure-`Handler` pi-profile session from booting the subprocess
+      just to clear a dict it never sees). Two engine tests cover both: a
+      pure-`Handler` pi-profile run pointed at a nonexistent interpreter
+      completes via prose without ever spawning (eager boot would fail at
+      `start_env`), and a Python-dispatch tool that flips `answer['ready']`
+      with `repl` hidden does not stop the run (it continues to the prose
+      turn). fmt + clippy (no new warnings) + nix workspace-test all green.
+      **WS1.2 is closed.** The pi pack (WS1.5) is unblocked; `add_context`'s
+      interaction with `env.context = false` (the session loads `context_N`
+      via a Python exec regardless of the context knob) is left for the
+      WS1.5 pi-pack pass to resolve if the pack needs it — it is a
+      context-knob question, not a `repl_tool` one.
 - [ ] **1.3 Turn-protocol knobs, not user-supplied loops.** The loop stays
       one engine-owned `run_loop` parameterized by profile policy —
       loop-as-arbitrary-extension-code remains deferred until the knob
