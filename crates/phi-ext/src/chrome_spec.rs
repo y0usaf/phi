@@ -113,9 +113,9 @@ pub struct ChromeSpec {
     /// Append a dim `(elapsed · ↓ tokens)` suffix to the status line
     /// (claude-code's semantics: elapsed shown past 30s, tokens once > 0).
     pub status_meta: bool,
-    /// Editor prompt glyph override (claude-code: `"❯"`). `None` keeps the
-    /// frontend's stock glyph. Must render one column wide — the cursor
-    /// math assumes glyph + space = 2 cells.
+    /// Editor prompt glyph override (claude-code: `"❯"`, crush: `":::"`).
+    /// `None` keeps the frontend's stock glyph. Any display width works —
+    /// the cursor math tracks the glyph's rendered width (glyph + space).
     pub input_prompt: Option<String>,
     /// Rule the input area top *and* bottom (claude-code's two-line input
     /// box); the chrome header moves below the box, reading as a footer.

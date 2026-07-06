@@ -30,6 +30,8 @@
 //! | `skills.lua` | `phi.on("before_agent_start")` + `phi.fs` file discovery |
 //! | `approvals.lua` | `phi.on("tool_call")` + `phi.ui.ask` + `phi.json`/`phi.fs` persistence |
 //! | `styles/claude_code.lua` | Pure `register_style` bundle (WS10 style pack) |
+//! | `styles/codex.lua` | Pure `register_style` bundle — Codex CLI imitation (WS10.3) |
+//! | `styles/crush.lua` | Pure `register_style` bundle — crush Charmtone palette (WS10.3) |
 //!
 //! ## What stays Rust (and why)
 //!
@@ -81,3 +83,11 @@ pub const APPROVALS_LUA: &str = include_str!("../defaults/approvals.lua");
 /// `phi.register_style` bundle — theme, asterisk-morph spinner, gerund
 /// thinking verbs, and Bash/Read/Update/Search tool verbs.
 pub const STYLE_CLAUDE_CODE_LUA: &str = include_str!("../defaults/styles/claude_code.lua");
+/// The `codex` style pack (WS10.3): OpenAI Codex CLI's dark look as a
+/// `phi.register_style` bundle — braille spinner, tree-branch gutter,
+/// flat transcript, and ANSI-cyan accent.
+pub const STYLE_CODEX_LUA: &str = include_str!("../defaults/styles/codex.lua");
+/// The `crush` style pack (WS10.3): Charm's crush CLI dark look as a
+/// `phi.register_style` bundle — Charmtone Pantera palette, `●`/`✓`/`×`
+/// tool glyphs, and `::: ` editor prompt.
+pub const STYLE_CRUSH_LUA: &str = include_str!("../defaults/styles/crush.lua");

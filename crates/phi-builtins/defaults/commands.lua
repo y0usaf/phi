@@ -136,13 +136,18 @@ phi.register_command("exit", {
 
 -- ── /style ──────────────────────────────────────────────────────────────
 -- With an argument: activate that style pack (persisted). Without: list
--- the registered styles. Completion is not registry-driven yet — style
--- packs register during the same runtime build as this command, so the
--- names aren't known here (the /model gap, WS3.2; revisit for WS10.4).
+-- the registered styles. Completion uses _phi_style_names, injected by
+-- the Rust side (session_builder) before this source executes — the same
+-- pattern as _phi_model_names. This covers the shipped packs ("phi",
+-- "claude-code", "codex", "crush"); user-registered packs that load
+-- during the same build aren't in the injected list (the /model gap,
+-- WS3.2 — a runtime-query completion API would close it for both).
+local style_completions = _phi_style_names or {}
 
 phi.register_command("style", {
     description = "switch the visual style pack (no arg: list styles)",
     args_hint = "[name]",
+    completions = style_completions,
     handler = function(args)
         return { actions = { { type = "SwitchStyle", data = { name = trim(args) } } } }
     end,

@@ -154,7 +154,7 @@ pub(super) fn generate_syntax_theme(t: &Theme) -> SyntaxTheme {
         function: to_color(t.syntax_function),
         type_: to_color(t.syntax_type),
         operator: to_color(t.syntax_operator),
-        punctuation: fg,
+        punctuation: to_color(t.syntax_punctuation),
         variable: to_color(t.syntax_variable),
         builtin: to_color(t.syntax_builtin),
     });

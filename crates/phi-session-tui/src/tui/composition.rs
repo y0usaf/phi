@@ -588,7 +588,7 @@ impl Ui {
             lines.push(format!("{tert}{hint}{RESET}", tert = &p.text_tertiary));
         } else {
             let (editor_lines, (row, col)) = self.editor.render();
-            // Editor prompt: chevron on row 0, 2-space indent on continuation.
+            // Editor prompt: glyph on row 0, matching-width indent on continuation.
             // When the window is blurred the chevron dims to ghost — a clear
             // signal that keystrokes are going elsewhere. An empty editor
             // shows a ghost placeholder so the input is never a silent void.
@@ -602,15 +602,20 @@ impl Ui {
             } else {
                 "ready"
             };
-            // Chrome may swap the prompt glyph (claude-code's `❯`); the
-            // stock look keeps the Nerd Font chevron / ASCII fallback.
+            // Chrome may swap the prompt glyph (claude-code's `❯`, crush's
+            // `:::`); the stock look keeps the Nerd Font chevron / ASCII
+            // fallback. The gutter is glyph + one space, so cursor math and
+            // continuation indents track the glyph's display width instead
+            // of assuming a single cell.
             let prompt_glyph = self
                 .chrome
                 .input_prompt
                 .as_deref()
                 .unwrap_or_else(|| success_symbol());
+            let prompt_width = visible_width(prompt_glyph) + 1;
+            let cont_indent = " ".repeat(prompt_width);
             let editor_top = lines.len();
-            let input_inner = width.saturating_sub(2).max(1);
+            let input_inner = width.saturating_sub(prompt_width).max(1);
             let mut input_cursor = None;
             let mut rendered_rows_before_cursor = 0usize;
             for (absolute_row, line) in editor_lines.iter().enumerate() {
@@ -626,7 +631,7 @@ impl Ui {
                         format!("{prompt_fg}{prompt_glyph}{RESET} {line}")
                     }
                 } else {
-                    format!("  {line}")
+                    format!("{cont_indent}{line}")
                 };
                 let avail_inner = if absolute_row == 0 {
                     input_inner
@@ -634,10 +639,13 @@ impl Ui {
                     width
                 };
                 if absolute_row == row {
-                    let source_col = if absolute_row == 0 {
-                        if line.is_empty() { 2 } else { 2 + col }
+                    // Editor cols are byte offsets; wrap marks are display
+                    // columns — convert through the text's rendered width.
+                    let col_cells = visible_width(&line[..col.min(line.len())]);
+                    let source_col = if absolute_row == 0 && line.is_empty() {
+                        prompt_width
                     } else {
-                        2 + col
+                        prompt_width + col_cells
                     };
                     let (wrapped, (cursor_row, cursor_col)) =
                         wrap_ansi_locate(&content, avail_inner, source_col);

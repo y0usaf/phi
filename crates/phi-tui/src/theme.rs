@@ -199,6 +199,9 @@ pub struct Theme {
     pub syntax_variable: Rgb,
     /// Builtin (ANSI 1 / red).
     pub syntax_builtin: Rgb,
+    /// Punctuation (foreground — previously hardcoded in the syntect theme
+    /// builder, now a first-class role so a pack can restyle it).
+    pub syntax_punctuation: Rgb,
 
     // --- CLI glyphs ---
     /// Active / in-flight glyph (ANSI 4 / blue).
@@ -350,6 +353,7 @@ pub fn generate_theme(colors: &TerminalColors) -> Theme {
         syntax_operator: col(6),
         syntax_variable: fg,
         syntax_builtin: col(1),
+        syntax_punctuation: fg,
 
         // CLI glyphs
         glyph_active: col(4),
@@ -472,6 +476,7 @@ pub fn apply_palette(theme: &mut Theme, palette: &std::collections::BTreeMap<Str
     role!(syntax_operator, "syntax_operator");
     role!(syntax_variable, "syntax_variable");
     role!(syntax_builtin, "syntax_builtin");
+    role!(syntax_punctuation, "syntax_punctuation");
 
     // CLI glyphs
     role!(glyph_active, "glyph_active");

@@ -33,6 +33,19 @@ phi.register_style("claude-code", {
         user_message_bg = { 55, 55, 55 }, -- userMessageBackground
         md_diff_add = { 78, 186, 101 },
         md_diff_del = { 255, 107, 128 },
+        -- Syntax (Monokai scopes from native-ts/color-diff/index.ts:190):
+        -- code blocks render with claude-code's palette, not phi's default
+        -- base16-ocean. variable/property are plain white (foreground) in
+        -- upstream Monokai.
+        syntax_comment = { 117, 113, 94 },
+        syntax_keyword = { 249, 38, 114 },
+        syntax_string = { 230, 219, 116 },
+        syntax_number = { 190, 132, 255 },
+        syntax_function = { 166, 226, 46 },
+        syntax_type = { 166, 226, 46 },
+        syntax_operator = { 249, 38, 114 },
+        syntax_variable = { 255, 255, 255 },
+        syntax_builtin = { 166, 226, 46 },
     },
 
     -- ── Spinner: the asterisk morph ──────────────────────────────────────
@@ -119,7 +132,7 @@ phi.register_style("claude-code", {
     },
 
     -- ── Tool renderers: claude-code verbs ────────────────────────────────
-    -- Bash / Read / Write / Update / Search / Glob / List over the same
+    -- Bash / Read / Write / Update / Search / Search / List over the same
     -- prelude helpers; the chrome's anchor_format renders them `Verb(arg)`.
     -- `repl` names the container itself: with `repl_as_tool` chrome its
     -- anchor is `● Repl`, capitalized like every claude-code verb.
@@ -164,7 +177,7 @@ phi.register_style("claude-code", {
             body = { kind = "none" },
         },
         find = {
-            verb = "Glob",
+            verb = "Search",
             category = "searches",
             anchor = {
                 { key = "pattern", style = "pattern" },

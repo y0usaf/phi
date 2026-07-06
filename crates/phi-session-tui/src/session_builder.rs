@@ -231,6 +231,16 @@ pub async fn build_runtime(
             phi_builtins::defaults::STYLE_CLAUDE_CODE_LUA.to_owned(),
         )?;
         rt_builder = rt_builder.register_extension(claude_code_style_ext);
+        let codex_style_ext = phi_lua::LuaExtension::from_source(
+            "phi-style-codex",
+            phi_builtins::defaults::STYLE_CODEX_LUA.to_owned(),
+        )?;
+        rt_builder = rt_builder.register_extension(codex_style_ext);
+        let crush_style_ext = phi_lua::LuaExtension::from_source(
+            "phi-style-crush",
+            phi_builtins::defaults::STYLE_CRUSH_LUA.to_owned(),
+        )?;
+        rt_builder = rt_builder.register_extension(crush_style_ext);
 
         // Tool render metadata (last-write-wins, so a user spec can restyle).
         let tool_render_ext = phi_lua::LuaExtension::from_source(
@@ -256,7 +266,11 @@ pub async fn build_runtime(
             "phi-commands",
             phi_builtins::defaults::COMMANDS_LUA.to_owned(),
         )?
-        .with_global("_phi_model_names", serde_json::json!(model_names));
+        .with_global("_phi_model_names", serde_json::json!(model_names))
+        .with_global(
+            "_phi_style_names",
+            serde_json::json!(["phi", "claude-code", "codex", "crush"]),
+        );
         rt_builder = rt_builder.register_extension(commands_ext);
 
         // About and help overlays — the tutorial overlays (simplest and

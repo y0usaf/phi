@@ -42,7 +42,13 @@ fn commands_runtime(models: &[&str]) -> std::sync::Arc<phi_ext::AppRuntime> {
     build_one_with(
         "phi-commands",
         defaults::COMMANDS_LUA,
-        &[("_phi_model_names", serde_json::json!(models))],
+        &[
+            ("_phi_model_names", serde_json::json!(models)),
+            (
+                "_phi_style_names",
+                serde_json::json!(["phi", "claude-code", "codex", "crush"]),
+            ),
+        ],
     )
 }
 
@@ -137,6 +143,24 @@ async fn defaults_commands_model_completions() {
         vec!["anthropic".to_owned(), "openai".to_owned()]
     );
     assert!(rt.complete_command_arg("help").is_none());
+}
+
+#[tokio::test]
+async fn defaults_commands_style_completions_list_shipped_packs() {
+    // WS10.4: /style completion is registry-driven via the injected
+    // _phi_style_names global — the same pattern as _phi_model_names.
+    // The shipped packs appear; a user's own pack that registers during
+    // the build isn't in the pre-injected list (the /model gap, WS3.2).
+    let rt = commands_runtime(&[]);
+    assert_eq!(
+        rt.complete_command_arg("style").unwrap(),
+        vec![
+            "phi".to_owned(),
+            "claude-code".to_owned(),
+            "codex".to_owned(),
+            "crush".to_owned(),
+        ]
+    );
 }
 
 // ── Mux commands ─────────────────────────────────────────────────────────
@@ -457,6 +481,29 @@ async fn defaults_claude_code_style_registers_and_activates() {
         Some("Update")
     );
     assert_eq!(idx.get("grep").unwrap().verb.as_deref(), Some("Search"));
+    // WS10.3: find's verb is "Search" (ref GlobTool/UI.tsx:12 labels both
+    // grep and glob as "Search", not "Glob").
+    assert_eq!(idx.get("find").unwrap().verb.as_deref(), Some("Search"));
+
+    // WS10.3: the 9 syntax_* theme roles are populated from Monokai scopes
+    // (ref/claude-code native-ts/color-diff/index.ts:190), so code blocks
+    // render with claude-code's palette instead of phi's default.
+    assert_eq!(
+        theme.palette.get("syntax_comment"),
+        Some(&phi_ext::Rgb(117, 113, 94))
+    );
+    assert_eq!(
+        theme.palette.get("syntax_keyword"),
+        Some(&phi_ext::Rgb(249, 38, 114))
+    );
+    assert_eq!(
+        theme.palette.get("syntax_string"),
+        Some(&phi_ext::Rgb(230, 219, 116))
+    );
+    assert_eq!(
+        theme.palette.get("syntax_function"),
+        Some(&phi_ext::Rgb(166, 226, 46))
+    );
 
     // Chrome (WS10.3): the `⏺ Verb(args)` / `  ⎿  ` flat transcript shape.
     let chrome = rt.active_chrome();
@@ -517,6 +564,155 @@ async fn defaults_claude_code_style_restyles_every_base_tool() {
         assert!(
             pack.tool_renderers.iter().any(|s| s.tool == tool),
             "claude-code pack misses a renderer for base-styled tool `{tool}`"
+        );
+    }
+}
+// ── Style pack: codex (WS10.3) ──────────────────────────────────────────
+
+#[tokio::test]
+async fn defaults_codex_style_registers_and_activates() {
+    let rt = build_one("phi-style-codex", defaults::STYLE_CODEX_LUA);
+
+    assert_eq!(rt.list_styles(), vec!["codex"]);
+    rt.set_active_style(Some("codex")).unwrap();
+
+    // Theme: ANSI cyan accent (codex's `Color::Cyan` accent).
+    let theme = rt.active_theme().unwrap();
+    assert_eq!(
+        theme.palette.get("accent"),
+        Some(&phi_ext::Rgb(0, 215, 255))
+    );
+
+    // Spinner: the 10-frame braille sequence at 100ms
+    // (status_surfaces.rs TERMINAL_TITLE_SPINNER_FRAMES).
+    let spinner = rt.active_spinner().unwrap();
+    assert_eq!(spinner.frames.len(), 10);
+    assert_eq!(spinner.frame_interval_ms, 100);
+    assert_eq!(spinner.frames.first().map(String::as_str), Some("⠋"));
+
+    // Tool renderers: codex verbs (Run/Read/Write/Edit/Search/Search/List).
+    let idx = rt.tool_render_index();
+    assert_eq!(idx.get("bash").unwrap().verb.as_deref(), Some("Run"));
+    assert_eq!(idx.get("read_file").unwrap().verb.as_deref(), Some("Read"));
+    assert_eq!(idx.get("edit_file").unwrap().verb.as_deref(), Some("Edit"));
+    assert_eq!(idx.get("grep").unwrap().verb.as_deref(), Some("Search"));
+    assert_eq!(idx.get("find").unwrap().verb.as_deref(), Some("Search"));
+
+    // Chrome (WS10.3): tree-branch gutter, flat transcript, bullet header.
+    let chrome = rt.active_chrome();
+    assert_eq!(chrome.glyph_ok, "✓");
+    assert_eq!(chrome.glyph_failed, "✗");
+    assert_eq!(chrome.result_prefix, "  └ ");
+    assert!(chrome.is_flat());
+    assert_eq!(chrome.user_prefix.as_deref(), Some("› "));
+    assert!(chrome.user_background);
+    // codex's ellipsis marker names ctrl+t (not ctrl+o).
+    assert!(chrome.format_more_lines(5).contains("ctrl + t"));
+
+    // Deactivating falls back to the base registrations.
+    rt.set_active_style(None).unwrap();
+    assert!(rt.tool_render_index().get("bash").is_none());
+    assert_eq!(rt.active_chrome(), phi_ext::ChromeSpec::default());
+}
+
+#[tokio::test]
+async fn defaults_codex_style_restyles_every_base_tool() {
+    let rt = build_one("phi-style-codex", defaults::STYLE_CODEX_LUA);
+    let pack = rt.get_style("codex").unwrap();
+    for tool in [
+        "bash",
+        "read_file",
+        "write_file",
+        "edit_file",
+        "grep",
+        "find",
+        "ls",
+    ] {
+        assert!(
+            pack.tool_renderers.iter().any(|s| s.tool == tool),
+            "codex pack misses a renderer for base-styled tool `{tool}`"
+        );
+    }
+}
+
+// ── Style pack: crush (WS10.3) ──────────────────────────────────────────
+
+#[tokio::test]
+async fn defaults_crush_style_registers_and_activates() {
+    let rt = build_one("phi-style-crush", defaults::STYLE_CRUSH_LUA);
+
+    assert_eq!(rt.list_styles(), vec!["crush"]);
+    rt.set_active_style(Some("crush")).unwrap();
+
+    // Theme: Charmtone Pantera palette (verbatim RGB from charmtone.go).
+    let theme = rt.active_theme().unwrap();
+    // Charple (primary) = (107, 80, 255)
+    assert_eq!(
+        theme.palette.get("accent"),
+        Some(&phi_ext::Rgb(107, 80, 255))
+    );
+    // Dolly (secondary) = (255, 96, 255)
+    assert_eq!(
+        theme.palette.get("accent_2"),
+        Some(&phi_ext::Rgb(255, 96, 255))
+    );
+    // Malibu (info) = (0, 164, 255) — tool names
+    assert_eq!(
+        theme.palette.get("tool_accent"),
+        Some(&phi_ext::Rgb(0, 164, 255))
+    );
+    // Julep (success) = (0, 255, 178)
+    assert_eq!(
+        theme.palette.get("success"),
+        Some(&phi_ext::Rgb(0, 255, 178))
+    );
+    // Sriracha (error) = (235, 66, 104)
+    assert_eq!(
+        theme.palette.get("error"),
+        Some(&phi_ext::Rgb(235, 66, 104))
+    );
+
+    // Tool renderers: crush verbs (Bash/View/Write/Edit/Search/Search/List).
+    let idx = rt.tool_render_index();
+    assert_eq!(idx.get("bash").unwrap().verb.as_deref(), Some("Bash"));
+    assert_eq!(idx.get("read_file").unwrap().verb.as_deref(), Some("View"));
+    assert_eq!(idx.get("edit_file").unwrap().verb.as_deref(), Some("Edit"));
+    assert_eq!(idx.get("grep").unwrap().verb.as_deref(), Some("Search"));
+
+    // Chrome: card container, `✓`/`×` glyphs, `::: ` editor prompt.
+    let chrome = rt.active_chrome();
+    assert_eq!(chrome.glyph_ok, "✓");
+    assert_eq!(chrome.glyph_failed, "×");
+    assert!(!chrome.is_flat()); // crush uses card containers
+    assert_eq!(chrome.input_prompt.as_deref(), Some(":::"));
+    // crush's syntax_punctuation is Zest (warningSubtle) — gap (f) fix.
+    assert_eq!(
+        theme.palette.get("syntax_punctuation"),
+        Some(&phi_ext::Rgb(232, 254, 150))
+    );
+
+    // Deactivating falls back to the base registrations.
+    rt.set_active_style(None).unwrap();
+    assert!(rt.tool_render_index().get("bash").is_none());
+    assert_eq!(rt.active_chrome(), phi_ext::ChromeSpec::default());
+}
+
+#[tokio::test]
+async fn defaults_crush_style_restyles_every_base_tool() {
+    let rt = build_one("phi-style-crush", defaults::STYLE_CRUSH_LUA);
+    let pack = rt.get_style("crush").unwrap();
+    for tool in [
+        "bash",
+        "read_file",
+        "write_file",
+        "edit_file",
+        "grep",
+        "find",
+        "ls",
+    ] {
+        assert!(
+            pack.tool_renderers.iter().any(|s| s.tool == tool),
+            "crush pack misses a renderer for base-styled tool `{tool}`"
         );
     }
 }
