@@ -42,11 +42,18 @@ can be expressed as extension API surface, grow the API and move the feature
 across the seam. The "What is core" table below describes today's state, not
 the destination — the direction of travel is to shrink it.
 
-This supersedes the WS9.3 note that rejected abstracting the RLM loop behind an
+This supersedes the WS12.3 note that rejected abstracting the RLM loop behind an
 extension path: that rejection now reads as *sequencing*, not doctrine. Near
 term the loop stays engine-owned while the registry seam matures (bare core
 must still boot); each workstream should nonetheless prefer cuts that move
 logic toward the extension surface over cuts that entrench it in core.
+
+**Update (2026-07-05): the sequencing gate is lifted.** WS1 (agent packs) is
+now the active workstream carrying this direction: the agent itself — system
+prompt, tool surface, turn protocol, execution environment — becomes
+registerable configuration, with the RLM engine demoted to the shipped
+default pack. The registry seam WS12.3a built is judged mature enough to
+carry it.
 
 ### What is core
 
@@ -56,8 +63,8 @@ logic toward the extension surface over cuts that entrench it in core.
 | `phi-mux`, `phi-grid` | The mux differentiator |
 | `phi-ext`, `phi-lua`, `phi-event` | The extension-surface differentiator |
 | `phi-session` | Session tree/JSONL store — substrate everything depends on |
-| `phi-ai`, `phi-ai-auth`, `phi-ai-types` | Provider abstraction, streaming, auth (keep thin — see WS3) |
-| `phi-tui` | Single rendering substrate (see WS6) |
+| `phi-ai`, `phi-ai-auth`, `phi-ai-types` | Provider abstraction, streaming, auth (keep thin — see WS7) |
+| `phi-tui` | Single rendering substrate (see WS3) |
 | `phi-app` | Entrypoint + minimal flag surface |
 
 Also core-worthy despite not being crates: **context compaction** (part of the
@@ -69,10 +76,10 @@ loop — upstream rlm and pi both keep it in core) and **tool-prelude invariants
 - **Permission system / sandboxing.** Adopt pi's stance: Phi runs with full user
   permissions; containerization is the user's sandbox. The `ToolCall`
   interception event lets an extension implement approvals. Exception: project
-  trust (WS4.1) — that gates *extension loading* and must work in core.
-- **MCP** — build as an extension (WS7.1); it's the stress test for `register_tool`.
+  trust (WS8.1) — that gates *extension loading* and must work in core.
+- **MCP** — build as an extension (WS10.1); it's the stress test for `register_tool`.
 - **LSP, memory systems, hooks-as-config, share/export** — extension territory.
-- **A 3,597-entry model catalog** — see WS3.2.
+- **A 3,597-entry model catalog** — see WS7.2.
 
 ## Where we strayed (evidence inventory)
 
@@ -102,7 +109,7 @@ visual defaults + the Python prelude) while everything else is hardwired:
 
 ### Second audit (2026-07-02) — what the dogfood pass missed
 
-WS1's migrations are real, but they proved the **Rust** extension API, not the
+WS4's migrations are real, but they proved the **Rust** extension API, not the
 one users actually get (Lua). The line was drawn correctly; it's enforced
 asymmetrically. Findings, worst first:
 
@@ -113,31 +120,31 @@ asymmetrically. Findings, worst first:
   get a fixed "bordered box of text lines" renderer, a fixed Esc/Enter/q key
   handler not driven by Lua at all, no `handle_scroll`, no payloads, no
   `OverlayResponder`. **Not one of the builtin commands or overlays migrated
-  in WS1.1/1.2 could be reimplemented as a user extension today.** The Rule's
+  in WS4.1/4.2 could be reimplemented as a user extension today.** The Rule's
   corollary ("the API's test suite is `phi-builtins`") is currently testing an
-  API users can't reach. (→ WS1.6)
-- **The mux `:command` line is the disease WS1.1 cured, unaddressed**: a
+  API users can't reach. (→ WS4.6)
+- **The mux `:command` line is the disease WS4.1 cured, unaddressed**: a
   closed enum + literal string matches (`open`, `archive`, `cleanup`, `usage`,
   `refresh`, `quit`, `help`, nav aliases — `crates/phi-mux/src/keys/mod.rs:10-51`,
-  dispatched from `app/commands.rs:329-385`), no registry. (→ WS1.7)
+  dispatched from `app/commands.rs:329-385`), no registry. (→ WS4.7)
 - **Three copies of the hardcoded per-tool-name render table**, not the one
-  WS1.3 names: `phi-session-tui/src/tui/tool_display.rs:139-238`,
+  WS4.3 names: `phi-session-tui/src/tui/tool_display.rs:139-238`,
   `phi-app/src/tool_view.rs` (independently written, own bash special-casing),
   `phi-tui/src/tool_category.rs` (coarse categorizer). Core thereby knows the
   names of tools that only exist because `phi-builtins/prelude/*.py` defines
-  them. (→ WS1.3, scope corrected)
+  them. (→ WS4.3, scope corrected)
 - **"Bare core must boot" is unverifiable and false at the Cargo level**:
   `phi-app`, `phi-session-tui`, and `phi-mux` all hard-depend on
   `phi-builtins` (plain deps, no feature gate), and the repo has no CI.
   Deleting the crate is a compile error, not graceful degradation — though
   the runtime *behavior* mostly degrades correctly (overlay fallbacks,
-  unknown-command errors). (→ WS1.5, made mechanical)
+  unknown-command errors). (→ WS4.5, made mechanical)
 - **Two plumbed-but-dead APIs falsely signal coverage**:
   `register_message_renderer` (zero non-test consumers — already known,
-  WS1.3) and `register_shortcut` (`list_shortcuts()` is never called by
+  WS4.3) and `register_shortcut` (`list_shortcuts()` is never called by
   either frontend, while `phi-session-tui` hardcodes all 18 of its shortcut
   key checks with no keymap abstraction at all). Wire consumption or delete
-  until needed. (→ WS1.3, WS6.3)
+  until needed. (→ WS4.3, WS3.3)
 - **Feature vocabulary baked into the "generic" crate**: `UiAction`
   (`SwitchModel`/`StartLogin`/`TrustProject`), `PickerKind`,
   `OVERLAY_USAGE/MODEL/HELP` constants, `ModelPickerPayload`/`HelpPayload` —
@@ -146,9 +153,9 @@ asymmetrically. Findings, worst first:
   duplicates the open-overlay-by-name path as a private two-variant side
   channel between the TUI and mux that no extension can participate in.
   Every new capability currently costs a phi-ext enum variant plus a match
-  arm in each host. (→ WS1.8, decision needed before WS7)
+  arm in each host. (→ WS4.8, decision needed before WS10)
 - Minor: `Config.skills` (`crates/phi-session/src/config.rs:78-81`) stayed in
-  the persistence crate's config schema after WS1.4 moved the feature to
+  the persistence crate's config schema after WS4.4 moved the feature to
   builtins — there's no primitive yet for extension-owned config sections.
 
 What the audit confirmed is *right* (no churn needed): trust gating lives in
@@ -162,42 +169,536 @@ and Lua identically — the inequality is in the bridge, not the trait).
 
 ## Workstreams
 
-Ordering rationale: WS0/WS1 first (WS1 is the highest-leverage work and everything
-else benefits from a proven extension API), WS4.1 early (trust gates project
-extensions, which WS1 encourages people to write). WS2/WS3 are mechanical and can
-interleave. WS5 only after WS1 proves the API. WS6 is investigative, no deadline.
-**WS9 jumps the queue for all remaining work** (2026-07-03 loop audit): sessions
-feel long and outputs underperform, and the causes are identified mechanics in
-`run_loop`, not vibes — 9.1/9.2 are small `core.rs` diffs with outsized latency
-wins; 9.3 routes the tool-surface question through the extension API (an API
-gap fix per The Rule's corollary) and gates any default change on measurement.
-**Loop before UI for the remaining extension-ification** (2026-07-03 reorder):
-after the 9.1/9.2/9.4/9.5 quick wins, do 9.3(a) + 9.6, then WS7.1 (MCP) as the
-proof — *before* the UI-side extension work (WS1.6, 1.7, 1.3). Rationale: the
-loop is the product; the 2026-07-02 audit found tools/providers/events *are*
-faithfully Lua-bridged while commands/overlays are not, so loop-surface API
-work is user-reachable today and finally makes the Rule's corollary test an
-API users can reach — and WS7 depends on the tool surface, while nothing
-depends on overlay parity. WS1.6/1.7/1.3 remain committed work, deferred, and
-WS1.7's in-flight part B lands first rather than being abandoned mid-migration.
+**Numbering = priority (renumbered 2026-07-05).** Workstreams are ordered and
+numbered by what matters now: open work first in priority order, landed work
+after in its historical sequence. A session picking "the next open item in
+numeric order" starts in the right place by construction. Commit messages and
+notes from before 2026-07-05 use the old numbers; the map (old→new):
+WS11→WS1 (agent packs), WS10→WS2 (style packs), WS6→WS3 (TUI),
+WS1→WS4 (dogfood), WS0→WS5, WS2→WS6, WS3→WS7, WS4→WS8, WS5→WS9,
+WS7→WS10, WS8→WS11, WS9→WS12 (agent loop). All references *inside this
+document* have been rewritten to the new numbers, including inside dated
+historical notes.
 
-### WS0 — Codify the rule (small, do first)
+Current priority (2026-07-05): **WS1 — the agent itself becomes
+configuration.** This supersedes the agent loop's 2026-07-03 queue-jump: its
+quick wins landed, and its one open remainder (the 12.3b measurement run)
+folds into WS1.5's acceptance, where the pi pack is the cleaner "native-only"
+arm. In-flight WS2 remainders (2.3 packs, 2.4 acceptance) finish but spawn no
+new dependents. Deferred UI work (WS4.3, WS3.2) stays deferred, though
+WS3.2's case has strengthened — `tui/mod.rs` is ~3,270 lines after WS2.4, and
+the transcript-cache state machine (six coordinated `Ui` fields plus a
+caller-bumped generation epoch) is exactly the accretion 3.2 exists to
+arrest.
 
-- [x] Add "The Rule" and the core/not-core tables to `AGENTS.md` (or link there
-      to this file) so every future agent session enforces it.
-- [x] Remove `crates/phi-builtins/src/prelude/__pycache__/` from git; add
-      `__pycache__/` to `.gitignore`.
-- [x] Land the in-flight uncommitted work first (strict prose policy +
-      `message()` primitive) — it's engine hardening, on-brand, and rebasing the
-      dogfood pass over it is easier than the reverse.
+Historical ordering decisions, compressed (rationale preserved in each
+workstream's own notes): the dogfood pass (WS4) ran first as
+highest-leverage; trust (8.1) ran early because dogfooding encourages people
+to write project extensions; the 2026-07-03 loop audit queue-jumped the
+agent loop (WS12) and ordered loop-surface API work before UI-side extension
+work ("the loop is the product"); tool-surface *default* changes were gated
+on measurement — that gate still stands, now inside WS1.5.
 
-### WS1 — Dogfood pass: built-ins through the extension API (highest leverage)
+### WS1 — Agent packs: the agent itself as configuration (highest priority)
+
+Decision (2026-07-05): the loop-as-extension direction stops being "eventual"
+and becomes the active workstream. WS2 proves the *visual* surface by
+imitation; WS1 proves the *agent* surface the same way. The goal: the entire
+agent — system prompt, tool surface, turn protocol, execution environment —
+is a registerable configuration ("agent pack"), selectable per session, and
+the RLM engine is demoted from hardwired privilege to the shipped default
+pack.
+
+**The deliverable is the API, not any particular agent.** WS1 ships
+primitives and grows seams; it does not design multi-agent features into
+core. The test of done is expressibility: a user who wants an agent
+architecture this plan never imagined — debate tournaments, MCTS over
+subagents, a swarm with a scratchpad protocol — should find the primitives
+sufficient and core unmodified. The four scenarios below are *falsifiers*
+chosen to span the surface (peer communication, loop shape, tool surface,
+turn protocol), not a feature roadmap; none is fully expressible today:
+
+1. **Peer agents** — multiple agents talking to each other while working one
+   problem. Today only hierarchical `subagent()` call/return exists
+   (`router.py:342`, `engine/subcalls.rs`): no addressability, no messaging,
+   no shared state between siblings beyond what the parent threads through.
+2. **A pi-shaped agent** — flat tool-call loop, native read/edit/bash tools,
+   no `repl` tool in the model's surface, no `context`-variable injection.
+   Today ~80% expressible (WS12.3a native exposure + WS12.1 prose-stop +
+   `SystemPromptMod` replace); the missing 20% is that `repl` is
+   engine-hardcoded (`repl_tool_definition()`, `core.rs:97`) and the
+   context scaffold is unconditional.
+3. **Ask-an-agent** — a *user extension* builds claude-code's
+   `AskUserQuestion` shape where the answerer is another agent, a
+   deliberating pair, or the human as fallback (WS10.2's ask-the-user
+   primitive). Hackable today via a `Handler` tool that spawns subagents;
+   the clean form needs scenario 1's addressability. Phi does not ship
+   this — it must merely be buildable.
+4. **A codex-shaped agent** — codex's tool surface and turn protocol. The
+   tool roster is registerable today (native-only exposure); stop semantics
+   match after WS12.1; parallel-tool policy, per-tool truncation, and
+   compaction policy are still engine-owned constants.
+
+Every detail an agent pack cannot express is an API gap: grow
+`phi-ext`/`phi-lua`/`phi-event`, never special-case a pack — the Rule's
+corollary, third application (WS4: builtins, WS2: styles, WS1: agents).
+
+Relationship to the feature-parity non-goal: unchanged in spirit, sharpened
+in wording (see Non-goals). Phi does not *import* claude-code/codex features
+into its defaults; it becomes expressive enough that their *shape* is a
+config file. Parity-as-configuration is the differentiator;
+parity-as-feature-set stays rejected.
+
+- [ ] **1.1 Agent-profile primitive.** `register_agent { name, … }` — the
+      WS2.1 pattern (doctrine 5; `StyleSpec`'s inline-bundle precedent,
+      `phi-ext/src/style_spec.rs`): a declarative bundle of the
+      agent-defining knobs — `system_prompt` (full text or a named shipped
+      identity), `tools` (roster of registered tool names + per-tool
+      exposure override), `env` (the 1.2 block), `turn` (the 1.3 block),
+      `subagent_defaults` (profile children spawn with). Exactly one
+      profile active per session; selectable at session build (config.lua
+      `agent` field, `--agent` flag) and at runtime (`/agent`,
+      `UiAction::SwitchAgent` — mirrors `/style`; switching mid-session
+      starts a fresh turn context, it does not rewrite history). The
+      shipped `rlm` profile is the empty bundle — today's behavior with no
+      special case, so "bare core must boot" is satisfied by the default
+      profile rather than by hardwiring. System prompt becomes a
+      *declarative* member here; the imperative
+      `BeforeAgentStart`/`SystemPromptMod` hook stays for mutation
+      (skills), but identity *selection* moves out of host code (today
+      `CODING_IDENTITY` vs orchestrator addendum is chosen host-side in
+      `phi_rlm::prompts`).
+- [ ] **1.2 Demote `repl` to a default-profile tool.** `register_tools`
+      (`phi-rlm/src/engine/rlm/core.rs:200`) hardcodes
+      `repl_tool_definition()` ahead of the registry, and the Python env
+      boots unconditionally. Fix: the profile's `env` block controls the
+      *model-visible* surface — `repl_tool: false` removes the `repl` tool
+      and its routing; `context: false` skips `context`/`context_0`
+      injection. Deliberate scoping: "no repl tool" ≠ "no Python
+      subprocess" — prelude functions remain the implementation substrate
+      for `dispatch: Python` tools (one implementation, two exposures;
+      hashline cache / read-before-edit / spill hold regardless of
+      surface), so the pi-shaped profile keeps the battle-tested prelude
+      under native-only exposure. The subprocess becomes lazy: boot on
+      first Python-dispatch invocation, never for profiles whose roster is
+      pure `Handler`. `answer`-dict protocol and scaffold restore gate on
+      `env.repl_tool` (they're meaningless without the REPL surface).
+- [ ] **1.3 Turn-protocol knobs, not user-supplied loops.** The loop stays
+      one engine-owned `run_loop` parameterized by profile policy —
+      loop-as-arbitrary-extension-code remains deferred until the knob
+      vocabulary proves insufficient. Knobs, each with a reference
+      precedent: stop condition (prose-stop / `answer['ready']` /
+      explicit end-turn tool — codex `end_turn`), per-turn injection
+      policy (WS12.2 left only capped-run warnings; profiles may add
+      codex-style token-budget reminders), parallel tool execution
+      (pi's per-file mutation queue, `agent-loop.ts:373-388`; codex's
+      per-tool RwLock gating, `tools/parallel.rs`), per-tool truncation
+      budgets (claude-code `toolLimits.ts`), and compaction policy
+      (threshold + summary shape — WS9 machinery, profile-selected).
+      Loop detection and the WS12.5 retry ladder are engine invariants, not
+      knobs.
+- [ ] **1.4 Agent addressability + messaging.** The missing primitive under
+      scenarios 1 and 3. Home per doctrine 3: the mux daemon already owns
+      multiple sessions behind a versioned wire protocol
+      (`crates/phi-mux/src/remote/protocol.rs`) — sessions become
+      *addressable agents* (name + profile). New extension-API surface, one
+      mechanism (doctrine 5) exposed on both tool surfaces:
+      `spawn_agent(profile, prompt) -> address` (non-blocking, unlike
+      `subagent()`), `send(address, message)`, and delivery into the
+      target's next turn via the existing steer/`Context`-event path (no
+      new history mutation mechanism). Peer pairs = two spawned agents
+      given each other's addresses. Single-session hosts (plain `phi -p`)
+      route within the local subagent tree so scripts don't require the
+      daemon. Budget/usage roll-up follows the `subagent` precedent
+      (`LmHandler` aggregation); depth/fan-out caps apply per
+      `RlmConfig`. The commitment here is the *capability* (spawn without
+      blocking, address, deliver); the exact names and payload shapes are
+      implementation's call. Core ships no topology, no orchestration
+      policy, no built-in multi-agent features on top — pairs, panels,
+      supervisors, and whatever else are extension territory by
+      construction. Explicitly out of scope: shared mutable blackboards —
+      messages only, revisit with evidence.
+- [ ] **1.5 Acceptance by expressibility.** Two halves, mirroring WS2.4:
+      *Shipped defaults (dogfood):* `pi` and `codex` agent packs as pure
+      Lua next to the WS2 style packs
+      (`phi-builtins/defaults/agents/*.lua`) — verified on the wire, not
+      the glass: run the `bench/` suite through each pack; the request
+      stream must show the right roster (no `repl` tool in the pi pack, no
+      Python-subprocess boot for pure-Handler profiles, codex-shaped stop
+      behavior), with zero pack-specific code in core. This subsumes the
+      open WS12.3b measurement: REPL-only vs hybrid vs pi-pack is the
+      cleaner three-arm comparison, on models the user actually runs
+      (still needs the user's model/spend call).
+      *Expressibility (the actual point):* scenarios 1 and 3 — peer agents
+      and ask-an-agent — implemented as *user-path* extensions (examples,
+      not shipped defaults) using only the public API. Every piece of core
+      they need that doesn't exist is an API gap to fix; every piece of
+      core code written *for* them is a failure of the workstream.
+
+Sequencing: 1.1 + 1.2 first (one refactor: profile plumbing + de-hardwiring
+`repl`), 1.3 next, then the pi pack immediately as the falsifier; 1.4 can
+proceed in parallel after 1.1 (it rides WS11's daemon, independent of loop
+knobs); 1.5 closes the workstream.
+
+### WS2 — Style packs: `/style` as the visual-surface acceptance test
+
+Goal: Phi can *look like* the other harnesses purely through configuration —
+`/style claude-code`, `/style codex`, `/style crush` (later `opencode`, …)
+swap the entire visual identity at runtime, and `/style phi` swaps it back.
+A style pack is an ordinary Lua extension bundling theme + spinner +
+thinking expressions + tool renderers + message/transcript chrome; the
+shipped packs live next to the WS4.9 embedded defaults
+(`phi-builtins/defaults/styles/*.lua`) and load through the same
+`LuaExtension::from_source` path. This is **presentation parity only** —
+the feature-parity non-goal below stands untouched.
+
+Why this is on-plan and not vanity: it's the visual counterpart of the
+Rule's corollary. WS4.6/4.9 proved the *behavioral* surface (commands,
+overlays, tools, events) is user-reachable; nothing yet proves the *visual*
+surface is. "Make Phi indistinguishable from crush at a glance" is a
+falsifiable acceptance test: every visual difference an imitation pack
+cannot express is, by definition, an API gap — fix the API
+(`phi-ext`/`phi-lua`/`phi-tui`), never special-case a pack. It also
+subsumes the still-open WS4.3(b): mimicking three real transcripts is a
+far better forcing function for the message-renderer design than inventing
+one in the abstract.
+
+- [x] **2.1 Style-pack primitive + runtime switching.** Today every visual
+      registration is startup-time and last-write-wins; there is no
+      activatable bundle and no way to re-skin a running session. Decide the
+      mechanism deliberately (one declaration mechanism — doctrine 5): a
+      `register_style { name, … }` bundle whose members are the *existing*
+      registration shapes (theme, spinner, tool renderers, chrome), exactly
+      one style active at a time, host re-resolves visuals + repaints on
+      switch (both frontends; mux views re-theme per WS11.3's per-view
+      palette note). Persist the choice in config so it survives restarts.
+      Switching arrives as a `UiAction` from the command registry, not a
+      side channel.
+      *Landed as (2026-07-04):* `StyleSpec` (`phi-ext/src/style_spec.rs`)
+      bundles the existing shapes **inline** — `Option<ThemeSpec>`,
+      `Option<SpinnerSpec>`, `Option<ThinkingExpressionSpec>`,
+      `Vec<ToolRenderSpec>` — deliberately not by-name references, so an
+      inactive pack's theme never leaks into the `first_theme()` fallback
+      order. Absent members fall through to the base registrations; the
+      shipped `phi` default style is literally the empty bundle
+      (`visual_data.lua`), so "switch back to phi" needs no special case.
+      Runtime state: `active_style: Mutex<Option<String>>` on `AppRuntime`
+      (the `connect_ui` interior-mutability precedent — the registry stays
+      immutable, which bundle is active does not); `set_active_style`
+      rejects unknown names listing the available ones, and the
+      `active_theme`/`active_spinner`/`active_thinking_expression`
+      accessors + a style-overlaying `tool_render_index()` replace the
+      `first_*` calls in both frontends' `VisualContext` and palette
+      paths. `UiAction::SwitchStyle { name }` (empty name = list styles)
+      is emitted by `/style` (`commands.lua`) and `:style`
+      (`mux_commands.lua`); the session TUI re-resolves palette (terminal
+      colours kept on `Ui` for re-derivation), visual context, and tool
+      render index, then repaints via the resize mechanics (clear
+      viewport + `transcript.reset()` + cache flush); the mux re-derives
+      `ScenePalette` and invalidates every view's surface+renderer (the
+      alt-screen-transition mechanics). Persistence: user-global
+      `style.json` (`phi_session::style::StyleStore`, the TrustStore
+      layout) written on switch; config.lua grew a declarative `style`
+      field, and `initial_style` (persisted-wins, approvals layering)
+      applies at every runtime build — session, one-shot, and mux visual
+      runtime. Lua parity shipped in the same change (WS4.6's lesson):
+      `phi.register_style{...}` reuses the exact member parsers of the
+      standalone registrations (now shared helpers in
+      `phi-lua/extension/mod.rs`); dogfood tests in `lua_api.rs` +
+      `defaults.rs`. Honest remainders: `/style` has no completion —
+      packs register during the same runtime build as the command, so a
+      static list can't know them (the WS7.2 /model gap; a dynamic
+      completion primitive is WS2.4's registry-driven-completion work);
+      in mux mode `/style` re-skins the issuing session and `:style` the
+      chrome — other *live* sessions re-theme on their next build (live
+      cross-runtime propagation rides WS11.3's per-view palette follow-up);
+      Lua style themes are static palettes (no resolver), same as
+      `register_theme`; text effects and message renderers aren't bundle
+      members yet — grow the vocabulary when WS2.2's pack inventory
+      demands it.
+- [x] **2.2 Inventory the gap by imitation.** Same method as WS4.1/4.6:
+      build the first pack (claude-code — closest to Phi's current look)
+      and let every un-expressible detail become the work list. Expected
+      gaps from eyeballing the refs, to be confirmed: transcript chrome
+      (claude-code's `⏺`/`⎿` gutter bullets and collapsed tool results;
+      crush's charm-style rounded borders, gradients, boxed tool panels;
+      codex's flat minimal prefixes), input-box and status-line styling,
+      welcome banner, tool-result collapse/expand presentation, and the
+      WS4.3(b) custom message renderers. Grow the *declarative* vocabulary
+      per WS4.3(a)'s decision — data, not closures on the hot render path.
+      *Landed as (2026-07-04):* the pack —
+      `phi-builtins/defaults/styles/claude_code.lua`, values read off
+      `ref/claude-code` (darkTheme in `utils/theme.ts`, spinner chars +
+      120ms cadence in `components/Spinner/`, gerund verbs in
+      `constants/spinnerVerbs.ts`): claude-orange accent/shimmer theme
+      (monochrome anchors via white `path`/`string` roles), the
+      `·✢✳✶✻✽` asterisk-morph ping-pong spinner, ~60 whimsical thinking
+      gerunds, and Bash/Read/Write/Update/Search/Glob/List tool verbs.
+      Loaded via the same `from_source` path in both the session builder
+      and the mux visual runtime; dogfood tests in
+      `phi-lua/tests/defaults.rs` (activation + a drift test tying the
+      pack's renderer roster to base `tool_render.lua`'s). **Expressible
+      today** (worked first try): theme roles, spinner frames/cadence,
+      thinking word lists, tool verbs/anchors/categories/bodies.
+      **Gap inventory** (the work list for 2.3, worst first):
+      1. *Tool-card chrome:* ~~not vocabulary members~~ **closed
+         (2026-07-04)** by `ChromeSpec` (`phi-ext/src/chrome_spec.rs`), a
+         new `StyleSpec` member (style-only, no standalone registration —
+         chrome is a singular surface, so "which chrome" is exactly "which
+         style"): `glyph_ok`/`glyph_failed` (status glyphs, palette-role
+         coloured), `result_prefix` (first result row's gutter, claude-code
+         `  ⎿  `; continuations hang at same-width blank indent),
+         `more_lines` (`{n}` template), `container = card|flat` (flat
+         drops the tinted repl/tool block surface *and* the pending
+         boxed status — commit, replay/cache, and live paths all
+         conditional, mirrored exactly). Pure data per WS4.3a — the
+         in-flight label is still composed once at ToolStart, nothing
+         extension-side runs on the tick path. `AppRuntime::active_chrome()`
+         (style's chrome else `ChromeSpec::default()` = phi's stock look),
+         snapshotted on `Ui` next to `tool_render`, re-resolved on
+         `/style` switch.
+      2. *Anchor format:* **closed (2026-07-04)** — `ChromeSpec.anchor_format`
+         template over `{verb}`/`{args}` placeholders; `tool_identity`
+         builds styled verb/args segments and composes through it (all
+         branches: code-bodied, anchored, fallback `name key=value`);
+         argless calls collapse to the bare verb, so `()` never dangles.
+      3. *Status-line semantics:* **closed (2026-07-04)** —
+         `ThinkingExpressionSpec.selection = cycle|per_turn` (per-turn
+         holds one verb for the whole run, tools included, seeded by the
+         host's `run_started_ms`; Lua: `thinking.selection`), plus
+         `ChromeSpec.status_meta` for the dim `(elapsed · ↓ tokens)`
+         suffix (claude-code thresholds: elapsed past 30s, tokens once
+         > 0 — data from the host's usage, semantics from the chrome).
+      4. *Text effects:* **closed (2026-07-04)** for the status line —
+         `ChromeSpec.status_indicator = equalizer|spinner` (spinner mode
+         draws the style's spinner frames in the accent role) and
+         `status_effect = gradient|sweep` (`sweep` is claude-code's
+         GlimmerMessage: `phi_tui::shimmer_sweep_text`, a ±1-char
+         highlight sweeping right-to-left at 200ms/col with a 20-col
+         runway, pulsing uniformly via `shimmer_flash_text` while a tool
+         runs; base = accent, highlight = running role). Enum data, not
+         closures — the `TextEffectSpec` handler surface stays unused on
+         the tick path per WS4.3a.
+      5. *Input box + welcome banner:* input box **closed (2026-07-04)**
+         — `ChromeSpec.input_prompt` (glyph override, stock = Nerd Font
+         chevron) and `input_ruled` (claude-code's two-rule box:
+         top rule, editor, bottom rule, header re-reads as the footer
+         line; selectors keep the stock layout). Welcome banner still
+         open.
+      6. *Custom message renderers* (WS4.3b) — still the right forcing
+         function, still open. Meanwhile the *message chrome* half is
+         vocabulary: `ChromeSpec.user_prefix` (ghost prefix replaces the
+         accent gutter bar; continuations flow flush beneath, matching
+         ink's inline wrap), `user_background` (full-width
+         `user_message_bg` wash — the role the theme already carried,
+         now consumed via `InlinePalette.user_bg`), `assistant_prefix`
+         (claude-code's `⏺ ` dot, body hangs at prefix width).
+      *Chrome consumption is session-TUI only, deliberately:* the plain
+      CLI (`phi -p` event printing) keeps its own panel presentation —
+      WS4.3a's doctrine is that frontends keep their presentation
+      machinery, and the 2.4 at-a-glance test is the interactive
+      transcript. Revisit only if one-shot output ever becomes a parity
+      surface. The mux inherits chrome for free (it embeds the session
+      TUI); mux *sidebar/statusbar* chrome stays host-owned.
+- [ ] **2.3 Ship the packs.** `claude-code`, `codex`, `crush` as pure Lua
+      in `defaults/styles/`; `opencode` as a stretch. The default remains
+      Phi's own style; packs contain zero core special-cases (a grep for
+      pack names outside `phi-builtins` should come up empty).
+      *Progress:* `claude-code` v1 shipped with 2.2; inventory items (1)
+      and (2) closed 2026-07-04 (`ChromeSpec`) and the pack now carries
+      `chrome = { "⏺", "  ⎿  ", "{verb}({args})", "… +{n} lines (ctrl+o
+      to expand)", flat }` — phi's expand toggle already *is* ctrl+o, so
+      the marker text is literal claude-code. Items (3)–(5) closed later
+      the same day (first 1:1 pass against the ref): the pack now also
+      carries `status_indicator = "spinner"`, `status_effect = "sweep"`,
+      `status_meta`, `input_prompt = "❯"`, `input_ruled`, `user_prefix =
+      "❯ "`, `user_background`, `assistant_prefix = "● "`, and
+      `thinking.selection = "per_turn"` — the asterisk-morph status line
+      with the shimmering held verb, the two-rule input box, the gray
+      user band with the ghost `❯`, and the `●` prose dot (BLACK_CIRCLE
+      is `⏺` only on darwin; the pack targets `●`). Third pass (same
+      day): `pending_indicator = "blink_glyph"` + `pending_note =
+      "Running…"` (ToolUseLoader's 600ms visibility blink over the dim
+      gutter note — in-flight rows animate by blink, not shimmer) and
+      `repl_as_tool` (the repl container borrows the tool-card shape:
+      `● Repl` verb anchor via the pack's `repl` renderer, code hanging
+      2 cells under it, stdout/stderr behind a once-per-container `⎿`
+      gutter — live streaming and replay paths mirrored). **Pack-content
+      gaps** (zero Rust work — edit the Lua, not the API): ~120 of ref's 186
+      spinner verbs are missing (the pack carries ~65, a deliberate subset —
+      fill to full if/when the cadence feels thin); ~50 of 70 theme roles
+      are unset (thinking levels, markdown chrome, tool backgrounds, chrome
+      meta, glyph roles — all consumed by `apply_palette` `role!()` entries
+      today, just not populated by the pack).
+      *Closed (WS2.3 pack-content, 2026-07-04):* `find`'s verb is now
+      "Search" (matching `GlobTool/UI.tsx:12`'s `userFacingName()` — both
+      grep and glob label as "Search"), and all 9 `syntax_*` theme roles
+      are now populated from `MONOKAI_SCOPES`
+      (`native-ts/color-diff/index.ts:190`) so code blocks render with
+      claude-code's Monokai palette instead of phi's default base16-ocean.
+      **API vocabulary gaps** (need Rust, then Lua can express —
+      per the WS2 method (§2.2): "every visual difference an imitation
+      pack cannot express is, by definition, an API gap"):
+      (e) diff color levels — phi has 2 of 6 (`md_diff_add`/`del` only;
+      no `diffAdded`/`diffRemoved`/dimmed roles, renderer has one level);
+      (f) `punctuation` syntax role — `SyntaxColors.punctuation` is
+      hardcoded to `foreground` with no `apply_palette` `role!()` entry;
+      (g) conditional `ToolRenderSpec.verb` — it's a single static
+      `Option<String>` but ref's `userFacingName()` is input-dependent
+      (FileEdit → "Update"/"Create"/"Updated plan", Bash → "SandboxedBash",
+      FileRead → "Reading Plan"/"Read agent output") — needs a declarative
+      rule vocabulary (data, not closures, per WS4.3a); (h) per-subagent
+      colors — phi has 1 `subcall_accent`, ref has 8 — need roles +
+      index-based renderer selection; (i) system-spinner color —
+      `SpinnerSpec` carries no color (comes from `theme.accent`), ref has
+      a second spinner color for system-level background work; (j)
+      `OverlayPalette` has 8 of 70 roles — overlays can't access
+      syntax/diff/thinking/warning colors; (k) `register_text_effect` is
+      Rust-only (`traits.rs:78`, not in `globals.rs`) — a pack can
+      *select* effects (`status_effect = "sweep"`) but can't *define* new
+      ones or parameterize the sweep color per surface; (l) syntax
+      scope-to-role mapping is hardcoded in Rust (`syntax_items()`,
+      `constants.rs:198-271`) — the Lua can set 9 colors but can't
+      change which TextMate scopes map to which roles or per-scope
+      italic/bold styling. The crush `border` member (below) and
+      WS4.3(b) message renderers are the other tracked vocabulary grows.
+      **Style-out-of-scope deltas** (acknowledged, not API gaps):
+      welcome banner (item 5's second half — a layout/content feature,
+      not a color role), "ready"/"queue a follow-up…" placeholder copy
+      (host-owned), `user_padding` widening the user band by one row
+      each side (session config, not style), and phi's header line
+      standing in for claude-code's footer info line (structural, not
+      expressible via a style pack). **Feature gaps** (explicitly
+      non-goal per the non-goals section below: presentation parity, not feature parity —
+      these surfaces don't exist in phi, so the colors have nothing to
+      paint): permission/auto-accept/plan-mode UI (6 ref colors), rate-
+      limit bar (2), fast-mode indicator (2), mouse-selection highlight
+      (1), message-action menu (1), memory view (1), ultrathink rainbow
+      highlighting (7+7 shimmer) — each would need the feature built
+      first, then a color role as a side effect. Next: re-check 2.4's
+      at-a-glance test. `codex` and `crush` shipped 2026-07-05 as pure
+      Lua in `defaults/styles/` (WS2.3): codex is flat-chrome with the
+      braille spinner, `  └ ` tree-branch gutter, `› ` user prefix, and
+      ANSI-cyan accent; crush carries the Charmtone Pantera palette
+      (verbatim RGB from charmtone.go), `●`/`✓`/`×` tool glyphs, the
+      `::: ` editor prompt, and card containers — its rounded-border
+      member is a remaining API gap (no `border` on `ChromeSpec` yet;
+      crush uses card bg-tinted boxes as the approximation). Gap (f)
+      closed: `syntax_punctuation` is now a first-class `Theme` role
+      (previously hardcoded to `foreground` in the syntect theme builder).
+      `opencode` remains a stretch goal. Remaining API vocabulary gaps:
+      (e) diff color levels, (g) conditional verb, (h) per-subagent
+      colors, (i) system-spinner color, (j) overlay palette roles, (k)
+      `register_text_effect` Lua exposure, (l) syntax scope mapping.
+- [ ] **2.4 Acceptance.** Run one fixed scripted session (prompt → a few
+      tool calls → prose answer) in Phi-with-pack and in the real harness
+      (`ref/` checkouts), side by side: transcript, tool cards, spinner/
+      status, and input area should be hard to tell apart at a glance.
+      Mechanical half: packs load through the user extension path, a
+      builtins-less build still boots with generic visuals, and `/style`
+      completion is registry-driven (a user's own pack shows up uninstalled
+      alongside the shipped ones).
+
+### WS3 — TUI consolidation (investigative)
+
+~25K lines across `phi-tui` + `phi-session-tui` + `phi-mux` + `phi-grid`.
+Mux earns its keep (differentiator; `phi-grid`'s rect-level damage tracking is
+finer-grained than zellij's). But:
+
+- [x] **3.1** Audit rendering duplication between `phi-tui`, `phi-session-tui`,
+      and `phi-mux` (markdown, code highlighting, diff, wrapping). Target: one
+      substrate (`phi-tui`) that both frontends consume.
+      *Audit (WS3.1, 2026-07-04):* the target is already met.
+      `render_markdown`, `highlight_code`, `highlight_diff_line`, and
+      `wrap_ansi` all live in `phi-tui` and are the only implementations —
+      `phi-session-tui` consumes them directly (`tui/chat.rs`,
+      `tui/tool_display.rs`, `tui/navigation.rs`); `phi-mux` embeds session
+      TUIs and composites vt100 cells, so it does no markdown/code/diff
+      rendering of its own. The one residual duplication noted in the WS6.3
+      audit — `usage/rendering.rs`'s `display_cell_width`/`truncate_to_cells`
+      — is a deliberate layering artifact, not drift: `phi-session` is the
+      substrate crate *below* `phi-tui` in the dependency graph (phi-tui
+      depends on phi-session, not the reverse), so the usage table can't
+      import `phi_tui::cells`. The helpers are trivial (~30 lines, stable);
+      folding them would require moving `cells.rs` out of phi-tui into a
+      substrate crate, which is not worth it for a 3-function width utility.
+      No work needed.
+- [ ] **3.2** Break up `phi-session-tui/src/tui/mod.rs` (~3,270 lines) as part
+      of the WS4 command/overlay extraction — it should shrink substantially
+      for free.
+- [x] **3.3** Adopt pi's keybinding discipline: no hardcoded key checks; every
+      shortcut is a named, remappable binding (pi forbids this in AGENTS.md —
+      copy that rule into ours once bindings are data-driven).
+      *Status (2026-07-02 audit):* `phi-mux` is partway there — navigation
+      actions route through `Keymap::lookup` with Lua `mux.keybinds`
+      overrides, and extension-overlay toggle keys are data-driven; still
+      hardcoded: the literal `':'` that opens the command line and the
+      archive viewer's entire vim-ish keyset. `phi-session-tui` is unstarted:
+      18 literal `KeyCode` checks (esc/ctrl-c/ctrl-l/ctrl-t/ctrl-g/tab/…),
+      no keymap abstraction at all. Related dead API: `register_shortcut` is
+      fully plumbed but `list_shortcuts()` is never called by either
+      frontend — consuming it here is the natural fix (or delete it until
+      this workstream needs it; a registered-but-unconsumed API falsely
+      signals coverage).
+      *Partial (WS3.3 shortcut consumption, 2026-07-04):* `list_shortcuts()`
+      now has real consumers in both frontends — the session TUI's `/help`
+      and the mux's `:help` overlay surface extension-registered shortcuts
+      (`events.rs:show_help`, `commands.rs:help_entries`), so the API no
+      longer falsely signals coverage. The full keybinding discipline
+      (data-driven `Keymap` for the session TUI's remappable single-strokes,
+      named bindings from config.lua's `keybinds` table) is now landed.
+      *Landed (WS3.3, 2026-07-05):* the inline session TUI's 7 remappable
+      single-stroke shortcuts (alt+up, ctrl+p/l/t/g/o, shift+tab) route
+      through one `Keymap<SessionAction>` lookup in `events.rs`
+      (`lookup_session_action`), driven by `BindingSpec` defaults overridable
+      from config.lua's `[keybinds]` table (action name → binding string;
+      unknown/invalid overrides fall back to defaults, mirroring the mux).
+      The key-stroke parser (`KeyStroke`/`KeyToken`/`KeyModifiers`) moved to
+      `phi_tui::keymap` and is shared with the mux, so both frontends use one
+      binding-string grammar; the mux's private copy was deleted. The 4
+      stateful shortcuts (double-Esc tree, double-Ctrl+C quit, Tab interrupt,
+      Enter submit/login) stay hardcoded — they depend on multi-keystroke
+      timing or editor state, not a single stroke. `cycle_model` keeps its
+      shift-to-reverse direction (both `ctrl+p` and `shift+ctrl+p` bind to
+      the action; the direction comes from the raw key's shift flag). The
+      AGENTS.md rule (no hardcoded key checks for remappable shortcuts) is
+      now added to the Code Conventions section.
+- [x] **3.4 Transcript commit hardening.** `Transcript::committed_rows`
+      (`phi-session/src/transcript/render.rs`) is a bare row count: anything
+      that re-renders *already-committed* rows differently (suspects:
+      `tool_summary` run-merging when a new ReplBlock extends a committed
+      run; transcript-cache rebuilds) silently misaligns the commit point
+      and corrupts scrollback from there on. Audit the prefix-stability
+      invariant and assert it (or make commits content-addressed). Related,
+      by design: resize resets `committed_rows` and re-commits the whole
+      transcript below the stale copy (events.rs) — ordinary-CLI behavior
+      on a real terminal, but noisy in mux panes that resize on layout
+      changes; revisit if duplicates persist after the 2026-07-03 sanitize/
+      DECAWM fix in `phi-tui/src/terminal.rs`.
+      *Landed as (WS3.4, 2026-07-04):* commits are now **content-addressed**.
+      On a cache miss (generation bump or key/len fingerprint divergence)
+      the durable prefix is reassembled and `committed_rows` is clamped to
+      the longest common row-prefix with the old assembly (`old.zip(new).take_while(==)`,
+      capped at the new durable length). So changed rows re-emit as
+      scrollback and the commit point never lands in the live region — live
+      rows are never committed (the invariant the audit proved was
+      violated by the old bare-count + coarse shrink guard when a gen-bump
+      shrank the prefix but live content kept the total above the stale
+      count, silently swallowing live rows). A `debug_assert!` in `render`
+      catches any future regression. Four audit tests cover the suspect
+      scenarios: content-change-same-key-len (display stale, commit
+      intact), gen-bump-shrunken-prefix-with-live (no live swallowing),
+      tool-summary run-merge, and monotonicity within a generation. The
+      fast path (same generation + fingerprint match) keeps the
+      append-only assembly and skips the divergence scan.
+
+### WS4 — Dogfood pass: built-ins through the extension API (landed except 4.3)
 
 Goal: `phi-builtins` becomes the proof that the extension API is sufficient.
 Each migration that can't be expressed through the API is an API gap — fix the
 API (`phi-ext`/`phi-lua`/`phi-event`), never bypass it.
 
-- [x] **1.1 Unify the command registry.** One registry for slash commands; the
+- [x] **4.1 Unify the command registry.** One registry for slash commands; the
       TUI resolves commands only through it. Built-ins register at startup via
       the same path as `phi.register_command`. Migrate incrementally:
       - [x] Trivial: `/help`, `/usage`, `/exit`, `/quit`
@@ -205,7 +706,7 @@ API (`phi-ext`/`phi-lua`/`phi-event`), never bypass it.
       - [x] Model ops: `/model`, `/submodel` (`/mo` was only ever a fuzzy
             completion query, not a command)
       - [x] Auth: `/login`, `/logout`
-      - [x] Stragglers: `/trust` (new, WS4.1); `/zzz` was never a command
+      - [x] Stragglers: `/trust` (new, WS8.1); `/zzz` was never a command
       Expected API gaps to surface: commands need to open overlays/pickers,
       read usage totals, mutate session state, trigger auth flows. Grow the
       command `ctx` to cover these (pi's `ctx` is the reference:
@@ -219,9 +720,9 @@ API (`phi-ext`/`phi-lua`/`phi-event`), never bypass it.
       strings and completion/help are registry-driven.
       *Caveat (2026-07-02 audit):* this proved the Rust API only. The Lua
       bridge discards `actions` entirely, so none of these commands is
-      expressible as a user extension — see WS1.6. Stays checked because the
+      expressible as a user extension — see WS4.6. Stays checked because the
       migration described here is done; the parity gap is tracked separately.
-- [x] **1.2 Overlays.** Move mux usage/model/help overlays to builtin extensions
+- [x] **4.2 Overlays.** Move mux usage/model/help overlays to builtin extensions
       via `register_overlay`. Same drill: gaps in the overlay API get fixed in
       `phi-ext`, not worked around.
       *How the gap was closed:* `OverlaySpec.init_state` now takes an optional
@@ -238,12 +739,12 @@ API (`phi-ext`/`phi-lua`/`phi-event`), never bypass it.
       live in `phi-builtins/src/overlays/`, and a build without them degrades
       to status notes / error replies. The archive viewer (with its
       `Restore(PathBuf)` host action) is the only overlay still hardwired.
-      *Caveat (2026-07-02 audit):* Rust-API-only, same as 1.1 — Lua overlays
+      *Caveat (2026-07-02 audit):* Rust-API-only, same as 4.1 — Lua overlays
       are reduced to a fixed text-box renderer with close-only keys, no
-      payloads, no responder (WS1.6). And `HostModalKind` grew alongside this
+      payloads, no responder (WS4.6). And `HostModalKind` grew alongside this
       work as a private TUI↔mux side channel that bypasses the by-name
-      overlay path it duplicates (WS1.8).
-- [ ] **1.3 Themes / spinners / renderers.** Default theme, spinner frames, and
+      overlay path it duplicates (WS4.8).
+- [ ] **4.3 Themes / spinners / renderers.** Default theme, spinner frames, and
       any special-cased message renderers become `register_theme` /
       `register_spinner` / `register_message_renderer` calls in `phi-builtins`.
       - [x] Registration side: `DefaultVisualExtension`
@@ -304,9 +805,9 @@ API (`phi-ext`/`phi-lua`/`phi-event`), never bypass it.
             non-test consumers, no way for an extension to inject a
             custom-typed message) until this lands. Styling decision for
             *this* half is still open (renderer returns markdown? spans of
-            `StyledText` with palette roles, per the WS1.6 overlay
+            `StyledText` with palette roles, per the WS4.6 overlay
             precedent?) — don't rush it.
-- [x] **1.4 Skills.** Relocate `phi-session/src/skills.rs` into a builtin
+- [x] **4.4 Skills.** Relocate `phi-session/src/skills.rs` into a builtin
       extension (discovery of `SKILL.md` dirs, injection into the system prompt
       via the `before_agent_start`-equivalent event). Skills are not RLM-core.
       *Landed as:* `phi-builtins/src/skills.rs` — `SkillsExtension` discovers
@@ -324,19 +825,19 @@ API (`phi-ext`/`phi-lua`/`phi-event`), never bypass it.
       *Leftover (2026-07-02 audit):* `Config.skills` still lives in
       `phi-session`'s config schema (`config.rs:78-81`), consumed only by the
       builtin. Symptom of a missing primitive: extension-owned config
-      sections. Fold into whatever WS1.8 decides, or accept and document.
-- [x] **1.5 Acceptance (made mechanical, 2026-07-02):** `phi-session-tui`
+      sections. Fold into whatever WS4.8 decides, or accept and document.
+- [x] **4.5 Acceptance (made mechanical, 2026-07-02):** `phi-session-tui`
       contains zero hardcoded command strings (✓ done); `phi-mux` contains
-      zero hardwired overlay feature logic (✓ done — WS1.7 closed both the
+      zero hardwired overlay feature logic (✓ done — WS4.7 closed both the
       `:command` parser and the archive viewer); deleting `phi-builtins`
       from the build leaves a bare-but-functional harness (engine + REPL +
       plain TUI + mux shell).
       *Audit finding:* the last clause is currently false at the Cargo level —
       all three app crates hard-depend on `phi-builtins` with no feature
       gate, and there is no CI, so the doctrine ("bare core must boot") is
-      prose, not a property. *Status (WS1.5 sub-items landed):* the feature
+      prose, not a property. *Status (WS4.5 sub-items landed):* the feature
       gate + CI check below are done, so "deleting phi-builtins from the
-      build" is now mechanical (`--no-default-features`); with WS1.7 landed,
+      build" is now mechanical (`--no-default-features`); with WS4.7 landed,
       all three clauses hold and the bare build stays CI-enforced. In a
       builtins-less build the mux `:` line has no commands (every input is
       an "unknown command" note) and no overlays — the shell itself
@@ -362,7 +863,7 @@ API (`phi-ext`/`phi-lua`/`phi-event`), never bypass it.
             *Landed as:* `checks.<system>.phi-app-no-builtins` — a crane
             `cargoBuild` of `-p phi-app --no-default-features` (build only,
             shares `cargoArtifacts`), visible to `nix flake check`.
-- [x] **1.6 Lua parity for commands and overlays.** The Lua bridge exposes
+- [x] **4.6 Lua parity for commands and overlays.** The Lua bridge exposes
       only a narrow slice of what builtins use: commands can't return
       `UiAction`s (`phi-lua/src/extension/mod.rs:381-384` hardcodes
       `actions: Vec::new()`); overlays get a fixed text-box renderer, a fixed
@@ -371,10 +872,10 @@ API (`phi-ext`/`phi-lua`/`phi-event`), never bypass it.
       shortcuts are no-op stubs ("handled at the TUI layer"). Themes,
       spinners, tools, providers, message renderers, and the full event
       surface *are* faithfully bridged — the gap is concentrated in exactly
-      the two capabilities WS1.1/1.2 leaned on. Without this, the third
+      the two capabilities WS4.1/4.2 leaned on. Without this, the third
       differentiator ("greater extension surface") is only true for people
       writing Rust in this repo, and the Rule's corollary tests the wrong
-      API. Dogfood test, same method as WS1.1: port one builtin command that
+      API. Dogfood test, same method as WS4.1: port one builtin command that
       returns `UiAction`s and one builtin overlay to Lua; every failure is
       the work list.
       *Landed as:* commands — the bridge returns the handler's full result
@@ -397,16 +898,16 @@ API (`phi-ext`/`phi-lua`/`phi-event`), never bypass it.
       port a `/usage`-style command, the help overlay, and a model picker
       (responder round-trip + dismissal) to Lua in
       `phi-lua/tests/lua_api.rs`. Shortcuts stay no-op stubs by design —
-      neither frontend consumes `list_shortcuts()` yet; that's WS6.3's
+      neither frontend consumes `list_shortcuts()` yet; that's WS3.3's
       keymap work, not a bridge gap.
-- [x] **1.7 Mux `:command` registry.** The mux colon-command line is a closed
+- [x] **4.7 Mux `:command` registry.** The mux colon-command line is a closed
       enum + literal string matches (`phi-mux/src/keys/mod.rs:10-51`) — the
-      exact pattern WS1.1 removed from the inline TUI, missed by the original
+      exact pattern WS4.1 removed from the inline TUI, missed by the original
       inventory. Route it through the same `CommandSpec` registry (namespace
       or context-tag mux-level commands vs session-level ones). The archive
       viewer overlay (`ui/overlays/archive.rs`, `Restore(PathBuf)` host
       action, own hardcoded keyset) migrates to `register_overlay` as part of
-      this — it needs whatever host-action mechanism WS1.8 lands.
+      this — it needs whatever host-action mechanism WS4.8 lands.
       *Landed as (part A):* `CommandSpec` grew `context: CommandContext`
       (`Session` default / `Mux`) and `aliases`; the colon commands live in
       `phi-builtins/src/mux_commands.rs` and return declarative actions —
@@ -414,7 +915,7 @@ API (`phi-ext`/`phi-lua`/`phi-event`), never bypass it.
       {name}` ("cleanup", "refresh", "reload", nav) join the vocabulary;
       the mux dispatches via `invoke_command_sync_in(CommandContext::Mux, …)`
       and interprets actions in `apply_mux_ui_action`. The `AppAction` closed
-      enum survives only for *keybound* navigation (keymap territory, WS6.3),
+      enum survives only for *keybound* navigation (keymap territory, WS3.3),
       not command dispatch.
       *Landed as (part B):* archive persistence moved to
       `phi_session::archive` (pure store-layout code — list/archive/restore/
@@ -427,7 +928,7 @@ API (`phi-ext`/`phi-lua`/`phi-event`), never bypass it.
       the extension via `restore_session`; the host only interprets
       `RunHostAction("reload")`. `phi-mux/src/ui/overlays/` is deleted
       entirely — the mux has zero hardwired overlay feature logic.
-- [x] **1.8 Decide the `UiAction` vocabulary stance (before WS7).** Every
+- [x] **4.8 Decide the `UiAction` vocabulary stance (before WS10).** Every
       host effect is a feature-named variant in `phi-ext` (`SwitchModel`,
       `StartLogin`, `TrustProject`, `PickerKind::…`) interpreted by a match
       arm in each host — extensions cannot define new host effects, and
@@ -436,8 +937,8 @@ API (`phi-ext`/`phi-lua`/`phi-event`), never bypass it.
       genuinely host-owned effects (quit, new-session — declarative actions
       match the snapshot-in/actions-out doctrine), but add a generic
       `UiAction::OpenOverlay { name, payload }` escape hatch that subsumes
-      `ShowHelp`, most of `PickerKind`, and `HostModalKind` entirely. WS7.1
-      (MCP) and WS7.2 (approvals) will hit this immediately; settling it
+      `ShowHelp`, most of `PickerKind`, and `HostModalKind` entirely. WS10.1
+      (MCP) and WS10.2 (approvals) will hit this immediately; settling it
       first avoids two more rounds of enum growth.
       *Landed as:* `UiAction::OpenOverlay { name, payload: Option<serde_json::Value> }`
       subsumes `ShowHelp` and `PickerKind::{Usage, Model}` (both deleted);
@@ -451,7 +952,7 @@ API (`phi-ext`/`phi-lua`/`phi-event`), never bypass it.
       attaches the native `ModelPickerPayload` (model list + single
       `OverlayResponder`, reply-on-drop preserved) for `OVERLAY_MODEL` and
       routes any other name generically to every focused view.
-- [x] **1.9 Defaults as embedded Lua.** (landed 2026-07-03; retro-added to
+- [x] **4.9 Defaults as embedded Lua.** (landed 2026-07-03; retro-added to
       the plan) The builtin defaults are now *literally* user extensions:
       commands, mux commands, tool renderers, coding tools, spinner/thinking
       data, about/help overlays, skills, and approvals ship as Lua in
@@ -464,9 +965,19 @@ API (`phi-ext`/`phi-lua`/`phi-event`), never bypass it.
       Lua `register_tool`, `LuaExtension::from_source`. Dogfood tests in
       `phi-lua/tests/defaults.rs`.
 
-### WS2 — Prune the surface
+### WS5 — Codify the rule (landed)
 
-- [x] **2.1** Delete the seven `--tools-*` flags from `cli.rs`; move to settings
+- [x] Add "The Rule" and the core/not-core tables to `AGENTS.md` (or link there
+      to this file) so every future agent session enforces it.
+- [x] Remove `crates/phi-builtins/src/prelude/__pycache__/` from git; add
+      `__pycache__/` to `.gitignore`.
+- [x] Land the in-flight uncommitted work first (strict prose policy +
+      `message()` primitive) — it's engine hardening, on-brand, and rebasing the
+      dogfood pass over it is easier than the reverse.
+
+### WS6 — Prune the surface
+
+- [x] **6.1** Delete the seven `--tools-*` flags from `cli.rs`; move to settings
       (config file), keeping CLI flags for behavior only (model, budget,
       iterations, output mode, mux, project). Extensions can add flags via
       `register_flag`.
@@ -474,13 +985,13 @@ API (`phi-ext`/`phi-lua`/`phi-event`), never bypass it.
       already covered every knob, so the flags and the seven `tools_*`
       passthrough fields on `CliArgs` just died; `Settings::resolve` reads
       tool display settings from config only.
-- [x] **2.2** Relocate `phi-session/src/prompts.rs` (`.phi/SYSTEM.md` overrides)
+- [x] **6.2** Relocate `phi-session/src/prompts.rs` (`.phi/SYSTEM.md` overrides)
       next to the prompt builder in `phi-rlm/src/prompts/`, leaving `phi-session`
       as pure persistence (config, transcript, usage, store, tree).
       *Landed as:* `phi-rlm/src/prompts/overrides.rs`, re-exported as
       `phi_rlm::discover_prompt_overrides`; the trust-gated `include_project`
       contract is unchanged.
-- [x] **2.3** Audit remaining `phi-session` contents for other non-persistence
+- [x] **6.3** Audit remaining `phi-session` contents for other non-persistence
       logic.
       *Found and relocated:* `files.rs` (`@`-token editor file completion —
       TUI input logic) → `phi-session-tui/src/files.rs` (took the `ignore`
@@ -489,15 +1000,15 @@ API (`phi-ext`/`phi-lua`/`phi-event`), never bypass it.
       duplicate tally loops in `phi-app/src/event_print.rs` and
       `phi-session-tui/src/tui/chat.rs`. *Stays, per the blessed list:*
       config, session store/tree, transcript, trust, usage. *Noted for
-      WS6.1:* `usage/rendering.rs` re-implements `phi-tui`'s cell-width/
+      WS3.1:* `usage/rendering.rs` re-implements `phi-tui`'s cell-width/
       truncation helpers — fold when auditing rendering duplication.
 
-### WS3 — Slim the provider layer
+### WS7 — Slim the provider layer
 
-- [x] **3.1** Keep the four real backends (`AnthropicMessages`, `OpenAiResponses`,
+- [x] **7.1** Keep the four real backends (`AnthropicMessages`, `OpenAiResponses`,
       `OpenAiCompletions`, `CursorNative`) in core.
       *Unchanged — verified all four stay registered in `Registry::builtin`.*
-- [x] **3.2** Shrink embedded `models.json` to models for natively supported
+- [x] **7.2** Shrink embedded `models.json` to models for natively supported
       backends only. Everything else arrives via `register_provider` /
       `register_model`, or via an optional catalog extension that fetches and
       caches a registry (crush's pattern is the reference: tiny embedded
@@ -505,7 +1016,7 @@ API (`phi-ext`/`phi-lua`/`phi-event`), never bypass it.
       `ref/crush/internal/config/catwalk.go`).
       *Landed as:* embedded catalog is now the three first-party providers
       Phi has auth flows for — anthropic (24), openai (41), cursor (11);
-      76 models, ~40KB instead of 3,597 / 1.7MB. API gap closed on the way:
+      76 models, ~40KB instead of 3,597 / 4.7MB. API gap closed on the way:
       `register_provider` was stored-but-dead (model resolution ran
       concurrently with runtime boot), so `build_session` now boots the
       runtime first, converts each `ProviderConfig` to registry models
@@ -537,15 +1048,15 @@ API (`phi-ext`/`phi-lua`/`phi-event`), never bypass it.
       extensions still don't `/model`-complete (they register after the
       completion list is built). A fetch + ETag-refresh catalog extension
       (crush's catwalk pattern) remains optional future work.
-- [x] **3.3** Retire or repurpose the `xtask` registry generator accordingly.
+- [x] **7.3** Retire or repurpose the `xtask` registry generator accordingly.
       *Repurposed:* generates only `EMBEDDED_PROVIDERS` (anthropic, openai)
       from models.dev, preserves the hand-maintained cursor-native entries
       across regenerations, and lost the `ai_gateway` module plus the dead
       per-provider classify branches.
 
-### WS4 — Core robustness invariants (minimal ≠ flimsy)
+### WS8 — Core robustness invariants (minimal ≠ flimsy)
 
-- [x] **4.1 Project trust (do early).** Ship a builtin trust extension: first
+- [x] **8.1 Project trust (do early).** Ship a builtin trust extension: first
       time Phi runs in a directory containing `.phi/` extensions/skills/prompt
       overrides, prompt the user; persist the decision. Until trusted, load
       nothing project-local. (pi reference: `project-trust.ts` in pi core;
@@ -557,7 +1068,7 @@ API (`phi-ext`/`phi-lua`/`phi-event`), never bypass it.
       `resolve_project_trust` in `session_builder` (stdin prompt in
       standalone TUI, untrusted-with-notice in mux/one-shot), and a
       `/trust [revoke]` builtin command via `UiAction::TrustProject`.
-- [x] **4.2 Read-before-edit enforcement.** `edit_file`/`write_file` in the
+- [x] **8.2 Read-before-edit enforcement.** `edit_file`/`write_file` in the
       prelude refuse to touch a file the session hasn't read (or that changed
       on disk since the read — mtime/size already tracked by `file_ops.py`'s
       cache). Distinct, actionable error messages that teach the model the
@@ -572,7 +1083,7 @@ API (`phi-ext`/`phi-lua`/`phi-event`), never bypass it.
       errors: never-read → "call read_file(path) first, then retry"; stale →
       "re-read with read_file(path, fresh=True), rebase the change, then
       retry". `read_file(raw=True)` now records a snapshot so raw reads count.
-- [x] **4.3 Subcall result spill.** Port upstream rlm's `SubagentResult`
+- [x] **8.3 Subcall result spill.** Port upstream rlm's `SubagentResult`
       spill-to-tmp-file: subagent/`llm_query` results over ~50K chars get
       written to a tmp file; the REPL value carries a preview + path + full
       programmatic access. Phi currently caps REPL *stdout* (20K,
@@ -588,7 +1099,7 @@ API (`phi-ext`/`phi-lua`/`phi-event`), never bypass it.
       `answer['content'] = r['text']` submits the full text, not the
       preview (`_capture_answer` unwraps). Spill behavior documented in
       `DEFAULT_REPL_TOOLS`. Below-threshold results stay plain `str`.
-- [x] **4.4 Scaffold restoration.** Verify (and if absent, implement) that
+- [x] **8.4 Scaffold restoration.** Verify (and if absent, implement) that
       `router.py` force-restores reserved names (`llm_query`, `subagent`,
       `answer`, `context`, `bash`, …) after every exec so model code can't
       corrupt the environment (upstream: `_restore_scaffold`,
@@ -603,7 +1114,7 @@ API (`phi-ext`/`phi-lua`/`phi-event`), never bypass it.
       taken after prelude setup, reasserted (plus a fresh `__builtins__`
       copy) in `_restore_scaffold` after every exec; `answer` keeps its
       dedicated re-wrap logic.
-- [x] **4.5 Aggregate truncation budget.** In addition to per-result caps, cap
+- [x] **8.5 Aggregate truncation budget.** In addition to per-result caps, cap
       the *aggregate* tool/REPL output injected per iteration, so wide subagent
       batches can't blow the context. (Reference: claude-code
       `constants/toolLimits.ts` — 50K chars/result, 100K tokens/result, 200K
@@ -615,9 +1126,9 @@ API (`phi-ext`/`phi-lua`/`phi-event`), never bypass it.
       truncated with an explicit `chars dropped` marker; fully elided
       results say so — never silent. UI events keep the full output.
 
-### WS5 — Context compaction (core, part of the loop)
+### WS9 — Context compaction (core, part of the loop)
 
-- [x] **5.1** In-loop auto-compaction in `phi-rlm`: trigger at a threshold of
+- [x] **9.1** In-loop auto-compaction in `phi-rlm`: trigger at a threshold of
       the model's context window *minus reserved headroom for the summary
       itself* (upstream rlm: 0.85 of window, `ref/rlm/rlm/core/rlm.py:600-642`;
       claude-code reserves ~13K + max-output tokens).
@@ -629,7 +1140,7 @@ API (`phi-ext`/`phi-lua`/`phi-event`), never bypass it.
       compaction off; `ProviderLm` reads it from the registry `Model`).
       API gap closed on the way: the trait previously exposed no model
       metadata at all.
-- [x] **5.2** Structured summary preserving: original intent, key technical
+- [x] **9.2** Structured summary preserving: original intent, key technical
       concepts, files touched (with why), errors + user corrections, pending
       work, current state; keep recent N messages and all user messages
       verbatim. (Reference: claude-code `services/compact/prompt.ts` 8-section
@@ -648,7 +1159,7 @@ API (`phi-ext`/`phi-lua`/`phi-event`), never bypass it.
       demotes context to a cheaper view instead of deleting it.
       `SessionBeforeCompact` can veto or customize instructions;
       `SessionCompact` fires after.
-- [x] **5.3** Compaction as an *additive marker* in the session JSONL — spliced
+- [x] **9.3** Compaction as an *additive marker* in the session JSONL — spliced
       into context on reconstruction, never destructive (opencode pattern;
       Phi's tree store already supports this shape). Wire the existing
       `SessionBeforeCompact`/`SessionCompact` events so extensions can observe
@@ -661,7 +1172,7 @@ API (`phi-ext`/`phi-lua`/`phi-event`), never bypass it.
       `restore_session` splices them into the archived `history_N`.
       Message/repl records are never rewritten; the file-level `compact()`
       rewrite preserves the markers.
-- [x] **5.4** Circuit breaker: stop auto-compacting after 3 consecutive
+- [x] **9.4** Circuit breaker: stop auto-compacting after 3 consecutive
       failures (claude-code added this after telemetry showed runaway retry
       loops burning API quota).
       *Landed as:* `CompactionState.consecutive_failures` in `run_loop`;
@@ -670,50 +1181,11 @@ API (`phi-ext`/`phi-lua`/`phi-event`), never bypass it.
       run (history left untouched; the run proceeds until provider limits).
       Covered by `compaction_breaker_disarms_after_repeated_failures`.
 
-### WS6 — TUI consolidation (investigative)
-
-~25K lines across `phi-tui` + `phi-session-tui` + `phi-mux` + `phi-grid`.
-Mux earns its keep (differentiator; `phi-grid`'s rect-level damage tracking is
-finer-grained than zellij's). But:
-
-- [ ] **6.1** Audit rendering duplication between `phi-tui`, `phi-session-tui`,
-      and `phi-mux` (markdown, code highlighting, diff, wrapping). Target: one
-      substrate (`phi-tui`) that both frontends consume.
-- [ ] **6.2** Break up `phi-session-tui/src/tui/mod.rs` (~2,600 lines) as part
-      of the WS1 command/overlay extraction — it should shrink substantially
-      for free.
-- [ ] **6.3** Adopt pi's keybinding discipline: no hardcoded key checks; every
-      shortcut is a named, remappable binding (pi forbids this in AGENTS.md —
-      copy that rule into ours once bindings are data-driven).
-      *Status (2026-07-02 audit):* `phi-mux` is partway there — navigation
-      actions route through `Keymap::lookup` with Lua `mux.keybinds`
-      overrides, and extension-overlay toggle keys are data-driven; still
-      hardcoded: the literal `':'` that opens the command line and the
-      archive viewer's entire vim-ish keyset. `phi-session-tui` is unstarted:
-      18 literal `KeyCode` checks (esc/ctrl-c/ctrl-l/ctrl-t/ctrl-g/tab/…),
-      no keymap abstraction at all. Related dead API: `register_shortcut` is
-      fully plumbed but `list_shortcuts()` is never called by either
-      frontend — consuming it here is the natural fix (or delete it until
-      this workstream needs it; a registered-but-unconsumed API falsely
-      signals coverage).
-- [ ] **6.4 Transcript commit hardening.** `Transcript::committed_rows`
-      (`phi-session/src/transcript/render.rs`) is a bare row count: anything
-      that re-renders *already-committed* rows differently (suspects:
-      `tool_summary` run-merging when a new ReplBlock extends a committed
-      run; transcript-cache rebuilds) silently misaligns the commit point
-      and corrupts scrollback from there on. Audit the prefix-stability
-      invariant and assert it (or make commits content-addressed). Related,
-      by design: resize resets `committed_rows` and re-commits the whole
-      transcript below the stale copy (events.rs) — ordinary-CLI behavior
-      on a real terminal, but noisy in mux panes that resize on layout
-      changes; revisit if duplicates persist after the 2026-07-03 sanitize/
-      DECAWM fix in `phi-tui/src/terminal.rs`.
-
-### WS7 — Prove the API: reference extensions (after WS1)
+### WS10 — Prove the API: reference extensions (landed)
 
 Build these as extensions *because* they stress the API, in this order of value:
 
-- [x] **7.1 MCP client extension.** Config: one shape covering stdio/sse/http,
+- [x] **10.1 MCP client extension.** Config: one shape covering stdio/sse/http,
       per-server tool allow/deny lists, shell-expanded env/headers (reference:
       `ref/crush/internal/config/config.go:182`). Exposes MCP tools via
       `register_tool` into the Python prelude namespace.
@@ -728,7 +1200,7 @@ Build these as extensions *because* they stress the API, in this order of value:
       specifically, because MCP servers spawn processes at startup. Env and
       header values shell-expand (`$VAR`/`${VAR}`/`$(cmd)`, empty-expanded
       headers omitted). Each tool registers as `ToolSpec { dispatch:
-      Handler }` named `{server}_{tool}`, so all of WS9.3a applies unchanged
+      Handler }` named `{server}_{tool}`, so all of WS12.3a applies unchanged
       — REPL stubs, per-server `expose = repl|native|both`, the 60s host
       watchdog, ToolCall/ToolResult interception; params derive from the
       server's JSON Schema (required-first for Python default ordering) and
@@ -746,7 +1218,7 @@ Build these as extensions *because* they stress the API, in this order of value:
       legacy SSE transport; OAuth for remote servers; dynamic
       `tools/list_changed` (the registry is immutable after build);
       per-session (not per-server) connection reuse in the mux.
-- [x] **7.2 Approval/permission extension.** Uses the `ToolCall` interception
+- [x] **10.2 Approval/permission extension.** Uses the `ToolCall` interception
       event to gate `bash`/`write_file`/`edit_file` behind user confirmation
       with a persistable allowlist. Optional install — core stays pi-stance.
       *Landed as:* `ApprovalsExtension` (`phi-builtins/src/approvals.rs`),
@@ -774,7 +1246,7 @@ Build these as extensions *because* they stress the API, in this order of value:
       requests queued FIFO, dismissed when the run ends), works mid-run in
       standalone and embedded/mux modes; one-shot `phi -p` never connects,
       so `has_ui()` is false and ask-rules deny. Lua parity shipped in the
-      same change (WS1.6's lesson): `phi.on(event, handler, { timeout })`
+      same change (WS4.6's lesson): `phi.on(event, handler, { timeout })`
       and `phi.ui.ask{...}`/`phi.ui.has_ui()`, with the Lua VM's
       instruction-hook deadline and the bridge wait both tracking the
       registration timeout; dogfood test ports the gate to Lua
@@ -785,7 +1257,7 @@ Build these as extensions *because* they stress the API, in this order of value:
       unapplied by the engine, so edit-before-approve isn't expressible
       yet; dispatch stays fail-open on timeout for ordinary handlers (the
       gate protects itself via its raised budget).
-- [x] **7.3 Structured subagent reports.** Extend the `subagent` return
+- [x] **10.3 Structured subagent reports.** Extend the `subagent` return
       contract with a bounded summary field (jcode bounds completion reports to
       4K chars) — engine-side, but validated by an extension consuming it.
       *Landed as:* the subagent dict grew `'summary'` — always present,
@@ -794,7 +1266,7 @@ Build these as extensions *because* they stress the API, in this order of value:
       never trusted to the child). Model-authored path: the child sets
       `answer['summary']` at any point — a *standing declaration* read from
       the live answer dict on every exec (`final_summary` on the REPL wire),
-      so it survives a WS9.1 prose finish, not just `answer['ready']`;
+      so it survives a WS12.1 prose finish, not just `answer['ready']`;
       bounded at capture in `run_loop` and carried on the model-finish stop
       paths (answer/prose/default-answer; limit/cancel/failed stay `None`)
       through `Outcome` → `RlmCompletion.summary`. Fallback: a child that
@@ -809,13 +1281,13 @@ Build these as extensions *because* they stress the API, in this order of value:
       an `answer['summary']` instruction on the answer bullet (jcode's
       report-instruction analog, shared prompt so children see it).
 
-### WS8 — Mux client/server (canonical daemon, thin clients)
+### WS11 — Mux client/server (canonical daemon, thin clients)
 
 Goal: one canonical mux per user. A headless daemon owns all sessions and
 screen state; any number of terminals attach as thin clients over a unix
 socket. Advances the Mux differentiator (core work per the table above).
 
-- [x] **8.1 Headless daemon + thin-client attach.** `phi --mux` spawns a
+- [x] **11.1 Headless daemon + thin-client attach.** `phi --mux` spawns a
       detached `--mux-server` daemon if none is running, then attaches; every
       terminal (including the first) is an equal client. Sessions and in-flight
       agent turns survive any terminal closing; reattach resumes live.
@@ -831,7 +1303,7 @@ socket. Advances the Mux differentiator (core work per the table above).
       `$EDITOR` runs on the last-active client's tty; copy = OSC 52 to that
       client; paste = client-side clipboard read). `phi --kill` terminates the
       daemon; `:quit` from any client does too.
-- [x] **8.2 Per-client views (free navigation + independent sizing).** Split
+- [x] **11.2 Per-client views (free navigation + independent sizing).** Split
       `MuxApp` into `MuxCore` (shared: workspace, session handles, watchers,
       persistence, clock) and `MuxView` (per client: focus, size, surface,
       renderer, sidebar scroll, command line, overlays, selection, note) so
@@ -886,14 +1358,38 @@ socket. Advances the Mux differentiator (core work per the table above).
             for the acting client, `set_note` broadcast for background
             events). Known shared state: scrollback offset lives on the
             vt100 screen, so co-viewers of one session scroll together.
-- [ ] **8.3 v1 gaps (deliberate, small follow-ups):** a later-attaching
+- [x] **11.3 v1 gaps (deliberate, small follow-ups):** a later-attaching
       client's cwd doesn't join the sidebar (handshake already carries it);
       later clients don't re-theme (first client's OSC colors win — per-view
-      palettes become possible after 8.2); per-invocation CLI overrides
+      palettes become possible after 11.2); per-invocation CLI overrides
       (`--model`) don't reach an already-running daemon; daemon sessions
       inherit the first spawner's environment.
+      *Partial (WS11.3, 2026-07-04):* the cwd gap is closed — on attach,
+      `RemoteEvent::Attached` now calls `workspace.add_project(info.cwd)`
+      (no-op when the project already exists, so the first spawner isn't
+      duplicated) and re-syncs watchers
+      (`phi-mux/src/app/session.rs`).
+      *Further (WS11.3, 2026-07-05):* the re-theme and `--model` gaps are
+      closed. On attach, a client's `terminal_colors` re-derive the mux
+      palette (`ScenePalette::from_extension_theme`/`from_terminal_colors`
+      over the new colors — tmux-attach feel: the last client's colors win
+      for the daemon, since the daemon renders one frame for all clients;
+      per-view palettes would need per-view rendering). The `Attach`
+      handshake grew an optional `model` field (`ClientMsg::Attach`,
+      `AttachInfo`), and the client forwards its `--model` override; the
+      daemon applies it to `shared.cli_args.model` so new session builds
+      use the last attaching client's model. The remaining gap (daemon
+      env inheritance — sessions inherit the first spawner's environment)
+      is now closed: the `Attach` handshake grew a `shell` field
+      (`ClientMsg::Attach`/`AttachInfo`), the client forwards its
+      `$SHELL`/`$COMSPEC`, and the daemon applies it to
+      `shared.shell` (seed + last-attach-wins, matching `--model`/re-theme).
+      `env_info_block(cwd, shell)` reports the attaching client's shell in
+      the `# Environment` prompt block instead of the daemon spawner's;
+      `None` keeps the process-env fallback for standalone/one-shot/local.
+      Covered by `env_info_block_uses_daemon_shell_override`.
 
-### WS9 — Agent loop: coding-first RLM (latency + quality, highest priority)
+### WS12 — Agent loop: coding-first RLM (latency + quality; queue-jump superseded by WS1)
 
 Diagnosis (2026-07-03 audit of `run_loop` vs `ref/codex` + `ref/pi`): upstream
 RLM is a **long-context-QA harness** (its own docs and training env are
@@ -905,7 +1401,7 @@ Phi does neither. This workstream does **not** soften differentiator #2 — the
 REPL, recursion, and persistent env stay; what changes is the turn protocol
 around them and the shape of the tool surface on top of them.
 
-- [x] **9.1 Accept prose as the final answer (bug-level contradiction; do
+- [x] **12.1 Accept prose as the final answer (bug-level contradiction; do
       first).** `DEFAULT_MECHANICS` tells the model *"If you are finished …
       stop making tool calls and output your answer as text"*
       (`phi-rlm/src/prompts/constants.rs:21`), but `run_loop` refuses the
@@ -930,7 +1426,7 @@ around them and the shape of the tool surface on top of them.
       now states outright that a tool-free turn ends the run. Prep commit
       removed the `ProsePolicy` strict/lenient machinery (strict tool-only
       mode contradicted this item and lenient was the only mode in use).
-- [x] **9.2 Stop injecting a `Role::User` "Turn N:" message every iteration.**
+- [x] **12.2 Stop injecting a `Role::User` "Turn N:" message every iteration.**
       `build_user_prompt` pushes a user message before *every* model call
       (`core.rs:412-423`, `prompts/builder.rs:4-46`). No reference harness
       does this — codex/pi feed back tool results and let the model continue.
@@ -957,7 +1453,7 @@ around them and the shape of the tool surface on top of them.
       `Role::Assistant`, since iterations no longer carry user messages.
       Consecutive user-role messages are safe where they still occur — the
       providers merge them.
-- [ ] **9.3 Tool surface through the extension API (API gap fix +
+- [ ] **12.3 Tool surface through the extension API (API gap fix +
       evidence-gated experiment).** *(a) and (c) landed 2026-07-03; (b)'s
       builtin landed 2026-07-03 — only its measurement remains.* The tension: pure-CodeAct is
       off-distribution for models RL-trained on native read/edit/bash
@@ -968,7 +1464,7 @@ around them and the shape of the tool surface on top of them.
       effect dominates for coding with current models is **empirical, not
       doctrinal** — so don't decide it in core. Resolve via The Rule instead:
       - (a) *API gap fix:* `register_tool` today means only "inject a Python
-        callable into the REPL namespace" (the WS7.1 shape). Grow the tool
+        callable into the REPL namespace" (the WS10.1 shape). Grow the tool
         spec with a native exposure — `expose: repl | native | both` — so a
         registered tool can also surface as a provider `ToolDefinition`. The
         engine builds its per-turn tool list from the registry instead of
@@ -983,15 +1479,15 @@ around them and the shape of the tool surface on top of them.
         stays engine-registered (bare core must boot); the loop, guardrails,
         termination, and compaction stay engine-owned (doctrine 2 — the
         registry is the seam, the loop is the substrate). *Not gated on the
-        (b) experiment* — start as soon as 9.1/9.2 land (same-file
+        (b) experiment* — start as soon as 12.1/12.2 land (same-file
         sequencing in `run_loop` is the only dependency); this is the API
-        WS7.1/7.2 build on, and per the 2026-07-03 reorder it precedes the
+        WS10.1/10.2 build on, and per the 2026-07-03 reorder it precedes the
         UI-side extension work.
         *Landed as:* `ToolSpec` grew `expose: ToolExposure`
         (`repl`/`native`/`both`, default `repl`), optional `input_schema`
         (JSON Schema; derived from `params` via `schema_from_params` when
         absent), and `dispatch: ToolDispatch` — `Handler(ToolHandler)` (the
-        MCP/WS7.1 shape) or `Python` (implemented by a same-named function
+        MCP/WS10.1 shape) or `Python` (implemented by a same-named function
         already in the REPL env; no stub generated, native calls map onto
         it). `register_repl_tool` became `register_tools`: per-turn tool
         list = engine-owned `repl` (bare core must boot) + every
@@ -1016,9 +1512,9 @@ around them and the shape of the tool surface on top of them.
       - (b) *The hybrid ships as a default-off builtin* (`coding-tools-
         native`): registers bash/read_file/edit_file/write_file/grep/find/ls
         with `expose: both`. Enabling it by default is gated on measurement:
-        after 9.1/9.2/9.4 land, run a fixed coding-task suite through
+        after 12.1/12.2/12.4 land, run a fixed coding-task suite through
         oneshot mode, REPL-only vs hybrid, comparing success rate, turns,
-        and wall-clock (9.6 telemetry is the instrumentation). No data, no
+        and wall-clock (12.6 telemetry is the instrumentation). No data, no
         default change.
         *Builtin landed as:* `CodingToolsExtension`
         (`phi-builtins/src/coding_tools.rs`), enabled by
@@ -1037,7 +1533,7 @@ around them and the shape of the tool surface on top of them.
         isolated per-variant `XDG_CONFIG_HOME` (auth/data dir untouched);
         metrics come from `--output ndjson` — the result line now includes
         `usage` (tokens/cost) alongside iterations/duration, and the runner
-        folds the WS9.6 `IterationEnd {model, exec, dispatch}` split.
+        folds the WS12.6 `IterationEnd {model, exec, dispatch}` split.
         Smoke-validated end-to-end (gemini-2.5-flash via openrouter: 4/4
         pass across both variants; native-exposure toggle probe-confirmed).
         Finding worth keeping: openrouter/qwen3-coder mangles tool-arg
@@ -1080,8 +1576,9 @@ around them and the shape of the tool surface on top of them.
       direction (see The Rule section), that rejection is downgraded from
       doctrine to sequencing — the loop stays engine-owned *for now* while
       the registry seam matures, but loop-as-extension is the eventual goal
-      once the API can carry it without regressing the shipped defaults.
-- [x] **9.4 Coding-session prompt retune.** The "You are a Recursive Language
+      once the API can carry it without regressing the shipped defaults
+      (now scheduled: WS1 carries it as agent packs).
+- [x] **12.4 Coding-session prompt retune.** The "You are a Recursive Language
       Model" identity and the `ORCHESTRATOR_ADDENDUM` ("if you find yourself
       about to write several sentences of unaided reasoning, that is usually
       a sign to delegate with `subagent`", `constants.rs:23`) are tuned for
@@ -1106,7 +1603,7 @@ around them and the shape of the tool surface on top of them.
       `user_prologue` ("You are a coding agent…" as a *user* message) died —
       the system prompt owns the identity now, and `user_prologue` reverts
       to its real job: the `preamble=` channel for subagent children.
-- [x] **9.5 Retry transient provider errors with backoff.** `run_loop`
+- [x] **12.5 Retry transient provider errors with backoff.** `run_loop`
       returns `Outcome::failed` on the first `complete_root` error
       (`core.rs:643-657`) — a single 429/529 blip kills a long run. Both
       references retry: codex exponential backoff `200ms·2ⁿ` with jitter
@@ -1123,7 +1620,7 @@ around them and the shape of the tool surface on top of them.
       Transport layer: phi-ai adds mid-stream retry with rollback and a
       fresh unpooled client (commit 1171000). `run_loop`'s error arm is now
       only reached after both layers are exhausted — correct.
-- [x] **9.6 Turn telemetry before further tuning.** `IterationEnd` already
+- [x] **12.6 Turn telemetry before further tuning.** `IterationEnd` already
       carries a duration; split it into model-time vs exec-time vs
       event-dispatch per iteration so "slow" is attributable. Candidate
       follow-ups that should wait for this data: parallel execution of
@@ -1145,256 +1642,6 @@ span into a REPL variable, hashline read-dedup stubs, exec-during-stream,
 timeout-to-background-job conversion, and steer-text merging. The problem is
 the turn protocol, not the engineering.
 
-### WS10 — Style packs: `/style` as the visual-surface acceptance test
-
-Goal: Phi can *look like* the other harnesses purely through configuration —
-`/style claude-code`, `/style codex`, `/style crush` (later `opencode`, …)
-swap the entire visual identity at runtime, and `/style phi` swaps it back.
-A style pack is an ordinary Lua extension bundling theme + spinner +
-thinking expressions + tool renderers + message/transcript chrome; the
-shipped packs live next to the WS1.9 embedded defaults
-(`phi-builtins/defaults/styles/*.lua`) and load through the same
-`LuaExtension::from_source` path. This is **presentation parity only** —
-the feature-parity non-goal below stands untouched.
-
-Why this is on-plan and not vanity: it's the visual counterpart of the
-Rule's corollary. WS1.6/1.9 proved the *behavioral* surface (commands,
-overlays, tools, events) is user-reachable; nothing yet proves the *visual*
-surface is. "Make Phi indistinguishable from crush at a glance" is a
-falsifiable acceptance test: every visual difference an imitation pack
-cannot express is, by definition, an API gap — fix the API
-(`phi-ext`/`phi-lua`/`phi-tui`), never special-case a pack. It also
-subsumes the still-open WS1.3(b): mimicking three real transcripts is a
-far better forcing function for the message-renderer design than inventing
-one in the abstract.
-
-- [x] **10.1 Style-pack primitive + runtime switching.** Today every visual
-      registration is startup-time and last-write-wins; there is no
-      activatable bundle and no way to re-skin a running session. Decide the
-      mechanism deliberately (one declaration mechanism — doctrine 5): a
-      `register_style { name, … }` bundle whose members are the *existing*
-      registration shapes (theme, spinner, tool renderers, chrome), exactly
-      one style active at a time, host re-resolves visuals + repaints on
-      switch (both frontends; mux views re-theme per WS8.3's per-view
-      palette note). Persist the choice in config so it survives restarts.
-      Switching arrives as a `UiAction` from the command registry, not a
-      side channel.
-      *Landed as (2026-07-04):* `StyleSpec` (`phi-ext/src/style_spec.rs`)
-      bundles the existing shapes **inline** — `Option<ThemeSpec>`,
-      `Option<SpinnerSpec>`, `Option<ThinkingExpressionSpec>`,
-      `Vec<ToolRenderSpec>` — deliberately not by-name references, so an
-      inactive pack's theme never leaks into the `first_theme()` fallback
-      order. Absent members fall through to the base registrations; the
-      shipped `phi` default style is literally the empty bundle
-      (`visual_data.lua`), so "switch back to phi" needs no special case.
-      Runtime state: `active_style: Mutex<Option<String>>` on `AppRuntime`
-      (the `connect_ui` interior-mutability precedent — the registry stays
-      immutable, which bundle is active does not); `set_active_style`
-      rejects unknown names listing the available ones, and the
-      `active_theme`/`active_spinner`/`active_thinking_expression`
-      accessors + a style-overlaying `tool_render_index()` replace the
-      `first_*` calls in both frontends' `VisualContext` and palette
-      paths. `UiAction::SwitchStyle { name }` (empty name = list styles)
-      is emitted by `/style` (`commands.lua`) and `:style`
-      (`mux_commands.lua`); the session TUI re-resolves palette (terminal
-      colours kept on `Ui` for re-derivation), visual context, and tool
-      render index, then repaints via the resize mechanics (clear
-      viewport + `transcript.reset()` + cache flush); the mux re-derives
-      `ScenePalette` and invalidates every view's surface+renderer (the
-      alt-screen-transition mechanics). Persistence: user-global
-      `style.json` (`phi_session::style::StyleStore`, the TrustStore
-      layout) written on switch; config.lua grew a declarative `style`
-      field, and `initial_style` (persisted-wins, approvals layering)
-      applies at every runtime build — session, one-shot, and mux visual
-      runtime. Lua parity shipped in the same change (WS1.6's lesson):
-      `phi.register_style{...}` reuses the exact member parsers of the
-      standalone registrations (now shared helpers in
-      `phi-lua/extension/mod.rs`); dogfood tests in `lua_api.rs` +
-      `defaults.rs`. Honest remainders: `/style` has no completion —
-      packs register during the same runtime build as the command, so a
-      static list can't know them (the WS3.2 /model gap; a dynamic
-      completion primitive is WS10.4's registry-driven-completion work);
-      in mux mode `/style` re-skins the issuing session and `:style` the
-      chrome — other *live* sessions re-theme on their next build (live
-      cross-runtime propagation rides WS8.3's per-view palette follow-up);
-      Lua style themes are static palettes (no resolver), same as
-      `register_theme`; text effects and message renderers aren't bundle
-      members yet — grow the vocabulary when WS10.2's pack inventory
-      demands it.
-- [x] **10.2 Inventory the gap by imitation.** Same method as WS1.1/1.6:
-      build the first pack (claude-code — closest to Phi's current look)
-      and let every un-expressible detail become the work list. Expected
-      gaps from eyeballing the refs, to be confirmed: transcript chrome
-      (claude-code's `⏺`/`⎿` gutter bullets and collapsed tool results;
-      crush's charm-style rounded borders, gradients, boxed tool panels;
-      codex's flat minimal prefixes), input-box and status-line styling,
-      welcome banner, tool-result collapse/expand presentation, and the
-      WS1.3(b) custom message renderers. Grow the *declarative* vocabulary
-      per WS1.3(a)'s decision — data, not closures on the hot render path.
-      *Landed as (2026-07-04):* the pack —
-      `phi-builtins/defaults/styles/claude_code.lua`, values read off
-      `ref/claude-code` (darkTheme in `utils/theme.ts`, spinner chars +
-      120ms cadence in `components/Spinner/`, gerund verbs in
-      `constants/spinnerVerbs.ts`): claude-orange accent/shimmer theme
-      (monochrome anchors via white `path`/`string` roles), the
-      `·✢✳✶✻✽` asterisk-morph ping-pong spinner, ~60 whimsical thinking
-      gerunds, and Bash/Read/Write/Update/Search/Glob/List tool verbs.
-      Loaded via the same `from_source` path in both the session builder
-      and the mux visual runtime; dogfood tests in
-      `phi-lua/tests/defaults.rs` (activation + a drift test tying the
-      pack's renderer roster to base `tool_render.lua`'s). **Expressible
-      today** (worked first try): theme roles, spinner frames/cadence,
-      thinking word lists, tool verbs/anchors/categories/bodies.
-      **Gap inventory** (the work list for 10.3, worst first):
-      1. *Tool-card chrome:* ~~not vocabulary members~~ **closed
-         (2026-07-04)** by `ChromeSpec` (`phi-ext/src/chrome_spec.rs`), a
-         new `StyleSpec` member (style-only, no standalone registration —
-         chrome is a singular surface, so "which chrome" is exactly "which
-         style"): `glyph_ok`/`glyph_failed` (status glyphs, palette-role
-         coloured), `result_prefix` (first result row's gutter, claude-code
-         `  ⎿  `; continuations hang at same-width blank indent),
-         `more_lines` (`{n}` template), `container = card|flat` (flat
-         drops the tinted repl/tool block surface *and* the pending
-         boxed status — commit, replay/cache, and live paths all
-         conditional, mirrored exactly). Pure data per WS1.3a — the
-         in-flight label is still composed once at ToolStart, nothing
-         extension-side runs on the tick path. `AppRuntime::active_chrome()`
-         (style's chrome else `ChromeSpec::default()` = phi's stock look),
-         snapshotted on `Ui` next to `tool_render`, re-resolved on
-         `/style` switch.
-      2. *Anchor format:* **closed (2026-07-04)** — `ChromeSpec.anchor_format`
-         template over `{verb}`/`{args}` placeholders; `tool_identity`
-         builds styled verb/args segments and composes through it (all
-         branches: code-bodied, anchored, fallback `name key=value`);
-         argless calls collapse to the bare verb, so `()` never dangles.
-      3. *Status-line semantics:* **closed (2026-07-04)** —
-         `ThinkingExpressionSpec.selection = cycle|per_turn` (per-turn
-         holds one verb for the whole run, tools included, seeded by the
-         host's `run_started_ms`; Lua: `thinking.selection`), plus
-         `ChromeSpec.status_meta` for the dim `(elapsed · ↓ tokens)`
-         suffix (claude-code thresholds: elapsed past 30s, tokens once
-         > 0 — data from the host's usage, semantics from the chrome).
-      4. *Text effects:* **closed (2026-07-04)** for the status line —
-         `ChromeSpec.status_indicator = equalizer|spinner` (spinner mode
-         draws the style's spinner frames in the accent role) and
-         `status_effect = gradient|sweep` (`sweep` is claude-code's
-         GlimmerMessage: `phi_tui::shimmer_sweep_text`, a ±1-char
-         highlight sweeping right-to-left at 200ms/col with a 20-col
-         runway, pulsing uniformly via `shimmer_flash_text` while a tool
-         runs; base = accent, highlight = running role). Enum data, not
-         closures — the `TextEffectSpec` handler surface stays unused on
-         the tick path per WS1.3a.
-      5. *Input box + welcome banner:* input box **closed (2026-07-04)**
-         — `ChromeSpec.input_prompt` (glyph override, stock = Nerd Font
-         chevron) and `input_ruled` (claude-code's two-rule box:
-         top rule, editor, bottom rule, header re-reads as the footer
-         line; selectors keep the stock layout). Welcome banner still
-         open.
-      6. *Custom message renderers* (WS1.3b) — still the right forcing
-         function, still open. Meanwhile the *message chrome* half is
-         vocabulary: `ChromeSpec.user_prefix` (ghost prefix replaces the
-         accent gutter bar; continuations flow flush beneath, matching
-         ink's inline wrap), `user_background` (full-width
-         `user_message_bg` wash — the role the theme already carried,
-         now consumed via `InlinePalette.user_bg`), `assistant_prefix`
-         (claude-code's `⏺ ` dot, body hangs at prefix width).
-      *Chrome consumption is session-TUI only, deliberately:* the plain
-      CLI (`phi -p` event printing) keeps its own panel presentation —
-      WS1.3a's doctrine is that frontends keep their presentation
-      machinery, and the 10.4 at-a-glance test is the interactive
-      transcript. Revisit only if one-shot output ever becomes a parity
-      surface. The mux inherits chrome for free (it embeds the session
-      TUI); mux *sidebar/statusbar* chrome stays host-owned.
-- [ ] **10.3 Ship the packs.** `claude-code`, `codex`, `crush` as pure Lua
-      in `defaults/styles/`; `opencode` as a stretch. The default remains
-      Phi's own style; packs contain zero core special-cases (a grep for
-      pack names outside `phi-builtins` should come up empty).
-      *Progress:* `claude-code` v1 shipped with 10.2; inventory items (1)
-      and (2) closed 2026-07-04 (`ChromeSpec`) and the pack now carries
-      `chrome = { "⏺", "  ⎿  ", "{verb}({args})", "… +{n} lines (ctrl+o
-      to expand)", flat }` — phi's expand toggle already *is* ctrl+o, so
-      the marker text is literal claude-code. Items (3)–(5) closed later
-      the same day (first 1:1 pass against the ref): the pack now also
-      carries `status_indicator = "spinner"`, `status_effect = "sweep"`,
-      `status_meta`, `input_prompt = "❯"`, `input_ruled`, `user_prefix =
-      "❯ "`, `user_background`, `assistant_prefix = "● "`, and
-      `thinking.selection = "per_turn"` — the asterisk-morph status line
-      with the shimmering held verb, the two-rule input box, the gray
-      user band with the ghost `❯`, and the `●` prose dot (BLACK_CIRCLE
-      is `⏺` only on darwin; the pack targets `●`). Third pass (same
-      day): `pending_indicator = "blink_glyph"` + `pending_note =
-      "Running…"` (ToolUseLoader's 600ms visibility blink over the dim
-      gutter note — in-flight rows animate by blink, not shimmer) and
-      `repl_as_tool` (the repl container borrows the tool-card shape:
-      `● Repl` verb anchor via the pack's `repl` renderer, code hanging
-      2 cells under it, stdout/stderr behind a once-per-container `⎿`
-      gutter — live streaming and replay paths mirrored). **Pack-content
-      gaps** (zero Rust work — edit the Lua, not the API): `find`'s verb
-      says "Glob" but ref labels both grep and glob as "Search"
-      (`GlobTool/UI.tsx:12`); ~120 of ref's 186 spinner verbs are missing
-      (the pack carries ~65, a deliberate subset — fill to full if/when
-      the cadence feels thin); the 9 `syntax_*` theme roles exist and flow
-      to a real syntect highlighter (`generate_syntax_theme` →
-      `syntax_items` → `highlight_code`, 54 TextMate scopes mapped) but
-      the pack sets **zero** of them — code blocks render with phi's
-      default base16-ocean palette instead of claude-code's Monokai
-      (`MONOKAI_SCOPES` in `native-ts/color-diff/index.ts:190`); ~50 of
-      70 theme roles are unset (thinking levels, markdown chrome, tool
-      backgrounds, chrome meta, glyph roles — all consumed by
-      `apply_palette` `role!()` entries today, just not populated by the
-      pack). **API vocabulary gaps** (need Rust, then Lua can express —
-      per the WS10 method (§10.2): "every visual difference an imitation
-      pack cannot express is, by definition, an API gap"):
-      (e) diff color levels — phi has 2 of 6 (`md_diff_add`/`del` only;
-      no `diffAdded`/`diffRemoved`/dimmed roles, renderer has one level);
-      (f) `punctuation` syntax role — `SyntaxColors.punctuation` is
-      hardcoded to `foreground` with no `apply_palette` `role!()` entry;
-      (g) conditional `ToolRenderSpec.verb` — it's a single static
-      `Option<String>` but ref's `userFacingName()` is input-dependent
-      (FileEdit → "Update"/"Create"/"Updated plan", Bash → "SandboxedBash",
-      FileRead → "Reading Plan"/"Read agent output") — needs a declarative
-      rule vocabulary (data, not closures, per WS1.3a); (h) per-subagent
-      colors — phi has 1 `subcall_accent`, ref has 8 — need roles +
-      index-based renderer selection; (i) system-spinner color —
-      `SpinnerSpec` carries no color (comes from `theme.accent`), ref has
-      a second spinner color for system-level background work; (j)
-      `OverlayPalette` has 8 of 70 roles — overlays can't access
-      syntax/diff/thinking/warning colors; (k) `register_text_effect` is
-      Rust-only (`traits.rs:78`, not in `globals.rs`) — a pack can
-      *select* effects (`status_effect = "sweep"`) but can't *define* new
-      ones or parameterize the sweep color per surface; (l) syntax
-      scope-to-role mapping is hardcoded in Rust (`syntax_items()`,
-      `constants.rs:198-271`) — the Lua can set 9 colors but can't
-      change which TextMate scopes map to which roles or per-scope
-      italic/bold styling. The crush `border` member (below) and
-      WS1.3(b) message renderers are the other tracked vocabulary grows.
-      **Style-out-of-scope deltas** (acknowledged, not API gaps):
-      welcome banner (item 5's second half — a layout/content feature,
-      not a color role), "ready"/"queue a follow-up…" placeholder copy
-      (host-owned), `user_padding` widening the user band by one row
-      each side (session config, not style), and phi's header line
-      standing in for claude-code's footer info line (structural, not
-      expressible via a style pack). **Feature gaps** (explicitly
-      non-goal per the non-goals section below: presentation parity, not feature parity —
-      these surfaces don't exist in phi, so the colors have nothing to
-      paint): permission/auto-accept/plan-mode UI (6 ref colors), rate-
-      limit bar (2), fast-mode indicator (2), mouse-selection highlight
-      (1), message-action menu (1), memory view (1), ultrathink rainbow
-      highlighting (7+7 shimmer) — each would need the feature built
-      first, then a color role as a side effect. Next: re-check 10.4's
-      at-a-glance test, then add `codex`/`crush` (both are flat-chrome
-      harnesses — codex is `{verb} {args}`-shaped with different glyphs;
-      crush needs `container = card` plus its rounded borders, which may
-      grow a border member).
-- [ ] **10.4 Acceptance.** Run one fixed scripted session (prompt → a few
-      tool calls → prose answer) in Phi-with-pack and in the real harness
-      (`ref/` checkouts), side by side: transcript, tool cards, spinner/
-      status, and input area should be hard to tell apart at a glance.
-      Mechanical half: packs load through the user extension path, a
-      builtins-less build still boots with generic visuals, and `/style`
-      completion is registry-driven (a user's own pack shows up uninstalled
-      alongside the shipped ones).
-
 ---
 
 ## Non-goals (rejected explicitly — don't relitigate without a new decision)
@@ -1404,11 +1651,16 @@ one in the abstract.
 - **Declarative hooks config in core.** The Lua event surface (~25 events,
   `crates/phi-event/src/lib.rs`) *is* Phi's hooks system. A "shell hooks"
   convenience can be a builtin extension later if demand appears.
-- **Embedded mega model catalog.** See WS3.2.
+- **Embedded mega model catalog.** See WS7.2.
 - **Feature parity with claude-code/codex.** Phi competes on mux + RLM +
-  extensibility, not breadth. *Presentation* parity (WS10 style packs) is in
-  scope precisely because it exercises extensibility — the line is: imitate
-  the look through the extension API, never import the feature set.
+  extensibility, not breadth. *Presentation* parity (WS2 style packs) and
+  *shape* parity (WS1 agent packs — prompt, tool surface, turn protocol as
+  configuration) are in scope precisely because they exercise extensibility —
+  the line is: imitate the look and the shape through the extension API,
+  never import the feature set into core or the shipped defaults. A codex
+  pack that exists because the API can express it is on-plan; a codex
+  feature hardwired because a pack couldn't express it is the exact failure
+  the Rule exists to reject.
 
 ## Reference map (all under `ref/`, git-ignored checkouts)
 
@@ -1421,8 +1673,8 @@ one in the abstract.
 | `crush` | MCP config shape, self-documenting config schema, model roles, registry fallback pattern | `internal/config/config.go`, `internal/config/catwalk.go` |
 | `opencode` | Additive compaction markers, permission rule semantics (last-match-wins) | `src/session/compaction.ts`, `src/permission/index.ts` |
 | `oh-my-pi` | Hashline/anchor edits (Phi has this), typed subagent contracts, what "maximal pi" looks like — a cautionary + idea mine | `README.md` |
-| `jcode` | Bounded subagent completion reports, compaction thresholds incl. payload-byte budget; daemon lifecycle (flock lock, stale-socket reaping, ready-fd handshake — stolen for WS8.1) | `jcode-swarm-core/src/lib.rs`, `jcode-compaction-core/src/lib.rs`, `crates/jcode-app-core/src/server/socket.rs` |
-| `zellij` | Canonical-row scrollback reflow on resize; client/server minimal core (dumb client, per-client fanout, remove-client-on-any-exit invariant — stolen for WS8.1) | `zellij-server/src/panes/grid.rs`, `zellij-utils/src/ipc.rs`, `zellij-server/src/route.rs` |
+| `jcode` | Bounded subagent completion reports, compaction thresholds incl. payload-byte budget; daemon lifecycle (flock lock, stale-socket reaping, ready-fd handshake — stolen for WS11.1) | `jcode-swarm-core/src/lib.rs`, `jcode-compaction-core/src/lib.rs`, `crates/jcode-app-core/src/server/socket.rs` |
+| `zellij` | Canonical-row scrollback reflow on resize; client/server minimal core (dumb client, per-client fanout, remove-client-on-any-exit invariant — stolen for WS11.1) | `zellij-server/src/panes/grid.rs`, `zellij-utils/src/ipc.rs`, `zellij-server/src/route.rs` |
 
 ## Verification
 
@@ -1439,18 +1691,25 @@ Definition of done for the plan overall:
 1. The Rule is in `AGENTS.md` and `phi-builtins` is the largest consumer of the
    extension API.
 2. A bare build without `phi-builtins` still runs (engine + REPL + shells) —
-   enforced by a flake check (WS1.5), not by prose.
+   enforced by a flake check (WS4.5), not by prose.
 3. Project-local extensions load only after explicit trust.
 4. The prelude enforces read-before-edit and spills oversized subcall results.
 5. Long sessions auto-compact without losing user messages.
 6. MCP works — as an extension nobody had to modify core for.
 7. A user Lua extension can reimplement a builtin command (including its
-   `UiAction`s) and a builtin overlay without touching core (WS1.6) — the
+   `UiAction`s) and a builtin overlay without touching core (WS4.6) — the
    extension API the Rule dogfoods is the one users actually get.
 8. A completed task ends on the model's first prose turn — zero wasted
    end-of-task completions — and no `Role::User` scaffolding is injected on
-   ordinary iterations (WS9.1/9.2). Transient provider errors never kill a
-   run (WS9.5).
+   ordinary iterations (WS12.1/12.2). Transient provider errors never kill a
+   run (WS12.5).
 9. `/style claude-code` (or `codex`, `crush`) re-skins a running session to
    be hard to distinguish from the real harness at a glance — with every
-   pack a pure Lua extension and zero pack-specific code in core (WS10).
+   pack a pure Lua extension and zero pack-specific code in core (WS2).
+10. `/agent pi` (or `codex`) swaps the entire agent — prompt, tool surface,
+    turn protocol, env — as a pure Lua pack with zero pack-specific code in
+    core; the pi pack's request stream carries no `repl` tool; the RLM
+    engine ships as the default pack rather than a hardwired privilege; and
+    a user extension, on the public API alone, can wire agents that spawn
+    and message each other or route a question to a peer instead of the
+    human (WS1).
