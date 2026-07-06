@@ -1118,6 +1118,37 @@ impl AppRuntime {
     pub fn active_agent_context(&self) -> Option<bool> {
         self.active_agent_env().and_then(|e| e.context)
     }
+    /// The active agent's turn-protocol block (WS1.3), if one is set. `None`
+    /// when no agent is active or the agent carries no `turn` block — the
+    /// caller falls back to the engine defaults (prose stop, reminders on,
+    /// parallel tools, today's behavior, so bare core boots).
+    pub fn active_agent_turn(&self) -> Option<&crate::AgentTurn> {
+        self.active_agent_spec().and_then(|a| a.turn.as_ref())
+    }
+
+    /// The stop-condition knob in effect: the active agent's `turn.stop`, if
+    /// set. `None` = inherit (prose + answer, today's behavior).
+    /// `Some(AgentStop::Answer)` = only `answer['ready']` / `<task_complete>`
+    /// complete the run. `Some(AgentStop::EndTurn)` = an explicit `end_turn`
+    /// tool completes the run (the engine registers it for this profile).
+    pub fn active_agent_stop(&self) -> Option<crate::AgentStop> {
+        self.active_agent_turn().and_then(|t| t.stop)
+    }
+
+    /// The `per_turn_reminder` knob in effect. `None` = inherit (inject
+    /// remaining-turns warnings when approaching the cap, today's behavior).
+    /// `Some(false)` = never inject (the codex-shaped profile suppresses
+    /// turn-budget noise).
+    pub fn active_agent_per_turn_reminder(&self) -> Option<bool> {
+        self.active_agent_turn().and_then(|t| t.per_turn_reminder)
+    }
+
+    /// The `parallel_tools` knob in effect. `None` = inherit (tools execute
+    /// eagerly during the stream, today's behavior). `Some(false)` = tools
+    /// execute serially after the stream completes.
+    pub fn active_agent_parallel_tools(&self) -> Option<bool> {
+        self.active_agent_turn().and_then(|t| t.parallel_tools)
+    }
 
     // ── Visual: theme accessors ──────────────────────────────────────────
 

@@ -75,26 +75,58 @@ impl AgentEnv {
     }
 }
 
+/// The stop condition a turn profile selects (WS1.3). Controls which
+/// completion paths the engine honors when the model emits a no-tool-call
+/// turn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentStop {
+    /// Non-empty text ends the run immediately (today's behavior — the
+    /// default). `answer['ready']` / `<task_complete>` still complete too.
+    Prose,
+    /// Only `answer['ready']` / `<task_complete>` complete the run; a
+    /// non-empty prose turn is banked as a normal assistant message and the
+    /// loop continues. The pi-shaped flat loop can use this so the model
+    /// must explicitly signal completion.
+    Answer,
+    /// A codex-style explicit end-turn tool completes the run. The engine
+    /// registers an `end_turn` tool for profiles that select this; the prose
+    /// and answer paths are also honored.
+    EndTurn,
+}
+
 /// The turn-protocol block (WS1.3). Each knob is optional and falls through
 /// to the engine default when absent — so the shipped `rlm` profile leaves
 /// this empty and the pi/codex profiles set the knobs they differ on.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct AgentTurn {
-    /// Stop condition: `prose` (non-empty text turn ends the run — today's
-    /// behavior), `answer` (only `answer['ready']` / `<task_complete>`),
-    /// `end_turn` (codex-style explicit end-turn tool). `None` = inherit
-    /// (prose + answer, today's behavior).
+    /// Stop condition. `None` = inherit (prose + answer, today's behavior).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub stop: Option<String>,
-    /// Whether the engine injects a per-turn user message with remaining-turn
-    /// reminders. `None` = inherit (only when approaching the cap, today's
-    /// behavior).
+    pub stop: Option<AgentStop>,
+    /// Whether the engine injects a per-turn remaining-turns reminder when a
+    /// capped run nears its limit. `None` = inherit (inject when approaching
+    /// the cap, today's behavior). `Some(false)` = never inject (the
+    /// codex-shaped profile suppresses turn-budget noise).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub per_turn_reminder: Option<bool>,
-    /// Whether parallel tool execution is enabled. `None` = inherit (today's
-    /// behavior — tools execute eagerly during the stream).
+    /// Whether tool calls within a turn execute concurrently (eagerly during
+    /// the stream, today's behavior) or serially (queued after the stream
+    /// completes, codex's per-tool gating simplified to a global toggle).
+    /// `None` = inherit (parallel, today's behavior). `Some(false)` = serial.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parallel_tools: Option<bool>,
+}
+
+impl AgentTurn {
+    /// Convenience for tests / Rust extensions: a turn block that selects the
+    /// `end_turn` stop condition.
+    pub fn end_turn() -> Self {
+        Self {
+            stop: Some(AgentStop::EndTurn),
+            per_turn_reminder: None,
+            parallel_tools: None,
+        }
+    }
 }
 
 /// A named agent-profile bundle registered by an extension.
@@ -176,6 +208,14 @@ impl AgentSpec {
         self.env = Some(env);
         self
     }
+
+    /// Set the turn-protocol block (WS1.3). Convenience for tests and Rust
+    /// extensions; Lua extensions set `turn = { stop = ..., ... }` and the
+    /// bridge collects it.
+    pub fn with_turn(mut self, turn: AgentTurn) -> Self {
+        self.turn = Some(turn);
+        self
+    }
 }
 
 #[cfg(test)]
@@ -214,20 +254,23 @@ mod tests {
     }
 
     #[test]
-    fn env_round_trips_repl_tool_and_context() {
-        let spec = AgentSpec::new("pi")
-            .with_system_prompt("flat tool-call loop")
-            .with_env(AgentEnv {
-                repl_tool: Some(false),
-                context: Some(false),
+    fn turn_round_trips_stop_and_knobs() {
+        let spec = AgentSpec::new("codex")
+            .with_system_prompt("codex-shaped agent")
+            .with_turn(AgentTurn {
+                stop: Some(AgentStop::EndTurn),
+                per_turn_reminder: Some(false),
+                parallel_tools: Some(false),
             });
         let json = serde_json::to_string(&spec).unwrap();
-        assert!(json.contains("\"env\""), "{json}");
-        assert!(json.contains("\"repl_tool\":false"), "{json}");
-        assert!(json.contains("\"context\":false"), "{json}");
+        assert!(json.contains("\"turn\""), "{json}");
+        assert!(json.contains("\"stop\":\"end_turn\""), "{json}");
+        assert!(json.contains("\"per_turn_reminder\":false"), "{json}");
+        assert!(json.contains("\"parallel_tools\":false"), "{json}");
         let back: AgentSpec = serde_json::from_str(&json).unwrap();
-        let env = back.env.expect("env survived round-trip");
-        assert_eq!(env.repl_tool, Some(false));
-        assert_eq!(env.context, Some(false));
+        let turn = back.turn.expect("turn survived round-trip");
+        assert_eq!(turn.stop, Some(AgentStop::EndTurn));
+        assert_eq!(turn.per_turn_reminder, Some(false));
+        assert_eq!(turn.parallel_tools, Some(false));
     }
 }

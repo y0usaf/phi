@@ -83,10 +83,14 @@ pub struct ToolCallResult {
 }
 
 /// How one streamed tool call executes (WS9.3a): the engine-owned `repl`
-/// tool runs its `code` in the env; registry tools dispatch either to their
-/// host handler (watchdogged) or to a same-named Python function in the env.
+/// tool runs its `code` in the env; the engine-owned `end_turn` tool (WS1.3)
+/// is a no-op that signals completion; registry tools dispatch either to
+/// their host handler (watchdogged) or to a same-named Python function.
 enum ToolRoute {
     Repl(String),
+    /// The codex-shaped `end_turn` tool (WS1.3): a no-op result; the run
+    /// completes after the turn's blocks are banked.
+    EndTurn,
     Handler,
     Python,
 }
@@ -107,6 +111,24 @@ pub fn repl_tool_definition() -> ToolDefinition {
                 }
             },
             "required": ["code"]
+        }),
+    }
+}
+
+/// The engine-owned `end_turn` tool (WS1.3 — codex-shaped stop). When the
+/// active agent's `turn.stop` is `EndTurn`, the engine registers this tool
+/// alongside the normal roster; calling it completes the run. The model
+/// emits no arguments — the run's current best partial is the answer. Like
+/// codex's `end_turn`, it is the explicit "I'm done" signal for profiles that
+/// don't rely on prose-stop or `answer['ready']`.
+pub fn end_turn_tool_definition() -> ToolDefinition {
+    ToolDefinition {
+        name: "end_turn".to_owned(),
+        description: "Signal that the turn is complete and the assistant is ready to return the final answer. Call this when you are done. Takes no arguments.".to_owned(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {},
+            "required": []
         }),
     }
 }
@@ -207,6 +229,40 @@ impl Rlm {
             .unwrap_or(true)
     }
 
+    /// The active agent's stop-condition knob (WS1.3): `None` or
+    /// `Some(AgentStop::Prose)` = inherit (non-empty text ends the run,
+    /// today's behavior); `Some(AgentStop::Answer)` = only
+    /// `answer['ready']` / `<task_complete>` complete; `Some(AgentStop::EndTurn)`
+    /// = an explicit `end_turn` tool completes the run (the engine registers
+    /// it for this profile).
+    pub fn stop_mode(&self) -> phi_ext::AgentStop {
+        self.runtime
+            .as_ref()
+            .and_then(|rt| rt.active_agent_stop())
+            .unwrap_or(phi_ext::AgentStop::Prose)
+    }
+
+    /// Whether per-turn remaining-turns reminders are injected near the cap
+    /// (WS1.3): `None` or `Some(true)` = inherit (today's behavior);
+    /// `Some(false)` = never inject (the codex-shaped profile suppresses
+    /// turn-budget noise).
+    pub fn per_turn_reminder_enabled(&self) -> bool {
+        self.runtime
+            .as_ref()
+            .and_then(|rt| rt.active_agent_per_turn_reminder())
+            .unwrap_or(true)
+    }
+
+    /// Whether tool calls within a turn execute concurrently (eagerly during
+    /// the stream, today's behavior) or serially (WS1.3). `None` or
+    /// `Some(true)` = inherit (parallel); `Some(false)` = serial.
+    pub fn parallel_tools(&self) -> bool {
+        self.runtime
+            .as_ref()
+            .and_then(|rt| rt.active_agent_parallel_tools())
+            .unwrap_or(true)
+    }
+
     /// Register the per-turn tool list on the root model: the engine-owned
     /// `repl` tool (unless the active agent's `env.repl_tool` is `Some(false)`,
     /// WS1.2 — the pi-shaped profile hides the REPL surface), plus every
@@ -222,10 +278,17 @@ impl Rlm {
         if repl_enabled {
             tools.push(repl_tool_definition());
         }
+        // The `end_turn` tool is engine-owned for codex-shaped profiles
+        // (WS1.3): `turn.stop = "end_turn"` registers it alongside the roster.
+        // Bare core (prose stop) does not register it.
+        if self.stop_mode() == phi_ext::AgentStop::EndTurn {
+            tools.push(end_turn_tool_definition());
+        }
         if let Some(rt) = &self.runtime {
             for spec in rt.native_tool_specs() {
-                // `repl` is engine-registered; a registry tool can't shadow it.
-                if spec.name == "repl" {
+                // `repl` and `end_turn` are engine-registered; a registry tool
+                // can't shadow them.
+                if spec.name == "repl" || spec.name == "end_turn" {
                     continue;
                 }
                 tools.push(ToolDefinition {
@@ -487,6 +550,12 @@ impl Rlm {
         // the unknown-tool path (synthetic error), not the REPL; the
         // answer-dict completion gate below also keys off this.
         let repl_enabled = self.repl_enabled();
+        // Turn-protocol knobs (WS1.3): stop condition, per-turn reminders,
+        // and parallel/serial tool execution. Each falls through to today's
+        // behavior when the active agent doesn't set it (bare core boots).
+        let stop_mode = self.stop_mode();
+        let per_turn_reminder = self.per_turn_reminder_enabled();
+        let parallel_tools = self.parallel_tools();
         let iteration_limit = self.iteration_limit();
         let mut i = 0usize;
         // Steer text queued by save_point in the previous tool-call turn. Carried
@@ -556,7 +625,7 @@ impl Rlm {
             if let Some(steer) = pending_steer.take() {
                 preamble.push(steer);
             }
-            if let Some(limit) = iteration_limit {
+            if per_turn_reminder && let Some(limit) = iteration_limit {
                 let remaining = limit - i;
                 if remaining <= TURN_WARNING_THRESHOLD {
                     preamble.push(format!(
@@ -595,7 +664,13 @@ impl Rlm {
                 (result, model_start.elapsed())
             };
 
-            // Eagerly execute tool calls as they arrive during the stream.
+            // Execute tool calls from the stream. When `parallel_tools` is
+            // on (today's behavior, WS1.3) calls execute eagerly as they
+            // arrive — overlapping with the model's stream for latency. When
+            // off (serial, the codex-shaped profile's `parallel_tools =
+            // false`), calls are buffered until the stream completes, then
+            // executed one at a time in arrival order (codex's per-tool
+            // RwLock gating simplified to a global toggle).
             let exec = async {
                 let mut blocks = Vec::new();
                 let mut dispatch = std::time::Duration::ZERO;
@@ -617,6 +692,13 @@ impl Rlm {
                             Some(code) => ToolRoute::Repl(code.to_owned()),
                             None => continue,
                         }
+                    } else if name == "end_turn" && stop_mode == phi_ext::AgentStop::EndTurn {
+                        // The engine-owned `end_turn` tool (WS1.3): a no-op
+                        // that signals completion. It is only routable when
+                        // the profile selected `stop = "end_turn"`; a
+                        // hallucinated call otherwise falls through to the
+                        // unknown-tool synthetic-error path below.
+                        ToolRoute::EndTurn
                     } else {
                         match self
                             .runtime
@@ -704,6 +786,21 @@ impl Rlm {
                         error_result(format!("Tool blocked: {reason}"), exec_start.elapsed())
                     } else {
                         match &route {
+                            ToolRoute::EndTurn => {
+                                // The `end_turn` tool is a no-op (WS1.3): it
+                                // produces a success result and signals
+                                // completion via the `end_turn_called` flag,
+                                // checked after the turn's blocks are banked.
+                                ReplResult {
+                                    stdout: "Turn complete.".to_owned(),
+                                    stderr: String::new(),
+                                    vars: Vec::new(),
+                                    final_answer: None,
+                                    final_summary: None,
+                                    duration: exec_start.elapsed(),
+                                    truncated: false,
+                                }
+                            }
                             ToolRoute::Repl(code) => env
                                 .exec(code, self.config.exec_timeout)
                                 .await
@@ -842,7 +939,22 @@ impl Rlm {
             };
 
             let ((completion, model_time), (blocks, exec_dispatch)) = tokio::select! {
-                pair = async { tokio::join!(stream, exec) } => pair,
+                pair = async {
+                    if parallel_tools {
+                        // Parallel (today's behavior): stream and exec race
+                        // — tool calls execute eagerly as they arrive.
+                        tokio::join!(stream, exec)
+                    } else {
+                        // Serial (WS1.3 `parallel_tools = false`): let the
+                        // stream finish first (the unbounded channel buffers
+                        // calls), then drain and execute them one at a time
+                        // in arrival order — codex's per-tool gating
+                        // simplified to a global toggle.
+                        let (completion, model_time) = stream.await;
+                        let (blocks, exec_dispatch) = exec.await;
+                        ((completion, model_time), (blocks, exec_dispatch))
+                    }
+                } => pair,
                 () = cancel.cancelled() => {
                     return self.cancelled_outcome(best_partial, iterations);
                 }
@@ -1162,6 +1274,29 @@ impl Rlm {
                 )
                 .await;
 
+                // ── end_turn completion (WS1.3) ──────────────────────────
+                // The codex-shaped `end_turn` tool signals the run is done.
+                // The assistant message + tool_results are already banked
+                // (provider sees a complete turn); the answer is the best
+                // partial (the model's text alongside the end_turn call, or
+                // the empty string if it emitted none). Prose/answer paths
+                // also still complete, so end_turn is additive.
+                if blocks.iter().any(|b| b.name == "end_turn") {
+                    let answer = best_partial.clone().unwrap_or_default();
+                    let answer = answer.trim().to_owned();
+                    self.events.emit(RlmEvent::AnswerSubmitted {
+                        depth: self.depth,
+                        content: answer.clone(),
+                    });
+                    return Outcome {
+                        stop: StopCause::Answer,
+                        response: answer,
+                        summary: run_summary,
+                        error: None,
+                        iterations,
+                    };
+                }
+
                 i += 1;
                 continue;
             }
@@ -1216,8 +1351,14 @@ impl Rlm {
             // calls and output your answer as text") and pi/codex turn
             // semantics. `answer['ready']` and `<task_complete>` above remain
             // the explicit alternate completion paths.
+            //
+            // WS1.3 stop knob: `stop = "answer"` suppresses prose-stop —
+            // only `answer['ready']` / `<task_complete>` / `end_turn` complete
+            // the run. A non-empty prose turn is banked as a normal assistant
+            // message and the loop continues (the model must explicitly
+            // signal completion). This is the pi-shaped flat loop's protocol.
             let prose = response.trim();
-            if !prose.is_empty() {
+            if !prose.is_empty() && stop_mode != phi_ext::AgentStop::Answer {
                 let prose = prose.to_owned();
                 self.events.emit(RlmEvent::AnswerSubmitted {
                     depth: self.depth,
@@ -1248,6 +1389,36 @@ impl Rlm {
                     error: None,
                     iterations,
                 };
+            }
+
+            // Non-empty prose with `stop = "answer"` (WS1.3): bank it as a
+            // normal assistant message and continue. The model must
+            // explicitly call `end_turn` or set `answer['ready']` to finish.
+            // This keeps the turn in history so the provider doesn't see a
+            // dangling no-tool-call turn, and resets the empty counter.
+            if !prose.is_empty() {
+                consecutive_empty = 0;
+                history.push(ChatMessage::text(Role::Assistant, response.clone()));
+                dispatch_event(
+                    &self.runtime,
+                    LifecycleEvent {
+                        kind: EventKind::TurnEnd,
+                        payload: EventPayload::TurnEnd {
+                            turn: i as u32,
+                            had_code: false,
+                        },
+                    },
+                );
+                self.events.emit(RlmEvent::IterationEnd {
+                    depth: self.depth,
+                    iteration: i,
+                    duration: iter_start.elapsed(),
+                    model: model_time,
+                    exec: exec_time,
+                    dispatch: dispatch_time,
+                });
+                i += 1;
+                continue;
             }
 
             // Empty turn: no tool calls AND no text. Nothing to bank (an

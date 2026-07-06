@@ -506,8 +506,7 @@ impl phi_ext::Extension for LuaExtension {
             }
             // env block (WS1.2): { repl_tool = false, context = false }.
             // Each knob is optional; absent knobs fall through to the engine
-            // default (on). Collected here so the engine can consume them;
-            // the tools/turn blocks are forward-compatible slots (WS1.3).
+            // default (on). Collected here so the engine can consume them.
             if let Some(env) = ag.get::<Option<mlua::Table>>("env")? {
                 let mut agent_env = phi_ext::AgentEnv::default();
                 if let Some(repl_tool) = env.get::<Option<bool>>("repl_tool")? {
@@ -517,6 +516,30 @@ impl phi_ext::Extension for LuaExtension {
                     agent_env.context = Some(context);
                 }
                 spec.env = Some(agent_env);
+            }
+            // turn block (WS1.3): { stop = "prose"|"answer"|"end_turn",
+            // per_turn_reminder = false, parallel_tools = false }. Each knob
+            // is optional; absent knobs fall through to the engine default.
+            if let Some(turn) = ag.get::<Option<mlua::Table>>("turn")? {
+                let mut agent_turn = phi_ext::AgentTurn::default();
+                if let Some(stop) = turn.get::<Option<String>>("stop")? {
+                    agent_turn.stop = Some(
+                        serde_json::from_value(serde_json::Value::String(stop.clone())).map_err(
+                            |e| {
+                                mlua::Error::external(format!(
+                                    "invalid stop '{stop}' (expected prose|answer|end_turn): {e}"
+                                ))
+                            },
+                        )?,
+                    );
+                }
+                if let Some(reminder) = turn.get::<Option<bool>>("per_turn_reminder")? {
+                    agent_turn.per_turn_reminder = Some(reminder);
+                }
+                if let Some(parallel) = turn.get::<Option<bool>>("parallel_tools")? {
+                    agent_turn.parallel_tools = Some(parallel);
+                }
+                spec.turn = Some(agent_turn);
             }
             if let Some(sub) = ag.get::<Option<String>>("subagent_defaults")? {
                 spec.subagent_defaults = Some(sub);

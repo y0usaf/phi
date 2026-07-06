@@ -22,7 +22,9 @@ pub mod traits;
 pub mod ui;
 pub mod visual;
 
-pub use agent_spec::{AgentEnv, AgentSpec, AgentToolEntry, AgentTurn, ToolExposureOverride};
+pub use agent_spec::{
+    AgentEnv, AgentSpec, AgentStop, AgentToolEntry, AgentTurn, ToolExposureOverride,
+};
 pub use builder::RuntimeBuilder;
 pub use chrome_spec::{
     ChromeContainer, ChromeSpec, PendingIndicator, StatusEffect, StatusIndicator,

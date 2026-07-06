@@ -236,8 +236,8 @@ turn protocol), not a feature roadmap; none is fully expressible today:
    this — it must merely be buildable.
 4. **A codex-shaped agent** — codex's tool surface and turn protocol. The
    tool roster is registerable today (native-only exposure); stop semantics
-   match after WS12.1; parallel-tool policy, per-tool truncation, and
-   compaction policy are still engine-owned constants.
+   and parallel-tool policy are registerable after WS1.3; per-tool
+   truncation and compaction policy are still engine-owned constants.
 
 Every detail an agent pack cannot express is an API gap: grow
 `phi-ext`/`phi-lua`/`phi-event`, never special-case a pack — the Rule's
@@ -365,7 +365,7 @@ parity-as-feature-set stays rejected.
       via a Python exec regardless of the context knob) is left for the
       WS1.5 pi-pack pass to resolve if the pack needs it — it is a
       context-knob question, not a `repl_tool` one.
-- [ ] **1.3 Turn-protocol knobs, not user-supplied loops.** The loop stays
+- [x] **1.3 Turn-protocol knobs, not user-supplied loops.** The loop stays
       one engine-owned `run_loop` parameterized by profile policy —
       loop-as-arbitrary-extension-code remains deferred until the knob
       vocabulary proves insufficient. Knobs, each with a reference
@@ -379,6 +379,45 @@ parity-as-feature-set stays rejected.
       (threshold + summary shape — WS9 machinery, profile-selected).
       Loop detection and the WS12.5 retry ladder are engine invariants, not
       knobs.
+      *Landed as (WS1.3 slice — stop/reminders/parallel, 2026-07-05):* the
+      three core turn-protocol knobs are wired into the engine.
+      `AgentStop` enum (`Prose` / `Answer` / `EndTurn`) on `AgentTurn.stop`
+      replaces the forward-compatible `Option<String>` slot. `stop =
+      "answer"` suppresses prose-stop — a non-empty text turn is banked as a
+      normal assistant message and the loop continues (the model must
+      explicitly signal completion via `answer['ready']` /
+      `<task_complete>`). `stop = "end_turn"` registers the engine-owned
+      `end_turn` tool (`end_turn_tool_definition()` in `core.rs`); calling
+      it completes the run with the best partial as the answer (trimmed).
+      The prose and answer paths also still complete, so `end_turn` is
+      additive. `per_turn_reminder = false` suppresses the remaining-turns
+      reminder near the cap (the codex-shaped profile suppresses
+      turn-budget noise); `None`/inherit keeps today's behavior (inject when
+      approaching the cap). `parallel_tools = false` sequences tool
+      execution: the stream completes first (the unbounded channel buffers
+      calls), then exec drains and runs them serially in arrival order
+      (codex's per-tool RwLock gating simplified to a global toggle);
+      `None`/inherit keeps today's eager-during-stream behavior.
+      `AppRuntime` accessors (`active_agent_stop`,
+      `active_agent_per_turn_reminder`, `active_agent_parallel_tools`) and
+      `Rlm` helpers (`stop_mode`, `per_turn_reminder_enabled`,
+      `parallel_tools`) mirror the WS1.2 `repl_enabled` pattern. Lua
+      parity: the bridge collects the `turn = { stop = "…",
+      per_turn_reminder = …, parallel_tools = … }` block
+      (`phi-lua/extension/mod.rs`), validating `stop` against the enum.
+      `AgentSpec::with_turn` builder; `AgentTurn::end_turn()` convenience.
+      Eight engine tests cover stop-answer prose suppression, end_turn
+      tool registration + completion, default-agent prose-stop,
+      per_turn_reminder on/off, parallel_tools serial completion; two Lua
+      tests cover turn-block collection + invalid-stop rejection. fmt +
+      clippy (no new warnings) + nix workspace-test all green.
+      **Remaining for 1.3:** per-tool truncation budgets (claude-code
+      `toolLimits.ts` — per-tool `maxResultSizeChars` overriding the
+      engine's `max_output_chars`) and compaction policy (threshold +
+      summary shape — WS9 machinery, profile-selected). These are deeper
+      engine-internal knobs tied to the truncation/compaction subsystems;
+      the three landed knobs are the model-visible turn-protocol surface.
+      The pi pack (WS1.5) is unblocked by this slice.
 - [ ] **1.4 Agent addressability + messaging.** The missing primitive under
       scenarios 1 and 3. Home per doctrine 3: the mux daemon already owns
       multiple sessions behind a versioned wire protocol

@@ -2110,10 +2110,12 @@ async fn register_tools_includes_native_registry_tools() {
 
 // ── WS1.2: agent env knobs (repl_tool / context) ─────────────────────────────
 
-/// A test extension that registers an agent profile with a given env block.
+/// A test extension that registers an agent profile with a given env and/or
+/// turn block.
 struct AgentExt {
     name: &'static str,
     env: Option<phi_ext::AgentEnv>,
+    turn: Option<phi_ext::AgentTurn>,
 }
 
 impl phi_ext::Extension for AgentExt {
@@ -2122,13 +2124,16 @@ impl phi_ext::Extension for AgentExt {
             id: format!("test.agent-{}", self.name),
             name: format!("Agent{}", self.name),
             version: "0".to_owned(),
-            description: "WS1.2 test agent".to_owned(),
+            description: "WS1 test agent".to_owned(),
         }
     }
     fn register(&self, host: &mut dyn phi_ext::ExtensionHost) -> anyhow::Result<()> {
         let mut spec = phi_ext::AgentSpec::new(self.name);
         if let Some(env) = &self.env {
             spec = spec.with_env(env.clone());
+        }
+        if let Some(turn) = &self.turn {
+            spec = spec.with_turn(turn.clone());
         }
         host.register_agent(spec)
     }
@@ -2138,11 +2143,20 @@ impl phi_ext::Extension for AgentExt {
 /// the agent. The native tools let us observe whether `repl` is still in the
 /// per-turn tool list alongside them.
 fn agent_runtime(name: &'static str, env: Option<phi_ext::AgentEnv>) -> Arc<phi_ext::AppRuntime> {
+    agent_runtime_turn(name, env, None)
+}
+
+/// Like `agent_runtime` but also sets a turn-protocol block (WS1.3).
+fn agent_runtime_turn(
+    name: &'static str,
+    env: Option<phi_ext::AgentEnv>,
+    turn: Option<phi_ext::AgentTurn>,
+) -> Arc<phi_ext::AppRuntime> {
     let rt = Arc::new(
         phi_ext::RuntimeBuilder::new()
             .with_cwd(std::path::Path::new("."))
             .register_extension(NativeToolsExt)
-            .register_extension(AgentExt { name, env })
+            .register_extension(AgentExt { name, env, turn })
             .build()
             .expect("build runtime"),
     );
@@ -2409,4 +2423,334 @@ async fn answer_dict_gate_skips_ready_when_repl_hidden() {
         2,
         "run should have continued past the answer-dict-flipping tool turn"
     );
+}
+
+// ── WS1.3: turn-protocol knobs ─────────────────────────────────────────────
+
+/// `stop = "answer"` suppresses prose-stop: a non-empty prose turn is banked
+/// as a normal assistant message and the loop continues until the model sets
+/// `answer['ready']`. Without the knob, the same prose turn would end the run
+/// immediately (WS9.1). Here turn 1 is prose ("Let me think…"); the run must
+/// NOT stop — it continues to turn 2 where `answer['ready']` completes it.
+#[tokio::test]
+async fn stop_answer_suppresses_prose_stop() {
+    let root = Arc::new(ScriptedLm::new(
+        "root-model",
+        &[
+            "Let me think about this.",
+            "```repl\nanswer['content'] = '42'\nanswer['ready'] = True\n```",
+        ],
+    ));
+    let engine =
+        rlm(RlmConfig::default(), root.clone(), quiet_sub()).with_runtime(agent_runtime_turn(
+            "answer-only",
+            None,
+            Some(phi_ext::AgentTurn {
+                stop: Some(phi_ext::AgentStop::Answer),
+                per_turn_reminder: None,
+                parallel_tools: None,
+            }),
+        ));
+    let result = engine
+        .completion(
+            ContextPayload::Str("ctx".into()),
+            Some("What is the magic number?"),
+            &CancellationToken::new(),
+        )
+        .await;
+    assert_eq!(result.stop, StopCause::Answer, "{:?}", result.error);
+    assert_eq!(result.response, "42");
+    // Both turns ran — the prose turn was banked, not accepted as the answer.
+    assert_eq!(
+        root.recorded_prompts().len(),
+        2,
+        "prose turn should not have stopped the run"
+    );
+}
+
+/// `stop = "answer"` with the default agent (prose stop, today's behavior):
+/// the same prose turn stops the run immediately. This guards against the
+/// gate accidentally inverting — prose-stop is the default.
+#[tokio::test]
+async fn default_stop_prose_ends_run_immediately() {
+    let root = Arc::new(ScriptedLm::new(
+        "root-model",
+        &["The magic number is 42.", "NEVER REACHED"],
+    ));
+    let engine = rlm(RlmConfig::default(), root.clone(), quiet_sub())
+        .with_runtime(agent_runtime_turn("rlm", None, None));
+    let result = engine
+        .completion(
+            ContextPayload::Str("ctx".into()),
+            Some("What is the magic number?"),
+            &CancellationToken::new(),
+        )
+        .await;
+    assert_eq!(result.stop, StopCause::Prose, "{:?}", result.error);
+    assert_eq!(result.response, "The magic number is 42.");
+    assert_eq!(root.recorded_prompts().len(), 1);
+}
+
+/// `stop = "end_turn"` registers the engine-owned `end_turn` tool and calling
+/// it completes the run. The model calls `end_turn` after doing work; the
+/// answer is the best partial (the prose alongside the call).
+#[tokio::test]
+async fn stop_end_turn_completes_run_via_end_turn_tool() {
+    let root = Arc::new(ScriptedLm::new(
+        "root-model",
+        &[
+            "Let me check.\n```tool:greet\n{\"who\": \"world\"}\n```",
+            "The answer is 42.\n```tool:end_turn\n{}\n```",
+        ],
+    ));
+    let engine =
+        rlm(RlmConfig::default(), root.clone(), quiet_sub()).with_runtime(agent_runtime_turn(
+            "codex",
+            None,
+            Some(phi_ext::AgentTurn {
+                stop: Some(phi_ext::AgentStop::EndTurn),
+                per_turn_reminder: None,
+                parallel_tools: None,
+            }),
+        ));
+    // Verify the end_turn tool is registered alongside the roster.
+    engine.register_tools();
+    let result = engine
+        .completion(
+            ContextPayload::Str("ctx".into()),
+            Some("What is the answer?"),
+            &CancellationToken::new(),
+        )
+        .await;
+    // The end_turn call completes the run; stop is Answer (the end_turn path
+    // returns StopCause::Answer).
+    assert_eq!(result.stop, StopCause::Answer, "{:?}", result.error);
+    assert_eq!(result.response, "The answer is 42.");
+    assert_eq!(result.iterations, 2);
+}
+
+/// The `end_turn` tool is NOT registered for profiles that don't select
+/// `stop = "end_turn"` (bare core / default agent). Guards against the tool
+/// leaking into every profile's surface.
+#[tokio::test]
+async fn end_turn_tool_not_registered_for_default_agent() {
+    struct CapturingLm(Mutex<Vec<phi_ai::ToolDefinition>>);
+    #[async_trait]
+    impl LanguageModel for CapturingLm {
+        fn name(&self) -> String {
+            "capturing".to_owned()
+        }
+        fn set_tools(&self, tools: Vec<phi_ai::ToolDefinition>) {
+            *self.0.lock().unwrap() = tools;
+        }
+        async fn complete(
+            &self,
+            _prompt: &[ChatMessage],
+            _cancel: &CancellationToken,
+        ) -> Result<Completion, String> {
+            Err("unused".into())
+        }
+    }
+
+    let root = Arc::new(CapturingLm(Mutex::new(Vec::new())));
+    let engine = Rlm::new(
+        RlmConfig::default(),
+        root.clone(),
+        quiet_sub(),
+        "python3".to_owned(),
+    )
+    .with_runtime(agent_runtime_turn("rlm", None, None));
+    engine.register_tools();
+    let tools = root.0.lock().unwrap().clone();
+    let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+    assert!(
+        !names.contains(&"end_turn"),
+        "end_turn should not be registered for the default agent: {names:?}"
+    );
+    assert_eq!(names, vec!["repl", "greet", "shout"]);
+}
+
+/// The `end_turn` tool IS registered when `stop = "end_turn"` is selected.
+#[tokio::test]
+async fn end_turn_tool_registered_when_stop_end_turn() {
+    struct CapturingLm(Mutex<Vec<phi_ai::ToolDefinition>>);
+    #[async_trait]
+    impl LanguageModel for CapturingLm {
+        fn name(&self) -> String {
+            "capturing".to_owned()
+        }
+        fn set_tools(&self, tools: Vec<phi_ai::ToolDefinition>) {
+            *self.0.lock().unwrap() = tools;
+        }
+        async fn complete(
+            &self,
+            _prompt: &[ChatMessage],
+            _cancel: &CancellationToken,
+        ) -> Result<Completion, String> {
+            Err("unused".into())
+        }
+    }
+
+    let root = Arc::new(CapturingLm(Mutex::new(Vec::new())));
+    let engine = Rlm::new(
+        RlmConfig::default(),
+        root.clone(),
+        quiet_sub(),
+        "python3".to_owned(),
+    )
+    .with_runtime(agent_runtime_turn(
+        "codex",
+        None,
+        Some(phi_ext::AgentTurn {
+            stop: Some(phi_ext::AgentStop::EndTurn),
+            per_turn_reminder: None,
+            parallel_tools: None,
+        }),
+    ));
+    engine.register_tools();
+    let tools = root.0.lock().unwrap().clone();
+    let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+    assert!(
+        names.contains(&"end_turn"),
+        "end_turn should be registered: {names:?}"
+    );
+    assert_eq!(names, vec!["repl", "end_turn", "greet", "shout"]);
+}
+
+/// `per_turn_reminder = false` suppresses the remaining-turns reminder near
+/// the cap. A capped run (depth > 0, max_iterations = 3) nears its limit at
+/// turn 3; the default injects a "Note: turn 3/3…" reminder, the knob
+/// suppresses it. We verify by checking that the prompt sent on the last
+/// turn does NOT contain "turn(s) remaining".
+#[tokio::test]
+async fn per_turn_reminder_false_suppresses_warning() {
+    let root = Arc::new(ScriptedLm::new(
+        "root-model",
+        &[
+            "Probing.\n```repl\nprint('a')\n```",
+            "Probing.\n```repl\nprint('b')\n```",
+            "Probing.\n```repl\nprint('c')\n```",
+            // Turn 4 would exceed the cap — but at depth 0 the root has no
+            // iteration limit. We use depth > 0 via a child RLM to get a cap.
+            "```repl\nanswer['content'] = 'done'\nanswer['ready'] = True\n```",
+        ],
+    ));
+    // A capped run: depth 1 with max_iterations 3.
+    let config = RlmConfig {
+        max_iterations: 3,
+        max_rlm_depth: 2,
+        ..RlmConfig::default()
+    };
+    let engine = Rlm::new(config, root.clone(), quiet_sub(), "python3".to_owned())
+        .at_depth(1)
+        .with_runtime(agent_runtime_turn(
+            "codex",
+            None,
+            Some(phi_ext::AgentTurn {
+                stop: None,
+                per_turn_reminder: Some(false),
+                parallel_tools: None,
+            }),
+        ));
+    let result = engine
+        .completion(
+            ContextPayload::Str("ctx".into()),
+            Some("Do something."),
+            &CancellationToken::new(),
+        )
+        .await;
+    // The run either completes or hits the cap — either way, check no
+    // reminder was injected into any turn's prompt.
+    for (i, prompt) in root.recorded_prompts().iter().enumerate() {
+        for msg in prompt {
+            if msg.role == Role::User {
+                assert!(
+                    !msg.content.contains("turn(s) remaining"),
+                    "reminder leaked into turn {i}: {}",
+                    msg.content
+                );
+            }
+        }
+    }
+    let _ = result;
+}
+
+/// `per_turn_reminder` default (inherit/on): a capped run near its limit
+/// DOES inject the "turn(s) remaining" reminder. Guards against the gate
+/// accidentally suppressing reminders for the default agent.
+#[tokio::test]
+async fn per_turn_reminder_default_injects_warning() {
+    let root = Arc::new(ScriptedLm::new(
+        "root-model",
+        &[
+            "Probing.\n```repl\nprint('a')\n```",
+            "Probing.\n```repl\nprint('b')\n```",
+            "Probing.\n```repl\nprint('c')\n```",
+        ],
+    ));
+    let config = RlmConfig {
+        max_iterations: 3,
+        max_rlm_depth: 2,
+        ..RlmConfig::default()
+    };
+    let engine = Rlm::new(config, root.clone(), quiet_sub(), "python3".to_owned())
+        .at_depth(1)
+        .with_runtime(agent_runtime_turn("rlm", None, None));
+    let _result = engine
+        .completion(
+            ContextPayload::Str("ctx".into()),
+            Some("Do something."),
+            &CancellationToken::new(),
+        )
+        .await;
+    let prompts = root.recorded_prompts();
+    // At least one turn near the cap should have the reminder in its user
+    // preamble. The reminder fires when remaining <= TURN_WARNING_THRESHOLD.
+    let found = prompts.iter().any(|prompt| {
+        prompt
+            .iter()
+            .any(|m| m.role == Role::User && m.content.contains("turn(s) remaining"))
+    });
+    assert!(found, "reminder should be injected near the cap");
+}
+
+/// `parallel_tools = false` (serial, WS1.3): tool calls are buffered until
+/// the stream completes, then executed serially. The run still completes
+/// correctly — the functional contract is unchanged, only the timing
+/// (tools don't overlap with the stream). Two tool calls in one turn both
+/// land as results; the answer completes via `answer['ready']`.
+#[tokio::test]
+async fn parallel_tools_false_still_completes_serially() {
+    let root = Arc::new(ScriptedLm::new(
+        "root-model",
+        &[
+            "Two at once.\n```repl\nprint('alpha')\n```\n```repl\nprint('beta')\n```",
+            "```repl\nanswer['content'] = 'done'\nanswer['ready'] = True\n```",
+        ],
+    ));
+    let engine =
+        rlm(RlmConfig::default(), root.clone(), quiet_sub()).with_runtime(agent_runtime_turn(
+            "codex",
+            None,
+            Some(phi_ext::AgentTurn {
+                stop: None,
+                per_turn_reminder: None,
+                parallel_tools: Some(false),
+            }),
+        ));
+    let result = engine
+        .completion(
+            ContextPayload::Str("ctx".into()),
+            None,
+            &CancellationToken::new(),
+        )
+        .await;
+    assert_eq!(result.stop, StopCause::Answer, "{:?}", result.error);
+    assert_eq!(result.response, "done");
+    // Both tool results land on the next turn — serial mode doesn't drop calls.
+    let prompts = root.recorded_prompts();
+    let tool_results: Vec<_> = prompts[1].iter().filter(|m| m.role == Role::Tool).collect();
+    assert_eq!(tool_results.len(), 2, "two tool results expected");
+    assert!(tool_results[0].content.contains("alpha"));
+    assert!(tool_results[1].content.contains("beta"));
 }

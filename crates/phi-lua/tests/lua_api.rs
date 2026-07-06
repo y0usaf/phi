@@ -1327,3 +1327,46 @@ phi.register_command("canon", {
         .unwrap();
     assert_eq!(out.message.as_deref(), Some("<nil>"));
 }
+
+#[tokio::test]
+async fn lua_register_agent_collects_turn_block() {
+    let source = r#"
+phi.register_agent("codex", {
+    system_prompt = "codex-shaped agent",
+    turn = {
+        stop = "end_turn",
+        per_turn_reminder = false,
+        parallel_tools = false,
+    },
+})
+"#;
+    let rt = load_lua(source);
+
+    let spec = rt.get_agent("codex").expect("agent registered");
+    assert_eq!(spec.system_prompt.as_deref(), Some("codex-shaped agent"));
+    let turn = spec.turn.as_ref().expect("turn block collected");
+    assert_eq!(turn.stop, Some(phi_ext::AgentStop::EndTurn));
+    assert_eq!(turn.per_turn_reminder, Some(false));
+    assert_eq!(turn.parallel_tools, Some(false));
+}
+
+#[tokio::test]
+async fn lua_register_agent_invalid_stop_errors() {
+    let source = r#"
+phi.register_agent("bad", {
+    turn = { stop = "bogus" },
+})
+"#;
+    let result = RuntimeBuilder::new()
+        .with_cwd(std::path::Path::new("."))
+        .register_extension(LuaExtension::from_source("bad", source.to_owned()).unwrap())
+        .build();
+    let err = match result {
+        Ok(_) => panic!("invalid stop should fail the build"),
+        Err(e) => e.to_string(),
+    };
+    assert!(
+        err.contains("invalid stop") || err.contains("bogus"),
+        "error should mention the bad stop: {err}"
+    );
+}
