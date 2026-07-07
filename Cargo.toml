@@ -48,6 +48,7 @@ phi-ai-auth = { path = "crates/phi-ai-auth" }
 phi-ai-types = { path = "crates/phi-ai-types" }
 phi-grid = { path = "crates/phi-grid" }
 phi-host = { path = "crates/phi-host" }
+phi-session = { path = "crates/phi-session" }
 phi-tui = { path = "crates/phi-tui" }
 
 [profile.dev]

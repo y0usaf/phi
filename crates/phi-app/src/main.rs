@@ -17,6 +17,7 @@ mod chat;
 mod cli;
 mod extensions;
 mod format;
+mod session;
 mod settings;
 mod transcript;
 
@@ -156,6 +157,12 @@ async fn main() -> Result<()> {
         }),
     );
 
+    // Session log (PLAN.md WS4.1): every run writes one JSONL session
+    // under the phi data dir, keyed by cwd. `--continue` resumes the most
+    // recent for cwd. The store is created inside each run path so the
+    // transcript `Context` it seeds stays local to that path.
+    let sessions_root = session::root().context("resolving sessions root")?;
+
     match prompt {
         Some(prompt) => {
             agent::run(agent::RunSpec {
@@ -168,6 +175,8 @@ async fn main() -> Result<()> {
                 prompt,
                 verbose: args.verbose,
                 cancel,
+                sessions_root,
+                continue_session: args.continue_session,
             })
             .await
         }
@@ -182,6 +191,8 @@ async fn main() -> Result<()> {
                 system: args.system.clone(),
                 verbose: args.verbose,
                 cancel,
+                sessions_root,
+                continue_session: args.continue_session,
             })
             .await
         }

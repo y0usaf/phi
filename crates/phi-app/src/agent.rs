@@ -30,6 +30,11 @@ pub struct RunSpec<'a> {
     /// Show tool output even when it succeeded (PLAN.md WS3.2).
     pub verbose: bool,
     pub cancel: CancellationToken,
+    /// Sessions root (phi data dir). Every run writes one JSONL session
+    /// (PLAN.md WS4.1).
+    pub sessions_root: std::path::PathBuf,
+    /// Resume the most recent session for cwd before the prompt runs.
+    pub continue_session: bool,
 }
 
 pub async fn run(spec: RunSpec<'_>) -> Result<()> {
@@ -37,9 +42,28 @@ pub async fn run(spec: RunSpec<'_>) -> Result<()> {
     let system_prompt = phi_agent::prompt::build(&spec.host.tools(), spec.system.as_deref(), &cwd);
     let mut ctx = Context {
         system_prompt: Some(system_prompt),
-        messages: vec![Message::User(UserMessage::new(spec.prompt))],
+        messages: Vec::new(),
         ..Context::default()
     };
+
+    // Session log: seed the transcript from the prior session on
+    // `--continue`, then create/open the store before the prompt is pushed
+    // (so the prompt lands in the log too). The store is flushed with the
+    // run's delta after the loop settles.
+    let model_key = format!("{}/{}", spec.model.provider, spec.model.id);
+    let store = crate::session::open(
+        &spec.sessions_root,
+        &cwd,
+        &model_key,
+        &mut ctx,
+        spec.continue_session,
+    )?;
+    // Snapshot the resumed transcript length before the prompt; the
+    // prompt + everything the run adds is the session-log delta.
+    let start_len = ctx.messages.len();
+    // The prompt always runs, on top of any resumed transcript.
+    ctx.messages
+        .push(Message::User(UserMessage::new(spec.prompt)));
 
     let mut stream_fn = |ctx: &Context| {
         let mut opts = StreamOptions::new(spec.auth.clone());
@@ -61,6 +85,11 @@ pub async fn run(spec: RunSpec<'_>) -> Result<()> {
         &mut |event| renderer.on_event(event),
     )
     .await?;
+    // Flush the run's new messages (assistant + tool results) to the
+    // session log. The prompt was pushed above and is included in the
+    // delta, so a `--continue` log records the resumed transcript's new
+    // turn in full.
+    crate::session::flush(&store, &ctx.messages, start_len);
     renderer.finish(&outcome)
 }
 

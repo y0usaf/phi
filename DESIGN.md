@@ -65,9 +65,10 @@ crates/
                  one-shot streamed completion           (policy, minimal)
 ```
 
-To be built (in roadmap order): `phi-host` (Lua runtime, registries, event
-bus, watchdog), the agent loop pack, the interactive TUI. Names TBD when the
-first line is written, not before.
+Built since the strip (in roadmap order): `phi-host` (Lua runtime, registries,
+event bus, watchdog), the agent loop pack (`phi-agent`), the interactive TUI
+(in `phi-app`'s chat frontend), and `phi-session` (the JSONL session log).
+`phi-grid` waits for the mux pack.
 
 Resurrection candidates on `main`: `phi-lua`'s `LuaMsg` thread model /
 discovery / loader; `phi-session`'s JSONL store types; the Python prelude's
@@ -131,7 +132,7 @@ pi's shape, over the Lua bridge:
       failing test"` edits a file and runs bash, end to end, with the loop
       selected by config rather than hardwired.* (Live acceptance pending
       provider credit — see PLAN.md WS2.4.)
-- [ ] **WS3 — First frontend pack (inline TUI).** Chat frontend on `phi-tui`
+- [x] **WS3 — First frontend pack (inline TUI).** Chat frontend on `phi-tui`
       (scrollback + bottom live region, forgecode-minimal chrome, no alt
       screen), selected like any other frontend rather than hardwired; chrome
       (footer/overlays) extension-rendered. *Accept: interactive session with

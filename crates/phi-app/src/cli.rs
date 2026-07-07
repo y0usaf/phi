@@ -39,6 +39,11 @@ pub struct Args {
     /// List known models (optionally filtered) and exit.
     #[arg(long, value_name = "PATTERN", num_args = 0..=1, default_missing_value = "")]
     pub list_models: Option<String>,
+
+    /// Resume the most recent session for the current directory (WS4.1).
+    /// Seeds the transcript from the last session before the prompt runs.
+    #[arg(long = "continue")]
+    pub continue_session: bool,
 }
 
 impl Args {

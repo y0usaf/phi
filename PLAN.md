@@ -96,10 +96,23 @@ past ~150 lines, it's absorbing what commits should say.
 
 ## WS4 — Sessions (usability, then parity)
 
-- [ ] **4.1 JSONL session log.** Append-only, pi-compatible spirit
-      (header line + entries), stored under the phi data dir keyed by cwd;
-      every run writes one. `--continue` resumes the most recent for cwd.
-      *Accept: kill a session, `phi --continue`, the model remembers.*
+- [x] **4.1 JSONL session log.** Landed as `phi-session` (new crate):
+      append-only JSONL — one `session` header line + one `message` entry per
+      transcript `Message`, tagged `Line` so the format grows (compaction,
+      branch nav) without breaking older readers. Files under
+      `{data dir}/sessions/{--cwd--}/{ts}_{uuidv7}.jsonl`, mirroring pi's
+      per-cwd layout. Tolerant reader skips malformed/torn lines; newer-than-
+      understood versions are rejected. `phi-app/src/session.rs` wires it:
+      every run (one-shot + chat) writes one; the loop owns the transcript,
+      the store is an append-only sink flushed with the run's message delta;
+      `--continue` resumes the most recent non-empty session for cwd,
+      seeding `Context.messages` and reusing its file. 12 phi-session store
+      tests + 3 phi-app session-wiring tests (continue round-trip, fresh
+      fallback, empty-session skip). *Accept: kill a session, `phi --continue`,
+      the model remembers.* *Pending live acceptance (a real two-turn session
+      with a model): still blocked on provider credit, same as WS2.4/WS3.1.
+      The headless round-trip (write → continue → see both turns) is covered
+      by `session::tests::continue_seeds_and_appends_across_runs`.*
 - [ ] **4.2 `/resume` picker + `--resume`.** Selector over session files.
 - [ ] **4.3 Compaction.** Only when overflow actually bites; pi's
       reserve/keep numbers as defaults; overridable via a

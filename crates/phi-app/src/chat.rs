@@ -47,6 +47,11 @@ pub struct ChatSpec {
     /// Session-level cancellation (external SIGINT): quits the frontend and
     /// winds down any active run (run tokens are children of this one).
     pub cancel: CancellationToken,
+    /// Sessions root (phi data dir). Every chat session writes one JSONL
+    /// log; `--continue` resumes the most recent for cwd (PLAN.md WS4.1).
+    pub sessions_root: std::path::PathBuf,
+    /// Resume the most recent session for cwd on startup.
+    pub continue_session: bool,
 }
 
 pub async fn run(spec: ChatSpec) -> Result<()> {
@@ -69,7 +74,21 @@ pub async fn run(spec: ChatSpec) -> Result<()> {
     let (tx, mut rx) = mpsc::unbounded_channel::<UiMsg>();
     spawn_input_thread(tx.clone());
 
-    let mut chat = Chat::new(spec, tx, width as usize);
+    // Session log (PLAN.md WS4.1): seed the transcript from the prior
+    // session on `--continue`, then create/open the store. Done before
+    // `Chat::new` so the store and transcript live with the `Chat`.
+    let cwd = std::env::current_dir().context("resolving cwd")?;
+    let model_key = format!("{}/{}", spec.model.provider, spec.model.id);
+    let mut ctx = Box::<Context>::default();
+    let store = crate::session::open(
+        &spec.sessions_root,
+        &cwd,
+        &model_key,
+        &mut ctx,
+        spec.continue_session,
+    )?;
+
+    let mut chat = Chat::new(spec, tx, width as usize, ctx, store);
     let mut tick = tokio::time::interval(Duration::from_millis(SPINNER_FRAME_MS));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
@@ -155,10 +174,19 @@ struct Chat {
     run_cancel: Option<CancellationToken>,
     /// An in-flight `/login` flow; Esc cancels it like a run.
     login_cancel: Option<CancellationToken>,
+    /// The session log (PLAN.md WS4.1). Shared so each spawned run task can
+    /// flush its message delta off the UI loop.
+    store: crate::session::SharedStore,
 }
 
 impl Chat {
-    fn new(spec: ChatSpec, tx: mpsc::UnboundedSender<UiMsg>, width: usize) -> Self {
+    fn new(
+        spec: ChatSpec,
+        tx: mpsc::UnboundedSender<UiMsg>,
+        width: usize,
+        ctx: Box<Context>,
+        store: crate::session::SharedStore,
+    ) -> Self {
         let mut state = ChatState::new(spec.model.id.clone(), width);
         state.verbose = spec.verbose;
         Self {
@@ -166,9 +194,10 @@ impl Chat {
             tx,
             state,
             steering: Arc::default(),
-            ctx: Some(Box::default()),
+            ctx: Some(ctx),
             run_cancel: None,
             login_cancel: None,
+            store,
         }
     }
 
@@ -255,11 +284,14 @@ impl Chat {
             return;
         }
         let mut ctx = self.ctx.take().expect("context is home while idle");
+        // Snapshot before the prompt; the prompt + the run's output is the
+        // session-log delta (PLAN.md WS4.1).
+        let start_len = ctx.messages.len();
         ctx.messages.push(Message::User(UserMessage::new(text)));
-        self.start_run(ctx);
+        self.start_run(ctx, start_len);
     }
 
-    fn start_run(&mut self, mut ctx: Box<Context>) {
+    fn start_run(&mut self, mut ctx: Box<Context>, start_len: usize) {
         let cwd = match std::env::current_dir() {
             Ok(cwd) => cwd,
             Err(e) => {
@@ -287,6 +319,7 @@ impl Chat {
         let thinking = self.spec.thinking;
         let steering = Arc::clone(&self.steering);
         let tx = self.tx.clone();
+        let store = Arc::clone(&self.store);
         tokio::spawn(async move {
             let stream_cancel = run_cancel.clone();
             let mut stream_fn = move |ctx: &Context| {
@@ -307,6 +340,10 @@ impl Chat {
                 &mut on_event,
             )
             .await;
+            // Flush the run's delta to the session log off the UI loop.
+            // The transcript stays well-formed even when the run was
+            // aborted: the loop appends error/aborted assistant messages.
+            crate::session::flush(&store, &ctx.messages, start_len);
             let _ = tx.send(UiMsg::RunDone(ctx, outcome));
         });
     }
@@ -325,10 +362,13 @@ impl Chat {
             .collect();
         if !leftover.is_empty() {
             let mut ctx = self.ctx.take().expect("context returned above");
+            // Each leftover steering line is its own logged turn; snapshot
+            // before pushing so the prompts land in the session log.
+            let start_len = ctx.messages.len();
             for text in leftover {
                 ctx.messages.push(Message::User(UserMessage::new(text)));
             }
-            self.start_run(ctx);
+            self.start_run(ctx, start_len);
         }
     }
 

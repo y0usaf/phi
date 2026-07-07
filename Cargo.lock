@@ -1244,9 +1244,11 @@ dependencies = [
  "phi-agent",
  "phi-ai",
  "phi-host",
+ "phi-session",
  "phi-tui",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "tokio-util",
 ]
@@ -1269,6 +1271,20 @@ dependencies = [
  "mlua",
  "serde_json",
  "tempfile",
+]
+
+[[package]]
+name = "phi-session"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "directories",
+ "jiff",
+ "phi-ai-types",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "uuid",
 ]
 
 [[package]]

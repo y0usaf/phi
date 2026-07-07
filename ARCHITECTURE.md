@@ -21,8 +21,10 @@ graph TD
   phi_app["phi-app"] --> phi_agent["phi-agent"]
   phi_app["phi-app"] --> phi_ai["phi-ai"]
   phi_app["phi-app"] --> phi_host["phi-host"]
+  phi_app["phi-app"] --> phi_session["phi-session"]
   phi_app["phi-app"] --> phi_tui["phi-tui"]
   phi_grid["phi-grid"] --> phi_tui["phi-tui"]
+  phi_session["phi-session"] --> phi_ai_types["phi-ai-types"]
 ```
 
 ## Crates
@@ -36,6 +38,7 @@ graph TD
 | `phi-app` | _no description in Cargo.toml_ |
 | `phi-grid` | _no description in Cargo.toml_ |
 | `phi-host` | _no description in Cargo.toml_ |
+| `phi-session` | Append-only JSONL session log (pi-compatible) |
 | `phi-tui` | _no description in Cargo.toml_ |
 
 ## Module structure
@@ -227,6 +230,8 @@ crate phi
 │   └── struct Args: pub
 ├── mod extensions: pub(crate)
 ├── mod format: pub(crate)
+├── mod session: pub(crate)
+│   └── type SharedStore: pub
 ├── mod settings: pub(crate)
 │   └── struct Settings: pub
 └── mod transcript: pub(crate)
@@ -290,6 +295,20 @@ crate phi_host
 └── mod trust: pub(crate)
     ├── enum TrustDecision: pub
     └── struct TrustStore: pub
+```
+
+### `phi-session`
+
+```
+
+crate phi_session
+├── mod store: pub(crate)
+└── mod types: pub(crate)
+    ├── struct Entry: pub
+    ├── struct Header: pub
+    ├── enum Line: pub(crate)
+    ├── struct SessionMeta: pub
+    └── struct SessionStore: pub
 ```
 
 ### `phi-tui`
