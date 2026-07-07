@@ -44,6 +44,7 @@ below; the pre-rebuild tree is preserved on `main` (final state `fd373e0`).
 | API definition order | Lua-first: the bridge is the canonical API; the Rust trait is an internal detail | The old bridge was Rust-trait-first and Lua silently lost fidelity (`actions: Vec::new()`, fixed overlay renderer). Inverting the order makes second-class Lua structurally impossible. |
 | API growth rule | Generous surface, but **no hook without an exerciser** — every hook lands with an example extension in `examples/` in the same commit | Resolves the "no API without a consumer" debate: build ahead of demand for sharing's sake, but nothing ships unexercised (the `register_shortcut`/`register_message_renderer` lesson). The examples directory is the conformance suite and the docs. |
 | Shipped defaults | Embedded `.lua`, loaded through the public API | "We build via the extension surface too", made mechanical. |
+| Frontend seam | Headless substrate: the core emits the event stream and consumes input actions, never renders. A frontend is any pack bridging the two; the bare core's one-shot stdout printer is the degenerate frontend. Default frontend (WS3): inline TUI on `phi-tui`'s scrollback + live-region model, forgecode-minimal chrome, no alt screen. | Renderer swappable by extension (alt-screen, GUI, …) without touching the substrate. In-process frontends are packs; Lua-*authored* frontends wait on `phi-tui` bindings grown per the exerciser rule; out-of-process frontends (GUI/web) ride the doctrine-03 wire-protocol decision at the mux pack. |
 | Sandboxing | None in core; full user permissions (pi's stance). Trust gates *extension loading* only | Written decision so plain-Lua `os`/`io` access is a choice, not an accident. |
 | Salvage policy | Anything not in the keep set is deleted; resurrect from `main` history when a port needs it | Git is the attic. No dead code rides along "just in case". |
 
@@ -89,6 +90,9 @@ pi's shape, over the Lua bridge:
   `on(name, fn)`.
 - **Watchdog**: every host→Lua dispatch is bounded (number set when the
   host lands; record it here).
+- **Frontends**: the substrate never renders; a frontend subscribes to the
+  same event stream and feeds input back as actions. Swapping inline TUI →
+  alt-screen → GUI is a pack choice, not a core change.
 - **Async seam**: settle before the host lands — whether a Lua handler can
   await host futures (LLM call, subprocess) or only queue actions.
   Retrofitting this is the expensive mistake; decide it first.
@@ -119,16 +123,19 @@ pi's shape, over the Lua bridge:
       (`~/.config/phi/`, `.phi/`, embedded), trust gate for project-local
       extensions. *Accept: a `hello.lua` registers a command and an event
       handler; a hung handler is killed by the watchdog; an untrusted
-      `.phi/` prompts.*
+      `.phi/` prompts; `phi-host` has no terminal dependencies (headless
+      substrate per the frontend-seam decision).*
 - [ ] **WS2 — The loop as a pack.** Flat tool-call agent loop; native
       read/edit/bash/grep tools registered through the same `register_tool`
       a user would call; one-shot mode drives it. *Accept: `phi "fix the
       failing test"` edits a file and runs bash, end to end, with the loop
       selected by config rather than hardwired.*
-- [ ] **WS3 — Interactive TUI.** Chat frontend on `phi-tui`; chrome
-      (footer/header/overlays) extension-rendered. *Accept: interactive
-      session with streaming, editor, slash commands sourced only from the
-      command registry.*
+- [ ] **WS3 — First frontend pack (inline TUI).** Chat frontend on `phi-tui`
+      (scrollback + bottom live region, forgecode-minimal chrome, no alt
+      screen), selected like any other frontend rather than hardwired; chrome
+      (footer/overlays) extension-rendered. *Accept: interactive session with
+      streaming, editor, slash commands sourced only from the command
+      registry.*
 - [ ] **WS4 — Examples as conformance.** Port pi's examples one at a time
       (start: hello, commands, permission-gate, custom-provider,
       message-renderer, custom-footer). Each port either passes or grows the
