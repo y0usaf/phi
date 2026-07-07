@@ -1,25 +1,22 @@
 # Phi (φ)
 
-Rust-first coding harness scaffold with an extension-first runtime and native CLI/TUI frontends.
+Rust coding harness, rebuilt: pi's shape (small flat-loop core, features
+arrive as extensions) with a Lua-canonical extension surface. See `DESIGN.md`
+for the spine — vision, locked decisions, and roadmap. The pre-rebuild tree
+lives on the `main` branch.
 
 **Phi** is named for the Greek letter `φ` (lowercase phi; uppercase `Φ`). The CLI binary is
 `phi`, and Rust workspace crates use the `phi-*` prefix.
 
 ## Layout
 
-- `crates/phi-app`: binary entrypoint
-- `crates/phi-ai`: provider abstraction, model registry, streaming, and auth
-- `crates/phi-rlm`: Recursive Language Model engine (core LM types, engine, harness, prompts, sessions)
-- `crates/phi-repl`: REPL environment protocol and Python backend
-- `crates/phi-tui`: native terminal frontend primitives
-- `crates/phi-mux`: session multiplexer (cell-grid rendering, UI, keys, workspace)
-- `crates/phi-session`: session config, transcript, usage, and JSONL store
-- `crates/phi-session-tui`: TUI session loop and session builder
-- `crates/phi-ext`: host runtime and extension registry
-- `crates/phi-builtins`: bundled extensions that use the same host API
-- `crates/phi-lua`: Lua extension loader
-- `crates/xtask`: workspace tasks (model registry generation)
-- `ref/`: local checkouts of upstream reference implementations (`pi/`, `rlm/`), ignored by git
+- `crates/phi-app`: bare-core binary — login, list-models, one-shot streamed completion
+- `crates/phi-ai`: provider abstraction, model registry, streaming
+- `crates/phi-ai-auth`: OAuth flows and token storage/refresh
+- `crates/phi-ai-types`: core LM/message/model types
+- `crates/phi-tui`: terminal frontend primitives (editor, markdown, keymap)
+- `crates/phi-grid`: damage-tracked ANSI cell renderer (dormant until the mux pack)
+- `ref/`: local checkouts of upstream reference implementations (`pi/`, `rlm/`, …), ignored by git
 
 Runtime state uses the `phi` application name in XDG paths, for example
 `~/.local/share/phi/auth.json`.
@@ -27,8 +24,8 @@ Runtime state uses the `phi` application name in XDG paths, for example
 ## Running
 
 ```bash
-cargo run -p phi-app -- --help
-cargo run -p phi-app -- --list-models
-nix run
+nix run . -- --login anthropic
 nix run . -- --list-models
+nix run . -- "what is 2+2?"
+cargo run -p phi-app -- --help
 ```

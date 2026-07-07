@@ -1,5 +1,0 @@
-{
-  "prompt": "Create a script `wordcount.py` in the project root. `python3 wordcount.py FILE` must print exactly one line: the file's line count, word count (whitespace-separated tokens), and byte count, separated by single spaces — the same three numbers `wc FILE` reports. Example output format: `4 4 45`. It must work for any text file, not just the ones present here.",
-  "timeout": 300,
-  "immutable": ["data.csv"]
-}

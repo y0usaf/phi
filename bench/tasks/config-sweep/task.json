@@ -1,4 +1,0 @@
-{
-  "prompt": "In every file under services/: set `debug = false`, and add the line `timeout = 30` at the end of any file that has no timeout setting. Files that already set a timeout keep their existing value. Change nothing else.",
-  "timeout": 300
-}

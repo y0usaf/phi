@@ -1,5 +1,0 @@
-{
-  "prompt": "Write a new file `orders_out.json` containing the same records as `orders.json`, in the same order, each with all existing fields preserved plus an added `total` field equal to qty * price rounded to 2 decimals. Do not modify orders.json.",
-  "timeout": 300,
-  "immutable": ["orders.json"]
-}

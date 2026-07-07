@@ -9,13 +9,6 @@ version = "0.1.0"
 
 [workspace.dependencies]
 anyhow = "1.0.98"
-# Memory allocator (reduces fragmentation for long-running processes)
-tikv-jemallocator = { version = "0.6", features = ["unprefixed_malloc_on_supported_platforms"] }
-tikv-jemalloc-ctl = "0.6"
-tikv-jemalloc-sys = "0.6"
-# Text-only clipboard: no `image-data` (it pulls the whole `image` codec
-# tree into the build; MuxClipboard never touches images).
-arboard = { version = "3", default-features = false, features = ["wayland-data-control"] }
 async-trait = "0.1.88"
 base64 = "0.22.1"
 bytes = "1"
@@ -25,11 +18,8 @@ directories = "6.0.0"
 eventsource-stream = "0.2.3"
 fd-lock = "4.0.4"
 futures = "0.3.31"
-ignore = "0.4"
 jiff = "0.2.14"
 libc = "0.2"
-mlua = { version = "0.11", features = ["lua54", "vendored", "serialize", "error-send", "send"] }
-notify = "8"
 pulldown-cmark = { version = "0.13", default-features = false }
 rand = "0.9.1"
 regex-lite = "0.1.6"
@@ -44,7 +34,6 @@ tempfile = "3.20.0"
 thiserror = "2.0.12"
 tokio = { version = "1.45.1", features = ["rt-multi-thread", "macros", "process", "fs", "io-util", "sync", "time", "signal", "net"] }
 tokio-util = "0.7.15"
-toml = "0.8.22"
 unicode-segmentation = "1.12"
 unicode-width = "0.2"
 url = "2.5.4"
@@ -55,19 +44,8 @@ flate2 = "1"
 phi-ai = { path = "crates/phi-ai" }
 phi-ai-auth = { path = "crates/phi-ai-auth" }
 phi-ai-types = { path = "crates/phi-ai-types" }
-# default-features = false so app crates can gate the `builtins` feature
-# (WS1.5); each consumer forwards it via its own default-on feature.
-phi-builtins = { path = "crates/phi-builtins", default-features = false }
-phi-ext = { path = "crates/phi-ext" }
 phi-grid = { path = "crates/phi-grid" }
-phi-event = { path = "crates/phi-event" }
-phi-repl = { path = "crates/phi-repl" }
-phi-mux = { path = "crates/phi-mux", default-features = false }
-phi-rlm = { path = "crates/phi-rlm" }
-phi-session = { path = "crates/phi-session" }
-phi-session-tui = { path = "crates/phi-session-tui", default-features = false }
 phi-tui = { path = "crates/phi-tui" }
-phi-lua = { path = "crates/phi-lua" }
 
 [profile.dev]
 debug = 0

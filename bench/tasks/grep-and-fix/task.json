@@ -1,5 +1,0 @@
-{
-  "prompt": "Users report that paginate() returns one item fewer than the page size. Find the bug in this codebase and fix it. The tests in test_pager.py must pass (`python3 -m unittest`); do not modify them.",
-  "timeout": 300,
-  "immutable": ["test_pager.py"]
-}

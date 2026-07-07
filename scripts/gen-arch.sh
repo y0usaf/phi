@@ -18,7 +18,7 @@ strip_ansi() { sed -e 's/\x1b\[[0-9;]*m//g'; }
   echo '# Architecture map (generated)'
   echo
   echo 'Structural map of the workspace, extracted from the code. For rationale,'
-  echo 'invariants, and dataflow, see DESIGN.md / PLAN.md.'
+  echo 'invariants, and dataflow, see DESIGN.md.'
   echo
   echo '## Crate dependency graph'
   echo

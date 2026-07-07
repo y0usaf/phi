@@ -1,4 +1,0 @@
-{
-  "prompt": "Edit CHANGELOG.md: insert a new `## [1.2.0] - 2026-07-01` section between the [Unreleased] section and the [1.1.0] section. The new section gets two subsections: `### Added` with exactly the two bullets `- config hot-reload` and `- verbose flag`, then `### Changed` with exactly one bullet `- rework config loading` (this is the bullet currently under [Unreleased] — move it, so [Unreleased] keeps its heading but has no bullets left). Change nothing else in the file.",
-  "timeout": 300
-}

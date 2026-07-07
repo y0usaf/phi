@@ -1,66 +1,27 @@
-#[cfg(feature = "jemalloc")]
-#[global_allocator]
-static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+//! Bare core (DESIGN.md doctrine 06): login, list-models, and a one-shot
+//! streamed completion with zero extensions loaded. Everything else arrives
+//! as packs on the Lua host.
 
-#[cfg(all(feature = "jemalloc", not(feature = "jemalloc-prof")))]
-#[allow(non_upper_case_globals)]
-#[unsafe(no_mangle)]
-pub static malloc_conf: Option<&'static [u8; 50]> =
-    Some(b"dirty_decay_ms:1000,muzzy_decay_ms:1000,narenas:4\0");
-
-#[cfg(feature = "jemalloc-prof")]
-#[allow(non_upper_case_globals)]
-#[unsafe(no_mangle)]
-pub static malloc_conf: Option<&'static [u8; 78]> =
-    Some(b"dirty_decay_ms:1000,muzzy_decay_ms:1000,narenas:4,prof:true,prof_active:false\0");
-
-use std::io::IsTerminal;
+use std::io::{IsTerminal, Read as _, Write as _};
 use std::sync::Arc;
 
-use crate::cli::Args;
 use anyhow::{Context as _, Result, bail};
-use phi_ai::{AuthStorage, LoginMethod, OAuthProviderId, PrintCallbacks, Registry};
-use phi_mux as mux;
-use phi_session::config;
-use phi_session_tui::{session_builder, tui};
+use phi_ai::{
+    AssistantEvent, AuthStorage, Context, LoginMethod, Message, OAuthProviderId, PrintCallbacks,
+    Registry, StreamOptions, ThinkingLevel, UserMessage,
+};
 use tokio_util::sync::CancellationToken;
 
-/// glibc's default arena policy (up to 8 x cores) trades memory for lock
-/// contention headroom — a poor fit for a long-running TUI, where it shows
-/// up as steadily growing RSS. Cap arenas before any thread allocates.
-/// jemalloc builds replace the allocator wholesale via the attributes
-/// above; musl has no `mallopt`, hence the `gnu` guard.
-#[cfg(all(target_os = "linux", target_env = "gnu", not(feature = "jemalloc")))]
-fn configure_system_allocator() {
-    unsafe extern "C" {
-        fn mallopt(param: i32, value: i32) -> i32;
-    }
+use crate::cli::Args;
+use crate::format::{format_model_pricing, format_usage_summary};
 
-    const M_ARENA_MAX: i32 = -8;
-    let arena_max = std::env::var("PHI_GLIBC_ARENA_MAX")
-        .ok()
-        .and_then(|value| value.trim().parse::<i32>().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(4);
+mod cli;
+mod format;
 
-    let _ = unsafe { mallopt(M_ARENA_MAX, arena_max) };
-}
+const DEFAULT_MODEL: &str = "claude-opus-4-7";
 
-#[cfg(not(all(target_os = "linux", target_env = "gnu", not(feature = "jemalloc"))))]
-fn configure_system_allocator() {}
-
-fn main() -> Result<()> {
-    // Must run before the runtime spawns worker threads: arena caps only
-    // apply to arenas that don't exist yet.
-    configure_system_allocator();
-    tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .context("failed to build tokio runtime")?
-        .block_on(async_main())
-}
-
-async fn async_main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     let args = Args::parse();
     let storage = Arc::new(AuthStorage::new(auth_path()?));
 
@@ -85,27 +46,9 @@ async fn async_main() -> Result<()> {
         return Ok(());
     }
 
-    let registry = Arc::new(Registry::builtin());
+    let registry = Registry::builtin();
 
     if let Some(pattern) = &args.list_models {
-        // The listing covers the embedded first-party models plus the
-        // bundled catalog — the same set a session resolves against before
-        // any user extension registers additional providers.
-        #[allow(unused_mut)]
-        let mut notices: Vec<String> = Vec::new();
-        #[allow(unused_mut)]
-        let mut extra = Vec::new();
-        #[cfg(feature = "builtins")]
-        for config in phi_builtins::catalog::provider_configs() {
-            extra.extend(session_builder::extension_provider_models(
-                config,
-                &mut notices,
-            ));
-        }
-        for notice in &notices {
-            eprintln!("phi: {notice}");
-        }
-        let registry = registry.extended(extra);
         for model in registry.supported_models() {
             let qualified = format!("{}/{}", model.provider, model.id);
             if pattern.is_empty() || qualified.contains(pattern.as_str()) {
@@ -119,108 +62,112 @@ async fn async_main() -> Result<()> {
         return Ok(());
     }
 
-    run(args, storage, registry).await
+    let prompt = match args.prompt_text() {
+        Some(text) if text == "-" => read_stdin()?,
+        Some(text) => text,
+        None if !std::io::stdin().is_terminal() => read_stdin()?,
+        None => {
+            bail!("no prompt given (the interactive frontend is not part of the bare core yet)")
+        }
+    };
+    if prompt.trim().is_empty() {
+        bail!("empty prompt");
+    }
+
+    oneshot(&args, &storage, &registry, prompt).await
 }
 
-mod cli;
-mod event_print;
-mod format;
-mod oneshot;
-mod render;
-mod tool_view;
-
-#[cfg(test)]
-mod tests;
-
-use format::format_model_pricing;
-
-/// Dispatch to the appropriate execution mode: mux, TUI, or one-shot CLI.
-async fn run(args: Args, storage: Arc<AuthStorage>, registry: Arc<Registry>) -> Result<()> {
-    let cwd = std::env::current_dir().context("could not determine working directory")?;
-
-    // Headless mux daemon (spawned by the first `phi --mux` client). Runs
-    // before any tty checks — the daemon has no terminal by design.
-    if args.mux_server {
-        let mux_config = config::Config::load(&cwd)?.mux.unwrap_or_default();
-        let shared = session_builder::SharedResources {
-            cli_args: args.to_session_args(),
-            projects: args.project.clone(),
-            storage,
-            registry,
-            // Daemon sessions can never prompt on stdin; undecided
-            // projects get a notice, same as the in-terminal mux.
-            trust_prompt: false,
-            // WS8.3: seeded from the first attaching client's shell; later
-            // attaches overwrite (last wins) so sessions spawned for a
-            // newcomer report that client's shell, not the daemon's own.
-            shell: None,
-        };
-        return mux::remote::server::run(shared, mux_config, cwd).await;
+async fn oneshot(
+    args: &Args,
+    storage: &AuthStorage,
+    registry: &Registry,
+    prompt: String,
+) -> Result<()> {
+    let query = args.model.as_deref().unwrap_or(DEFAULT_MODEL);
+    let model = registry
+        .find(query)
+        .with_context(|| format!("unknown model '{query}' (see --list-models)"))?
+        .clone();
+    if !registry.is_supported(&model) {
+        bail!(
+            "no provider implementation for '{}/{}'",
+            model.provider,
+            model.id
+        );
     }
 
-    if args.kill {
-        if mux::remote::daemon::kill_daemon()? {
-            println!("mux daemon terminated");
-        } else {
-            println!("no mux daemon running");
-        }
-        return Ok(());
-    }
+    let auth = storage
+        .resolve(&model.provider)
+        .await
+        .with_context(|| format!("auth resolution failed for '{}'", model.provider))?
+        .with_context(|| {
+            format!(
+                "no credentials for provider '{}' (use --login or an env api key)",
+                model.provider
+            )
+        })?;
 
-    let prompt = args.prompt_text();
-    let tty = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
-    let tui_mode = prompt.is_none() && args.context.is_none() && tty;
+    let mut opts = StreamOptions::new(auth);
+    opts.thinking = parse_thinking(args.thinking.as_deref())?;
 
-    if args.mux || tui_mode {
-        let mux_config = config::Config::load(&cwd)?.mux.unwrap_or_default();
-        let mux_enabled =
-            args.mux || (!args.no_mux && tui_mode && mux_config.enabled.unwrap_or(false));
-        if mux_enabled {
-            if !tty {
-                bail!("--mux requires an interactive terminal");
+    let ctx = Context {
+        system_prompt: args.system.clone(),
+        messages: vec![Message::User(UserMessage::new(prompt))],
+        ..Context::default()
+    };
+
+    let mut stream = registry.stream(&model, &ctx, opts);
+    let mut stdout = std::io::stdout();
+    let mut wrote = false;
+    while let Some(event) = stream.next().await {
+        match event {
+            AssistantEvent::TextDelta { delta, .. } => {
+                stdout.write_all(delta.as_bytes())?;
+                stdout.flush()?;
+                wrote = true;
             }
-            if prompt.is_some() || args.context.is_some() {
-                bail!("--mux does not take a prompt or --context");
+            AssistantEvent::Done { message } => {
+                if wrote && !message.text().ends_with('\n') {
+                    println!();
+                }
+                eprintln!("{}", format_usage_summary(&message.usage));
+                return Ok(());
             }
-            // Escape hatch for debugging: run the mux single-process (the
-            // pre-daemon architecture) instead of attaching to a daemon.
-            if std::env::var("PHI_MUX_LOCAL").is_ok_and(|v| v == "1") {
-                let shared = session_builder::SharedResources {
-                    cli_args: args.to_session_args(),
-                    projects: args.project.clone(),
-                    storage,
-                    registry,
-                    trust_prompt: false,
-                    shell: None,
-                };
-                return mux::app::run(shared, mux_config, cwd).await;
+            AssistantEvent::Error { message } => {
+                if wrote {
+                    println!();
+                }
+                bail!(
+                    "provider error: {}",
+                    message
+                        .error_message
+                        .unwrap_or_else(|| "unknown error".to_owned())
+                );
             }
-            // Client/server mode: ensure the daemon is up, then attach this
-            // terminal as a thin client. Note: the daemon builds sessions
-            // from its own (config-file) settings; per-invocation CLI
-            // WS8.3: per-invocation --model now reaches a running daemon
-            // via the Attach handshake (the daemon applies it to new
-            // sessions for this client's projects).
-            mux::remote::daemon::ensure_running()?;
-            return mux::remote::client::run(cwd, args.project.clone(), args.model.clone()).await;
+            _ => {}
         }
     }
+    bail!("stream ended without a terminal event")
+}
 
-    if tui_mode {
-        let shared = session_builder::SharedResources {
-            cli_args: args.to_session_args(),
-            projects: args.project.clone(),
-            storage,
-            registry,
-            // Standalone TUI builds its session before raw mode: safe to ask.
-            trust_prompt: true,
-            shell: None,
-        };
-        let setup = session_builder::build_session(&cwd, &shared, None).await?;
-        return tui::run(setup, tui::SessionIo::standalone(cwd)).await;
-    }
+fn parse_thinking(level: Option<&str>) -> Result<ThinkingLevel> {
+    let Some(level) = level else {
+        return Ok(ThinkingLevel::Off);
+    };
+    ThinkingLevel::ALL
+        .into_iter()
+        .find(|candidate| candidate.as_str() == level)
+        .with_context(|| {
+            format!("unknown thinking level '{level}' (off|minimal|low|medium|high|xhigh)")
+        })
+}
 
-    oneshot::run(args, storage, registry, cwd).await
+fn read_stdin() -> Result<String> {
+    let mut buf = String::new();
+    std::io::stdin()
+        .read_to_string(&mut buf)
+        .context("failed to read prompt from stdin")?;
+    Ok(buf)
 }
 
 fn auth_path() -> Result<std::path::PathBuf> {

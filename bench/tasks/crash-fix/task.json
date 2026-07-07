@@ -1,5 +1,0 @@
-{
-  "prompt": "`python3 report.py sales.json` crashes. Fix report.py so that orders without an amount count as 0 and the script prints the correct total in the existing `TOTAL <sum with 2 decimals>` format. Do not modify sales.json.",
-  "timeout": 300,
-  "immutable": ["sales.json"]
-}

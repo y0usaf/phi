@@ -34,22 +34,16 @@
           pkgs = mkPkgs system;
           craneLib = crane.mkLib pkgs;
 
-          # crane's default filter strips non-Rust files; we need .py and .json
-          # for include_str!() macros in phi-repl, phi-ai, and phi-builtins,
-          # and .lua for the embedded Lua defaults in phi-builtins. bench/ is
-          # dev tooling full of .py/.json fixtures — keep it out of the build
-          # source so bench edits never invalidate the cargo cache.
+          # crane's default filter strips non-Rust files; we need .json for
+          # include_str!() macros in phi-ai (models.json), and .lua for the
+          # embedded Lua defaults once the Lua host lands.
           src = pkgs.lib.cleanSourceWith {
             src = ./.;
             filter =
               path: type:
-              !(type == "directory" && lib.hasSuffix "/bench" path)
-              && (
-                (craneLib.filterCargoSources path type)
-                || (lib.hasSuffix ".py" path)
-                || (lib.hasSuffix ".json" path)
-                || (lib.hasSuffix ".lua" path)
-              );
+              (craneLib.filterCargoSources path type)
+              || (lib.hasSuffix ".json" path)
+              || (lib.hasSuffix ".lua" path);
           };
 
           # Clear rustup env vars so nix's rustc-wrapper doesn't pick up
@@ -98,11 +92,7 @@
           inherit (c) src cargoArtifacts;
           pname = "phi-test";
           version = "0.1.0";
-          inherit (c.commonEnv) RUSTUP_HOME RUSTUP_TOOLCHAIN;
-          # phi-builtins tests spawn a Python REPL (python3) and run bash()
-          # via subprocess(shell=True → /bin/sh); both are available through
-          # the sandbox's stdenv, but python3 must be added explicitly.
-          nativeBuildInputs = c.commonEnv.nativeBuildInputs ++ [ c.pkgs.python3 ];
+          inherit (c.commonEnv) RUSTUP_HOME RUSTUP_TOOLCHAIN nativeBuildInputs;
           # Test every workspace member, not just phi-app.
           cargoExtraArgs = "--workspace";
         };
@@ -137,22 +127,6 @@
           dontInstall = true;
         };
 
-      # WS1.5 acceptance, CI-enforced: the bare core must build with the
-      # builtin extensions compiled out. `--no-default-features` on phi-app
-      # disables the `builtins` feature chain (phi-app -> phi-session-tui /
-      # phi-mux -> phi-builtins), leaving engine + REPL + plain TUI + mux
-      # shell. Build only — cheap, no tests.
-      mkBareBuild = system:
-        let
-          c = mkCraneLib system;
-        in
-        c.craneLib.cargoBuild {
-          inherit (c) src cargoArtifacts;
-          pname = "phi-app-no-builtins";
-          version = "0.1.0";
-          inherit (c.commonEnv) RUSTUP_HOME RUSTUP_TOOLCHAIN nativeBuildInputs;
-          cargoExtraArgs = "-p phi-app --no-default-features";
-        };
     in
     {
       packages = forAllSystems (
@@ -169,7 +143,6 @@
       checks = forAllSystems (
         system: {
           workspace-test = mkTest system;
-          phi-app-no-builtins = mkBareBuild system;
           arch-fresh = mkArchFresh system;
         }
       );
