@@ -118,18 +118,19 @@ pi's shape, over the Lua bridge:
       becomes the bare core. *Accept: `nix flake check` passes; `nix run --
       --list-models` works; `nix run -- "2+2?"` streams an answer from a
       logged-in provider; workspace is only the keep-set crates.*
-- [ ] **WS1 — Lua host.** `phi-host`: mlua runtime on a message thread,
+- [x] **WS1 — Lua host.** `phi-host`: mlua runtime on a message thread,
       watchdog, `register_*` registries, event bus, discovery
       (`~/.config/phi/`, `.phi/`, embedded), trust gate for project-local
       extensions. *Accept: a `hello.lua` registers a command and an event
       handler; a hung handler is killed by the watchdog; an untrusted
       `.phi/` prompts; `phi-host` has no terminal dependencies (headless
       substrate per the frontend-seam decision).*
-- [ ] **WS2 — The loop as a pack.** Flat tool-call agent loop; native
-      read/edit/bash/grep tools registered through the same `register_tool`
+- [x] **WS2 — The loop as a pack.** Flat tool-call agent loop; native
+      read/edit/bash/write tools registered through the same `register_tool`
       a user would call; one-shot mode drives it. *Accept: `phi "fix the
       failing test"` edits a file and runs bash, end to end, with the loop
-      selected by config rather than hardwired.*
+      selected by config rather than hardwired.* (Live acceptance pending
+      provider credit — see PLAN.md WS2.4.)
 - [ ] **WS3 — First frontend pack (inline TUI).** Chat frontend on `phi-tui`
       (scrollback + bottom live region, forgecode-minimal chrome, no alt
       screen), selected like any other frontend rather than hardwired; chrome
