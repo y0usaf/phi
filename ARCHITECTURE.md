@@ -21,6 +21,7 @@ graph TD
   phi_app["phi-app"] --> phi_agent["phi-agent"]
   phi_app["phi-app"] --> phi_ai["phi-ai"]
   phi_app["phi-app"] --> phi_host["phi-host"]
+  phi_app["phi-app"] --> phi_tui["phi-tui"]
   phi_grid["phi-grid"] --> phi_tui["phi-tui"]
 ```
 
@@ -214,6 +215,13 @@ crate phi
 ├── mod agent: pub(crate)
 │   ├── struct Renderer: pub(self)
 │   └── struct RunSpec: pub
+├── mod chat: pub(crate)
+│   ├── enum Block: pub(self)
+│   ├── struct Chat: pub(self)
+│   ├── struct ChatSpec: pub
+│   ├── struct ChatState: pub(self)
+│   ├── enum Flow: pub(self)
+│   └── enum UiMsg: pub(self)
 ├── mod cli: pub(crate)
 │   └── struct Args: pub
 ├── mod extensions: pub(crate)

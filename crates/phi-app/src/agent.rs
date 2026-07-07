@@ -164,7 +164,7 @@ impl Renderer {
 
 /// One-line argument summary for a `●` tool line: the command or path when
 /// the tool has one, compact JSON otherwise, capped for the terminal.
-fn summarize(arguments: &serde_json::Value) -> String {
+pub(crate) fn summarize(arguments: &serde_json::Value) -> String {
     let text = ["command", "path"]
         .iter()
         .find_map(|k| arguments.get(k).and_then(|v| v.as_str()).map(str::to_owned))

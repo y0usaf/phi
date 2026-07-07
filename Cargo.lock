@@ -1244,6 +1244,7 @@ dependencies = [
  "phi-agent",
  "phi-ai",
  "phi-host",
+ "phi-tui",
  "serde",
  "serde_json",
  "tokio",

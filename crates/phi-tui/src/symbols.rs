@@ -16,6 +16,8 @@ pub const FOCUS_MARKER: &str = "▌";
 pub const GUTTER_BAR: &str = "▌";
 /// List bullet / primary-role marker.
 pub const BULLET: &str = "•";
+/// Input-editor prompt marker.
+pub const PROMPT: &str = "❯";
 /// Secondary-role / inactive marker.
 pub const DOT: &str = "·";
 /// Success indicator.

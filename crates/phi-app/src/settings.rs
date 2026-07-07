@@ -11,6 +11,9 @@ pub struct Settings {
     pub loop_name: Option<String>,
     /// Default thinking level (off|minimal|low|medium|high|xhigh).
     pub thinking: Option<String>,
+    /// Interactive frontend key; like the loop, a frontend is a pack
+    /// selected by name (DESIGN.md WS3). Default: "inline".
+    pub frontend: Option<String>,
 }
 
 pub fn load() -> Settings {

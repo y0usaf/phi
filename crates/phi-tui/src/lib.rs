@@ -44,7 +44,8 @@ pub use spinner::{
     thinking_expression,
 };
 pub use symbols::{
-    ARROW, ARROW_LEFT, BULLET, CHECK, CROSS, DOT, ELLIPSIS, FOCUS_MARKER, GUTTER_BAR, RULE, SLASH,
+    ARROW, ARROW_LEFT, BULLET, CHECK, CROSS, DOT, ELLIPSIS, FOCUS_MARKER, GUTTER_BAR, PROMPT, RULE,
+    SLASH,
 };
 pub use terminal::{
     LiveCursor, RawModeGuard, Terminal, drain_input, emergency_restore, escape_len, fill_bg,

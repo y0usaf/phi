@@ -58,14 +58,18 @@ past ~150 lines, it's absorbing what commits should say.
 
 ## WS3 — First frontend pack (inline TUI)
 
-- [ ] **3.1 Chat frame.** Interactive mode (TTY default) on `phi-tui`'s
-      scrollback + live-region `Terminal`: editor at the bottom (`❯`
-      prompt, no borders), streamed assistant markdown flushed to
-      scrollback per block, braille spinner + dim elapsed while a turn
-      runs, one dim status line (model · tokens · cost). Esc interrupts;
-      Enter mid-run steers; Ctrl+C clears/quits; Ctrl+D quits.
-      *Accept: DESIGN.md WS3 criterion — interactive session with
-      streaming, editor.*
+- [x] **3.1 Chat frame.** Landed as `phi-app/src/chat.rs` on `phi-tui`'s
+      scrollback + live-region `Terminal`: `❯` editor (no borders),
+      markdown committed to scrollback per block with a live streaming
+      preview, braille spinner + dim elapsed, one dim status line
+      (model · tokens · cost), `●` tool/error lines. Esc interrupts;
+      Enter mid-run steers (leftover steering restarts a run); Ctrl+C
+      clears/quits; Ctrl+D quits; resize blanks + replays the transcript.
+      Frontend is a pack picked by `settings.json` `frontend` (only
+      "inline" exists). 12 state-machine tests + pty smoke test (raw-mode
+      enter/exit, editor + status render, clean quit + usage line).
+      *Pending live acceptance (streamed turn with a real model): still
+      blocked on provider credit, same as WS2.4.*
 - [ ] **3.2 Transcript vocabulary (forgecode-minimal).** Tool call = one
       line `● name summary` (dim summary); output hidden unless error
       (`● ERROR: …` red) or verbose; edit/write show a compact diff stat.

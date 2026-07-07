@@ -13,6 +13,7 @@ use crate::cli::Args;
 use crate::format::format_model_pricing;
 
 mod agent;
+mod chat;
 mod cli;
 mod extensions;
 mod format;
@@ -46,7 +47,7 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    let registry = Registry::builtin();
+    let registry = Arc::new(Registry::builtin());
 
     if let Some(pattern) = &args.list_models {
         for model in registry.supported_models() {
@@ -62,15 +63,18 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    // No prompt on a terminal means an interactive session; everything
+    // else is the one-shot path (pi's print mode when piped).
     let prompt = match args.prompt_text() {
-        Some(text) if text == "-" => read_stdin()?,
-        Some(text) => text,
-        None if !std::io::stdin().is_terminal() => read_stdin()?,
-        None => {
-            bail!("no prompt given (the interactive frontend is not part of the bare core yet)")
-        }
+        Some(text) if text == "-" => Some(read_stdin()?),
+        Some(text) => Some(text),
+        None if !std::io::stdin().is_terminal() => Some(read_stdin()?),
+        None if std::io::stdout().is_terminal() => None,
+        None => bail!("no prompt given and stdout is not a terminal"),
     };
-    if prompt.trim().is_empty() {
+    if let Some(prompt) = &prompt
+        && prompt.trim().is_empty()
+    {
         bail!("empty prompt");
     }
 
@@ -105,14 +109,21 @@ async fn main() -> Result<()> {
         })?;
     let thinking = parse_thinking(args.thinking.as_deref().or(settings.thinking.as_deref()))?;
 
-    // The loop is a pack selected by config, not hardwired (DESIGN.md WS2).
+    // The loop and the frontend are packs selected by config, not
+    // hardwired (DESIGN.md WS2/WS3).
     let loop_name = settings.loop_name.as_deref().unwrap_or("flat");
     if loop_name != "flat" {
         bail!("unknown loop '{loop_name}' in settings.json (available: flat)");
     }
+    let frontend = settings.frontend.as_deref().unwrap_or("inline");
+    if prompt.is_none() && frontend != "inline" {
+        bail!("unknown frontend '{frontend}' in settings.json (available: inline)");
+    }
 
-    // First Ctrl+C cancels the run (stream + tools wind down, transcript
-    // stays well-formed); a second one force-quits.
+    // First SIGINT cancels the run (stream + tools wind down, transcript
+    // stays well-formed); a second one force-quits. In the interactive
+    // frontend raw mode turns Ctrl+C into a key event, so this only fires
+    // for an external signal there.
     let cancel = CancellationToken::new();
     tokio::spawn({
         let cancel = cancel.clone();
@@ -121,6 +132,7 @@ async fn main() -> Result<()> {
             eprintln!("\nphi: interrupted (Ctrl+C again to force quit)");
             cancel.cancel();
             let _ = tokio::signal::ctrl_c().await;
+            phi_tui::emergency_restore();
             std::process::exit(130);
         }
     });
@@ -142,17 +154,33 @@ async fn main() -> Result<()> {
         }),
     );
 
-    agent::run(agent::RunSpec {
-        host,
-        registry: &registry,
-        model,
-        auth,
-        thinking,
-        system: args.system.clone(),
-        prompt,
-        cancel,
-    })
-    .await
+    match prompt {
+        Some(prompt) => {
+            agent::run(agent::RunSpec {
+                host,
+                registry: &registry,
+                model,
+                auth,
+                thinking,
+                system: args.system.clone(),
+                prompt,
+                cancel,
+            })
+            .await
+        }
+        None => {
+            chat::run(chat::ChatSpec {
+                host,
+                registry,
+                model,
+                auth,
+                thinking,
+                system: args.system.clone(),
+                cancel,
+            })
+            .await
+        }
+    }
 }
 
 fn parse_thinking(level: Option<&str>) -> Result<ThinkingLevel> {
