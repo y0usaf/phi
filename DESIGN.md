@@ -88,8 +88,8 @@ pi's shape, over the Lua bridge:
 - **Events**: one flat vocabulary (pi's ~23: session/turn/message/tool
   lifecycle, `before_provider_request`, input, trust…), subscribed via
   `on(name, fn)`.
-- **Watchdog**: every host→Lua dispatch is bounded (number set when the
-  host lands; record it here).
+- **Watchdog**: every host→Lua dispatch is bounded (default 5000 ms —
+  `phi_host::DEFAULT_DISPATCH_TIMEOUT_MS`).
 - **Frontends**: the substrate never renders; a frontend subscribes to the
   same event stream and feeds input back as actions. Swapping inline TUI →
   alt-screen → GUI is a pack choice, not a core change.

@@ -13,10 +13,14 @@ Internal (workspace-local) dependencies only. `A --> B` means A depends on B.
 
 ```mermaid
 graph TD
+  phi_agent["phi-agent"] --> phi_ai["phi-ai"]
+  phi_agent["phi-agent"] --> phi_host["phi-host"]
   phi_ai["phi-ai"] --> phi_ai_auth["phi-ai-auth"]
   phi_ai["phi-ai"] --> phi_ai_types["phi-ai-types"]
   phi_ai_auth["phi-ai-auth"] --> phi_ai_types["phi-ai-types"]
+  phi_app["phi-app"] --> phi_agent["phi-agent"]
   phi_app["phi-app"] --> phi_ai["phi-ai"]
+  phi_app["phi-app"] --> phi_host["phi-host"]
   phi_grid["phi-grid"] --> phi_tui["phi-tui"]
 ```
 
@@ -24,17 +28,39 @@ graph TD
 
 | Crate | Description |
 |-------|-------------|
+| `phi-agent` | _no description in Cargo.toml_ |
 | `phi-ai` | _no description in Cargo.toml_ |
 | `phi-ai-auth` | _no description in Cargo.toml_ |
 | `phi-ai-types` | _no description in Cargo.toml_ |
 | `phi-app` | _no description in Cargo.toml_ |
 | `phi-grid` | _no description in Cargo.toml_ |
+| `phi-host` | _no description in Cargo.toml_ |
 | `phi-tui` | _no description in Cargo.toml_ |
 
 ## Module structure
 
 Per-crate module/item trees (`cargo modules structure`). Functions are
 omitted; types, traits, and module boundaries are the architecture.
+
+### `phi-agent`
+
+```
+
+crate phi_agent
+├── enum AgentEvent: pub
+├── struct RunOutcome: pub
+├── type SteeringQueue: pub
+├── type StreamFn: pub
+├── mod prompt: pub
+├── mod tools: pub
+│   ├── mod bash: pub(self)
+│   │   └── enum Ending: pub(self)
+│   ├── mod edit: pub(self)
+│   ├── mod read: pub(self)
+│   └── mod write: pub(self)
+└── mod truncate: pub(crate)
+    └── struct Truncation: pub
+```
 
 ### `phi-ai`
 
@@ -185,9 +211,15 @@ crate phi_ai_types
 ```
 
 crate phi
+├── mod agent: pub(crate)
+│   ├── struct Renderer: pub(self)
+│   └── struct RunSpec: pub
 ├── mod cli: pub(crate)
 │   └── struct Args: pub
-└── mod format: pub(crate)
+├── mod extensions: pub(crate)
+├── mod format: pub(crate)
+└── mod settings: pub(crate)
+    └── struct Settings: pub
 ```
 
 ### `phi-grid`
@@ -224,6 +256,30 @@ crate phi_grid
 │   └── struct TerminalSelection: pub
 └── mod theme: pub
     └── struct GeneratedTheme: pub
+```
+
+### `phi-host`
+
+```
+
+crate phi_host
+├── struct CommandInfo: pub
+├── struct Dispatch: pub
+├── struct Host: pub
+├── struct HostConfig: pub
+├── type NativeToolFn: pub
+├── struct ToolInfo: pub
+├── struct ToolOutput: pub
+├── mod convert: pub(crate)
+├── mod discovery: pub(crate)
+├── mod globals: pub(crate)
+│   └── struct Meta: pub(crate)
+├── mod thread: pub(crate)
+│   ├── enum LuaMsg: pub(crate)
+│   └── struct RawOutcome: pub
+└── mod trust: pub(crate)
+    ├── enum TrustDecision: pub
+    └── struct TrustStore: pub
 ```
 
 ### `phi-tui`

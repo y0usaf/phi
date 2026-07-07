@@ -2,21 +2,21 @@
 //! streamed completion with zero extensions loaded. Everything else arrives
 //! as packs on the Lua host.
 
-use std::io::{IsTerminal, Read as _, Write as _};
+use std::io::{IsTerminal, Read as _};
 use std::sync::Arc;
 
 use anyhow::{Context as _, Result, bail};
-use phi_ai::{
-    AssistantEvent, AuthStorage, Context, LoginMethod, Message, OAuthProviderId, PrintCallbacks,
-    Registry, StreamOptions, ThinkingLevel, UserMessage,
-};
+use phi_ai::{AuthStorage, LoginMethod, OAuthProviderId, PrintCallbacks, Registry, ThinkingLevel};
 use tokio_util::sync::CancellationToken;
 
 use crate::cli::Args;
-use crate::format::{format_model_pricing, format_usage_summary};
+use crate::format::format_model_pricing;
 
+mod agent;
 mod cli;
+mod extensions;
 mod format;
+mod settings;
 
 const DEFAULT_MODEL: &str = "claude-opus-4-7";
 
@@ -74,16 +74,13 @@ async fn main() -> Result<()> {
         bail!("empty prompt");
     }
 
-    oneshot(&args, &storage, &registry, prompt).await
-}
+    let settings = settings::load();
 
-async fn oneshot(
-    args: &Args,
-    storage: &AuthStorage,
-    registry: &Registry,
-    prompt: String,
-) -> Result<()> {
-    let query = args.model.as_deref().unwrap_or(DEFAULT_MODEL);
+    let query = args
+        .model
+        .as_deref()
+        .or(settings.model.as_deref())
+        .unwrap_or(DEFAULT_MODEL);
     let model = registry
         .find(query)
         .with_context(|| format!("unknown model '{query}' (see --list-models)"))?
@@ -106,48 +103,56 @@ async fn oneshot(
                 model.provider
             )
         })?;
+    let thinking = parse_thinking(args.thinking.as_deref().or(settings.thinking.as_deref()))?;
 
-    let mut opts = StreamOptions::new(auth);
-    opts.thinking = parse_thinking(args.thinking.as_deref())?;
-
-    let ctx = Context {
-        system_prompt: args.system.clone(),
-        messages: vec![Message::User(UserMessage::new(prompt))],
-        ..Context::default()
-    };
-
-    let mut stream = registry.stream(&model, &ctx, opts);
-    let mut stdout = std::io::stdout();
-    let mut wrote = false;
-    while let Some(event) = stream.next().await {
-        match event {
-            AssistantEvent::TextDelta { delta, .. } => {
-                stdout.write_all(delta.as_bytes())?;
-                stdout.flush()?;
-                wrote = true;
-            }
-            AssistantEvent::Done { message } => {
-                if wrote && !message.text().ends_with('\n') {
-                    println!();
-                }
-                eprintln!("{}", format_usage_summary(&message.usage));
-                return Ok(());
-            }
-            AssistantEvent::Error { message } => {
-                if wrote {
-                    println!();
-                }
-                bail!(
-                    "provider error: {}",
-                    message
-                        .error_message
-                        .unwrap_or_else(|| "unknown error".to_owned())
-                );
-            }
-            _ => {}
-        }
+    // The loop is a pack selected by config, not hardwired (DESIGN.md WS2).
+    let loop_name = settings.loop_name.as_deref().unwrap_or("flat");
+    if loop_name != "flat" {
+        bail!("unknown loop '{loop_name}' in settings.json (available: flat)");
     }
-    bail!("stream ended without a terminal event")
+
+    // First Ctrl+C cancels the run (stream + tools wind down, transcript
+    // stays well-formed); a second one force-quits.
+    let cancel = CancellationToken::new();
+    tokio::spawn({
+        let cancel = cancel.clone();
+        async move {
+            let _ = tokio::signal::ctrl_c().await;
+            eprintln!("\nphi: interrupted (Ctrl+C again to force quit)");
+            cancel.cancel();
+            let _ = tokio::signal::ctrl_c().await;
+            std::process::exit(130);
+        }
+    });
+
+    // Extension host: native tools go in through the same public registry
+    // extensions use, and before discovery so an extension colliding with a
+    // builtin fails as a load error on stderr, not an app abort. The login
+    // and list-models paths above stay extension-free (bare core).
+    let host = phi_host::Host::new()?;
+    phi_agent::tools::register_all(&host, cancel.clone()).context("registering native tools")?;
+    extensions::load_discovered(&host)?;
+    let host = Arc::new(host);
+    extensions::announce(
+        &host,
+        "session_start",
+        serde_json::json!({
+            "reason": "startup",
+            "cwd": std::env::current_dir()?.display().to_string(),
+        }),
+    );
+
+    agent::run(agent::RunSpec {
+        host,
+        registry: &registry,
+        model,
+        auth,
+        thinking,
+        system: args.system.clone(),
+        prompt,
+        cancel,
+    })
+    .await
 }
 
 fn parse_thinking(level: Option<&str>) -> Result<ThinkingLevel> {
