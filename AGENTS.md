@@ -56,6 +56,10 @@ This project is built with Nix flakes (`flake.nix`) using crane. **Always compil
 they don't produce build artifacts. For **compilation** and **tests**, use
 the Nix commands.
 
+**Gotcha:** the flake only sees git-tracked files. `git add` any newly
+created file before `nix build`, or the build fails with "file not found
+for module".
+
 ## Code Conventions
 
 - **Rust edition**: 2024
