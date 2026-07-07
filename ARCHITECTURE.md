@@ -221,6 +221,7 @@ crate phi
 │   ├── struct ChatSpec: pub
 │   ├── struct ChatState: pub(self)
 │   ├── enum Flow: pub(self)
+│   ├── struct NoticeCallbacks: pub(self)
 │   └── enum UiMsg: pub(self)
 ├── mod cli: pub(crate)
 │   └── struct Args: pub

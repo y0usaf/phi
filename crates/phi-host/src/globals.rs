@@ -42,6 +42,8 @@ pub(crate) fn current_source(lua: &mlua::Lua) -> String {
 /// - `phi.register_command{ name, handler, description? }`
 /// - `phi.register_tool{ name, description, parameters?, handler }`
 /// - `phi.on(event, fn)` — open string vocabulary, no closed enum.
+/// - `phi.commands()` — snapshot of registered commands
+///   (`{ name, description?, source }` each), registration order.
 pub(crate) fn install(lua: &mlua::Lua, meta: Arc<Mutex<Meta>>) -> mlua::Result<()> {
     let registry = lua.create_table()?;
     registry.set("commands", lua.create_table()?)?;
@@ -183,6 +185,23 @@ pub(crate) fn install(lua: &mlua::Lua, meta: Arc<Mutex<Meta>>) -> mlua::Result<(
         })?
     };
     phi.set("on", on)?;
+
+    let commands = {
+        let meta = Arc::clone(&meta);
+        lua.create_function(move |lua, ()| {
+            let meta = meta.lock().expect("meta lock");
+            let list = lua.create_table()?;
+            for (i, cmd) in meta.commands.iter().enumerate() {
+                let entry = lua.create_table()?;
+                entry.set("name", cmd.name.as_str())?;
+                entry.set("description", cmd.description.as_deref())?;
+                entry.set("source", cmd.source.as_str())?;
+                list.set(i + 1, entry)?;
+            }
+            Ok(list)
+        })?
+    };
+    phi.set("commands", commands)?;
 
     lua.globals().set("phi", phi)?;
     Ok(())

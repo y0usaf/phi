@@ -15,8 +15,8 @@ use std::time::{Duration, Instant};
 use anyhow::{Context as _, Result};
 use phi_agent::{AgentEvent, RunOutcome, SteeringQueue, run_flat};
 use phi_ai::{
-    AssistantEvent, Auth, Context, Message, Model, Registry, StopReason, StreamOptions,
-    ThinkingLevel, Usage, UserMessage,
+    AssistantEvent, Auth, AuthStorage, Context, LoginCallbacks, LoginMethod, Message, Model,
+    OAuthProviderId, Registry, StopReason, StreamOptions, ThinkingLevel, Usage, UserMessage,
 };
 use phi_host::Host;
 use phi_tui::crossterm::event::{Event, KeyCode, KeyEventKind};
@@ -24,6 +24,7 @@ use phi_tui::{
     Editor, EditorAction, LiveCursor, MarkdownPalette, PROMPT, RawModeGuard, SPINNER_FRAME_MS,
     Terminal, render_markdown, spinner_frame_at, visible_width,
 };
+use serde_json::Value;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -35,6 +36,9 @@ pub struct ChatSpec {
     pub registry: Arc<Registry>,
     pub model: Model,
     pub auth: Auth,
+    /// Credential store, for `/login`, `/logout`, and the auth re-resolve a
+    /// `/model` switch needs.
+    pub storage: Arc<AuthStorage>,
     pub thinking: ThinkingLevel,
     /// Replaces the prompt head; project context + date/cwd tail stays.
     pub system: Option<String>,
@@ -105,6 +109,26 @@ enum UiMsg {
     Agent(AgentEvent),
     /// The run task returns the context it owned for the run's duration.
     RunDone(Box<Context>, Result<RunOutcome>),
+    /// A slash command's result, back from the host's VM thread.
+    Command {
+        name: String,
+        result: Result<Option<Value>>,
+    },
+    /// A dim `●` note from an async command task (login progress etc.).
+    Notice(String),
+    /// An async command task failed; rendered as an error line.
+    CommandFailed(String),
+    /// `/model` resolved: model and its auth swap together.
+    ModelChanged {
+        model: Model,
+        auth: Auth,
+    },
+    /// Fresh credentials for the current model after a `/login`.
+    AuthRefreshed(Auth),
+    LoginDone {
+        provider: OAuthProviderId,
+        result: Result<(), String>,
+    },
 }
 
 /// Blocking stdin reader on its own thread; raw-mode key events don't mix
@@ -129,6 +153,8 @@ struct Chat {
     /// for the run's duration and returns it via `RunDone`.
     ctx: Option<Box<Context>>,
     run_cancel: Option<CancellationToken>,
+    /// An in-flight `/login` flow; Esc cancels it like a run.
+    login_cancel: Option<CancellationToken>,
 }
 
 impl Chat {
@@ -142,6 +168,7 @@ impl Chat {
             steering: Arc::default(),
             ctx: Some(Box::default()),
             run_cancel: None,
+            login_cancel: None,
         }
     }
 
@@ -150,6 +177,20 @@ impl Chat {
             UiMsg::Input(event) => return self.handle_input(event, term),
             UiMsg::Agent(event) => self.state.on_agent_event(event),
             UiMsg::RunDone(ctx, outcome) => self.on_run_done(ctx, &outcome),
+            UiMsg::Command { name, result } => return self.on_command_done(&name, result, term),
+            UiMsg::Notice(text) => self.state.push_notice(&text),
+            UiMsg::CommandFailed(text) => {
+                self.state.push_line(transcript::error_line(&text, true));
+            }
+            UiMsg::ModelChanged { model, auth } => {
+                self.state.model_name = model.id.clone();
+                self.state
+                    .push_notice(&format!("model set to {}/{}", model.provider, model.id));
+                self.spec.model = model;
+                self.spec.auth = auth;
+            }
+            UiMsg::AuthRefreshed(auth) => self.spec.auth = auth,
+            UiMsg::LoginDone { provider, result } => self.on_login_done(provider, &result),
         }
         Ok(Flow::Continue)
     }
@@ -159,6 +200,9 @@ impl Chat {
             Event::Key(key) => {
                 if key.kind != KeyEventKind::Release && key.code == KeyCode::Esc {
                     if let Some(cancel) = &self.run_cancel {
+                        cancel.cancel();
+                    }
+                    if let Some(cancel) = &self.login_cancel {
                         cancel.cancel();
                     }
                     return Ok(Flow::Continue);
@@ -192,9 +236,16 @@ impl Chat {
         Ok(Flow::Continue)
     }
 
-    /// Enter: start a run when idle; queue steering when one is active
-    /// (delivered at the next turn boundary, pi-style).
+    /// Enter: slash commands dispatch immediately (even mid-run — they act
+    /// on the session, not the transcript); otherwise start a run when
+    /// idle, or queue steering when one is active (delivered at the next
+    /// turn boundary, pi-style).
     fn submit(&mut self, text: String) {
+        if let Some((name, args)) = parse_slash(text.trim()) {
+            self.state.push_user(text.trim());
+            self.dispatch_command(name, args);
+            return;
+        }
         self.state.push_user(&text);
         if self.run_cancel.is_some() {
             self.steering
@@ -279,6 +330,267 @@ impl Chat {
             }
             self.start_run(ctx);
         }
+    }
+
+    /// Invoke on the host off the UI loop — a Lua handler may burn its
+    /// whole watchdog window, and the spinner should keep moving.
+    fn dispatch_command(&mut self, name: String, args: String) {
+        let host = Arc::clone(&self.spec.host);
+        let tx = self.tx.clone();
+        tokio::task::spawn_blocking(move || {
+            let result = host.invoke_command(&name, &args);
+            let _ = tx.send(UiMsg::Command { name, result });
+        });
+    }
+
+    /// Render a command's result: `{ message }` prints as a `●` line;
+    /// `{ action }` dispatches on the string key (PLAN.md WS3.3 — an open
+    /// vocabulary, never a closed enum). Both may appear together.
+    fn on_command_done(
+        &mut self,
+        name: &str,
+        result: Result<Option<Value>>,
+        term: &mut Terminal<Stdout>,
+    ) -> Result<Flow> {
+        let value = match result {
+            Ok(Some(value)) => value,
+            Ok(None) => return Ok(Flow::Continue),
+            Err(e) => {
+                self.state
+                    .push_line(transcript::error_line(&format!("{e:#}"), true));
+                return Ok(Flow::Continue);
+            }
+        };
+        if let Some(message) = value.get("message").and_then(Value::as_str) {
+            self.state.push_notice(message);
+        }
+        if let Some(action) = value.get("action").and_then(Value::as_str) {
+            return self.dispatch_action(name, action, &value, term);
+        }
+        Ok(Flow::Continue)
+    }
+
+    fn dispatch_action(
+        &mut self,
+        command: &str,
+        action: &str,
+        value: &Value,
+        term: &mut Terminal<Stdout>,
+    ) -> Result<Flow> {
+        let str_arg = |key: &str| value.get(key).and_then(Value::as_str).unwrap_or("");
+        match action {
+            "quit" => return Ok(Flow::Quit),
+            "clear" => {
+                if self.run_cancel.is_some() {
+                    self.state.push_line(transcript::error_line(
+                        "can't clear while a run is active (Esc to interrupt it)",
+                        true,
+                    ));
+                    return Ok(Flow::Continue);
+                }
+                if let Some(ctx) = self.ctx.as_mut() {
+                    ctx.messages.clear();
+                }
+                self.state.clear_transcript();
+                term.clear_viewport()?;
+            }
+            "set_model" => self.set_model(str_arg("query")),
+            "login" => self.login(str_arg("args")),
+            "logout" => self.logout(str_arg("args")),
+            other => self.state.push_line(transcript::error_line(
+                &format!("/{command}: this frontend has no handler for action '{other}'"),
+                true,
+            )),
+        }
+        Ok(Flow::Continue)
+    }
+
+    /// `/model` — show the current model, or switch. The switch lands via
+    /// `ModelChanged` once the new provider's auth resolves (resolution may
+    /// refresh a token, so it runs off the UI loop); until then the old
+    /// model stays active.
+    fn set_model(&mut self, query: &str) {
+        let query = query.trim();
+        if query.is_empty() {
+            self.state.push_notice(&format!(
+                "model: {}/{}\nswitch: /model <id>   (ids: phi --list-models)",
+                self.spec.model.provider, self.spec.model.id
+            ));
+            return;
+        }
+        let Some(model) = self.spec.registry.find(query) else {
+            self.state.push_line(transcript::error_line(
+                &format!("unknown model '{query}' (see phi --list-models)"),
+                true,
+            ));
+            return;
+        };
+        if !self.spec.registry.is_supported(model) {
+            self.state.push_line(transcript::error_line(
+                &format!(
+                    "no provider implementation for '{}/{}'",
+                    model.provider, model.id
+                ),
+                true,
+            ));
+            return;
+        }
+        let model = model.clone();
+        let storage = Arc::clone(&self.spec.storage);
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            let msg = match storage.resolve(&model.provider).await {
+                Ok(Some(auth)) => UiMsg::ModelChanged { model, auth },
+                Ok(None) => UiMsg::CommandFailed(format!(
+                    "no credentials for provider '{}' (try /login {})",
+                    model.provider, model.provider
+                )),
+                Err(e) => UiMsg::CommandFailed(format!(
+                    "auth resolution failed for '{}': {e}",
+                    model.provider
+                )),
+            };
+            let _ = tx.send(msg);
+        });
+    }
+
+    /// `/login` — the same OAuth flow as `--login`, with its prompts
+    /// rendered as `●` notices instead of stdout prints (raw mode stays
+    /// on; the browser callback server completes the flow).
+    fn login(&mut self, args: &str) {
+        if self.login_cancel.is_some() {
+            self.state.push_line(transcript::error_line(
+                "a login is already in progress (Esc to cancel it)",
+                true,
+            ));
+            return;
+        }
+        let mut words = args.split_whitespace();
+        let provider = match words.next() {
+            None => {
+                self.state
+                    .push_notice("usage: /login anthropic|openai [device]");
+                return;
+            }
+            Some(word) => match OAuthProviderId::parse(word) {
+                Some(provider) => provider,
+                None => {
+                    self.state.push_line(transcript::error_line(
+                        &format!("unknown provider '{word}' (anthropic | openai)"),
+                        true,
+                    ));
+                    return;
+                }
+            },
+        };
+        let method = match words.next() {
+            None => LoginMethod::Browser,
+            Some("device") => LoginMethod::DeviceCode,
+            Some(other) => {
+                self.state.push_line(transcript::error_line(
+                    &format!("unknown login method '{other}' (only: device)"),
+                    true,
+                ));
+                return;
+            }
+        };
+        let cancel = self.spec.cancel.child_token();
+        self.login_cancel = Some(cancel.clone());
+        let storage = Arc::clone(&self.spec.storage);
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            let callbacks = NoticeCallbacks { tx: tx.clone() };
+            let result = storage
+                .login(provider, method, &callbacks, &cancel)
+                .await
+                .map(|_| ())
+                .map_err(|e| e.to_string());
+            let _ = tx.send(UiMsg::LoginDone { provider, result });
+        });
+    }
+
+    fn on_login_done(&mut self, provider: OAuthProviderId, result: &Result<(), String>) {
+        self.login_cancel = None;
+        match result {
+            Ok(()) => {
+                self.state
+                    .push_notice(&format!("logged in to {}", provider.storage_key()));
+                // Fresh credentials for the active model take effect on the
+                // next run; a failure here just leaves the old auth in place.
+                if self.spec.model.provider == provider.storage_key() {
+                    let storage = Arc::clone(&self.spec.storage);
+                    let provider = self.spec.model.provider.clone();
+                    let tx = self.tx.clone();
+                    tokio::spawn(async move {
+                        if let Ok(Some(auth)) = storage.resolve(&provider).await {
+                            let _ = tx.send(UiMsg::AuthRefreshed(auth));
+                        }
+                    });
+                }
+            }
+            Err(e) => self
+                .state
+                .push_line(transcript::error_line(&format!("login failed: {e}"), true)),
+        }
+    }
+
+    fn logout(&mut self, args: &str) {
+        let Some(provider) = OAuthProviderId::parse(args.trim()) else {
+            self.state.push_notice("usage: /logout anthropic|openai");
+            return;
+        };
+        match self.spec.storage.logout(provider.storage_key()) {
+            Ok(()) => self
+                .state
+                .push_notice(&format!("logged out of {}", provider.storage_key())),
+            Err(e) => self
+                .state
+                .push_line(transcript::error_line(&format!("logout failed: {e}"), true)),
+        }
+    }
+}
+
+/// `/name [args]` when the first token is exactly `/` + one word of
+/// `[A-Za-z0-9_-]`. Anything else — `/etc/hosts`, a lone `/`, `//` — is a
+/// regular prompt for the model.
+fn parse_slash(text: &str) -> Option<(String, String)> {
+    let rest = text.strip_prefix('/')?;
+    let (name, args) = match rest.split_once(char::is_whitespace) {
+        Some((name, args)) => (name, args),
+        None => (rest, ""),
+    };
+    if name.is_empty()
+        || !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return None;
+    }
+    Some((name.to_owned(), args.trim().to_owned()))
+}
+
+/// Login-flow prompts as `●` notices in the transcript (the chat frontend's
+/// stand-in for `--login`'s stdout prints).
+struct NoticeCallbacks {
+    tx: mpsc::UnboundedSender<UiMsg>,
+}
+
+impl LoginCallbacks for NoticeCallbacks {
+    fn on_auth_url(&self, url: &str, instructions: &str) {
+        let _ = self
+            .tx
+            .send(UiMsg::Notice(format!("{instructions}\n{url}")));
+    }
+
+    fn on_device_code(&self, user_code: &str, verification_uri: &str, expires_in: Duration) {
+        let _ = self.tx.send(UiMsg::Notice(format!(
+            "visit {verification_uri} and enter code {user_code} (expires in {} minutes)",
+            expires_in.as_secs() / 60
+        )));
+    }
+
+    fn on_progress(&self, message: &str) {
+        let _ = self.tx.send(UiMsg::Notice(message.to_owned()));
     }
 }
 
@@ -504,6 +816,21 @@ impl ChatState {
         }
         self.push_block(Block::Line(line));
     }
+
+    /// A (possibly multi-line) command reply as one dim `●` block.
+    fn push_notice(&mut self, text: &str) {
+        for line in transcript::notice_lines(text, true) {
+            self.push_line(line);
+        }
+    }
+
+    /// `/clear`: drop the committed transcript and anything pending; the
+    /// caller blanks the viewport (scrollback already written to the
+    /// terminal stays in its history, as with a resize replay).
+    fn clear_transcript(&mut self) {
+        self.transcript.clear();
+        self.pending.clear();
+    }
 }
 
 fn dim(s: &str) -> String {
@@ -688,6 +1015,47 @@ mod tests {
         let replay = s.take_pending();
         assert!(replay.len() > first.len()); // narrower width → more rows
         assert_eq!(replay[0], "❯ hi");
+    }
+
+    #[test]
+    fn slash_parses_only_single_token_commands() {
+        assert_eq!(parse_slash("/quit"), Some(("quit".into(), "".into())));
+        assert_eq!(
+            parse_slash("/model claude-opus-4-7"),
+            Some(("model".into(), "claude-opus-4-7".into()))
+        );
+        assert_eq!(
+            parse_slash("/login openai device"),
+            Some(("login".into(), "openai device".into()))
+        );
+        // Paths, bare slashes, and plain prose go to the model.
+        assert_eq!(parse_slash("/etc/hosts what is this"), None);
+        assert_eq!(parse_slash("/"), None);
+        assert_eq!(parse_slash("// a comment"), None);
+        assert_eq!(parse_slash("hello"), None);
+    }
+
+    #[test]
+    fn notice_block_groups_like_tool_lines() {
+        let mut s = state();
+        s.push_user("/help");
+        s.push_notice("commands:\n/quit — quit phi");
+        let plain: Vec<String> = s.take_pending().iter().map(|l| strip_ansi(l)).collect();
+        assert_eq!(
+            plain,
+            vec!["❯ /help", "", "● commands:", "  /quit — quit phi"]
+        );
+    }
+
+    #[test]
+    fn clear_drops_transcript_and_pending() {
+        let mut s = state();
+        s.push_user("hi");
+        s.push_markdown("answer");
+        s.clear_transcript();
+        assert!(s.take_pending().is_empty());
+        s.reflow(40); // replays the transcript — which must now be empty
+        assert!(s.take_pending().is_empty());
     }
 
     #[test]

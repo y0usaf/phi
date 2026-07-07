@@ -71,6 +71,27 @@ pub(crate) fn output_block(content: &str, color: bool) -> Vec<String> {
     out
 }
 
+/// A slash-command reply (or login progress note) under its `❯` echo:
+/// `● first line`, continuation lines indented to align, all dim.
+pub(crate) fn notice_lines(text: &str, color: bool) -> Vec<String> {
+    let mut out: Vec<String> = text
+        .lines()
+        .enumerate()
+        .map(|(i, line)| {
+            let line = line.trim_end();
+            if i == 0 {
+                dim(&format!("● {line}"), color)
+            } else {
+                dim(&format!("  {line}"), color)
+            }
+        })
+        .collect();
+    if out.is_empty() {
+        out.push(dim("●", color));
+    }
+    out
+}
+
 pub(crate) fn interrupted_line(color: bool) -> String {
     dim("● interrupted", color)
 }
@@ -141,6 +162,20 @@ fn summarize(arguments: &Value) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn notice_lines_golden() {
+        assert_eq!(
+            notice_lines("model set to anthropic/claude-opus-4-7", false),
+            vec!["● model set to anthropic/claude-opus-4-7"]
+        );
+        assert_eq!(
+            notice_lines("commands:\n/help — list available commands", false),
+            vec!["● commands:", "  /help — list available commands"]
+        );
+        assert_eq!(notice_lines("hi", true), vec!["\x1b[2m● hi\x1b[0m"]);
+        assert_eq!(notice_lines("", false), vec!["●"]);
+    }
 
     #[test]
     fn tool_line_golden_with_color() {

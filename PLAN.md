@@ -78,12 +78,21 @@ past ~150 lines, it's absorbing what commits should say.
       (head-capped at 10 lines), interrupted/retry lines. Two SGR
       attributes total (dim, red). 15 golden-string tests + a chat-state
       verbose test.
-- [ ] **3.3 Slash commands from the registry.** `/name args` dispatches
-      via `host.invoke_command`; result `{ message }` prints as a `●`
-      line; frontend dispatches on returned `action` string keys (`quit`,
-      `clear`), never a closed enum. Built-ins (`/quit`, `/clear`,
-      `/model`?) ship as embedded Lua through the public API.
-      *Accept: `/hello` from hello.lua works in-session; `/quit` quits.*
+- [x] **3.3 Slash commands from the registry.** Landed as chat.rs slash
+      dispatch (off the UI loop) + `phi-app/src/builtins/commands.lua` —
+      `/help /quit /clear /model /login /logout` as embedded Lua through
+      the public `register_command` door. `{ message }` prints as a dim
+      `●` block; `action` string keys dispatch open-vocabulary (`quit`,
+      `clear`, `set_model`, `login`, `logout`; unknown → error line).
+      `/model <id>` swaps model+auth together once the provider's auth
+      resolves; `/login` runs the OAuth flow in-session with progress as
+      `●` notices (Esc cancels). New `phi.commands()` snapshot
+      (exerciser: `examples/list-commands.lua`) powers `/help`. Accepted
+      live in a pty: `/hello` from hello.lua (trusted project extension),
+      `/model` switch reflected in the status line, `/quit` quits.
+      *Notes: `/model` is session-only (no settings.json persistence);
+      the in-session `/login` browser round-trip reuses `--login`'s flow
+      but hasn't been driven end-to-end (needs a browser).*
 
 ## WS4 — Sessions (usability, then parity)
 

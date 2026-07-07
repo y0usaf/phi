@@ -144,6 +144,7 @@ async fn main() -> Result<()> {
     // and list-models paths above stay extension-free (bare core).
     let host = phi_host::Host::new()?;
     phi_agent::tools::register_all(&host, cancel.clone()).context("registering native tools")?;
+    extensions::load_builtins(&host).context("loading built-in commands")?;
     extensions::load_discovered(&host)?;
     let host = Arc::new(host);
     extensions::announce(
@@ -176,6 +177,7 @@ async fn main() -> Result<()> {
                 registry,
                 model,
                 auth,
+                storage,
                 thinking,
                 system: args.system.clone(),
                 verbose: args.verbose,

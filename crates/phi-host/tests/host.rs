@@ -242,3 +242,25 @@ fn registration_from_event_handler_attributes_to_extension() {
     assert_eq!(commands.len(), 1);
     assert_eq!(commands[0].source, "late.lua");
 }
+
+#[test]
+fn commands_snapshot_is_readable_from_lua() {
+    let host = Host::new().expect("host");
+    host.load_file(&hello_lua()).expect("load hello.lua");
+    host.load_file(
+        &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/list-commands.lua"),
+    )
+    .expect("load list-commands.lua");
+
+    let result = host
+        .invoke_command("commands", "")
+        .expect("invoke")
+        .expect("result");
+    let message = result["message"].as_str().expect("message string");
+    let lines: Vec<&str> = message.lines().collect();
+    // Registration order: hello.lua loaded first, then list-commands.lua.
+    assert!(lines[0].starts_with("/hello"));
+    assert!(lines[0].ends_with("hello.lua)"));
+    assert!(lines[1].starts_with("/commands"));
+    assert!(lines[1].ends_with("list-commands.lua)"));
+}

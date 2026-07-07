@@ -8,6 +8,14 @@ use std::path::Path;
 use anyhow::{Context as _, Result};
 use phi_host::{Host, TrustDecision, TrustStore};
 
+/// The shipped built-in commands: embedded Lua registered through the same
+/// public API user extensions use (The Rule). Loaded before discovery so a
+/// user extension colliding with a built-in name fails as that extension's
+/// load error, not a broken built-in.
+pub fn load_builtins(host: &Host) -> Result<()> {
+    host.load_source("<builtin:commands>", include_str!("builtins/commands.lua"))
+}
+
 /// Discover and load extensions onto an existing host. With no extension
 /// files present this is the zero-extension bare boot (doctrine 06) — the
 /// host exists but nothing extension-shaped is registered. A failing
