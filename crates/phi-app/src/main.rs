@@ -18,6 +18,7 @@ mod cli;
 mod extensions;
 mod format;
 mod settings;
+mod transcript;
 
 const DEFAULT_MODEL: &str = "claude-opus-4-7";
 
@@ -164,6 +165,7 @@ async fn main() -> Result<()> {
                 thinking,
                 system: args.system.clone(),
                 prompt,
+                verbose: args.verbose,
                 cancel,
             })
             .await
@@ -176,6 +178,7 @@ async fn main() -> Result<()> {
                 auth,
                 thinking,
                 system: args.system.clone(),
+                verbose: args.verbose,
                 cancel,
             })
             .await

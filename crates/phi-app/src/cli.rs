@@ -20,6 +20,10 @@ pub struct Args {
     #[arg(long, value_name = "TEXT")]
     pub system: Option<String>,
 
+    /// Show tool output in the transcript (hidden unless it failed).
+    #[arg(long, short)]
+    pub verbose: bool,
+
     /// OAuth login and exit: anthropic | openai.
     #[arg(long, value_name = "PROVIDER")]
     pub login: Option<String>,

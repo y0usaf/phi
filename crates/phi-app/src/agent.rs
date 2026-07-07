@@ -16,6 +16,7 @@ use phi_host::Host;
 use tokio_util::sync::CancellationToken;
 
 use crate::format::format_usage_summary;
+use crate::transcript;
 
 pub struct RunSpec<'a> {
     pub host: Arc<Host>,
@@ -26,6 +27,8 @@ pub struct RunSpec<'a> {
     /// Replaces the prompt head; project context + date/cwd tail stays.
     pub system: Option<String>,
     pub prompt: String,
+    /// Show tool output even when it succeeded (PLAN.md WS3.2).
+    pub verbose: bool,
     pub cancel: CancellationToken,
 }
 
@@ -45,7 +48,7 @@ pub async fn run(spec: RunSpec<'_>) -> Result<()> {
         spec.registry.stream(&spec.model, ctx, opts)
     };
 
-    let mut renderer = Renderer::new(std::io::stdout().is_terminal());
+    let mut renderer = Renderer::new(std::io::stdout().is_terminal(), spec.verbose);
     // One-shot has no way to inject input mid-run; the queue exists because
     // the loop API demands one (interactive frontends fill it).
     let steering: SteeringQueue = Arc::default();
@@ -67,16 +70,18 @@ struct Renderer {
     interactive: bool,
     /// stderr is a terminal: allowed to color the tool lines.
     color: bool,
+    verbose: bool,
     /// stdout cursor sits mid-line (streamed text without a trailing \n).
     line_open: bool,
     final_text: String,
 }
 
 impl Renderer {
-    fn new(interactive: bool) -> Self {
+    fn new(interactive: bool, verbose: bool) -> Self {
         Self {
             interactive,
             color: std::io::stderr().is_terminal(),
+            verbose,
             line_open: false,
             final_text: String::new(),
         }
@@ -94,7 +99,7 @@ impl Renderer {
                 if self.interactive =>
             {
                 self.break_line();
-                eprintln!("{}", self.dim(&format!("● retrying ({attempt}/{max})")));
+                eprintln!("{}", transcript::retry_line(attempt, max, self.color));
             }
             AgentEvent::Assistant(AssistantEvent::Done { message }) => {
                 self.final_text = message.text();
@@ -103,15 +108,19 @@ impl Renderer {
                 name, arguments, ..
             } if self.interactive => {
                 self.break_line();
-                eprintln!("● {name} {}", self.dim(&summarize(&arguments)));
+                eprintln!("{}", transcript::tool_line(&name, &arguments, self.color));
             }
             AgentEvent::ToolEnd {
-                content,
-                is_error: true,
-                ..
+                content, is_error, ..
             } if self.interactive => {
-                let first = content.lines().next().unwrap_or("").trim();
-                eprintln!("{}", self.red(&format!("● ERROR: {first}")));
+                if is_error {
+                    eprintln!("{}", transcript::error_line(&content, self.color));
+                }
+                if self.verbose {
+                    for line in transcript::output_block(&content, self.color) {
+                        eprintln!("{line}");
+                    }
+                }
             }
             _ => {}
         }
@@ -143,63 +152,5 @@ impl Renderer {
             println!();
             self.line_open = false;
         }
-    }
-
-    fn dim(&self, s: &str) -> String {
-        if self.color {
-            format!("\x1b[2m{s}\x1b[0m")
-        } else {
-            s.to_owned()
-        }
-    }
-
-    fn red(&self, s: &str) -> String {
-        if self.color {
-            format!("\x1b[31m{s}\x1b[0m")
-        } else {
-            s.to_owned()
-        }
-    }
-}
-
-/// One-line argument summary for a `●` tool line: the command or path when
-/// the tool has one, compact JSON otherwise, capped for the terminal.
-pub(crate) fn summarize(arguments: &serde_json::Value) -> String {
-    let text = ["command", "path"]
-        .iter()
-        .find_map(|k| arguments.get(k).and_then(|v| v.as_str()).map(str::to_owned))
-        .unwrap_or_else(|| serde_json::to_string(arguments).unwrap_or_default());
-    let line = text.lines().next().unwrap_or("").trim();
-    let mut out: String = line.chars().take(80).collect();
-    if out.len() < line.len() {
-        out.push('…');
-    }
-    out
-}
-
-#[cfg(test)]
-mod tests {
-    use super::summarize;
-    use serde_json::json;
-
-    #[test]
-    fn summary_prefers_command_then_path() {
-        assert_eq!(summarize(&json!({ "command": "ls -la" })), "ls -la");
-        assert_eq!(summarize(&json!({ "path": "src/main.rs" })), "src/main.rs");
-        assert_eq!(summarize(&json!({ "command": "ls", "path": "x" })), "ls");
-    }
-
-    #[test]
-    fn summary_falls_back_to_json_and_truncates() {
-        assert_eq!(summarize(&json!({ "n": 1 })), "{\"n\":1}");
-        let long = "x".repeat(200);
-        let out = summarize(&json!({ "command": long }));
-        assert_eq!(out.chars().count(), 81);
-        assert!(out.ends_with('…'));
-    }
-
-    #[test]
-    fn summary_uses_first_line_only() {
-        assert_eq!(summarize(&json!({ "command": "echo a\necho b" })), "echo a");
     }
 }

@@ -27,8 +27,8 @@ use phi_tui::{
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use crate::agent::summarize;
 use crate::format::{format_tokens, format_usage_summary};
+use crate::transcript;
 
 pub struct ChatSpec {
     pub host: Arc<Host>,
@@ -38,6 +38,8 @@ pub struct ChatSpec {
     pub thinking: ThinkingLevel,
     /// Replaces the prompt head; project context + date/cwd tail stays.
     pub system: Option<String>,
+    /// Show tool output even when it succeeded (PLAN.md WS3.2).
+    pub verbose: bool,
     /// Session-level cancellation (external SIGINT): quits the frontend and
     /// winds down any active run (run tokens are children of this one).
     pub cancel: CancellationToken,
@@ -131,7 +133,8 @@ struct Chat {
 
 impl Chat {
     fn new(spec: ChatSpec, tx: mpsc::UnboundedSender<UiMsg>, width: usize) -> Self {
-        let state = ChatState::new(spec.model.id.clone(), width);
+        let mut state = ChatState::new(spec.model.id.clone(), width);
+        state.verbose = spec.verbose;
         Self {
             spec,
             tx,
@@ -210,7 +213,7 @@ impl Chat {
             Ok(cwd) => cwd,
             Err(e) => {
                 self.state
-                    .push_line(red(&format!("● ERROR: resolving cwd: {e}")));
+                    .push_line(transcript::error_line(&format!("resolving cwd: {e}"), true));
                 self.ctx = Some(ctx);
                 return;
             }
@@ -323,6 +326,8 @@ struct ChatState {
     model_name: String,
     palette: MarkdownPalette,
     width: usize,
+    /// Show tool output even when it succeeded (PLAN.md WS3.2).
+    verbose: bool,
 }
 
 impl ChatState {
@@ -338,6 +343,7 @@ impl ChatState {
             model_name,
             palette: MarkdownPalette::default_const(),
             width: width.max(1),
+            verbose: false,
         }
     }
 
@@ -367,17 +373,17 @@ impl ChatState {
         }
         match outcome {
             Ok(o) if matches!(o.stop_reason, StopReason::Aborted) => {
-                self.push_line(dim("● interrupted"));
+                self.push_line(transcript::interrupted_line(true));
             }
             Ok(o) if o.is_error() => {
                 let msg = o
                     .error_message
                     .as_deref()
                     .unwrap_or("unknown provider error");
-                self.push_line(red(&format!("● ERROR: {msg}")));
+                self.push_line(transcript::error_line(msg, true));
             }
             Ok(_) => {}
-            Err(e) => self.push_line(red(&format!("● ERROR: {e:#}"))),
+            Err(e) => self.push_line(transcript::error_line(&format!("{e:#}"), true)),
         }
     }
 
@@ -393,7 +399,7 @@ impl ChatState {
             }
             AgentEvent::Assistant(AssistantEvent::RetryRollback { attempt, max }) => {
                 self.stream_text.clear();
-                self.push_line(dim(&format!("● retrying ({attempt}/{max})")));
+                self.push_line(transcript::retry_line(attempt, max, true));
             }
             AgentEvent::Assistant(
                 AssistantEvent::Done { message } | AssistantEvent::Error { message },
@@ -403,15 +409,19 @@ impl ChatState {
             AgentEvent::ToolStart {
                 name, arguments, ..
             } => {
-                self.push_line(format!("● {name} {}", dim(&summarize(&arguments))));
+                self.push_line(transcript::tool_line(&name, &arguments, true));
             }
             AgentEvent::ToolEnd {
-                content,
-                is_error: true,
-                ..
+                content, is_error, ..
             } => {
-                let first = content.lines().next().unwrap_or("").trim();
-                self.push_line(red(&format!("● ERROR: {first}")));
+                if is_error {
+                    self.push_line(transcript::error_line(&content, true));
+                }
+                if self.verbose {
+                    for line in transcript::output_block(&content, true) {
+                        self.push_line(line);
+                    }
+                }
             }
             _ => {}
         }
@@ -497,11 +507,7 @@ impl ChatState {
 }
 
 fn dim(s: &str) -> String {
-    format!("\x1b[2m{s}\x1b[0m")
-}
-
-fn red(s: &str) -> String {
-    format!("\x1b[31m{s}\x1b[0m")
+    transcript::dim(s, true)
 }
 
 #[cfg(test)]
@@ -601,6 +607,25 @@ mod tests {
         let flushed = s.take_pending();
         let plain: Vec<String> = flushed.iter().map(|l| strip_ansi(l)).collect();
         assert_eq!(plain, vec!["", "● bash ls", "● ERROR: boom"]);
+    }
+
+    #[test]
+    fn verbose_shows_output_of_successful_tools() {
+        let mut s = state();
+        s.verbose = true;
+        s.on_agent_event(AgentEvent::ToolStart {
+            id: "1".into(),
+            name: "bash".into(),
+            arguments: serde_json::json!({ "command": "ls" }),
+        });
+        s.on_agent_event(AgentEvent::ToolEnd {
+            id: "1".into(),
+            name: "bash".into(),
+            content: "a.txt\nb.txt".into(),
+            is_error: false,
+        });
+        let plain: Vec<String> = s.take_pending().iter().map(|l| strip_ansi(l)).collect();
+        assert_eq!(plain, vec!["", "● bash ls", "  a.txt", "  b.txt"]);
     }
 
     #[test]

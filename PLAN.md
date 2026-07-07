@@ -70,12 +70,14 @@ past ~150 lines, it's absorbing what commits should say.
       enter/exit, editor + status render, clean quit + usage line).
       *Pending live acceptance (streamed turn with a real model): still
       blocked on provider credit, same as WS2.4.*
-- [ ] **3.2 Transcript vocabulary (forgecode-minimal).** Tool call = one
-      line `● name summary` (dim summary); output hidden unless error
-      (`● ERROR: …` red) or verbose; edit/write show a compact diff stat.
-      User prompts stay as typed (no re-echo box). No timestamps, no
-      borders, ≤6 colors.
-      *Accept: golden-string tests for the line formatters.*
+- [x] **3.2 Transcript vocabulary (forgecode-minimal).** Landed as
+      `phi-app/src/transcript.rs`: every status line both frontends print
+      is built there — `● name summary` (dim; edit shows `path +A -R`
+      computed from the arguments, write `path +N`), `● ERROR:` first
+      line red, `--verbose`/`-v` shows tool results dim-indented
+      (head-capped at 10 lines), interrupted/retry lines. Two SGR
+      attributes total (dim, red). 15 golden-string tests + a chat-state
+      verbose test.
 - [ ] **3.3 Slash commands from the registry.** `/name args` dispatches
       via `host.invoke_command`; result `{ message }` prints as a `●`
       line; frontend dispatches on returned `action` string keys (`quit`,

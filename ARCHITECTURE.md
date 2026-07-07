@@ -226,8 +226,9 @@ crate phi
 │   └── struct Args: pub
 ├── mod extensions: pub(crate)
 ├── mod format: pub(crate)
-└── mod settings: pub(crate)
-    └── struct Settings: pub
+├── mod settings: pub(crate)
+│   └── struct Settings: pub
+└── mod transcript: pub(crate)
 ```
 
 ### `phi-grid`
