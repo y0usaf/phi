@@ -62,19 +62,32 @@ the visual bar now.
   `parseErrorResponse` shaping, device-code engine, remaining protocols
   (openai-responses, google, bedrock) → WS5.
 - models.json custom models + `registerProvider` glue land with their
-  consumers (WS7 / host binding in WS3-4); `findInitialModel`
-  settings/scoped branches with WS3 settings; full `--help`/args parity
-  is WS9. Pending live verification: anthropic streaming + `--login`
-  OAuth round-trip (needs anthropic credentials/browser).
+  consumers (WS7 / host binding in WS3-4); `findInitialModel` scoped
+  branch (step 2) with WS9 `--models`; full `--help`/args parity is WS9.
+  Pending live verification: anthropic streaming + `--login` OAuth
+  round-trip (needs anthropic credentials/browser).
+- Settings follow-ups: the bare binary creates its SettingsManager with
+  the spec's default trust (spec `main.ts` startup manager); the
+  trust-prompt → `projectTrusted` wiring is WS7 glue.
+  `configureHttpDispatcher` (undici global) maps to phi-ai transport
+  wiring — lands with the WS4 session that consumes
+  `getHttpIdleTimeoutMs`/`getProviderRetrySettings`. `getSessionDir`
+  consumer + the full `utils/paths.ts` port land with WS3.2/3.3.
+  Settings exposure to Lua (if a consumer needs it) requires an
+  exerciser in the same commit.
 
 ## Current — WS3: `coding-agent` tools + sessions
 
 Depends only on WS1 bindings (mechanism/policy line: tools are Lua over
 bindings). Steps refine as the spec modules are read:
 
-- [ ] **3.1 Settings-manager.** `settings-manager.ts` port (scoped
-      settings, drainErrors semantics); consumer for the deferred
-      `findInitialModel` settings branches.
+- [x] **3.1 Settings-manager.** `core/settings_manager.rs` — scoped
+      global/project settings, per-field + nested-key persistence,
+      migrations, trust gating, drainErrors; `core/http_dispatcher.rs`
+      (pure parts), `core/defaults.rs`; `findInitialModel` settings
+      branch (step 3) + `sdk.ts` thinking-level resolution wired into
+      `main.rs` (divergences recorded in the module doc: sync write
+      queue, JSON-map settings type, lexicographic key order).
 - [ ] **3.2 Session-manager.** `core/session-manager.ts` → JSONL store
       (resurrect the attic's store as claimed); `phi-session` crate per
       the workspace-layout row.

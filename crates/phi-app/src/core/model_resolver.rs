@@ -1,15 +1,16 @@
 //! Port of `core/model-resolver.ts` — model resolution and initial
 //! selection.
 //!
-//! WS2.6 subset (recorded): `resolveModelScope` (glob patterns for
-//! `--models` cycling) and `restoreModelFromSession` land with their
-//! consumers (WS9 cli parity / WS3 sessions). `findInitialModel`'s
-//! scoped-models and settings-default branches take effect when those
-//! inputs exist (WS3 settings); the CLI branch is handled by the caller
-//! (as in the spec's `buildSessionOptions`).
+//! WS2.6/WS3.1 subset (recorded): `resolveModelScope` (glob patterns
+//! for `--models` cycling) and `restoreModelFromSession` land with
+//! their consumers (WS9 cli parity / WS3 sessions). `findInitialModel`
+//! covers steps 3–5 (settings default, provider defaults, first
+//! available); steps 1–2 (CLI args, scoped models) are the caller's (as
+//! in the spec's `buildSessionOptions` / `sdk.ts`).
 
 use phi_ai_types::{Model, ModelThinkingLevel};
 
+use crate::core::defaults::DEFAULT_THINKING_LEVEL;
 use crate::core::model_registry::ModelRegistry;
 
 /// Spec: `defaultModelPerProvider` — default model IDs per known
@@ -444,26 +445,51 @@ pub fn resolve_cli_model(
     }
 }
 
-/// Spec: `findInitialModel` steps 4–5 — the first available model,
-/// preferring per-provider defaults in declaration order. (Steps 1–3 —
-/// CLI args, scoped models, settings default — are the caller's when
-/// those inputs exist; see module doc.)
-pub fn find_initial_model(model_registry: &ModelRegistry) -> Option<Model> {
+/// Spec: `InitialModelResult` — `fallback_message` arrives with its
+/// consumers (scoped models / session restore, WS3+).
+#[derive(Clone, Debug)]
+pub struct InitialModelResult {
+    pub model: Option<Model>,
+    pub thinking_level: ModelThinkingLevel,
+}
+
+/// Spec: `findInitialModel` steps 3–5 — settings default (with its
+/// thinking level), then the first available model preferring
+/// per-provider defaults in declaration order. (Steps 1–2 — CLI args,
+/// scoped models — are the caller's; see module doc.)
+pub fn find_initial_model(
+    model_registry: &ModelRegistry,
+    default_provider: Option<&str>,
+    default_model_id: Option<&str>,
+    default_thinking_level: Option<ModelThinkingLevel>,
+) -> InitialModelResult {
+    // 3. Try saved default from settings
+    if let (Some(provider), Some(model_id)) = (default_provider, default_model_id)
+        && let Some(found) = model_registry.find(provider, model_id)
+    {
+        return InitialModelResult {
+            model: Some(found.clone()),
+            thinking_level: default_thinking_level.unwrap_or(DEFAULT_THINKING_LEVEL),
+        };
+    }
+
+    // 4. Try first available model with valid API key
     let available = model_registry.get_available();
-    if available.is_empty() {
-        return None;
-    }
+    let model = DEFAULT_MODEL_PER_PROVIDER
+        .iter()
+        .find_map(|(provider, default_id)| {
+            available
+                .iter()
+                .find(|m| m.provider == *provider && m.id == *default_id)
+        })
+        .or_else(|| available.first())
+        .map(|m| (*m).clone());
 
-    for (provider, default_id) in DEFAULT_MODEL_PER_PROVIDER {
-        if let Some(m) = available
-            .iter()
-            .find(|m| m.provider == *provider && m.id == *default_id)
-        {
-            return Some((*m).clone());
-        }
+    // 5. No model found
+    InitialModelResult {
+        model,
+        thinking_level: DEFAULT_THINKING_LEVEL,
     }
-
-    Some(available[0].clone())
 }
 
 #[cfg(test)]
@@ -564,10 +590,33 @@ mod tests {
     #[test]
     fn initial_model_prefers_provider_default() {
         let registry = registry();
-        let model = find_initial_model(&registry);
+        let result = find_initial_model(&registry, None, None, None);
         // anthropic is the only configured provider unless env keys add
         // more; bedrock (earlier in the table) is ambient-authenticated
         // only when AWS_* env vars exist.
-        assert!(model.is_some());
+        assert!(result.model.is_some());
+        assert_eq!(result.thinking_level, ModelThinkingLevel::Medium);
+    }
+
+    #[test]
+    fn initial_model_settings_default_wins_with_its_thinking_level() {
+        let registry = registry();
+        let result = find_initial_model(
+            &registry,
+            Some("anthropic"),
+            Some("claude-sonnet-4-5"),
+            Some(ModelThinkingLevel::High),
+        );
+        let model = result.model.unwrap_or_else(|| unreachable!());
+        assert_eq!(model.id, "claude-sonnet-4-5");
+        assert_eq!(result.thinking_level, ModelThinkingLevel::High);
+    }
+
+    #[test]
+    fn initial_model_unresolvable_settings_default_falls_through() {
+        let registry = registry();
+        let result = find_initial_model(&registry, Some("anthropic"), Some("gone"), None);
+        assert!(result.model.is_some());
+        assert_eq!(result.thinking_level, ModelThinkingLevel::Medium);
     }
 }

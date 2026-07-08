@@ -11,6 +11,7 @@ use std::process::ExitCode;
 use phi_ai::protocols::SimpleStreamOptions;
 use phi_ai_types::{
     AssistantMessageEvent, Context, Message, ModelThinkingLevel, ThinkingLevel, UserMessage,
+    clamp_thinking_level,
 };
 use phi_app::cli::args::{Args, help_text, parse_args};
 use phi_app::cli::list_models::render_model_list;
@@ -18,8 +19,10 @@ use phi_app::cli::login::run_login;
 use phi_app::config::VERSION;
 use phi_app::core::auth_guidance::format_no_models_available_message;
 use phi_app::core::auth_storage::AuthStorage;
+use phi_app::core::defaults::DEFAULT_THINKING_LEVEL;
 use phi_app::core::model_registry::{ModelRegistry, ResolvedRequestAuth};
 use phi_app::core::model_resolver::{find_initial_model, resolve_cli_model};
+use phi_app::core::settings_manager::{SettingsManager, SettingsManagerCreateOptions};
 
 /// Minimal chalk analogue: color only when the stream is a terminal.
 fn stderr_paint(code: &str, text: &str) -> String {
@@ -111,8 +114,23 @@ async fn run(args: Args) -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    // Spec (`buildSessionOptions` / `findInitialModel`): CLI model wins,
-    // else the first available model preferring provider defaults.
+    // Spec (`main.ts`): the startup settings manager is created with
+    // the default trust (the trust-prompt wiring is WS7 glue).
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let mut settings_manager =
+        SettingsManager::create(&cwd, None, SettingsManagerCreateOptions::default());
+    for error in settings_manager.drain_errors() {
+        warning_line(&format!(
+            "Warning: error loading {} settings: {}",
+            error.scope, error.error
+        ));
+    }
+
+    // Spec (`buildSessionOptions` / `findInitialModel`): CLI model wins
+    // (a `:<thinking>` suffix applies unless --thinking is explicit),
+    // else the settings default, else the first available model
+    // preferring provider defaults.
+    let mut cli_thinking = args.thinking;
     let model = if args.model.is_some() {
         let resolved = resolve_cli_model(
             args.provider.as_deref(),
@@ -126,9 +144,18 @@ async fn run(args: Args) -> ExitCode {
             error_line(&format!("Error: {error}"));
             return ExitCode::FAILURE;
         }
+        if cli_thinking.is_none() {
+            cli_thinking = resolved.thinking_level;
+        }
         resolved.model
     } else {
-        find_initial_model(&model_registry)
+        find_initial_model(
+            &model_registry,
+            settings_manager.get_default_provider().as_deref(),
+            settings_manager.get_default_model().as_deref(),
+            settings_manager.get_default_thinking_level(),
+        )
+        .model
     };
 
     let Some(model) = model else {
@@ -163,17 +190,24 @@ async fn run(args: Args) -> ExitCode {
         tools: None,
     };
 
+    // Spec (`sdk.ts`): CLI/suffix thinking wins, else the settings
+    // default, else DEFAULT_THINKING_LEVEL; clamped to the model.
+    let thinking_level = cli_thinking
+        .or_else(|| settings_manager.get_default_thinking_level())
+        .unwrap_or(DEFAULT_THINKING_LEVEL);
+    let thinking_level = clamp_thinking_level(&model, thinking_level);
+
     let mut options = SimpleStreamOptions::default();
     options.base.api_key = api_key;
     options.base.headers = headers;
-    options.reasoning = args.thinking.and_then(|level| match level {
+    options.reasoning = match thinking_level {
         ModelThinkingLevel::Off => None,
         ModelThinkingLevel::Minimal => Some(ThinkingLevel::Minimal),
         ModelThinkingLevel::Low => Some(ThinkingLevel::Low),
         ModelThinkingLevel::Medium => Some(ThinkingLevel::Medium),
         ModelThinkingLevel::High => Some(ThinkingLevel::High),
         ModelThinkingLevel::XHigh => Some(ThinkingLevel::XHigh),
-    });
+    };
 
     let stream = match phi_ai::registry::stream_simple(&model, &context, Some(options)) {
         Ok(stream) => stream,

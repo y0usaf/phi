@@ -4,6 +4,9 @@
 
 pub mod auth_guidance;
 pub mod auth_storage;
+pub mod defaults;
+pub mod http_dispatcher;
 pub mod model_registry;
 pub mod model_resolver;
 pub mod resolve_config_value;
+pub mod settings_manager;

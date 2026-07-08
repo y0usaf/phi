@@ -228,16 +228,32 @@ crate phi_app
     │   ├── type AuthStorageData: pub
     │   ├── enum AuthStorageError: pub
     │   └── struct FileLock: pub(self)
+    ├── mod defaults: pub
+    ├── mod http_dispatcher: pub
     ├── mod model_registry: pub
     │   ├── struct ModelRegistry: pub
     │   └── enum ResolvedRequestAuth: pub
     ├── mod model_resolver: pub
+    │   ├── struct InitialModelResult: pub
     │   ├── struct ParsedModelResult: pub
     │   └── struct ResolveCliModelResult: pub
-    └── mod resolve_config_value: pub
-        ├── enum ConfigValueError: pub
-        ├── enum ConfigValueReference: pub(self)
-        └── enum TemplatePart: pub(self)
+    ├── mod resolve_config_value: pub
+    │   ├── enum ConfigValueError: pub
+    │   ├── enum ConfigValueReference: pub(self)
+    │   └── enum TemplatePart: pub(self)
+    └── mod settings_manager: pub
+        ├── struct BranchSummarySettings: pub
+        ├── struct CompactionSettings: pub
+        ├── struct FileLock: pub(self)
+        ├── struct ProviderRetrySettings: pub
+        ├── struct RetrySettings: pub
+        ├── type Settings: pub
+        ├── struct SettingsError: pub
+        ├── struct SettingsManager: pub
+        ├── struct SettingsManagerCreateOptions: pub
+        ├── enum SettingsManagerError: pub
+        ├── enum SettingsScope: pub
+        └── enum SettingsStorage: pub
 ```
 
 ### `phi-host`
