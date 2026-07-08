@@ -1,0 +1,31 @@
+[workspace]
+members = ["crates/*"]
+resolver = "2"
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+version = "0.1.0"
+
+[workspace.dependencies]
+mlua = { version = "0.11", features = ["lua54", "vendored", "async"] }
+serde_json = "1.0"
+thiserror = "2.0"
+tokio = { version = "1.45", features = ["rt", "sync", "time", "macros"] }
+
+phi-host = { path = "crates/phi-host" }
+
+# Code standard (DESIGN.md, locked): no unwrap/expect/panic in library
+# crates. Tests opt out per-file with #![allow(...)].
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+
+[profile.dev]
+debug = 0
+incremental = true
+
+[profile.test]
+debug = 0
+incremental = true
