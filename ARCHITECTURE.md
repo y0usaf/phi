@@ -15,6 +15,10 @@ Internal (workspace-local) dependencies only. `A --> B` means A depends on B.
 graph TD
   phi_ai["phi-ai"] --> phi_ai_types["phi-ai-types"]
   phi_ai_auth["phi-ai-auth"] --> phi_ai_types["phi-ai-types"]
+  phi_app["phi-app"] --> phi_ai["phi-ai"]
+  phi_app["phi-app"] --> phi_ai_auth["phi-ai-auth"]
+  phi_app["phi-app"] --> phi_ai_types["phi-ai-types"]
+  phi_app["phi-app"] --> phi_tui["phi-tui"]
 ```
 
 ## Crates
@@ -24,7 +28,9 @@ graph TD
 | `phi-ai` | packages/ai port: transport (HTTP/SSE/retry/cancellation), protocols, registry |
 | `phi-ai-auth` | packages/ai oauth port: PKCE engine, flows as data, provider registry |
 | `phi-ai-types` | packages/ai type vocabulary: models, messages, content, usage, stream events |
+| `phi-app` | _no description in Cargo.toml_ |
 | `phi-host` | Lua extension host: coroutine async seam, event bus, watchdog |
+| `phi-tui` | _no description in Cargo.toml_ |
 
 ## Module structure
 
@@ -198,6 +204,42 @@ crate phi_ai_types
     └── struct VercelGatewayRouting: pub
 ```
 
+### `phi-app`
+
+```
+
+crate phi_app
+├── mod cli: pub
+│   ├── mod args: pub
+│   │   ├── struct Args: pub
+│   │   └── struct Diagnostic: pub
+│   ├── mod list_models: pub
+│   │   └── struct Row: pub(self)
+│   └── mod login: pub
+│       └── struct StdioLoginCallbacks: pub
+├── mod config: pub
+└── mod core: pub
+    ├── mod auth_guidance: pub
+    ├── mod auth_storage: pub
+    │   ├── enum AuthCredential: pub
+    │   ├── struct AuthStatus: pub
+    │   ├── struct AuthStorage: pub
+    │   ├── enum AuthStorageBackend: pub
+    │   ├── type AuthStorageData: pub
+    │   ├── enum AuthStorageError: pub
+    │   └── struct FileLock: pub(self)
+    ├── mod model_registry: pub
+    │   ├── struct ModelRegistry: pub
+    │   └── enum ResolvedRequestAuth: pub
+    ├── mod model_resolver: pub
+    │   ├── struct ParsedModelResult: pub
+    │   └── struct ResolveCliModelResult: pub
+    └── mod resolve_config_value: pub
+        ├── enum ConfigValueError: pub
+        ├── enum ConfigValueReference: pub(self)
+        └── enum TemplatePart: pub(self)
+```
+
 ### `phi-host`
 
 ```
@@ -237,4 +279,13 @@ crate phi_host
     ├── enum Msg: pub(crate)
     ├── struct WatchdogState: pub(self)
     └── struct Watched: pub(self)
+```
+
+### `phi-tui`
+
+```
+
+crate phi_tui
+└── mod fuzzy: pub
+    └── struct FuzzyMatch: pub
 ```

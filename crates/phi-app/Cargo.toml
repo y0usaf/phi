@@ -1,0 +1,25 @@
+[package]
+name = "phi-app"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "phi"
+path = "src/main.rs"
+
+[dependencies]
+phi-ai = { workspace = true }
+phi-ai-auth = { workspace = true }
+phi-ai-types = { workspace = true }
+phi-tui = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

@@ -135,7 +135,7 @@ the side-by-side test where UI is involved.
       bindings (fs/proc/env/path), discovery, trust gate, embedded-pack
       loading. *Accept: an example awaits a host future; a hung handler is
       killed; untrusted `.phi/` prompts.*
-- [ ] **WS2 — `packages/ai` vertical slice (anthropic).** phi-ai per the
+- [x] **WS2 — `packages/ai` vertical slice (anthropic).** phi-ai per the
       structural-compression row, one protocol deep: types + transport
       (landed), anthropic protocol + fixture replay (landed), registry
       seam + catalog-as-data with anthropic rows, anthropic auth (PKCE

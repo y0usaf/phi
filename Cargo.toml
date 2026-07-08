@@ -27,6 +27,7 @@ phi-ai = { path = "crates/phi-ai" }
 phi-ai-auth = { path = "crates/phi-ai-auth" }
 phi-ai-types = { path = "crates/phi-ai-types" }
 phi-host = { path = "crates/phi-host" }
+phi-tui = { path = "crates/phi-tui" }
 
 # Code standard (DESIGN.md, locked): no unwrap/expect/panic in library
 # crates. Tests opt out per-file with #![allow(...)].

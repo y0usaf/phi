@@ -1,5 +1,5 @@
 {
-  description = "phi — pi ported to Rust (WS1: substrate)";
+  description = "phi — pi ported to Rust";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -74,6 +74,70 @@
             ;
         };
 
+      # The `phi` binary (crates/phi-app).
+      mkPhi =
+        system:
+        let
+          c = mkCraneLib system;
+        in
+        c.craneLib.buildPackage {
+          inherit (c) src cargoArtifacts;
+          pname = "phi";
+          version = "0.1.0";
+          inherit (c.commonEnv) RUSTUP_HOME RUSTUP_TOOLCHAIN nativeBuildInputs;
+          cargoExtraArgs = "-p phi-app";
+          doCheck = false;
+        };
+
+      # Doctrine 06 — bare core boots: the substrate with zero packs,
+      # zero config, and zero credentials still runs and does something
+      # minimal but real. Exercises the WS2.6 entry points headlessly.
+      mkBareBoot =
+        system:
+        let
+          pkgs = mkPkgs system;
+          phi = mkPhi system;
+        in
+        pkgs.runCommand "bare-boot"
+          {
+            nativeBuildInputs = [
+              phi
+              pkgs.jq
+            ];
+          }
+          ''
+            export HOME=$TMPDIR
+
+            # --version prints the version and exits 0.
+            version=$(phi --version)
+            test -n "$version"
+
+            # --help prints usage.
+            phi --help | grep -q -- '--list-models'
+
+            # No credentials: --list-models reports guidance, exit 0.
+            phi --list-models | grep -q 'No models available.'
+
+            # No credentials: a prompt fails with the guidance, exit 1.
+            if phi "hi" 2>err.txt; then
+              echo 'expected `phi "hi"` to fail without credentials' >&2
+              exit 1
+            fi
+            grep -q 'No models available.' err.txt
+
+            # With an anthropic key: --list-models lists exactly the
+            # anthropic rows of pi's catalog (WS2 acceptance).
+            export ANTHROPIC_API_KEY=dummy
+            phi --list-models > list.txt
+            head -1 list.txt | grep -q '^provider'
+            grep -q 'claude-opus-4-8' list.txt
+            rows=$(($(wc -l < list.txt) - 1))
+            expected=$(jq -r '.[] | select(.provider=="anthropic") | .models | length' ${./crates/phi-ai/data/models.json})
+            test "$rows" -eq "$expected"
+
+            touch $out
+          '';
+
       # `cargo test` across the whole workspace.
       mkTest =
         system:
@@ -140,6 +204,12 @@
         workspace-test = mkTest system;
         workspace-clippy = mkClippy system;
         arch-fresh = mkArchFresh system;
+        bare-boot = mkBareBoot system;
+      });
+
+      packages = forAllSystems (system: rec {
+        phi = mkPhi system;
+        default = phi;
       });
 
       devShells = forAllSystems (
