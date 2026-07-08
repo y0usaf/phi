@@ -83,7 +83,7 @@ on a dedicated VM thread (current-thread tokio); the watchdog budget counts
       wins, undecided falls through). Exerciser:
       `project-trust.lua` (non-UI path of pi's example; UI branches when
       ctx lands). *Pending:* spec's `package.json` `pi`-manifest entry
-      rule → WS5 package-manager decision (locked row); spec's
+      rule → WS7 package-manager decision (locked row); spec's
       `emitProjectTrustEvent` stops dispatch at the first yes/no —
       `Host::emit` runs all handlers and the fold scans; revisit with the
       ctx binding if side-effect order becomes observable.
@@ -99,14 +99,19 @@ on a dedicated VM thread (current-thread tokio); the watchdog budget counts
 
 Carried out of WS1 (land with their host mechanisms): tool `execute`
 still receives `(tool_call_id, params)` — signal/on_update/ctx come with
-cancellation, update streaming, and the ctx binding (WS4/WS5); `pi.exec`
+cancellation, update streaming, and the ctx binding (WS3/WS4); `pi.exec`
 `options.signal` same step; command handlers run as `handler(args)` until
-ctx exists; `package.json`-manifest analogue → WS5 package-manager
+ctx exists; `package.json`-manifest analogue → WS7 package-manager
 decision; `emit` runs all `project_trust` handlers where the spec stops at
 the first yes/no — revisit with ctx if side-effect order becomes
 observable.
 
-## Current — WS2: `packages/ai` parity (`phi-ai*`, ~31k lines compressed)
+## Current — WS2: `packages/ai` vertical slice (anthropic)
+
+**Reordered 2026-07-08** (workstream-order locked row in DESIGN.md):
+vertical slice to a working coding agent — WS2 goes one protocol deep
+(anthropic), remaining protocols/catalog/auth flows are WS5 breadth;
+tools/sessions are WS3, the loop is WS4.
 
 Structure is the locked `phi-ai` row: layered `types → auth → transport →
 protocols → registry`, no upward deps; parity is behavioral (fixtures),
@@ -158,9 +163,10 @@ CI-checked from then on.
       `sanitize-unicode.ts`, `headers.ts` utils; codex
       `parseErrorResponse` friendly-message shaping (transport returns
       raw `Status{status,status_text,body}`).
-- [ ] **2.3 Protocols as trait impls.** anthropic first, with the
-      recorded-fixture replay harness (real SSE transcripts captured from
-      pi); then openai-completions, openai-responses, google, bedrock.
+- [x] **2.3 Protocol slices for the vertical cut.** anthropic (the
+      slice's required protocol) + openai-completions (landed before the
+      reorder), each with the recorded-fixture replay harness;
+      openai-responses, google, bedrock → WS5 breadth.
       *Landed (anthropic slice):* `protocols/` — `anthropic.rs` ←
       `anthropic.ts` (request shaping incl. OAuth/copilot/cloudflare
       branches + Claude Code stealth names, SSE→event mapping, stop-reason
@@ -187,27 +193,31 @@ CI-checked from then on.
       `tests/openai_completions.rs` (10 tests: replay, full params,
       deepseek/openrouter/moonshot compat, tools:[] on tool history,
       finish_reason errors, simple-options mapping, missing key).
-      *Remaining:* openai-responses, google, bedrock; the
+      *Moved to WS5:* openai-responses, google, bedrock; the
       protocol-dispatch trait lands with the registry seam (2.4).
       *Pending:* both `replay_basic.sse` fixtures are hand-built to the
       providers' documented shapes — replace with live pi-captured
       transcripts when credentials exist; codex `parseErrorResponse`
-      shaping still lands with the codex protocol slice;
-      `options.client` injection (Vertex) lands with google-vertex;
+      shaping still lands with the codex protocol slice (WS5);
+      `options.client` injection (Vertex) lands with google-vertex (WS5);
       openrouter `error.metadata.raw` append is done at the transport
       seam (module-doc divergence note); `streamSimple`'s TS-cast
       `toolChoice` smuggle is not represented — callers use the full
       options type.
-- [ ] **2.4 Registry + catalog as data.** Catalog generated from pi's
-      `models.generated.ts` as data (JSON/Lua tables, never hand code);
-      variants (azure, vertex, copilot, …) as catalog rows;
-      `pi.register_provider` binding + exerciser example.
-- [ ] **2.5 Auth.** `phi-ai-auth`: one PKCE engine + one device-code
-      engine + flows-as-data; resurrect the attic's OAuth/protobuf work
-      (`rebuild` @ `e8cb418`, `phi-ai*`) function-by-function; codex/
-      copilot stay code sharing the machinery.
+- [ ] **2.4 Registry + catalog seam.** Protocol-dispatch trait +
+      resolution; catalog generated from pi's `models.generated.ts` as
+      data (JSON/Lua tables, never hand code) — generation may cover the
+      full catalog (data is cheap), but only anthropic/openai-completions
+      rows resolve until WS5; variants (azure, vertex, copilot, …) stay
+      catalog rows; `pi.register_provider` binding + exerciser example.
+- [ ] **2.5 Auth (anthropic).** `phi-ai-auth`: the PKCE engine +
+      flow-as-data with the anthropic flow as first user; resurrect the
+      attic's OAuth work (`rebuild` @ `e8cb418`, `phi-ai*`)
+      function-by-function as claimed. Device-code engine + codex/copilot
+      flows → WS5 breadth.
 - [ ] **2.6 Bare core boots (doctrine 06).** Thin `phi` binary:
       `--login`, `--list-models`, `phi "prompt"` streaming a raw
-      completion (no tool loop). *Accept: `--list-models` matches pi's
-      catalog; fixture replay per protocol; live streaming/auth where
-      credentials exist; bare-boot CI check.*
+      completion (no tool loop). *Accept: `--list-models` matches the
+      anthropic rows of pi's catalog; fixture replay for the landed
+      protocols; live streaming/auth where credentials exist; bare-boot
+      CI check.*

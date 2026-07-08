@@ -14,7 +14,8 @@ gone: DESIGN.md, PLAN.md, and git history are your memory.
 - Read `DESIGN.md` in full — the spine: the three locked divergences (Lua
   not TS; everything first-party is Lua on the extension surface, no Rust
   shortcutting; surface superset allowed), the locked-decisions table, and
-  the workstream roadmap (WS0 → WS9, dependency order).
+  the workstream roadmap (WS0 → WS11, dependency order toward the
+  earliest working coding agent — see the workstream-order locked row).
 - Read `PLAN.md` — the ladder inside the *current* workstream. The next
   open item is the first unchecked box.
 - Check recent commits (`git log --oneline -10` plus the last few diffs)

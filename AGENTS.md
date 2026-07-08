@@ -20,15 +20,16 @@ workstream.
 
 ## State of the tree
 
-WS0: re-founded trunk — docs + stub flake, **no code yet**. The previous
-trees are preserved on `main` (final `fd373e0`) and `rebuild` (final
-`e8cb418`); git is the attic. Resurrect from branch history when a port
-claims something (e.g. the OAuth/protobuf work in `rebuild`'s `phi-ai*`),
-never carry code "just in case".
+WS2 in progress: `packages/ai` vertical slice (anthropic) — the roadmap
+was reordered 2026-07-08 to reach a working coding agent first (see the
+workstream-order locked row in DESIGN.md). Workspace under `crates/`,
+built with crane; regenerate `ARCHITECTURE.md` via `scripts/gen-arch.sh`
+after structural changes.
 
-When the workspace returns (WS1+): crates under `crates/`, built with
-crane; regenerate `ARCHITECTURE.md` via `scripts/gen-arch.sh` after
-structural changes (both return with the workspace).
+The previous trees are preserved on `main` (final `fd373e0`) and `rebuild`
+(final `e8cb418`); git is the attic. Resurrect from branch history when a
+port claims something (e.g. the OAuth/protobuf work in `rebuild`'s
+`phi-ai*`), never carry code "just in case".
 
 ## Build System — Nix is the Source of Truth
 

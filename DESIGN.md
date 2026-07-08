@@ -67,7 +67,8 @@ Two standing corollaries carry over from the rebuild:
 | `phi-grid` | Deleted from the workspace | Not in pi. Resurrect from the attic when the first-party mux pack returns. |
 | Shipped defaults | Embedded `.lua` via `include_str!`, loaded through the public API | Divergence 2. The flake source filter must include every embedded file type. |
 | Sandboxing / permissions | pi's stance: none in core, full user permissions; trust gates extension loading only (`core/project-trust` port) | Written decision so plain-Lua `os`/`io` access is a choice, not an accident. |
-| Extension distribution | pi's package-manager installs from npm; phi adapts to Lua distribution | Mechanism undecided — decide when the WS5 port reaches `package-manager.ts`, not before. |
+| Extension distribution | pi's package-manager installs from npm; phi adapts to Lua distribution | Mechanism undecided — decide when the WS7 port reaches `package-manager.ts`, not before. |
+| Workstream order | Vertical slice first: one protocol (anthropic) end-to-end → tools/sessions → agent loop → breadth (remaining protocols, TUI, interactive) | Reordered 2026-07-08 (supersedes the original package-order ladder; WS2–WS9 renumbered WS2–WS11). A working coding agent is the earliest meaningful acceptance test and everything it needs is depth, not breadth: one streaming protocol, auth for it, tools, the loop. Deferred items keep their pi-parity acceptance unchanged — nothing is built twice, breadth is backfilled behind a working agent. |
 | 1:1 acceptance | Every UI-touching workstream closes with a side-by-side session against pi v0.79.0 | "Looks and feels exactly like pi" is testable or it is nothing. |
 
 ## Architecture
@@ -119,9 +120,10 @@ internal detail:
 
 ## Roadmap
 
-Port order = dependency order. Each workstream's acceptance is parity
-against `ref/pi`, module-by-module, plus the side-by-side test where UI is
-involved.
+Port order = dependency order toward the earliest *working coding agent*
+(see the workstream-order locked row); breadth backfills behind it. Each
+workstream's acceptance is parity against `ref/pi`, module-by-module, plus
+the side-by-side test where UI is involved.
 
 - [x] **WS0 — Re-found.** Land this document; **rm everything** — all
       crates, examples, workspace files; stub flake (devshell + formatter);
@@ -133,41 +135,54 @@ involved.
       bindings (fs/proc/env/path), discovery, trust gate, embedded-pack
       loading. *Accept: an example awaits a host future; a hung handler is
       killed; untrusted `.phi/` prompts.*
-- [ ] **WS2 — `packages/ai` parity.** phi-ai per the structural-compression
-      row: transport once, ~5 protocol impls, variants as catalog data,
-      catalog as data, OAuth engines + flows-as-data. Resurrect the attic's
-      OAuth/protobuf work function-by-function into the new layering.
-      *Accept: `--list-models` matches pi's catalog; recorded-fixture replay
-      passes per protocol; streaming/auth verified live where credentials
-      exist.*
-- [ ] **WS3 — `packages/tui` parity.** Port the component tree: differential
-      renderer (`tui.ts`), editor, autocomplete, select-list, markdown,
-      loaders, kill-ring, undo-stack, images — with Lua bindings for every
-      component. *Accept: component behavior matches pi's; bindings
-      exercised by examples.*
+- [ ] **WS2 — `packages/ai` vertical slice (anthropic).** phi-ai per the
+      structural-compression row, one protocol deep: types + transport
+      (landed), anthropic protocol + fixture replay (landed), registry
+      seam + catalog-as-data with anthropic rows, anthropic auth (PKCE
+      engine + flow-as-data; resurrect the attic's OAuth work it claims),
+      bare `phi` binary (doctrine 06). *Accept: anthropic fixture replay
+      passes; `--list-models` matches the anthropic rows of pi's catalog;
+      streaming/auth verified live where credentials exist; bare-boot CI
+      check.*
+- [ ] **WS3 — `coding-agent` tools + sessions.** Pulled forward from
+      coding-agent parity — depends only on WS1 bindings, may run parallel
+      to WS2's tail: tools (read/edit/bash/write/grep/find/ls + truncation
+      and output-accumulator semantics) as Lua over bindings;
+      session-manager (JSONL store), settings-manager. *Accept: each
+      module has a named pi counterpart with matching behavior; placement
+      per the mechanism/policy line.*
 - [ ] **WS4 — `packages/agent` as a Lua pack.** Loop primitives in
       `phi-agent`; orchestration (`agent-loop.ts` semantics: steering,
       follow-up queue, error-as-tool-result) in embedded Lua. *Accept:
       one-shot `phi "fix the failing test"` edits and runs bash end to end;
-      loop replaceable via config.*
-- [ ] **WS5 — `coding-agent` core parity.** Tools (read/edit/bash/write/
-      grep/find/ls + truncation and output-accumulator semantics) as Lua
-      over bindings; session-manager, settings-manager, resource-loader
-      (skills, prompt-templates, themes), compaction, keybindings,
-      slash commands, project trust. *Accept: each module has a named pi
-      counterpart with matching behavior; placement per the
-      mechanism/policy line.*
-- [ ] **WS6 — Interactive mode.** pi's `modes/interactive` (~15k) as the
+      loop replaceable via config.* **The working-coding-agent milestone.**
+- [ ] **WS5 — `packages/ai` breadth.** Remaining protocols
+      (openai-completions, openai-responses, google, bedrock) as trait
+      impls with fixture replay; full catalog as data; variants as catalog
+      rows; remaining auth flows (codex exchange, copilot device-code)
+      sharing the engines. *Accept: `--list-models` matches pi's full
+      catalog; recorded-fixture replay passes per protocol.*
+- [ ] **WS6 — `packages/tui` parity.** Port the component tree: differential
+      renderer (`tui.ts`), editor, autocomplete, select-list, markdown,
+      loaders, kill-ring, undo-stack, images — with Lua bindings for every
+      component. *Accept: component behavior matches pi's; bindings
+      exercised by examples.*
+- [ ] **WS7 — `coding-agent` remainder.** resource-loader (skills,
+      prompt-templates, themes), compaction, keybindings, slash commands,
+      package-manager (distribution decision lands here), project-trust UI
+      glue. *Accept: each module has a named pi counterpart with matching
+      behavior; placement per the mechanism/policy line.*
+- [ ] **WS8 — Interactive mode.** pi's `modes/interactive` (~15k) as the
       default Lua frontend pack over `phi-tui` bindings. *Accept: the
       side-by-side test — chrome, keybindings, overlays, footer, theming
       indistinguishable from pi v0.79.0.*
-- [ ] **WS7 — Modes & periphery.** print-mode, RPC mode, export-html,
+- [ ] **WS9 — Modes & periphery.** print-mode, RPC mode, export-html,
       session-picker, startup UI, cli args parity. *Accept: `phi --help`
       surface matches pi's; RPC demo example runs.*
-- [ ] **WS8 — Examples as conformance.** All 77 pi examples translated to
+- [ ] **WS10 — Examples as conformance.** All 77 pi examples translated to
       Lua. *Accept: every example runs or has a locked-decision row
       explaining why not; every registry and event has ≥1 exerciser.*
-- [ ] **WS9 — First-party era.** Post-parity: RLM pack, mux pack (resurrect
+- [ ] **WS11 — First-party era.** Post-parity: RLM pack, mux pack (resurrect
       `phi-grid`, decide doctrine-03), surface growth beyond pi
       (divergence 3). All of it Lua on the public surface — divergence 2
       does not expire when parity lands.
