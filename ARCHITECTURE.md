@@ -61,6 +61,16 @@ crate phi_ai
 │   │   └── struct AdjustedTokens: pub
 │   └── mod transform_messages: pub
 │       └── type NormalizeToolCallId: pub
+├── mod registry: pub
+│   ├── mod api_registry: pub
+│   │   ├── struct ApiProvider: pub
+│   │   ├── type ApiStreamFn: pub
+│   │   ├── type ApiStreamSimpleFn: pub
+│   │   └── struct Registered: pub(self)
+│   ├── mod catalog: pub
+│   │   └── struct ProviderModels: pub(self)
+│   ├── mod env_api_keys: pub
+│   └── mod stream: pub
 ├── mod transport: pub
 │   ├── enum TransportError: pub
 │   ├── mod abort: pub
@@ -164,6 +174,7 @@ crate phi_host
 ├── struct LoadError: pub
 ├── struct LoadReport: pub
 ├── struct Outcome: pub
+├── struct ProviderInfo: pub
 ├── struct ToolInfo: pub
 ├── mod api: pub(crate)
 │   └── struct ResolvedCommand: pub(crate)

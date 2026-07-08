@@ -111,6 +111,21 @@ impl EmbeddedPack {
     }
 }
 
+/// Host-side mirror of one provider registration (spec: the queued
+/// `registerProvider(name, config)` call — `ProviderConfig` in
+/// `types.ts`). `config` is the JSON-able slice with function values
+/// (`streamSimple`, `oauth` callbacks) stripped at any depth; the
+/// functions stay Lua-side, invocable when their mechanisms land.
+/// Application to a model registry (validation included, spec
+/// `model-registry.ts`) is the embedder's.
+#[derive(Debug, Clone)]
+pub struct ProviderInfo {
+    pub name: String,
+    /// Source key of the registering extension.
+    pub source: String,
+    pub config: serde_json::Value,
+}
+
 /// Host-side metadata mirror of one registered command (spec:
 /// `ResolvedCommand`). When more than one extension registers the same
 /// name, `invocation_name` disambiguates as `name:N` (spec:
@@ -236,6 +251,17 @@ impl Host {
         let (reply, rx) = sync_channel(1);
         self.tx
             .send(vm::Msg::Commands { reply })
+            .map_err(|_| HostError::VmUnavailable)?;
+        rx.recv().map_err(|_| HostError::VmUnavailable)?
+    }
+
+    /// Mirror of provider registrations in extension load order, then
+    /// per-extension registration order; re-registration of a name
+    /// merges defined keys in place (spec `upsertRegisteredProvider`).
+    pub fn providers(&self) -> Result<Vec<ProviderInfo>, HostError> {
+        let (reply, rx) = sync_channel(1);
+        self.tx
+            .send(vm::Msg::Providers { reply })
             .map_err(|_| HostError::VmUnavailable)?;
         rx.recv().map_err(|_| HostError::VmUnavailable)?
     }

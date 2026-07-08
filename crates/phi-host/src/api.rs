@@ -16,6 +16,12 @@
 //!   per-extension map, re-registration replaces in place.
 //! - `pi.register_command(name, opts)` — spec `registerCommand`
 //!   (`loader.ts`): `{ name, ...opts }` into the per-extension map.
+//! - `pi.register_provider(name, config)` / `pi.unregister_provider(name)`
+//!   — spec `registerProvider`/`unregisterProvider`: registrations are
+//!   queued host-side (the spec's initial-load behavior — the runner
+//!   applies them once bound); re-registration merges defined keys over
+//!   the stored config (spec `upsertRegisteredProvider`). Application to
+//!   the model registry is the embedder's (phi-app, WS2.6).
 //! - `pi.exec(command, args?, options?)` — spec `ExtensionAPI.exec`
 //!   (`exec.rs` ← `core/exec.ts`).
 //! - `pi.fs` / `pi.path` / `pi.env` / `pi.cwd()` — OS bindings (`os.rs`;
@@ -61,6 +67,8 @@ fn ext_entry(lua: &mlua::Lua, source: &str) -> mlua::Result<mlua::Table> {
     entry.set("tool_order", lua.create_table()?)?;
     entry.set("commands", lua.create_table()?)?;
     entry.set("command_order", lua.create_table()?)?;
+    entry.set("providers", lua.create_table()?)?;
+    entry.set("provider_order", lua.create_table()?)?;
     exts.set(source, &entry)?;
     let ext_order: mlua::Table = registry.get("ext_order")?;
     ext_order.push(source)?;
@@ -175,6 +183,73 @@ pub(crate) fn build(lua: &mlua::Lua, cwd: &str) -> mlua::Result<mlua::Table> {
     })?;
     pi.set("register_command", register_command)?;
 
+    // Spec `registerProvider` (loader.ts / model-registry.ts): the
+    // host-side half — store the config per extension, merging defined
+    // keys over an existing registration of the same name (spec
+    // `upsertRegisteredProvider`). Function values (`streamSimple`,
+    // `oauth.*`) stay Lua-side, invocable when their mechanisms land
+    // (WS2.5 auth, WS5 custom streams); the JSON mirror strips them.
+    let register_provider = lua.create_function(|lua, (name, config): (String, mlua::Table)| {
+        if name.trim().is_empty() {
+            return Err(mlua::Error::runtime(
+                "register_provider: name must be a non-empty string",
+            ));
+        }
+        let source = current_source(lua);
+        let ext = ext_entry(lua, &source)?;
+        let providers: mlua::Table = ext.get("providers")?;
+        let entry = match providers.get::<Option<mlua::Table>>(name.as_str())? {
+            Some(existing) => existing,
+            None => {
+                let order: mlua::Table = ext.get("provider_order")?;
+                order.push(name.as_str())?;
+                let entry = lua.create_table()?;
+                providers.set(name.as_str(), &entry)?;
+                entry
+            }
+        };
+        for pair in config.pairs::<mlua::Value, mlua::Value>() {
+            let (k, v) = pair?;
+            entry.set(k, v)?;
+        }
+        Ok(())
+    })?;
+    pi.set("register_provider", register_provider)?;
+
+    // Spec `unregisterProvider`: removal by name regardless of which
+    // extension registered it (the spec's registry is keyed globally);
+    // no effect if the name was never registered.
+    let unregister_provider = lua.create_function(|lua, name: String| {
+        let registry = registry_table(lua)?;
+        let exts: mlua::Table = registry.get("exts")?;
+        let ext_order: mlua::Table = registry.get("ext_order")?;
+        for source in ext_order.sequence_values::<String>() {
+            let source = source?;
+            let Some(ext) = exts.get::<Option<mlua::Table>>(source.as_str())? else {
+                continue;
+            };
+            let providers: mlua::Table = ext.get("providers")?;
+            if providers
+                .get::<Option<mlua::Value>>(name.as_str())?
+                .is_none()
+            {
+                continue;
+            }
+            providers.set(name.as_str(), mlua::Value::Nil)?;
+            let order: mlua::Table = ext.get("provider_order")?;
+            let kept = lua.create_table()?;
+            for entry in order.sequence_values::<String>() {
+                let entry = entry?;
+                if entry != name {
+                    kept.push(entry)?;
+                }
+            }
+            ext.set("provider_order", kept)?;
+        }
+        Ok(())
+    })?;
+    pi.set("unregister_provider", unregister_provider)?;
+
     crate::exec::install(lua, &pi, cwd)?;
     crate::os::install(lua, &pi, cwd)?;
 
@@ -274,6 +349,76 @@ pub(crate) fn tool_meta(def: &mlua::Table) -> mlua::Result<serde_json::Value> {
         map.insert(key, crate::convert::lua_to_json(v)?);
     }
     Ok(serde_json::Value::Object(map))
+}
+
+/// All provider registrations in extension load order, then
+/// per-extension registration order (spec: the runner drains queued
+/// `registerProvider` calls in order; the consumer applies the spec's
+/// global upsert). Returns `(source, name, config)`.
+pub(crate) fn all_providers(lua: &mlua::Lua) -> mlua::Result<Vec<(String, String, mlua::Table)>> {
+    registrations(lua, "providers", "provider_order")
+}
+
+/// JSON mirror of a provider config: function values are stripped at
+/// any depth (functions never cross the bridge — `streamSimple` and the
+/// `oauth` callbacks stay Lua-side for later invocation; non-function
+/// fields like `oauth.name` survive).
+pub(crate) fn provider_meta(config: &mlua::Table) -> mlua::Result<serde_json::Value> {
+    let mut map = serde_json::Map::new();
+    for pair in config.pairs::<mlua::Value, mlua::Value>() {
+        let (k, v) = pair?;
+        if matches!(v, mlua::Value::Function(_)) {
+            continue;
+        }
+        let key = match k {
+            mlua::Value::String(s) => s.to_str()?.to_owned(),
+            mlua::Value::Integer(i) => i.to_string(),
+            _ => continue,
+        };
+        let value = match v {
+            mlua::Value::Table(t) => provider_table_value(&t)?,
+            other => crate::convert::lua_to_json(other)?,
+        };
+        map.insert(key, value);
+    }
+    Ok(serde_json::Value::Object(map))
+}
+
+/// [`provider_meta`] recursion: array tables keep their shape (function
+/// entries would shift positions, so they become `null`); map tables
+/// drop function values.
+fn provider_table_value(t: &mlua::Table) -> mlua::Result<serde_json::Value> {
+    let len = t.raw_len();
+    let mut is_array = len > 0;
+    if is_array {
+        let mut count = 0;
+        for pair in t.pairs::<mlua::Value, mlua::Value>() {
+            let (k, _) = pair?;
+            match k {
+                mlua::Value::Integer(i) if i >= 1 && (i as usize) <= len => count += 1,
+                _ => {
+                    is_array = false;
+                    break;
+                }
+            }
+        }
+        if is_array {
+            is_array = count == len;
+        }
+    }
+    if is_array {
+        let mut arr = Vec::with_capacity(len);
+        for i in 1..=len {
+            let v: mlua::Value = t.get(i)?;
+            arr.push(match v {
+                mlua::Value::Function(_) => serde_json::Value::Null,
+                mlua::Value::Table(inner) => provider_table_value(&inner)?,
+                other => crate::convert::lua_to_json(other)?,
+            });
+        }
+        return Ok(serde_json::Value::Array(arr));
+    }
+    provider_meta(t)
 }
 
 pub(crate) struct ResolvedCommand {

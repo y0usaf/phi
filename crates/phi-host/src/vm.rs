@@ -22,7 +22,7 @@ use std::time::Instant;
 use crate::api;
 use crate::convert::{json_to_lua, lua_to_json};
 use crate::error::{HostError, WATCHDOG_MARKER};
-use crate::{CommandInfo, HostConfig, Outcome, ToolInfo};
+use crate::{CommandInfo, HostConfig, Outcome, ProviderInfo, ToolInfo};
 
 /// Check the watchdog deadline every N VM instructions.
 const NTH_INSTRUCTION: u32 = 1000;
@@ -53,6 +53,11 @@ pub(crate) enum Msg {
     /// `runner.resolveRegisteredCommands()` — collisions get `name:N`).
     Commands {
         reply: SyncSender<Result<Vec<CommandInfo>, HostError>>,
+    },
+    /// Host-side metadata mirror of queued provider registrations (spec:
+    /// the loader's queued `registerProvider` calls, drained in order).
+    Providers {
+        reply: SyncSender<Result<Vec<ProviderInfo>, HostError>>,
     },
     /// Execute a registered tool on the coroutine path.
     CallTool {
@@ -138,6 +143,9 @@ fn vm_main(config: HostConfig, rx: Receiver<Msg>, init_tx: SyncSender<Result<(),
             Msg::Commands { reply } => {
                 let _ = reply.send(commands_mirror(&lua));
             }
+            Msg::Providers { reply } => {
+                let _ = reply.send(providers_mirror(&lua));
+            }
             Msg::CallTool {
                 name,
                 tool_call_id,
@@ -163,6 +171,20 @@ fn tools_mirror(lua: &mlua::Lua) -> Result<Vec<ToolInfo>, HostError> {
     for (source, name, def) in tools {
         let meta = api::tool_meta(&def).map_err(|e| HostError::Lua(e.to_string()))?;
         out.push(ToolInfo { name, source, meta });
+    }
+    Ok(out)
+}
+
+fn providers_mirror(lua: &mlua::Lua) -> Result<Vec<ProviderInfo>, HostError> {
+    let providers = api::all_providers(lua).map_err(|e| HostError::Lua(e.to_string()))?;
+    let mut out = Vec::with_capacity(providers.len());
+    for (source, name, config) in providers {
+        let config = api::provider_meta(&config).map_err(|e| HostError::Lua(e.to_string()))?;
+        out.push(ProviderInfo {
+            name,
+            source,
+            config,
+        });
     }
     Ok(out)
 }
