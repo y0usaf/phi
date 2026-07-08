@@ -34,16 +34,31 @@ crate phi_host
 ├── struct CommandInfo: pub
 ├── struct Host: pub
 ├── struct HostConfig: pub
+├── struct LoadError: pub
+├── struct LoadReport: pub
 ├── struct Outcome: pub
 ├── struct ToolInfo: pub
 ├── mod api: pub(crate)
 │   └── struct ResolvedCommand: pub(crate)
 ├── mod convert: pub(crate)
+├── mod discover: pub
 ├── mod error: pub(crate)
 │   └── enum HostError: pub
 ├── mod exec: pub(crate)
 │   └── struct ExecResult: pub(crate)
 ├── mod os: pub(crate)
+├── mod paths: pub(crate)
+├── mod trust: pub
+│   ├── struct ProjectTrustStore: pub
+│   ├── struct ResolveProjectTrust: pub
+│   ├── struct TrustEntry: pub
+│   ├── enum TrustError: pub
+│   ├── struct TrustEventResult: pub
+│   ├── type TrustFile: pub(self)
+│   ├── struct TrustLock: pub(self)
+│   ├── struct TrustOption: pub
+│   ├── enum TrustResolution: pub
+│   └── struct TrustUpdate: pub
 └── mod vm: pub(crate)
     ├── enum Msg: pub(crate)
     ├── struct WatchdogState: pub(self)

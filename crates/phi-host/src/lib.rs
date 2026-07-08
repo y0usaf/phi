@@ -18,9 +18,12 @@ use std::sync::mpsc::{Sender, sync_channel};
 
 mod api;
 mod convert;
+pub mod discover;
 mod error;
 mod exec;
 mod os;
+mod paths;
+pub mod trust;
 mod vm;
 
 pub use error::HostError;
@@ -71,6 +74,23 @@ pub struct ToolInfo {
     pub meta: serde_json::Value,
 }
 
+/// One extension path that failed to load (spec: the `errors` array of
+/// `LoadExtensionsResult` — `{ path, error }`).
+#[derive(Debug, Clone)]
+pub struct LoadError {
+    pub path: String,
+    pub error: String,
+}
+
+/// Result of loading a batch of extension files (spec:
+/// `LoadExtensionsResult`): loaded paths plus per-path errors — one
+/// failing extension never aborts the batch.
+#[derive(Debug, Clone)]
+pub struct LoadReport {
+    pub loaded: Vec<String>,
+    pub errors: Vec<LoadError>,
+}
+
 /// Host-side metadata mirror of one registered command (spec:
 /// `ResolvedCommand`). When more than one extension registers the same
 /// name, `invocation_name` disambiguates as `name:N` (spec:
@@ -112,6 +132,31 @@ impl Host {
             })
             .map_err(|_| HostError::VmUnavailable)?;
         rx.recv().map_err(|_| HostError::VmUnavailable)?
+    }
+
+    /// Load one on-disk extension file; the path is its source key.
+    pub fn load_file(&self, path: &str) -> Result<(), HostError> {
+        let source = std::fs::read_to_string(path)
+            .map_err(|e| HostError::Io(format!("read '{path}': {e}")))?;
+        self.load(path, &source)
+    }
+
+    /// Load extension files in order, collecting per-path errors (spec:
+    /// `loadExtensions` — `"Failed to load extension: ..."`); discovery
+    /// is [`discover::discover_extension_paths`].
+    pub fn load_extensions(&self, paths: &[String]) -> LoadReport {
+        let mut loaded = Vec::new();
+        let mut errors = Vec::new();
+        for path in paths {
+            match self.load_file(path) {
+                Ok(()) => loaded.push(path.clone()),
+                Err(e) => errors.push(LoadError {
+                    path: path.clone(),
+                    error: format!("Failed to load extension: {e}"),
+                }),
+            }
+        }
+        LoadReport { loaded, errors }
     }
 
     /// Emit an event to every subscribed handler, sequentially in

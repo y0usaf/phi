@@ -35,6 +35,10 @@ pub enum HostError {
 
     #[error("json: {0}")]
     Json(#[from] serde_json::Error),
+
+    /// Host-side I/O failure (e.g. reading an extension file).
+    #[error("io: {0}")]
+    Io(String),
 }
 
 impl HostError {

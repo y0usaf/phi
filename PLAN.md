@@ -69,9 +69,24 @@ on a dedicated VM thread (current-thread tokio); the watchdog budget counts
       path of pi's dirty-repo-guard.ts — full translation when ctx lands),
       `os-demo.lua`. *Pending:* `exec` `options.signal` lands with the
       cancellation mechanism (same step as tool `signal`).
-- [ ] **1.4 Discovery + trust gate.** `loader.ts` + `project-trust.ts`
-      port: global + project `.pi/extensions` discovery, trust store
-      gating project-local Lua.
+- [x] **1.4 Discovery + trust gate.** `loader.ts` discovery half
+      (`discover.rs`: direct `.lua` files, subdir `init.lua`, one level,
+      project `.phi/extensions` → global `~/.phi/agent/extensions` →
+      configured paths, dedup; project dir gated by `project_trusted`) +
+      `trust-manager.ts`/`project-trust.ts` port (`trust.rs`:
+      `ProjectTrustStore` on `trust.json` with mkdir lock,
+      nearest-ancestor lookup, options, `has_project_trust_inputs`,
+      `resolve_project_trusted` → `Decided(bool)` | `Ask` — prompting is
+      the frontend's; headless `Ask` = untrusted). `Host::load_file` /
+      `load_extensions` collect per-path errors (spec `loadExtensions`).
+      `project_trust` event folded via `trust_event_result` (first yes/no
+      wins, undecided falls through). Exerciser:
+      `project-trust.lua` (non-UI path of pi's example; UI branches when
+      ctx lands). *Pending:* spec's `package.json` `pi`-manifest entry
+      rule → WS5 package-manager decision (locked row); spec's
+      `emitProjectTrustEvent` stops dispatch at the first yes/no —
+      `Host::emit` runs all handlers and the fold scans; revisit with the
+      ctx binding if side-effect order becomes observable.
 - [ ] **1.5 Embedded-pack loading + acceptance.** `include_str!` packs
       through the public load path; WS1 acceptance run: an example awaits a
       host future, a hung handler is killed, untrusted `.phi/` prompts
