@@ -7,7 +7,7 @@
 //! kept in the named registry, not a global, so extension code can't
 //! clobber it by accident.
 //!
-//! Surface at WS1.2 (grown only alongside an exercising example):
+//! Surface at WS1.3 (grown only alongside an exercising example):
 //! - `pi.on(event, fn)` — open string vocabulary, no closed enum.
 //! - `pi.sleep(ms)` — first awaitable host future: suspends the handler
 //!   coroutine without burning watchdog budget (superset of pi's
@@ -16,6 +16,10 @@
 //!   per-extension map, re-registration replaces in place.
 //! - `pi.register_command(name, opts)` — spec `registerCommand`
 //!   (`loader.ts`): `{ name, ...opts }` into the per-extension map.
+//! - `pi.exec(command, args?, options?)` — spec `ExtensionAPI.exec`
+//!   (`exec.rs` ← `core/exec.ts`).
+//! - `pi.fs` / `pi.path` / `pi.env` / `pi.cwd()` — OS bindings (`os.rs`;
+//!   ambient Node in the spec, explicit bindings under divergence 1).
 
 use std::collections::{HashMap, HashSet};
 
@@ -65,8 +69,9 @@ fn ext_entry(lua: &mlua::Lua, source: &str) -> mlua::Result<mlua::Table> {
 
 /// Create the registration table and build the `pi` API table. The table
 /// is passed to each extension chunk as its single argument; it is *not*
-/// installed as a global.
-pub(crate) fn build(lua: &mlua::Lua) -> mlua::Result<mlua::Table> {
+/// installed as a global. `cwd` is the host working directory (spec: the
+/// loader's injected `cwd`) — the `pi.exec` default and `pi.cwd()`.
+pub(crate) fn build(lua: &mlua::Lua, cwd: &str) -> mlua::Result<mlua::Table> {
     let registry = lua.create_table()?;
     registry.set("events", lua.create_table()?)?;
     registry.set("exts", lua.create_table()?)?;
@@ -169,6 +174,9 @@ pub(crate) fn build(lua: &mlua::Lua) -> mlua::Result<mlua::Table> {
         Ok(())
     })?;
     pi.set("register_command", register_command)?;
+
+    crate::exec::install(lua, &pi, cwd)?;
+    crate::os::install(lua, &pi, cwd)?;
 
     Ok(pi)
 }

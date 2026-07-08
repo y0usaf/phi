@@ -88,9 +88,17 @@ pub(crate) fn spawn(config: HostConfig) -> Result<Sender<Msg>, HostError> {
 fn vm_main(config: HostConfig, rx: Receiver<Msg>, init_tx: SyncSender<Result<(), String>>) {
     let init = || -> Result<(mlua::Lua, mlua::Table, tokio::runtime::Runtime), String> {
         let lua = mlua::Lua::new();
-        let pi = api::build(&lua).map_err(|e| e.to_string())?;
+        // Host cwd for the OS bindings (spec: the loader's injected cwd).
+        let cwd = config.cwd.clone().unwrap_or_else(|| {
+            std::env::current_dir()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_else(|_| ".".to_owned())
+        });
+        let pi = api::build(&lua, &cwd).map_err(|e| e.to_string())?;
+        // enable_all: the process driver (pi.exec) needs the io/signal
+        // drivers in addition to time.
         let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_time()
+            .enable_all()
             .build()
             .map_err(|e| e.to_string())?;
         Ok((lua, pi, rt))

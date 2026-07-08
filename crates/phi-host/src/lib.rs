@@ -19,6 +19,8 @@ use std::sync::mpsc::{Sender, sync_channel};
 mod api;
 mod convert;
 mod error;
+mod exec;
+mod os;
 mod vm;
 
 pub use error::HostError;
@@ -32,12 +34,17 @@ pub struct HostConfig {
     /// Watchdog budget per host→Lua dispatch, in milliseconds of Lua
     /// execution time.
     pub dispatch_timeout_ms: i64,
+    /// Working directory for the OS bindings — the `pi.exec` default cwd,
+    /// `pi.cwd()`, and the base for `pi.path.resolve`/`relative` (spec:
+    /// the loader's injected `cwd`). `None` = process cwd at startup.
+    pub cwd: Option<String>,
 }
 
 impl Default for HostConfig {
     fn default() -> Self {
         Self {
             dispatch_timeout_ms: DEFAULT_DISPATCH_TIMEOUT_MS,
+            cwd: None,
         }
     }
 }

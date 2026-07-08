@@ -41,6 +41,9 @@ crate phi_host
 ├── mod convert: pub(crate)
 ├── mod error: pub(crate)
 │   └── enum HostError: pub
+├── mod exec: pub(crate)
+│   └── struct ExecResult: pub(crate)
+├── mod os: pub(crate)
 └── mod vm: pub(crate)
     ├── enum Msg: pub(crate)
     ├── struct WatchdogState: pub(self)

@@ -14,6 +14,7 @@ use phi_host::{Host, HostConfig, HostError};
 fn host_with_budget(ms: i64) -> Host {
     Host::new(HostConfig {
         dispatch_timeout_ms: ms,
+        ..HostConfig::default()
     })
     .expect("host starts")
 }

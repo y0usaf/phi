@@ -56,8 +56,19 @@ on a dedicated VM thread (current-thread tokio); the watchdog budget counts
       (signal, on_update, ctx) land with their host mechanisms
       (cancellation, update streaming, context binding) in later steps;
       command handlers likewise run as `handler(args)` until ctx exists.
-- [ ] **1.3 OS bindings.** fs / process spawn / env / path — awaitable
-      where pi's are async; each binding lands with an exerciser.
+- [x] **1.3 OS bindings.** `pi.exec(command, args?, opts?)` — 1:1 port of
+      the spec's `core/exec.ts` (`exec.rs`): never throws, spawn failure →
+      `code=1`, timeout → SIGTERM then SIGKILL+5s with `killed=true`,
+      post-exit stdio grace (`EXIT_STDIO_GRACE_MS`), cwd defaults to
+      `HostConfig.cwd` (spec: the loader's injected cwd). `pi.fs.*` (async
+      tokio — await is watchdog-free; errors throw, `pcall` = `try/catch`),
+      `pi.path.*` (Node posix semantics, pinned by unit tests), `pi.env`
+      (read-only view; mutation raises — revisit if a translation needs
+      env writes), `pi.cwd()` — ambient Node in pi, explicit bindings
+      under divergence 1 (`os.rs`). Exercisers: `exec-demo.lua` (the non-UI
+      path of pi's dirty-repo-guard.ts — full translation when ctx lands),
+      `os-demo.lua`. *Pending:* `exec` `options.signal` lands with the
+      cancellation mechanism (same step as tool `signal`).
 - [ ] **1.4 Discovery + trust gate.** `loader.ts` + `project-trust.ts`
       port: global + project `.pi/extensions` discovery, trust store
       gating project-local Lua.
