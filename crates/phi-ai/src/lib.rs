@@ -11,8 +11,9 @@
 //! - [`protocols`]: wire mapping per API family (WS2.3)
 //! - [`util`]: protocol-free helper ports (`json-parse`,
 //!   `sanitize-unicode`, `headers`)
-//! - registry: catalog as data + resolution (WS2.4)
+//! - [`registry`]: catalog as data + resolution (WS2.4)
 
 pub mod protocols;
+pub mod registry;
 pub mod transport;
 pub mod util;

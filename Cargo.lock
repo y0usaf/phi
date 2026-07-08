@@ -650,6 +650,7 @@ dependencies = [
  "httpdate",
  "phi-ai-types",
  "reqwest",
+ "serde",
  "serde_json",
  "thiserror",
  "tokio",
