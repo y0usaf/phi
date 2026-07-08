@@ -1,170 +1,169 @@
-# phi — design & roadmap (rebuild)
+# phi — design & roadmap (port)
 
-φ is a coding agent in Rust: **pi's shape** (small flat-loop harness, features
-arrive as extensions) with a **Lua-canonical extension surface** generous
-enough that the mux, the RLM engine, and anything a user dreams up are packs
-on a minimal substrate — including the ones we ship. This document is the
-spine of the `rebuild` branch, which restarts the trunk from the salvage set
-below; the pre-rebuild tree is preserved on `main` (final state `fd373e0`).
+φ is **pi, ported to Rust** — an exact port of
+[pi](https://github.com/badlogic/pi-mono) **v0.79.0**, pinned at `ref/pi`
+commit `c5582102`, which is the spec. Where this document and the spec
+disagree, the spec wins unless the divergence is one of the three below or
+has a row in the locked-decisions table. This is the spine of the `port`
+branch; the pre-port trees are preserved on `main` (final `fd373e0`) and
+`rebuild` (final `e8cb418`) — git is the attic.
 
-## Vision
+## The three divergences
 
-- **As small at the core as pi** (`ref/pi` is vendored as the reference):
-  substrate = event loop + registries + Lua host + provider layer + session
-  log. If the substrate creeps past ~5k lines, something snuck in.
-- **As extensible as pi, through Lua**: pi achieves extreme customizability
-  with a tiny vocabulary — six `register_*` functions, one event union, a
-  `ctx` handle, and 77 example extensions that exercise every hook. We port
-  that shape, not phi-ext's dozen `*Spec` types and closed enums.
-- **Built via its own surface**: shipped defaults are embedded `.lua` files
-  registered through the same API user extensions use. The user-facing
-  surface is the tested surface by construction.
-- **Provider auth is a keeper**: OAuth (Anthropic/Codex/Cursor incl. the
-  protobuf/JWT work), SSE streaming, retry — `phi-ai*` survives verbatim.
+Everything not listed here must look and feel **1:1 with pi**. The
+side-by-side test — phi and pi v0.79.0 in adjacent terminals, same session,
+indistinguishable — is the standing acceptance criterion for every
+workstream.
+
+1. **Lua, not TypeScript.** Extensions and configuration are Lua (mlua,
+   vendored 5.4). Cost accepted: pi's 77 examples arrive as translations,
+   not copy-paste — and each translation is a conformance test of the
+   bridge. A pi example that *cannot* translate is a bridge bug, not an
+   example we skip.
+2. **Everything first-party is Lua on the public extension surface — no
+   Rust shortcutting.** Rust is mechanism only. If a piece has product
+   behavior a user could plausibly want to change, it ships as embedded
+   `.lua` registered through the same API user extensions use. The Rust
+   substrate provides what a Lua table cannot express: the runtime, OS and
+   terminal bindings, and provider transport. Placement calls are recorded
+   in the locked-decisions table; the default is Lua.
+3. **The surface may exceed pi.** Where Lua + bindings can express more
+   than pi's API, we grow past it — still under the exerciser rule (below).
+   Superset, never dialect: pi's surface translated is the floor.
+
+Two standing corollaries carry over from the rebuild:
+
+- **No hook without an exerciser** — every API addition lands with an
+  example extension in `examples/` in the same commit. The examples
+  directory is the conformance suite and the docs.
+- **No closed enums at the seam** — hosts dispatch on registered string
+  keys, never match on variants.
 
 ## Doctrine conformance
 
 | Doctrine | Status | Notes |
 |---|---|---|
-| 01 extension-first core | follows | The Rule carries over from the old PLAN.md. Sharpened: the API is defined by what a Lua table can express; a capability that can't cross the bridge doesn't ship. |
-| 02 snapshot in, actions out | follows | Events in as tables, results out as tables; per-dispatch watchdog on the Lua message thread. Hot-path exception: none yet — declare here if one appears. |
-| 03 daemon + thin client | deferred | Applies to the future mux pack. Open question (decide before the mux port): is the daemon the substrate's process model, or part of the pack? |
+| 01 extension-first core | follows (strengthened) | Divergence 2 is The Rule with the escape hatch removed: first-party code is not allowed to shortcut through Rust. |
+| 02 snapshot in, actions out | follows | Events in as tables, results out as tables; per-dispatch watchdog. Async seam: handlers may *await host futures* via coroutines (locked below) — still no live `&mut` host references. |
+| 03 daemon + thin client | deferred | Applies to the future mux pack (post-parity, first-party era). |
 | 04 declarative front, idempotent executor | n/a | No system-config surface. |
-| 05 one declaration mechanism | follows | Every unit of a kind — tool, command, provider, flag, shortcut, renderer, event handler — is declared via `register_*` / `on(event)`. No closed enums at the seam: hosts dispatch on registered string keys, never match on variants (the `UiAction` lesson). |
-| 06 bare core must boot | follows | Bare = `phi --login`, `phi --list-models`, `phi "prompt"` streaming a completion, with zero extensions loaded. CI: `nix build .#phi-app` + workspace tests. |
+| 05 one declaration mechanism | follows | Every unit of a kind is declared via `register_*` / `on(event)`, per pi's vocabulary. |
+| 06 bare core must boot | follows | Bare = substrate with zero packs: `phi --login`, `phi --list-models`, `phi "prompt"` streaming a raw completion (no tool loop — the loop is a pack). CI-checked. |
 | 07 nix source of truth | follows | crane flake; `cargo fmt`/`clippy` sanctioned exceptions. |
 
 ## Locked decisions
 
 | Decision | Choice | Rationale |
 |---|---|---|
-| Rebuild vs refactor | Rebuild on a new trunk, salvage by transplant | The extension-first endpoint required rewriting the three host crates (`phi-session-tui`, `phi-mux`, `phi-rlm`) either way; greenfield skips the both-worlds tax and fixes the seam by construction. |
-| v0 scope | pi in Rust: flat tool-call loop, native read/edit/bash/grep tools, interactive TUI | Mux and RLM are not v0; they return later as packs. This was already PLAN.md's stated end state ("mux and RLM as extensions on a minimal substrate"). |
-| Extension language | Lua (mlua, vendored 5.4) | Lightest embed, already proven in-tree, threading model paid for. Cost accepted: no pi-ecosystem copy-paste. JS runtime revisitable if sharing demands it. |
-| API definition order | Lua-first: the bridge is the canonical API; the Rust trait is an internal detail | The old bridge was Rust-trait-first and Lua silently lost fidelity (`actions: Vec::new()`, fixed overlay renderer). Inverting the order makes second-class Lua structurally impossible. |
-| API growth rule | Generous surface, but **no hook without an exerciser** — every hook lands with an example extension in `examples/` in the same commit | Resolves the "no API without a consumer" debate: build ahead of demand for sharing's sake, but nothing ships unexercised (the `register_shortcut`/`register_message_renderer` lesson). The examples directory is the conformance suite and the docs. |
-| Shipped defaults | Embedded `.lua`, loaded through the public API | "We build via the extension surface too", made mechanical. |
-| Frontend seam | Headless substrate: the core emits the event stream and consumes input actions, never renders. A frontend is any pack bridging the two; the bare core's one-shot stdout printer is the degenerate frontend. Default frontend (WS3): inline TUI on `phi-tui`'s scrollback + live-region model, forgecode-minimal chrome, no alt screen. | Renderer swappable by extension (alt-screen, GUI, …) without touching the substrate. In-process frontends are packs; Lua-*authored* frontends wait on `phi-tui` bindings grown per the exerciser rule; out-of-process frontends (GUI/web) ride the doctrine-03 wire-protocol decision at the mux pack. |
-| Sandboxing | None in core; full user permissions (pi's stance). Trust gates *extension loading* only | Written decision so plain-Lua `os`/`io` access is a choice, not an accident. |
-| Salvage policy | Anything not in the keep set is deleted; resurrect from `main` history when a port needs it | Git is the attic. No dead code rides along "just in case". |
+| Spec | pi v0.79.0, `ref/pi` @ `c5582102`, frozen | The port targets a snapshot and then diverges into first-party work. Upstream pi changes are cherry-picked deliberately, each recorded here — never tracked wholesale. |
+| Port vs rebuild-with-own-choices | Exact port | The rebuild's own design choices (forgecode chrome, own event vocabulary) produced a tool that is not pi-polished. Pi's ~65k lines of behavior are the product; transcribing beats re-deriving. |
+| From scratch vs continue | New trunk from `rebuild`, salvage by transplant | Spec-first beats tree-first: the workspace mirrors pi's packages so parity is auditable module-by-module. Transplants: `phi-ai*` OAuth/SSE work, crane flake, `phi-host` thread/watchdog, `phi-tui` terminal layer. Everything else is replaced by ports; resurrect from branch history when a port wants it. |
+| Extension language | Lua (divergence 1) | JS runtime considered for verbatim example reuse; rejected — embed weight, and translation-as-conformance is judged worth the cost. Final. |
+| Mechanism/policy line | Rust substrate = Lua runtime (registries, event bus, watchdog), provider transport (`packages/ai` port: HTTP/SSE/OAuth/streaming), terminal mechanism (`packages/tui` port: raw mode, differential cell renderer, input decoding, components) exposed as bindings, OS bindings (fs, process spawn, env, path). Lua = tools, agent loop orchestration, slash commands, frontend/chrome, compaction policy, skills, prompt templates, themes, session naming — everything with behavior. | Divergence 2 made mechanical. A placement that puts behavior in Rust needs a row here. |
+| Async seam | Lua handlers run as coroutines and may await host futures (LLM streams, subprocesses, timers) | Required for the loop and the frontend to be Lua-authored (divergence 2). Settled before the substrate lands because retrofitting it is the expensive mistake. |
+| Workspace layout | `crates/phi-ai{,-types,-auth}` ← `packages/ai`; `crates/phi-agent` ← `packages/agent`; `crates/phi-tui` ← `packages/tui`; `crates/phi-app` ← `packages/coding-agent` (binary `phi`); `crates/phi-host` ← `core/extensions` (JS runtime → Lua runtime); `crates/phi-session` ← `core/session-manager` types | Crate granularity may differ from package granularity (Rust conventions); *module structure inside each crate mirrors pi's `src/`* so parity audits are `diff`-shaped. |
+| `phi-grid` | Deleted from the workspace | Not in pi. Resurrect from the attic when the first-party mux pack returns. |
+| Shipped defaults | Embedded `.lua` via `include_str!`, loaded through the public API | Divergence 2. The flake source filter must include every embedded file type. |
+| Sandboxing / permissions | pi's stance: none in core, full user permissions; trust gates extension loading only (`core/project-trust` port) | Written decision so plain-Lua `os`/`io` access is a choice, not an accident. |
+| Extension distribution | pi's package-manager installs from npm; phi adapts to Lua distribution | Mechanism undecided — decide when the WS5 port reaches `package-manager.ts`, not before. |
+| 1:1 acceptance | Every UI-touching workstream closes with a side-by-side session against pi v0.79.0 | "Looks and feels exactly like pi" is testable or it is nothing. |
 
 ## Architecture
 
-Keep set (after the strip; roles unchanged):
+Target shape (crate ← pi source, sizes are the spec's):
 
 ```
 crates/
-  phi-ai-types   core LM/message/model types            (mechanism)
-  phi-ai-auth    OAuth flows, token storage/refresh     (mechanism)
-  phi-ai         providers, SSE streaming, registry     (mechanism)
-  phi-tui        terminal primitives: editor, markdown,
-                 keymap, raw-mode terminal              (mechanism)
-  phi-grid       damage-tracked ANSI cell renderer      (mechanism; dormant
-                                                         until the mux pack)
-  phi-app        bare-core binary: login, list-models,
-                 one-shot streamed completion           (policy, minimal)
+  phi-ai-types    ← packages/ai types           (mechanism)
+  phi-ai-auth     ← packages/ai oauth           (mechanism; transplant, largely done)
+  phi-ai          ← packages/ai (~31k)          (mechanism: all providers, streaming,
+                                                 registry, overflow, images)
+  phi-agent       ← packages/agent              (mechanism: loop *primitives*;
+                                                 orchestration is Lua)
+  phi-tui         ← packages/tui (~12k)         (mechanism: differential component
+                                                 tree, editor, autocomplete, kill-ring,
+                                                 undo — exposed as Lua bindings)
+  phi-host        ← core/extensions (~3.6k)     (mechanism: Lua runtime, registries,
+                                                 event bus, watchdog, loader, trust)
+  phi-session     ← core/session-manager types  (mechanism: JSONL store)
+  phi-app         ← packages/coding-agent       (thin binary: cli args, config,
+                                                 mode selection; behavior is Lua)
+    src/builtins/*.lua                          (policy: tools, loop, interactive
+                                                 frontend, slash commands, compaction,
+                                                 skills, prompt templates, themes)
+examples/                                       (77 pi examples, translated —
+                                                 the conformance suite)
 ```
-
-Built since the strip (in roadmap order): `phi-host` (Lua runtime, registries,
-event bus, watchdog), the agent loop pack (`phi-agent`), the interactive TUI
-(in `phi-app`'s chat frontend), and `phi-session` (the JSONL session log).
-`phi-grid` waits for the mux pack.
-
-Resurrection candidates on `main`: `phi-lua`'s `LuaMsg` thread model /
-discovery / loader; `phi-session`'s JSONL store types; the Python prelude's
-invariants (read-before-edit, hashline cache, spill) for the RLM pack;
-`phi-mux` wholesale for the mux pack.
 
 ## Extension surface contract
 
-pi's shape, over the Lua bridge:
+pi's surface (`core/extensions/types.ts`, 1.6k lines) translated to the Lua
+bridge — the bridge is the canonical API; any Rust trait behind it is an
+internal detail:
 
-- **Read path**: handlers receive plain Lua tables (event payload +
-  snapshot); no live host references cross the bridge.
-- **Write path**: handlers return plain tables (result / queued actions);
-  the host validates against the registered key, never a variant match.
-- **Registries**: `register_tool`, `register_command`, `register_provider`,
-  `register_flag`, `register_shortcut`, `register_renderer` — grown only
-  alongside an exercising example.
-- **Events**: one flat vocabulary (pi's ~23: session/turn/message/tool
-  lifecycle, `before_provider_request`, input, trust…), subscribed via
-  `on(name, fn)`.
-- **Watchdog**: every host→Lua dispatch is bounded (default 5000 ms —
-  `phi_host::DEFAULT_DISPATCH_TIMEOUT_MS`).
-- **Frontends**: the substrate never renders; a frontend subscribes to the
-  same event stream and feeds input back as actions. Swapping inline TUI →
-  alt-screen → GUI is a pack choice, not a core change.
-- **Async seam**: settle before the host lands — whether a Lua handler can
-  await host futures (LLM call, subprocess) or only queue actions.
-  Retrofitting this is the expensive mistake; decide it first.
-
-## Deferred (and why)
-
-- **Mux pack** — after the agent works. Carries the doctrine-03 question
-  (daemon as substrate vs. pack). `phi-grid` waits for it.
-- **RLM pack** — the old differentiator returns as the flagship *non-default*
-  pack; proves the loop-as-pack seam. Prelude invariants come back with it.
-- **JS/TS extension runtime** — lost to Lua on weight; revisit only if
-  extension sharing outgrows Lua.
-- **Permission system / OS sandboxing** — rejected (pi's stance), unchanged
-  from old PLAN.md.
-- **MCP, LSP, memory, hooks-as-config** — extension territory, after the
-  surface exists.
-- **Old PLAN.md process** — 1,854 lines, 12 workstreams, audits of audits.
-  This document stays a spine; workstream detail lives in issues/commits.
+- **Read path**: plain Lua tables in (event payload + snapshot); no live
+  host references cross the bridge.
+- **Write path**: plain tables out (results / queued actions); validated
+  against the registered key.
+- **Await**: handlers are coroutines; host futures (provider streams,
+  subprocesses) are awaitable.
+- **Registries and events**: pi's vocabulary, translated 1:1, then grown
+  (divergence 3) only alongside an exercising example.
+- **Watchdog**: every host→Lua dispatch is bounded
+  (`phi_host::DEFAULT_DISPATCH_TIMEOUT_MS`).
+- **Frontends**: the substrate never renders. pi's interactive mode is the
+  default frontend pack, authored in Lua over `phi-tui` bindings. The bare
+  core's one-shot printer is the degenerate frontend.
 
 ## Roadmap
 
-- [x] **WS0 — Strip.** Delete everything outside the keep set; `phi-app`
-      becomes the bare core. *Accept: `nix flake check` passes; `nix run --
-      --list-models` works; `nix run -- "2+2?"` streams an answer from a
-      logged-in provider; workspace is only the keep-set crates.*
-- [x] **WS1 — Lua host.** `phi-host`: mlua runtime on a message thread,
-      watchdog, `register_*` registries, event bus, discovery
-      (`~/.config/phi/`, `.phi/`, embedded), trust gate for project-local
-      extensions. *Accept: a `hello.lua` registers a command and an event
-      handler; a hung handler is killed by the watchdog; an untrusted
-      `.phi/` prompts; `phi-host` has no terminal dependencies (headless
-      substrate per the frontend-seam decision).*
-- [x] **WS2 — The loop as a pack.** Flat tool-call agent loop; native
-      read/edit/bash/write tools registered through the same `register_tool`
-      a user would call; one-shot mode drives it. *Accept: `phi "fix the
-      failing test"` edits a file and runs bash, end to end, with the loop
-      selected by config rather than hardwired.* (Live acceptance pending
-      provider credit — see PLAN.md WS2.4.)
-- [x] **WS3 — First frontend pack (inline TUI).** Chat frontend on `phi-tui`
-      (scrollback + bottom live region, forgecode-minimal chrome, no alt
-      screen), selected like any other frontend rather than hardwired; chrome
-      (footer/overlays) extension-rendered. *Accept: interactive session with
-      streaming, editor, slash commands sourced only from the command
-      registry.*
-- [~] **WS4 — Examples as conformance.** Port pi's examples one at a time
-      (start: hello, commands, permission-gate, custom-provider,
-      message-renderer, custom-footer). Each port either passes or grows the
-      API. *Accept: ≥15 examples run; every registry and event has ≥1
-      exerciser.*
-      **Landed:** `register_provider` + `examples/custom-provider.lua` —
-      `phi.register_provider(name, config)` grafts models onto the
-      `Registry` via `Registry::extended`; inline `api_key` becomes a
-      runtime-only auth override. Extension providers visible in
-      `--list-models`, `--model`, and `/model`. The *entire* model catalog
-      arrives this way: there is no embedded models.json — the first-party
-      providers (anthropic, openai, cursor, neuralwatt) are
-      `phi-app/src/builtins/providers.lua`, registered through the same
-      public door, and `Registry::builtin()` carries only the API protocol
-      implementations. Re-registering a provider name replaces it, so user
-      extensions can override first-party providers.
-      **Landed:** session-tree navigation — `/tree` + double-Esc (idle,
-      empty editor) open `phi-tui`'s `TreeBrowser` (a faithful port of pi's
-      `TreeSelectorComponent`); Enter navigates the leaf in place via
-      `SessionStore::branch` and rebuilds the transcript from the
-      root→leaf path. `/fork` opens a user-message selector and
-      `SessionStore::create_branched_session` writes a fresh session file
-      containing only that path (under fresh ids), seeds the editor with
-      the forked message, and switches the live store. Tree, fork, and the
-      label editor are extension-agnostic surface exercised by the same
-      `action` dispatch as `/model`/`/login`.
-- [ ] **WS5 — RLM pack.** *Accept: RLM selectable via config; default
-      remains the flat loop; no RLM-specific branches in the substrate.*
-- [ ] **WS6 — Mux pack.** Decide doctrine-03 question first. *Accept: mux
-      runs as a pack; `phi-grid` is its renderer; substrate unmodified.*
+Port order = dependency order. Each workstream's acceptance is parity
+against `ref/pi`, module-by-module, plus the side-by-side test where UI is
+involved.
+
+- [ ] **WS0 — Re-found.** Land this document; realign the workspace to the
+      layout table (delete `phi-grid`, delete the forgecode chrome and the
+      rebuild's own frontend); reset PLAN.md as the port tracker; regenerate
+      ARCHITECTURE.md. *Accept: `nix flake check` passes on the stripped
+      tree; bare core (doctrine 06) still boots.*
+- [ ] **WS1 — Substrate.** `phi-host` finalized: coroutine async seam, OS
+      bindings (fs/proc/env/path), discovery, trust gate, embedded-pack
+      loading. *Accept: an example awaits a host future; a hung handler is
+      killed; untrusted `.phi/` prompts.*
+- [ ] **WS2 — `packages/ai` parity.** Complete the phi-ai port: every
+      provider (anthropic, openai completions+responses, codex, google,
+      vertex, bedrock, azure, mistral, cloudflare, copilot, images),
+      overflow, model registry. *Accept: `--list-models` output matches pi's
+      catalog; streaming/auth verified per provider where credentials
+      exist.*
+- [ ] **WS3 — `packages/tui` parity.** Port the component tree: differential
+      renderer (`tui.ts`), editor, autocomplete, select-list, markdown,
+      loaders, kill-ring, undo-stack, images — with Lua bindings for every
+      component. *Accept: component behavior matches pi's; bindings
+      exercised by examples.*
+- [ ] **WS4 — `packages/agent` as a Lua pack.** Loop primitives in
+      `phi-agent`; orchestration (`agent-loop.ts` semantics: steering,
+      follow-up queue, error-as-tool-result) in embedded Lua. *Accept:
+      one-shot `phi "fix the failing test"` edits and runs bash end to end;
+      loop replaceable via config.*
+- [ ] **WS5 — `coding-agent` core parity.** Tools (read/edit/bash/write/
+      grep/find/ls + truncation and output-accumulator semantics) as Lua
+      over bindings; session-manager, settings-manager, resource-loader
+      (skills, prompt-templates, themes), compaction, keybindings,
+      slash commands, project trust. *Accept: each module has a named pi
+      counterpart with matching behavior; placement per the
+      mechanism/policy line.*
+- [ ] **WS6 — Interactive mode.** pi's `modes/interactive` (~15k) as the
+      default Lua frontend pack over `phi-tui` bindings. *Accept: the
+      side-by-side test — chrome, keybindings, overlays, footer, theming
+      indistinguishable from pi v0.79.0.*
+- [ ] **WS7 — Modes & periphery.** print-mode, RPC mode, export-html,
+      session-picker, startup UI, cli args parity. *Accept: `phi --help`
+      surface matches pi's; RPC demo example runs.*
+- [ ] **WS8 — Examples as conformance.** All 77 pi examples translated to
+      Lua. *Accept: every example runs or has a locked-decision row
+      explaining why not; every registry and event has ≥1 exerciser.*
+- [ ] **WS9 — First-party era.** Post-parity: RLM pack, mux pack (resurrect
+      `phi-grid`, decide doctrine-03), surface growth beyond pi
+      (divergence 3). All of it Lua on the public surface — divergence 2
+      does not expire when parity lands.
