@@ -8,6 +8,7 @@
 //! Module structure mirrors the spec's `src/` so parity audits stay
 //! diff-shaped; modules arrive with their workstreams.
 
+pub mod builtins;
 pub mod cli;
 pub mod config;
 pub mod core;

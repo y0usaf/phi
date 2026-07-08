@@ -759,6 +759,7 @@ dependencies = [
  "phi-ai",
  "phi-ai-auth",
  "phi-ai-types",
+ "phi-host",
  "phi-tui",
  "serde",
  "serde_json",

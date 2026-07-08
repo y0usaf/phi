@@ -18,6 +18,7 @@ graph TD
   phi_app["phi-app"] --> phi_ai["phi-ai"]
   phi_app["phi-app"] --> phi_ai_auth["phi-ai-auth"]
   phi_app["phi-app"] --> phi_ai_types["phi-ai-types"]
+  phi_app["phi-app"] --> phi_host["phi-host"]
   phi_app["phi-app"] --> phi_tui["phi-tui"]
 ```
 
@@ -210,6 +211,7 @@ crate phi_ai_types
 ```
 
 crate phi_app
+├── mod builtins: pub
 ├── mod cli: pub
 │   ├── mod args: pub
 │   │   ├── struct Args: pub

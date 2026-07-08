@@ -8,7 +8,11 @@
 //! - `pi.fs.*` is async through tokio on the coroutine seam: callers just
 //!   call; the suspension while the host does I/O is watchdog-free.
 //!   Errors are thrown as Lua errors (Node's sync fs throws → `pcall` is
-//!   the `try/catch` translation); `exists` never throws.
+//!   the `try/catch` translation); `exists` never throws. `read_file` is
+//!   the `readFileSync(p, "utf-8")` translation (UTF-8-strict);
+//!   `read_bytes` is the `readFileSync(p)` Buffer translation — a
+//!   binary-safe Lua string. `realpath` is Node `fs.realpath` (throws
+//!   when the path does not exist).
 //! - `pi.path.*` matches Node's `path.posix` semantics, pinned by the
 //!   unit tests below (examples from the Node docs).
 //! - `pi.env` is a read-only view of the process environment
@@ -232,6 +236,16 @@ fn install_fs(lua: &mlua::Lua, pi: &mlua::Table) -> mlua::Result<()> {
     )?;
 
     fs.set(
+        "read_bytes",
+        lua.create_async_function(|lua, path: String| async move {
+            let bytes = tokio::fs::read(&path)
+                .await
+                .map_err(|e| io_err("read_bytes", &path, &e))?;
+            lua.create_string(&bytes)
+        })?,
+    )?;
+
+    fs.set(
         "exists",
         lua.create_async_function(|_, path: String| async move {
             Ok(tokio::fs::try_exists(&path).await.unwrap_or(false))
@@ -293,6 +307,16 @@ fn install_fs(lua: &mlua::Lua, pi: &mlua::Table) -> mlua::Result<()> {
             tokio::fs::create_dir_all(&path)
                 .await
                 .map_err(|e| io_err("mkdir", &path, &e))
+        })?,
+    )?;
+
+    fs.set(
+        "realpath",
+        lua.create_async_function(|_, path: String| async move {
+            let real = tokio::fs::canonicalize(&path)
+                .await
+                .map_err(|e| io_err("realpath", &path, &e))?;
+            Ok(real.to_string_lossy().into_owned())
         })?,
     )?;
 

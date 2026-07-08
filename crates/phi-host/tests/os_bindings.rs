@@ -276,6 +276,8 @@ fn os_demo_exerciser_loads_and_runs() {
     assert!(message.contains("base=notes.txt"), "got: {message}");
     assert!(message.contains("ext=.txt"), "got: {message}");
     assert!(message.contains("bytes=14"), "got: {message}");
+    assert!(message.contains("raw=14"), "got: {message}");
+    assert!(message.contains("real_base=phi-os-demo"), "got: {message}");
     assert!(message.contains("lines=2"), "got: {message}");
     assert!(message.contains("exists_after=false"), "got: {message}");
 }

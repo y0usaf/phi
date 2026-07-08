@@ -17,15 +17,19 @@ pi.register_command("os-demo", {
     pi.fs.append_file(file, "line 2\n")
 
     local text = pi.fs.read_file(file)
+    local raw = pi.fs.read_bytes(file) -- Buffer read: binary-safe Lua string
+    local real = pi.fs.realpath(dir) -- canonical path (symlinks resolved)
     local st = pi.fs.stat(file)
     local names = pi.fs.read_dir(dir)
     pi.fs.remove_file(file)
 
-    return ("cwd=%s base=%s ext=%s bytes=%d lines=%d entries=%d exists_after=%s"):format(
+    return ("cwd=%s base=%s ext=%s bytes=%d raw=%d real_base=%s lines=%d entries=%d exists_after=%s"):format(
       pi.cwd(),
       pi.path.basename(file),
       pi.path.extname(file),
       st.size,
+      #raw,
+      pi.path.basename(real),
       select(2, text:gsub("\n", "\n")),
       #names,
       tostring(pi.fs.exists(file))

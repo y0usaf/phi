@@ -109,4 +109,33 @@ bindings). Steps refine as the spec modules are read:
 - [ ] **3.3 Tools as Lua.** read/edit/bash/write/grep/find/ls over the
       WS1 bindings with truncation + output-accumulator semantics; land
       the carried tool-`execute` params (signal, on_update, ctx) with
-      their host mechanisms.
+      their host mechanisms. Sliced:
+  - [x] **3.3a Substrate + read/write/ls.** Embedded pack
+        `crates/phi-app/src/builtins/tools/` (one fragment per spec
+        module, concatenated into one chunk by `builtins/mod.rs`):
+        `truncate.lua`, `path-utils.lua` (+ `utils/paths.ts`
+        normalize/resolve slice), `mime.lua`, `file-mutation-queue.lua`
+        (passthrough — vm.rs runs one dispatch at a time; real queuing
+        with WS4 parallel dispatch), `read.lua`, `write.lua`, `ls.lua`.
+        Host mechanisms: `pi.fs.read_bytes` (Buffer read),
+        `pi.fs.realpath` (exercised in os-demo.lua). Golden suite:
+        `crates/phi-app/tests/tools.rs` ports the spec’s
+        `tools.test.ts` read/write/ls sections. Divergences in the
+        fragment docs: `truncatedBy: null` → absent key; byte counts
+        where JS counts UTF-16 units; per-byte U+FFFD; ls sort is
+        lowercased byte order, not ICU. Carried: image auto-resize
+        (Photon) needs an image mechanism — images pass through
+        unresized; resolveReadPath NFD variants need a
+        unicode-normalize binding; render callbacks land with WS6
+        bindings; signal/on_update/ctx still pending (3.3c lands
+        on_update with bash).
+  - [ ] **3.3b Edit.** `edit.lua` + `edit-diff.lua` (fuzzy matching,
+        multi-edit, diff collapse) with the spec’s edit sections +
+        fuzzy-matching suite as goldens.
+  - [ ] **3.3c Bash.** `bash.lua` + output-accumulator + `utils/shell.ts`
+        slice; needs host mechanisms: streaming exec (`onData`) +
+        `on_update` tool param + process-tree kill — land together with
+        exercisers.
+  - [ ] **3.3d Grep + find.** `grep.lua`, `find.lua` (ripgrep/fd
+        subprocess ports, flag-like pattern handling, gitignore
+        semantics) with their spec test sections.
