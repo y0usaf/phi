@@ -161,6 +161,25 @@ CI-checked from then on.
 - [ ] **2.3 Protocols as trait impls.** anthropic first, with the
       recorded-fixture replay harness (real SSE transcripts captured from
       pi); then openai-completions, openai-responses, google, bedrock.
+      *Landed (anthropic slice):* `protocols/` — `anthropic.rs` ←
+      `anthropic.ts` (request shaping incl. OAuth/copilot/cloudflare
+      branches + Claude Code stealth names, SSE→event mapping, stop-reason
+      map, usage/cost; SDK behavior reproduced explicitly: `/v1/messages`,
+      `anthropic-version`, 10-min default timeout); `simple_options.rs`,
+      `transform_messages.rs`, `cloudflare.rs`, `copilot_headers.rs`,
+      `options.rs` (runtime `StreamOptions` + sync onPayload/onResponse
+      hooks — async form waits for the Lua binding); 2.2-carried utils
+      landed in `util/` (`json_parse` with hand-rolled partial-JSON
+      parser, `sanitize` identity + rationale, `headers`). Replay harness:
+      `tests/anthropic.rs` over a loopback SSE server + fixtures
+      (`tests/fixtures/anthropic/`, `.sse` added to the flake filter).
+      *Remaining:* openai-completions, openai-responses, google, bedrock;
+      the protocol-dispatch trait lands with the registry seam (2.4).
+      *Pending:* `replay_basic.sse` is hand-built to Anthropic's
+      documented shapes — replace with a live pi-captured transcript when
+      credentials exist; codex `parseErrorResponse` shaping still lands
+      with the codex protocol slice; `options.client` injection (Vertex)
+      lands with google-vertex.
 - [ ] **2.4 Registry + catalog as data.** Catalog generated from pi's
       `models.generated.ts` as data (JSON/Lua tables, never hand code);
       variants (azure, vertex, copilot, …) as catalog rows;

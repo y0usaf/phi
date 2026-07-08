@@ -11,6 +11,7 @@ futures-util.workspace = true
 httpdate.workspace = true
 phi-ai-types.workspace = true
 reqwest.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 

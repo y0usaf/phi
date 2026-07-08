@@ -34,23 +34,49 @@ omitted; types, traits, and module boundaries are the architecture.
 ```
 
 crate phi_ai
-└── mod transport: pub
-    ├── enum TransportError: pub
-    ├── mod abort: pub
-    │   └── struct AbortSignal: pub
-    ├── mod event_stream: pub
-    │   ├── type AssistantMessageEventStream: pub
-    │   ├── type CompleteFn: pub(self)
-    │   ├── struct EventStream: pub
-    │   ├── enum ResultSlot: pub(self)
-    │   └── struct State: pub(self)
-    ├── mod http: pub
-    │   └── struct RetryOptions: pub
-    ├── mod retry: pub
-    └── mod sse: pub
-        ├── struct SseDecoder: pub
-        ├── struct SseEvent: pub
-        └── struct SseReader: pub
+├── mod protocols: pub
+│   ├── struct ProtocolError: pub
+│   ├── mod anthropic: pub
+│   │   ├── struct AnthropicOptions: pub
+│   │   ├── enum AnthropicThinkingDisplay: pub
+│   │   ├── enum AnthropicToolChoice: pub
+│   │   ├── struct BlockMeta: pub(self)
+│   │   ├── struct PreparedRequest: pub(self)
+│   │   └── struct ResolvedCompat: pub(self)
+│   ├── mod cloudflare: pub
+│   ├── mod copilot_headers: pub
+│   ├── mod options: pub
+│   │   ├── type PayloadHook: pub
+│   │   ├── type ResponseHook: pub
+│   │   ├── struct SimpleStreamOptions: pub
+│   │   └── struct StreamOptions: pub
+│   ├── mod simple_options: pub
+│   │   └── struct AdjustedTokens: pub
+│   └── mod transform_messages: pub
+│       └── type NormalizeToolCallId: pub
+├── mod transport: pub
+│   ├── enum TransportError: pub
+│   ├── mod abort: pub
+│   │   └── struct AbortSignal: pub
+│   ├── mod event_stream: pub
+│   │   ├── type AssistantMessageEventStream: pub
+│   │   ├── type CompleteFn: pub(self)
+│   │   ├── struct EventStream: pub
+│   │   ├── enum ResultSlot: pub(self)
+│   │   └── struct State: pub(self)
+│   ├── mod http: pub
+│   │   └── struct RetryOptions: pub
+│   ├── mod retry: pub
+│   └── mod sse: pub
+│       ├── struct SseDecoder: pub
+│       ├── struct SseEvent: pub
+│       └── struct SseReader: pub
+└── mod util: pub
+    ├── mod headers: pub
+    ├── mod json_parse: pub
+    │   ├── struct Parser: pub(self)
+    │   └── enum PartialJsonError: pub
+    └── mod sanitize: pub
 ```
 
 ### `phi-ai-types`

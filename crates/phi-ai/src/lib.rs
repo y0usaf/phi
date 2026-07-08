@@ -8,7 +8,11 @@
 //! - types: [`phi_ai_types`] (separate crate, WS2.1)
 //! - [`transport`]: HTTP + SSE decode + retry + cancellation, written
 //!   exactly once, zero protocol knowledge (WS2.2)
-//! - protocols: wire mapping per API family (WS2.3)
+//! - [`protocols`]: wire mapping per API family (WS2.3)
+//! - [`util`]: protocol-free helper ports (`json-parse`,
+//!   `sanitize-unicode`, `headers`)
 //! - registry: catalog as data + resolution (WS2.4)
 
+pub mod protocols;
 pub mod transport;
+pub mod util;

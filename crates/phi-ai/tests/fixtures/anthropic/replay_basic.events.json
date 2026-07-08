@@ -1,0 +1,40 @@
+[
+  { "type": "start" },
+  { "type": "thinking_start", "contentIndex": 0 },
+  {
+    "type": "thinking_delta",
+    "contentIndex": 0,
+    "delta": "Let me look at the file."
+  },
+  {
+    "type": "thinking_end",
+    "contentIndex": 0,
+    "content": "Let me look at the file."
+  },
+  { "type": "text_start", "contentIndex": 1 },
+  { "type": "text_delta", "contentIndex": 1, "delta": "I'll read the file" },
+  { "type": "text_delta", "contentIndex": 1, "delta": " now." },
+  {
+    "type": "text_end",
+    "contentIndex": 1,
+    "content": "I'll read the file now."
+  },
+  { "type": "toolcall_start", "contentIndex": 2 },
+  {
+    "type": "toolcall_delta",
+    "contentIndex": 2,
+    "delta": "{\"path\": \"src/m"
+  },
+  { "type": "toolcall_delta", "contentIndex": 2, "delta": "ain.rs\"}" },
+  {
+    "type": "toolcall_end",
+    "contentIndex": 2,
+    "toolCall": {
+      "type": "toolCall",
+      "id": "toolu_01XYZ",
+      "name": "read",
+      "arguments": { "path": "src/main.rs" }
+    }
+  },
+  { "type": "done", "reason": "toolUse" }
+]

@@ -1,0 +1,70 @@
+{
+  "model": "claude-opus-4-7",
+  "messages": [
+    { "role": "user", "content": "Hello" },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "Consider the file.",
+          "signature": "sig1"
+        },
+        { "type": "text", "text": "Reading." },
+        {
+          "type": "tool_use",
+          "id": "toolu_1",
+          "name": "read",
+          "input": { "path": "a.txt" }
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "toolu_1",
+          "content": "file contents",
+          "is_error": false
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "Continue",
+          "cache_control": { "type": "ephemeral" }
+        }
+      ]
+    }
+  ],
+  "max_tokens": 128000,
+  "stream": true,
+  "system": [
+    {
+      "type": "text",
+      "text": "You are helpful.",
+      "cache_control": { "type": "ephemeral" }
+    }
+  ],
+  "tools": [
+    {
+      "name": "read",
+      "description": "Read a file",
+      "eager_input_streaming": true,
+      "input_schema": {
+        "type": "object",
+        "properties": { "path": { "type": "string" } },
+        "required": ["path"]
+      },
+      "cache_control": { "type": "ephemeral" }
+    }
+  ],
+  "thinking": { "type": "adaptive", "display": "summarized" },
+  "output_config": { "effort": "high" },
+  "metadata": { "user_id": "abc" },
+  "tool_choice": { "type": "auto" }
+}
