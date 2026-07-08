@@ -12,8 +12,8 @@ pub use phi_ai_auth::{
 };
 pub use types::{
     Api, AssistantContent, AssistantMessage, Auth, Context, Cost, CostRates, Message, Modality,
-    Model, StopReason, StreamOptions, ThinkingLevel, ToolCall, ToolDefinition, ToolResultMessage,
-    Usage, UserMessage, now_ms,
+    Model, ReasoningControl, StopReason, StreamOptions, ThinkingLevel, ToolCall, ToolDefinition,
+    ToolResultMessage, Usage, UserMessage, now_ms,
 };
 
 pub use registry::{ApiProvider, Registry};

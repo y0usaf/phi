@@ -21,6 +21,14 @@ lives on the `main` branch.
 Runtime state uses the `phi` application name in XDG paths, for example
 `~/.local/share/phi/auth.json`.
 
+The model catalog is entirely extension-registered: the first-party
+providers (anthropic, openai, cursor, neuralwatt) live in an embedded
+builtins extension (`phi.register_provider`), loaded through the same door
+user extensions use — so their models are available out of the box via
+`--list-models`, `--model`, and `/model` (API keys resolve from OAuth,
+stored credentials, or `{PROVIDER}_API_KEY`, e.g. `NEURALWATT_API_KEY`),
+and a user extension can override any of them by re-registering the name.
+
 ## Running
 
 ```bash

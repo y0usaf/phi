@@ -12,7 +12,7 @@ pub struct Args {
     #[arg(long)]
     pub model: Option<String>,
 
-    /// Thinking level: off|minimal|low|medium|high|xhigh [default: off].
+    /// Thinking level: off|minimal|low|medium|high|xhigh [default: medium].
     #[arg(long)]
     pub thinking: Option<String>,
 

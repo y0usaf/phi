@@ -1,5 +1,5 @@
 //! One-shot driver for the agent loop (PLAN.md WS2.4). TTY: streamed text
-//! on stdout, one `● name summary` line per tool call on stderr, output
+//! on stdout, one `• name summary` line per tool call on stderr, output
 //! suppressed unless it failed (forgecode's vocabulary, minimally). Piped
 //! stdout: final text only (pi's print mode).
 
@@ -102,6 +102,11 @@ struct Renderer {
     verbose: bool,
     /// stdout cursor sits mid-line (streamed text without a trailing \n).
     line_open: bool,
+    /// Buffer for a reasoning trace in progress.
+    thinking: String,
+    /// A `ThinkingStart` arrived without a matching `ThinkingEnd` (the
+    /// stream died mid-trace): flush it as a block before text begins.
+    thinking_open: bool,
     final_text: String,
 }
 
@@ -112,12 +117,34 @@ impl Renderer {
             color: std::io::stderr().is_terminal(),
             verbose,
             line_open: false,
+            thinking: String::new(),
+            thinking_open: false,
             final_text: String::new(),
         }
     }
 
     fn on_event(&mut self, event: AgentEvent) {
         match event {
+            AgentEvent::Assistant(AssistantEvent::TextStart { .. }) if self.interactive => {
+                // Text follows thinking: commit any partial trace first.
+                self.flush_thinking();
+            }
+            AgentEvent::Assistant(AssistantEvent::ThinkingStart { .. }) if self.interactive => {
+                self.thinking.clear();
+                self.thinking_open = true;
+            }
+            AgentEvent::Assistant(AssistantEvent::ThinkingDelta { delta, .. })
+                if self.interactive =>
+            {
+                self.thinking.push_str(&delta);
+            }
+            AgentEvent::Assistant(AssistantEvent::ThinkingEnd { content, .. })
+                if self.interactive =>
+            {
+                self.thinking.clear();
+                self.thinking_open = false;
+                self.echo_thinking(&content);
+            }
             AgentEvent::Assistant(AssistantEvent::TextDelta { delta, .. }) if self.interactive => {
                 let mut out = std::io::stdout();
                 let _ = out.write_all(delta.as_bytes());
@@ -128,6 +155,7 @@ impl Renderer {
                 if self.interactive =>
             {
                 self.break_line();
+                self.flush_thinking();
                 eprintln!("{}", transcript::retry_line(attempt, max, self.color));
             }
             AgentEvent::Assistant(AssistantEvent::Done { message }) => {
@@ -157,6 +185,7 @@ impl Renderer {
 
     fn finish(mut self, outcome: &RunOutcome) -> Result<()> {
         self.break_line();
+        self.flush_thinking();
         if !self.interactive && !self.final_text.is_empty() {
             print!("{}", self.final_text);
             if !self.final_text.ends_with('\n') {
@@ -180,6 +209,24 @@ impl Renderer {
         if self.line_open {
             println!();
             self.line_open = false;
+        }
+    }
+
+    /// Flush a partial reasoning trace (no matching `ThinkingEnd`) as a dim
+    /// block on stderr. No-op when nothing is buffered.
+    fn flush_thinking(&mut self) {
+        if self.thinking.is_empty() {
+            self.thinking_open = false;
+            return;
+        }
+        let text = std::mem::take(&mut self.thinking);
+        self.thinking_open = false;
+        self.echo_thinking(&text);
+    }
+
+    fn echo_thinking(&self, content: &str) {
+        for line in transcript::thinking_block(content, self.color) {
+            eprintln!("{line}");
         }
     }
 }

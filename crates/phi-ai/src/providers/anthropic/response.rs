@@ -454,6 +454,7 @@ mod tests {
             headers: Default::default(),
             thinking_levels: None,
             adaptive_thinking: false,
+            reasoning_control: None,
         }
     }
 

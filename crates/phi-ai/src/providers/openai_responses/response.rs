@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use serde_json::Value;
 
 use crate::providers::SseHandler;
-use crate::stream::{Accumulator, AssistantEvent, EventSink};
+use crate::stream::{Accumulator, AssistantEvent, AssistantEventStream, EventSink};
 use crate::types::{AssistantContent, AssistantMessage, Model, StopReason};
 
 struct ToolBuffer {
@@ -190,7 +190,16 @@ impl SseHandler for Parser {
             "response.output_item.added" => {
                 let item = &value["item"];
                 if item["type"].as_str() == Some("function_call") {
-                    let item_id = item["call_id"]
+                    // Key by the item's `id` (not `call_id`) because the
+                    // delta/done events use `item_id` which matches `id`.
+                    // The `call_id` is stored separately on the buffer for
+                    // the tool call's wire-format id.
+                    let item_id = item["id"]
+                        .as_str()
+                        .or_else(|| item["call_id"].as_str())
+                        .unwrap_or_default()
+                        .to_owned();
+                    let call_id = item["call_id"]
                         .as_str()
                         .or_else(|| item["id"].as_str())
                         .unwrap_or_default()
@@ -206,7 +215,7 @@ impl SseHandler for Parser {
                     self.tools.insert(
                         item_id.clone(),
                         ToolBuffer {
-                            id: item_id.clone(),
+                            id: call_id.clone(),
                             name: name.clone(),
                             arguments,
                         },
@@ -214,7 +223,7 @@ impl SseHandler for Parser {
                     self.tool_use_seen = true;
                     sink.push(AssistantEvent::ToolCallStart {
                         index: ours,
-                        id: item_id,
+                        id: call_id,
                         name,
                     });
                 }
@@ -257,14 +266,14 @@ impl SseHandler for Parser {
             "response.output_item.done" => {
                 let item = &value["item"];
                 if item["type"].as_str() == Some("function_call") {
-                    let item_id = item["call_id"]
+                    let item_id = item["id"]
                         .as_str()
-                        .or_else(|| item["id"].as_str())
+                        .or_else(|| item["call_id"].as_str())
                         .unwrap_or_default()
                         .to_owned();
                     if let Some(tool) = self.tools.remove(&item_id) {
-                        let arguments: serde_json::Value =
-                            serde_json::from_str(&tool.arguments).unwrap_or_default();
+                        let arguments: serde_json::Value = serde_json::from_str(&tool.arguments)
+                            .unwrap_or(serde_json::Value::Object(Default::default()));
                         let call = crate::types::ToolCall {
                             id: tool.id.clone(),
                             name: tool.name.clone(),
@@ -290,5 +299,168 @@ impl SseHandler for Parser {
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{Api, CostRates, Model};
+
+    fn test_model() -> Model {
+        Model {
+            id: "gpt-test".to_owned(),
+            name: "Test".to_owned(),
+            api: Api::OpenAiResponses,
+            provider: "test".to_owned(),
+            base_url: "https://api.test.com/v1".to_owned(),
+            reasoning: false,
+            input: vec![],
+            cost: CostRates::default(),
+            context_window: 8192,
+            max_tokens: 1024,
+            headers: Default::default(),
+            thinking_levels: None,
+            adaptive_thinking: false,
+            reasoning_control: None,
+        }
+    }
+
+    /// Feed raw SSE event data through the parser and return the
+    /// resulting terminal message.
+    async fn parse_sse(raw_events: &[&str]) -> AssistantMessage {
+        let model = test_model();
+        let (sink, mut stream) = AssistantEventStream::channel();
+        let mut parser = Parser::new(&model);
+        for raw in raw_events {
+            parser.on_event("response", raw, &sink);
+        }
+        parser.finish(&model, &sink);
+        drop(sink);
+        let mut last = None;
+        while let Some(ev) = stream.next().await {
+            if let Some(msg) = ev.terminal_message() {
+                last = Some(msg.clone());
+            }
+        }
+        last.unwrap_or_else(|| AssistantMessage {
+            content: vec![],
+            api: Api::OpenAiResponses,
+            provider: String::new(),
+            model: String::new(),
+            usage: Default::default(),
+            stop_reason: StopReason::Error,
+            error_message: Some("no terminal event".to_owned()),
+            timestamp: crate::types::now_ms(),
+        })
+    }
+
+    #[tokio::test]
+    async fn streamed_tool_arguments_assembled_when_id_differs_from_call_id() {
+        // OpenAI Responses API: item has `id` = "fc_abc" and `call_id` =
+        // "call_xyz". The delta/done events use `item_id` = "fc_abc".
+        // If the parser keys tool buffers by `call_id` instead of `id`,
+        // the argument deltas are silently lost.
+        let added = serde_json::json!({
+            "type": "response.output_item.added",
+            "item": {
+                "type": "function_call",
+                "id": "fc_abc",
+                "call_id": "call_xyz",
+                "name": "bash",
+                "arguments": ""
+            }
+        })
+        .to_string();
+        let delta1 = serde_json::json!({
+            "type": "response.function_call_arguments.delta",
+            "item_id": "fc_abc",
+            "delta": "{\"comma"
+        })
+        .to_string();
+        let delta2 = serde_json::json!({
+            "type": "response.function_call_arguments.delta",
+            "item_id": "fc_abc",
+            "delta": "nd\": \"echo hi\"}"
+        })
+        .to_string();
+        let done = serde_json::json!({
+            "type": "response.output_item.done",
+            "item": {
+                "type": "function_call",
+                "id": "fc_abc",
+                "call_id": "call_xyz",
+                "name": "bash",
+                "arguments": ""
+            }
+        })
+        .to_string();
+        let completed = serde_json::json!({
+            "type": "response.completed",
+            "response": { "usage": { "input_tokens": 10, "output_tokens": 5 } }
+        })
+        .to_string();
+
+        let msg = parse_sse(&[&added, &delta1, &delta2, &done, &completed]).await;
+        assert_eq!(msg.stop_reason, StopReason::ToolUse);
+        let call = msg
+            .content
+            .iter()
+            .find_map(|b| {
+                if let AssistantContent::ToolCall(c) = b {
+                    Some(c)
+                } else {
+                    None
+                }
+            })
+            .expect("tool call in message");
+        assert_eq!(call.name, "bash");
+        assert_eq!(call.id, "call_xyz");
+        assert_eq!(call.arguments["command"], "echo hi");
+    }
+
+    #[tokio::test]
+    async fn full_arguments_on_added_event_works() {
+        let added = serde_json::json!({
+            "type": "response.output_item.added",
+            "item": {
+                "type": "function_call",
+                "id": "fc_1",
+                "call_id": "call_1",
+                "name": "bash",
+                "arguments": "{\"command\": \"ls\"}"
+            }
+        })
+        .to_string();
+        let done = serde_json::json!({
+            "type": "response.output_item.done",
+            "item": {
+                "type": "function_call",
+                "id": "fc_1",
+                "call_id": "call_1",
+                "name": "bash",
+                "arguments": "{\"command\": \"ls\"}"
+            }
+        })
+        .to_string();
+        let completed = serde_json::json!({
+            "type": "response.completed",
+            "response": { "usage": { "input_tokens": 10, "output_tokens": 5 } }
+        })
+        .to_string();
+
+        let msg = parse_sse(&[&added, &done, &completed]).await;
+        let call = msg
+            .content
+            .iter()
+            .find_map(|b| {
+                if let AssistantContent::ToolCall(c) = b {
+                    Some(c)
+                } else {
+                    None
+                }
+            })
+            .expect("tool call in message");
+        assert_eq!(call.arguments["command"], "ls");
     }
 }

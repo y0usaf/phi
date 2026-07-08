@@ -13,7 +13,7 @@ past ~150 lines, it's absorbing what commits should say.
   turn boundaries, errors as error tool-results (the loop never crashes),
   a ~30-line system prompt, print mode when stdin/stdout isn't a TTY.
 - **forgecode** sets the *visual* bar: inline scrollback (no alt screen),
-  one `●` glyph for every status line, dimmed secondary text, tool output
+  one `•` glyph for every status line, dimmed secondary text, tool output
   suppressed unless it failed, braille spinner, tiny default-16-color
   palette, no boxes or borders anywhere.
 
@@ -46,8 +46,8 @@ past ~150 lines, it's absorbing what commits should say.
       date + cwd last; `--system` replaces the head, keeps the tail.
       Snapshot-style tests with fake project trees.
 - [x] **2.4 One-shot drives the loop.** Landed as `phi-app/src/agent.rs`
-      (TTY: streamed text + `●` tool lines on stderr, errors as
-      `● ERROR:`; piped: final text only) + `settings.json` (`loop`,
+      (TTY: streamed text + `•` tool lines on stderr, errors as
+      `• ERROR:`; piped: final text only) + `settings.json` (`loop`,
       `model`, `thinking`; loop key selects the pack, only "flat" exists).
       First Ctrl+C cancels the run, second force-quits.
       *Pending live acceptance (edits a file + runs bash with a real
@@ -62,7 +62,7 @@ past ~150 lines, it's absorbing what commits should say.
       scrollback + live-region `Terminal`: `❯` editor (no borders),
       markdown committed to scrollback per block with a live streaming
       preview, braille spinner + dim elapsed, one dim status line
-      (model · tokens · cost), `●` tool/error lines. Esc interrupts;
+      (model · tokens · cost), `•` tool/error lines. Esc interrupts;
       Enter mid-run steers (leftover steering restarts a run); Ctrl+C
       clears/quits; Ctrl+D quits; resize blanks + replays the transcript.
       Frontend is a pack picked by `settings.json` `frontend` (only
@@ -72,8 +72,8 @@ past ~150 lines, it's absorbing what commits should say.
       blocked on provider credit, same as WS2.4.*
 - [x] **3.2 Transcript vocabulary (forgecode-minimal).** Landed as
       `phi-app/src/transcript.rs`: every status line both frontends print
-      is built there — `● name summary` (dim; edit shows `path +A -R`
-      computed from the arguments, write `path +N`), `● ERROR:` first
+      is built there — `• name summary` (dim; edit shows `path +A -R`
+      computed from the arguments, write `path +N`), `• ERROR:` first
       line red, `--verbose`/`-v` shows tool results dim-indented
       (head-capped at 10 lines), interrupted/retry lines. Two SGR
       attributes total (dim, red). 15 golden-string tests + a chat-state
@@ -82,11 +82,11 @@ past ~150 lines, it's absorbing what commits should say.
       dispatch (off the UI loop) + `phi-app/src/builtins/commands.lua` —
       `/help /quit /clear /model /login /logout` as embedded Lua through
       the public `register_command` door. `{ message }` prints as a dim
-      `●` block; `action` string keys dispatch open-vocabulary (`quit`,
+      `•` block; `action` string keys dispatch open-vocabulary (`quit`,
       `clear`, `set_model`, `login`, `logout`; unknown → error line).
       `/model <id>` swaps model+auth together once the provider's auth
       resolves; `/login` runs the OAuth flow in-session with progress as
-      `●` notices (Esc cancels). New `phi.commands()` snapshot
+      `•` notices (Esc cancels). New `phi.commands()` snapshot
       (exerciser: `examples/list-commands.lua`) powers `/help`. Accepted
       live in a pty: `/hello` from hello.lua (trusted project extension),
       `/model` switch reflected in the status line, `/quit` quits.
@@ -121,6 +121,28 @@ past ~150 lines, it's absorbing what commits should say.
 ## WS5+ — per DESIGN.md
 
 Examples-as-conformance (≥15 ports), RLM pack, mux pack — unchanged.
+
+### `register_provider` — all providers arrive via the extension surface
+
+- [x] **Provider registration API.** Landed `phi.register_provider(name,
+      config)` in `phi-host` (Lua globals + `Host::providers()` query) and
+      `extensions::graft_providers` in `phi-app`. Extensions register
+      model providers; the host converts each `ProviderInfo` to
+      `Vec<Model>` and grafts them onto the `Registry` via
+      `Registry::extended`. An inline `api_key` becomes a runtime-only
+      auth override (`AuthStorage::set_runtime_api_key`, never persisted).
+      The grafted registry is used in every mode: `--list-models`,
+      `--model`, `/model`, agent, and chat. Exerciser:
+      `examples/custom-provider.lua` (OpenRouter pattern + Vercel AI
+      Gateway pattern + proxy-override pattern).
+- [x] **First-party catalog through the same door.** There is no embedded
+      models.json: `Registry::builtin()` is protocol implementations only,
+      and the whole first-party catalog (anthropic, openai, cursor,
+      neuralwatt — cost, modalities, thinking_levels, adaptive_thinking,
+      reasoning_control) is `phi-app/src/builtins/providers.lua`,
+      registered via `phi.register_provider` like any user extension
+      (The Rule). Provider re-registration replaces, so user extensions
+      override first-party providers by name (exercised in tests).
 
 ## Deliberately not now
 

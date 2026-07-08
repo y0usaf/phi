@@ -15,9 +15,14 @@ pub struct Registry {
 }
 
 impl Registry {
+    /// The bare registry: every API protocol implementation, zero models.
+    /// There is no embedded model catalog — the first-party catalog is
+    /// `phi-app`'s `builtins/providers.lua`, registered through the same
+    /// public `phi.register_provider` door user extensions use and grafted
+    /// on via [`Registry::extended`] (DESIGN.md, The Rule: built-ins are
+    /// extensions).
     pub fn builtin() -> Self {
-        let models: Vec<Model> = serde_json::from_str(include_str!("models.json"))
-            .unwrap_or_else(|e| panic!("embedded models.json failed to parse: {e}"));
+        let models: Vec<Model> = Vec::new();
         let mut providers: HashMap<Api, Arc<dyn ApiProvider>> = HashMap::new();
         providers.insert(
             Api::AnthropicMessages,
@@ -68,13 +73,18 @@ impl Registry {
     }
 
     /// Look up by model id, optionally qualified as `provider/model-id`.
-    /// Prefers supported models when ids collide across providers.
+    /// Prefers supported models when ids collide across providers. If the
+    /// query contains slashes, first try an exact `provider/id` match, then
+    /// fall back to a bare-id lookup so first-party providers can expose ids
+    /// like `vendor/model` without forcing full qualification.
     pub fn find(&self, query: &str) -> Option<&Model> {
-        if let Some((provider, id)) = query.split_once('/') {
-            return self
+        if let Some((provider, id)) = query.split_once('/')
+            && let Some(found) = self
                 .models
                 .iter()
-                .find(|m| m.provider == provider && m.id == id);
+                .find(|m| m.provider == provider && m.id == id)
+        {
+            return Some(found);
         }
         self.supported_models()
             .find(|m| m.id == query)
@@ -119,16 +129,6 @@ impl Registry {
 mod tests {
     use super::*;
 
-    #[test]
-    fn embedded_models_parse_and_resolve() {
-        let registry = Registry::builtin();
-        assert!(registry.models().len() >= 4);
-        assert!(registry.find("claude-opus-4-7").is_some());
-        assert!(registry.find("anthropic/claude-opus-4-7").is_some());
-        assert!(registry.find("openai/gpt-5.1").is_some());
-        assert!(registry.find("nope").is_none());
-    }
-
     fn test_model(provider: &str, id: &str, api: Api) -> Model {
         Model {
             id: id.to_owned(),
@@ -144,31 +144,28 @@ mod tests {
             headers: Default::default(),
             thinking_levels: None,
             adaptive_thinking: false,
+            reasoning_control: None,
         }
     }
 
     #[test]
-    fn embedded_catalog_is_first_party_and_fully_supported() {
+    fn builtin_registry_is_bare_protocols_no_models() {
+        // The Rule: the catalog is builtins/providers.lua in phi-app,
+        // registered via phi.register_provider. The bare registry carries
+        // only the protocol implementations — every API is driveable, no
+        // model is hardcoded.
         let registry = Registry::builtin();
-        // The embedded catalog carries only first-party providers Phi has
-        // auth flows for; everything else arrives via `register_provider`.
-        assert!(
-            registry
-                .models()
-                .iter()
-                .all(|m| matches!(m.provider.as_str(), "anthropic" | "openai" | "cursor"))
-        );
-        assert!(registry.models().iter().all(|m| registry.is_supported(m)));
-    }
-
-    #[test]
-    fn openai_completions_provider_is_registered() {
-        // No embedded model uses the generic OpenAI-completions protocol,
-        // but the backend must stay registered: it's the default API for
-        // extension-registered providers.
-        let registry = Registry::builtin();
-        let model = test_model("some-router", "some-model", Api::OpenAiCompletions);
-        assert!(registry.is_supported(&model));
+        assert!(registry.models().is_empty());
+        for api in [
+            Api::AnthropicMessages,
+            Api::OpenAiResponses,
+            Api::OpenAiCompletions,
+            Api::CursorNative,
+        ] {
+            let model = test_model("any", "any-model", api);
+            assert!(registry.is_supported(&model), "{api:?} must be registered");
+        }
+        assert!(registry.find("nope").is_none());
     }
 
     #[test]
@@ -183,7 +180,6 @@ mod tests {
         assert_eq!(extended.models().len(), base_total + 1);
         let found = extended.find("my-router/my-model").unwrap();
         assert!(extended.is_supported(found));
-        assert!(extended.find("anthropic/claude-opus-4-7").is_some());
         // The base registry is untouched.
         assert!(registry.find("my-router/my-model").is_none());
     }
@@ -207,6 +203,7 @@ mod tests {
             headers: Default::default(),
             thinking_levels: None,
             adaptive_thinking: false,
+            reasoning_control: None,
         };
         // Budget-based fallback: returns a token budget string.
         assert_eq!(
@@ -236,6 +233,7 @@ mod tests {
             headers: Default::default(),
             thinking_levels: None,
             adaptive_thinking: true,
+            reasoning_control: None,
         };
         // Adaptive fallback: returns the level name as effort string.
         assert_eq!(
@@ -257,6 +255,7 @@ mod tests {
             headers: Default::default(),
             thinking_levels: None,
             adaptive_thinking: false,
+            reasoning_control: None,
         };
         // OpenAI Responses fallback: returns the level name as effort string.
         assert_eq!(
@@ -279,6 +278,7 @@ mod tests {
             headers: Default::default(),
             thinking_levels: None,
             adaptive_thinking: false,
+            reasoning_control: None,
         };
         assert_eq!(
             non_reasoning.thinking_value(crate::types::ThinkingLevel::High),
@@ -288,31 +288,49 @@ mod tests {
 
     #[test]
     fn thinking_value_clamps() {
-        let registry = Registry::builtin();
-        // opus-4-7 is an adaptive thinking model — thinking_value returns
-        // effort strings (low/medium/high/xhigh), not token budgets.
-        let opus = registry.find("anthropic/claude-opus-4-7").unwrap();
-        assert!(opus.adaptive_thinking, "opus-4-7 should be adaptive");
+        // An adaptive-thinking model returns effort strings, xhigh mapping
+        // to whatever the level map declares (catalog: opus-4-6 → "max").
+        let mut adaptive = test_model("anthropic", "adaptive-model", Api::AnthropicMessages);
+        adaptive.reasoning = true;
+        adaptive.adaptive_thinking = true;
+        adaptive.thinking_levels = Some(
+            [
+                (crate::types::ThinkingLevel::Medium, Some("medium".into())),
+                (crate::types::ThinkingLevel::High, Some("high".into())),
+                (crate::types::ThinkingLevel::XHigh, Some("max".into())),
+            ]
+            .into_iter()
+            .collect(),
+        );
         assert_eq!(
-            opus.thinking_value(crate::types::ThinkingLevel::Medium),
+            adaptive.thinking_value(crate::types::ThinkingLevel::Medium),
             Some("medium".to_owned())
         );
         assert_eq!(
-            opus.thinking_value(crate::types::ThinkingLevel::XHigh),
-            Some("xhigh".to_owned())
-        );
-        // opus-4-6 is adaptive with xhigh -> "max"
-        let opus46 = registry.find("anthropic/claude-opus-4-6").unwrap();
-        assert_eq!(
-            opus46.thinking_value(crate::types::ThinkingLevel::XHigh),
+            adaptive.thinking_value(crate::types::ThinkingLevel::XHigh),
             Some("max".to_owned())
         );
-        let gpt = registry.find("openai/gpt-5.1").unwrap();
-        // xhigh unsupported on gpt-5.1 -> clamps down to high
+
+        // A level absent from the map clamps down to the nearest supported
+        // one (catalog: gpt-5.1 has no xhigh → clamps to high).
+        let mut capped = test_model("openai", "capped-model", Api::OpenAiResponses);
+        capped.reasoning = true;
+        capped.thinking_levels = Some(
+            [
+                (crate::types::ThinkingLevel::Low, Some("low".into())),
+                (crate::types::ThinkingLevel::Medium, Some("medium".into())),
+                (crate::types::ThinkingLevel::High, Some("high".into())),
+            ]
+            .into_iter()
+            .collect(),
+        );
         assert_eq!(
-            gpt.thinking_value(crate::types::ThinkingLevel::XHigh),
+            capped.thinking_value(crate::types::ThinkingLevel::XHigh),
             Some("high".to_owned())
         );
-        assert_eq!(gpt.thinking_value(crate::types::ThinkingLevel::Off), None);
+        assert_eq!(
+            capped.thinking_value(crate::types::ThinkingLevel::Off),
+            None
+        );
     }
 }

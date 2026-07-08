@@ -6,7 +6,7 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use crate::{CommandInfo, ToolInfo};
+use crate::{CommandInfo, ProviderInfo, ProviderModelInfo, ToolInfo};
 
 /// Key of the registration table in the Lua named registry (not a global,
 /// so extension code can't clobber it by accident).
@@ -21,6 +21,9 @@ pub(crate) struct Meta {
     pub tools: Vec<ToolInfo>,
     /// Event name → number of subscribed handlers.
     pub events: BTreeMap<String, usize>,
+    /// Providers in registration order — extension-registered model
+    /// providers that graft onto the `phi_ai::Registry`.
+    pub providers: Vec<ProviderInfo>,
 }
 
 /// The registration table: `{ commands = {}, tools = {}, events = {}, source = "" }`.
@@ -41,6 +44,7 @@ pub(crate) fn current_source(lua: &mlua::Lua) -> String {
 /// Surface (grown only alongside an exercising example — DESIGN.md):
 /// - `phi.register_command{ name, handler, description? }`
 /// - `phi.register_tool{ name, description, parameters?, handler }`
+/// - `phi.register_provider(name, config)` — graft a custom model provider.
 /// - `phi.on(event, fn)` — open string vocabulary, no closed enum.
 /// - `phi.commands()` — snapshot of registered commands
 ///   (`{ name, description?, source }` each), registration order.
@@ -49,6 +53,7 @@ pub(crate) fn install(lua: &mlua::Lua, meta: Arc<Mutex<Meta>>) -> mlua::Result<(
     registry.set("commands", lua.create_table()?)?;
     registry.set("tools", lua.create_table()?)?;
     registry.set("events", lua.create_table()?)?;
+    registry.set("providers", lua.create_table()?)?;
     registry.set("source", "<host>")?;
     lua.set_named_registry_value(REGISTRY_KEY, registry)?;
 
@@ -157,6 +162,95 @@ pub(crate) fn install(lua: &mlua::Lua, meta: Arc<Mutex<Meta>>) -> mlua::Result<(
     };
     phi.set("register_tool", register_tool)?;
 
+    // phi.register_provider(name, config)
+    // config: { base_url = "...", api_key = "...", api = "...",
+    //            models = { { id = "...", name = "...", reasoning = bool,
+    //                         context_window = n, max_tokens = n }, ... } }
+    // Registers a custom model provider. The host grafts its models onto
+    // the `phi_ai::Registry` (via `Registry::extended`); an inline api_key
+    // becomes a runtime-only auth override (never persisted).
+    let register_provider = {
+        let meta = Arc::clone(&meta);
+        lua.create_function(move |lua, (name, config): (String, mlua::Table)| {
+            let name = name.trim().to_owned();
+            if name.is_empty() {
+                return Err(mlua::Error::runtime(
+                    "register_provider: 'name' must be a non-empty string",
+                ));
+            }
+            let base_url: Option<String> = config.get("base_url").ok();
+            let api_key: Option<String> = config.get("api_key").ok();
+            let api: Option<String> = config.get("api").ok();
+            let source = current_source(lua);
+
+            // Collect models from the config table. Sequence iteration, not
+            // `pairs`: catalog order is registration order (deterministic
+            // listings in --list-models and /model).
+            let mut models = Vec::new();
+            if let Some(mt) = config.get::<Option<mlua::Table>>("models")? {
+                for m in mt.sequence_values::<mlua::Table>() {
+                    let m = m?;
+                    let id: String = m.get("id").unwrap_or_default();
+                    let mname: String = m.get("name").unwrap_or_default();
+                    let reasoning: bool = m.get("reasoning").unwrap_or(false);
+                    let context_window: u64 = m.get("context_window").unwrap_or(0);
+                    let max_tokens: u64 = m.get("max_tokens").unwrap_or(0);
+                    let input: Vec<String> = m.get("input").unwrap_or_default();
+                    let cost = m
+                        .get::<Option<mlua::Value>>("cost")?
+                        .map(crate::convert::lua_to_json)
+                        .transpose()?;
+                    let headers: std::collections::BTreeMap<String, String> =
+                        m.get("headers").unwrap_or_default();
+                    let thinking_levels = parse_thinking_levels(&m)?;
+                    let adaptive_thinking: bool = m.get("adaptive_thinking").unwrap_or(false);
+                    let reasoning_control = parse_reasoning_control(&m)?;
+                    models.push(ProviderModelInfo {
+                        id,
+                        name: mname,
+                        reasoning,
+                        context_window,
+                        max_tokens,
+                        input,
+                        cost,
+                        headers,
+                        thinking_levels,
+                        adaptive_thinking,
+                        reasoning_control,
+                    });
+                }
+            }
+
+            // Duplicate provider names replace the prior registration, so
+            // a re-load after editing an extension updates rather than errors.
+            // (Contrast with tools/commands, where a duplicate is a load error.)
+            let providers: mlua::Table = registry_table(lua)?.get("providers")?;
+            providers.set(name.as_str(), config)?;
+            let mut meta = meta.lock().expect("meta lock");
+            if let Some(idx) = meta.providers.iter().position(|p| p.name == name) {
+                meta.providers[idx] = ProviderInfo {
+                    name: name.clone(),
+                    base_url,
+                    api_key,
+                    api,
+                    source,
+                    models,
+                };
+            } else {
+                meta.providers.push(ProviderInfo {
+                    name,
+                    base_url,
+                    api_key,
+                    api,
+                    source,
+                    models,
+                });
+            }
+            Ok(())
+        })?
+    };
+    phi.set("register_provider", register_provider)?;
+
     let on = {
         let meta = Arc::clone(&meta);
         lua.create_function(move |lua, (event, handler): (String, mlua::Function)| {
@@ -205,4 +299,68 @@ pub(crate) fn install(lua: &mlua::Lua, meta: Arc<Mutex<Meta>>) -> mlua::Result<(
 
     lua.globals().set("phi", phi)?;
     Ok(())
+}
+
+/// Parse a model config's optional `thinking_levels` table (level name →
+/// provider value, mirroring the builtin catalog in
+/// `phi-app/src/builtins/providers.lua`) into a raw JSON map. Level names
+/// are validated against the `--thinking` vocabulary so a typo fails at
+/// load, not silently at request time.
+fn parse_thinking_levels(m: &mlua::Table) -> mlua::Result<Option<serde_json::Value>> {
+    let Some(tl) = m.get::<Option<mlua::Table>>("thinking_levels")? else {
+        return Ok(None);
+    };
+    let mut map = serde_json::Map::new();
+    for pair in tl.pairs::<String, mlua::Value>() {
+        let (level, val) = pair?;
+        validate_thinking_level(&level, "thinking_levels")?;
+        map.insert(level, crate::convert::lua_to_json(val)?);
+    }
+    Ok(Some(serde_json::Value::Object(map)))
+}
+
+/// Reject unknown level names so a typo doesn't silently drop a level.
+/// The vocabulary is the same set as `--thinking`.
+fn validate_thinking_level(level: &str, context: &str) -> mlua::Result<()> {
+    if !matches!(
+        level,
+        "off" | "minimal" | "low" | "medium" | "high" | "xhigh"
+    ) {
+        return Err(mlua::Error::runtime(format!(
+            "register_provider: {context}: unknown thinking level '{level}'"
+        )));
+    }
+    Ok(())
+}
+
+/// Parse a model config's optional `reasoning_control` table into the
+/// raw JSON shape carried by `ProviderModelInfo`. The Lua form:
+///
+/// ```lua
+/// reasoning_control = {
+///   field = "chat_template_kwargs.enable_thinking",
+///   values = { off = false, high = true },
+/// }
+/// ```
+///
+/// `field` is required; `values` defaults to an empty map (every level
+/// keeps the model's upstream default — a no-op declaration). The raw JSON
+/// is typed into `phi_ai::ReasoningControl` at graft time (`phi_app`), so
+/// phi-host stays LM-agnostic.
+fn parse_reasoning_control(m: &mlua::Table) -> mlua::Result<Option<serde_json::Value>> {
+    let Some(rc) = m.get::<Option<mlua::Table>>("reasoning_control")? else {
+        return Ok(None);
+    };
+    let field: String = rc.get("field")?;
+    let mut values = serde_json::Map::new();
+    if let Some(vt) = rc.get::<Option<mlua::Table>>("values")? {
+        for pair in vt.pairs::<String, mlua::Value>() {
+            let (level, val) = pair?;
+            validate_thinking_level(&level, "reasoning_control.values")?;
+            values.insert(level, crate::convert::lua_to_json(val)?);
+        }
+    }
+    Ok(Some(
+        serde_json::json!({ "field": field, "values": values }),
+    ))
 }

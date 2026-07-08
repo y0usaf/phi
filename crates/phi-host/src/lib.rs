@@ -84,6 +84,64 @@ pub struct ToolOutput {
     pub is_error: bool,
 }
 
+/// A model registered within a provider; the host grafts each into a
+/// `phi_ai::Model` on the registry via `Registry::extended`.
+///
+/// The host stays LM-agnostic: typed-in-phi-ai shapes (`cost`,
+/// `thinking_levels`, `reasoning_control`) ride through as raw JSON and
+/// `phi_app::graft_providers` types them at graft time.
+#[derive(Debug, Clone)]
+pub struct ProviderModelInfo {
+    pub id: String,
+    pub name: String,
+    /// Whether the model supports extended thinking.
+    pub reasoning: bool,
+    /// Context window in tokens; 0 = unknown (host applies a default).
+    pub context_window: u64,
+    /// Max output tokens; 0 = unknown (host applies a default).
+    pub max_tokens: u64,
+    /// Input modalities ("text", "image"); empty = text-only.
+    pub input: Vec<String>,
+    /// Dollars per million tokens, as the raw JSON shape
+    /// `{ input, output, cache_read, cache_write }`. `None` = free/unknown
+    /// (grafts as zero rates).
+    pub cost: Option<serde_json::Value>,
+    /// Extra HTTP headers sent with every request to this model.
+    pub headers: std::collections::BTreeMap<String, String>,
+    /// Per-level thinking values (effort string or token budget), as the
+    /// raw JSON map `{ level: value }`. `None` = no explicit map (the
+    /// provider falls back to its default resolution).
+    pub thinking_levels: Option<serde_json::Value>,
+    /// Anthropic adaptive thinking (`thinking.type: "adaptive"`).
+    pub adaptive_thinking: bool,
+    /// OpenAI-Completions reasoning-control declaration (dotted wire field
+    /// + per-level value), as the raw JSON shape `{ field, values }`.
+    /// `None` = no declared field; the model keeps its upstream default.
+    pub reasoning_control: Option<serde_json::Value>,
+}
+
+/// A provider registered through `phi.register_provider`. The host
+/// converts each into `phi_ai::Model` entries grafted onto the registry;
+/// an inline `api_key` becomes a runtime-only auth override (never
+/// persisted to disk).
+#[derive(Debug, Clone)]
+pub struct ProviderInfo {
+    /// Provider name — also the `provider` field on each grafted model.
+    pub name: String,
+    /// Base URL for the API endpoint. Required for models to resolve.
+    pub base_url: Option<String>,
+    /// Inline API key (literal string). Injected as a runtime override;
+    /// `None` => auth falls back to stored credentials / env.
+    pub api_key: Option<String>,
+    /// API type string ("openai-completions", "anthropic-messages", ...).
+    /// Defaults to "openai-completions" (the generic OpenAI-compatible protocol).
+    pub api: Option<String>,
+    /// Path (or embedded key) of the registering extension.
+    pub source: String,
+    /// Models to register under this provider.
+    pub models: Vec<ProviderModelInfo>,
+}
+
 /// A native (Rust) tool handler. Runs on the caller's thread — long-running
 /// tools (bash) don't occupy the Lua VM thread or its watchdog.
 pub type NativeToolFn = Box<dyn Fn(&serde_json::Value) -> Result<String, String> + Send + Sync>;
@@ -160,6 +218,13 @@ impl Host {
     /// Registered tools, in registration order (native and Lua together).
     pub fn tools(&self) -> Vec<ToolInfo> {
         self.meta.lock().expect("meta lock").tools.clone()
+    }
+
+    /// Registered providers (`phi.register_provider`), in registration order.
+    /// The host grafts each onto the `phi_ai::Registry` before the session
+    /// starts; an inline `api_key` becomes a runtime-only auth override.
+    pub fn providers(&self) -> Vec<ProviderInfo> {
+        self.meta.lock().expect("meta lock").providers.clone()
     }
 
     /// Register a native (Rust) tool into the same registry

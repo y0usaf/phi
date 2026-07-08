@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 crossterm.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 pulldown-cmark = { workspace = true, optional = true }
 syntect = { workspace = true, optional = true }
 unicode-segmentation.workspace = true

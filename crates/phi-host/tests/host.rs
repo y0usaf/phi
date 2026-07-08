@@ -264,3 +264,71 @@ fn commands_snapshot_is_readable_from_lua() {
     assert!(lines[1].starts_with("/commands"));
     assert!(lines[1].ends_with("list-commands.lua)"));
 }
+
+#[test]
+fn register_provider_collects_models_and_api_key() {
+    let host = Host::new().expect("host");
+    host.load_source(
+        "<test:provider>",
+        r#"
+phi.register_provider("my-router", {
+  base_url = "https://api.example.com/v1",
+  api_key = "sk-test-123",
+  api = "openai-completions",
+  models = {
+    { id = "gpt-custom", name = "GPT Custom", reasoning = true,
+      context_window = 128000, max_tokens = 8192 },
+    { id = "llama-custom", name = "Llama Custom", reasoning = false,
+      context_window = 32768, max_tokens = 4096 },
+  }
+})
+"#,
+    )
+    .expect("load provider extension");
+
+    let providers = host.providers();
+    assert_eq!(providers.len(), 1);
+    let p = &providers[0];
+    assert_eq!(p.name, "my-router");
+    assert_eq!(p.base_url.as_deref(), Some("https://api.example.com/v1"));
+    assert_eq!(p.api_key.as_deref(), Some("sk-test-123"));
+    assert_eq!(p.api.as_deref(), Some("openai-completions"));
+    assert_eq!(p.models.len(), 2);
+    assert_eq!(p.models[0].id, "gpt-custom");
+    assert!(p.models[0].reasoning);
+    assert_eq!(p.models[0].context_window, 128000);
+    assert_eq!(p.models[1].id, "llama-custom");
+    assert!(!p.models[1].reasoning);
+}
+
+#[test]
+fn register_provider_replaces_duplicate_name() {
+    let host = Host::new().expect("host");
+    host.load_source(
+        "<test:dup1>",
+        r#"phi.register_provider("dup", { base_url = "https://a.example/v1", models = {} })"#,
+    )
+    .expect("load first");
+    host.load_source(
+        "<test:dup2>",
+        r#"phi.register_provider("dup", { base_url = "https://b.example/v1", models = {} })"#,
+    )
+    .expect("load second");
+
+    let providers = host.providers();
+    assert_eq!(providers.len(), 1, "duplicate replaces, not appends");
+    assert_eq!(
+        providers[0].base_url.as_deref(),
+        Some("https://b.example/v1")
+    );
+}
+
+#[test]
+fn register_provider_empty_name_fails() {
+    let host = Host::new().expect("host");
+    let result = host.load_source(
+        "<test:empty>",
+        r#"phi.register_provider("  ", { models = {} })"#,
+    );
+    assert!(result.is_err(), "empty provider name must fail the load");
+}

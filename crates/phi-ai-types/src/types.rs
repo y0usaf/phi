@@ -35,10 +35,10 @@ pub enum Api {
 #[serde(rename_all = "lowercase")]
 pub enum ThinkingLevel {
     #[default]
+    Medium,
     Off,
     Minimal,
     Low,
-    Medium,
     High,
     XHigh,
 }
@@ -125,6 +125,31 @@ pub struct Model {
     /// "high", "xhigh", "max") rather than token budgets.
     #[serde(default, skip_serializing_if = "is_false")]
     pub adaptive_thinking: bool,
+    /// Declares how to write reasoning control into an OpenAI-Completions
+    /// request body. The wire field name varies by upstream dialect
+    /// (`chat_template_kwargs.enable_thinking` for vLLM/Qwen/GLM,
+    /// `reasoning_effort` for OpenAI-shaped routers), so the field path
+    /// and the value for each `ThinkingLevel` are declared per model
+    /// rather than hand-wired per provider (doctrine 05). The Completions
+    /// provider writes the resolved value at the dotted `field` path;
+    /// Anthropic/Responses providers ignore this and keep using
+    /// `thinking_value`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_control: Option<ReasoningControl>,
+}
+
+/// Per-model declaration of the OpenAI-Completions reasoning-control wire
+/// field. `field` is a dotted path into the request body (e.g.
+/// `"chat_template_kwargs.enable_thinking"`); `values` maps each
+/// `ThinkingLevel` to the literal JSON value written at that path.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ReasoningControl {
+    /// Dotted path into the Chat Completions request body.
+    pub field: String,
+    /// Thinking level → literal JSON value at `field`. A level absent from
+    /// this map is not written (the model keeps its upstream default).
+    #[serde(default)]
+    pub values: BTreeMap<ThinkingLevel, serde_json::Value>,
 }
 
 impl Model {
@@ -152,6 +177,43 @@ impl Model {
         // silently dropped for all such models regardless of the configured
         // thinking level. Use sensible defaults so thinking is actually sent.
         Some(default_thinking_value(self, level))
+    }
+
+    /// Levels a user may cycle through for this model (pi's
+    /// `getSupportedThinkingLevels`). A non-reasoning model gets `[Off]`;
+    /// a reasoning model gets `Off` plus every level it can take, in order.
+    /// `Off` is always present for a reasoning model so the cycle can reach
+    /// the off state from the TUI.
+    pub fn supported_thinking_levels(&self) -> Vec<ThinkingLevel> {
+        if !self.reasoning {
+            return vec![ThinkingLevel::Off];
+        }
+        let mut out = vec![ThinkingLevel::Off];
+        match self.thinking_levels.as_ref() {
+            Some(map) => {
+                for level in ThinkingLevel::ALL {
+                    if level == ThinkingLevel::Off {
+                        continue;
+                    }
+                    // A level is supported when the map carries a value
+                    // for it (None value = explicitly unsupported, matching
+                    // `thinking_value`).
+                    if map.get(&level).is_some_and(|v| v.is_some()) {
+                        out.push(level);
+                    }
+                }
+            }
+            None => {
+                // No explicit map: the fallback path resolves any non-Off
+                // level, so all are cyclable.
+                for level in ThinkingLevel::ALL {
+                    if level != ThinkingLevel::Off {
+                        out.push(level);
+                    }
+                }
+            }
+        }
+        out
     }
 }
 
@@ -438,7 +500,7 @@ impl StreamOptions {
             auth,
             max_tokens: None,
             temperature: None,
-            thinking: ThinkingLevel::Off,
+            thinking: ThinkingLevel::Medium,
             cancel: CancellationToken::new(),
             timeout: Duration::from_secs(300),
             max_retries: 3,

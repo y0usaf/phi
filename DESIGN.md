@@ -138,11 +138,32 @@ pi's shape, over the Lua bridge:
       (footer/overlays) extension-rendered. *Accept: interactive session with
       streaming, editor, slash commands sourced only from the command
       registry.*
-- [ ] **WS4 — Examples as conformance.** Port pi's examples one at a time
+- [~] **WS4 — Examples as conformance.** Port pi's examples one at a time
       (start: hello, commands, permission-gate, custom-provider,
       message-renderer, custom-footer). Each port either passes or grows the
       API. *Accept: ≥15 examples run; every registry and event has ≥1
       exerciser.*
+      **Landed:** `register_provider` + `examples/custom-provider.lua` —
+      `phi.register_provider(name, config)` grafts models onto the
+      `Registry` via `Registry::extended`; inline `api_key` becomes a
+      runtime-only auth override. Extension providers visible in
+      `--list-models`, `--model`, and `/model`. The *entire* model catalog
+      arrives this way: there is no embedded models.json — the first-party
+      providers (anthropic, openai, cursor, neuralwatt) are
+      `phi-app/src/builtins/providers.lua`, registered through the same
+      public door, and `Registry::builtin()` carries only the API protocol
+      implementations. Re-registering a provider name replaces it, so user
+      extensions can override first-party providers.
+      **Landed:** session-tree navigation — `/tree` + double-Esc (idle,
+      empty editor) open `phi-tui`'s `TreeBrowser` (a faithful port of pi's
+      `TreeSelectorComponent`); Enter navigates the leaf in place via
+      `SessionStore::branch` and rebuilds the transcript from the
+      root→leaf path. `/fork` opens a user-message selector and
+      `SessionStore::create_branched_session` writes a fresh session file
+      containing only that path (under fresh ids), seeds the editor with
+      the forked message, and switches the live store. Tree, fork, and the
+      label editor are extension-agnostic surface exercised by the same
+      `action` dispatch as `/model`/`/login`.
 - [ ] **WS5 — RLM pack.** *Accept: RLM selectable via config; default
       remains the flat loop; no RLM-specific branches in the substrate.*
 - [ ] **WS6 — Mux pack.** Decide doctrine-03 question first. *Accept: mux

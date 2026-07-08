@@ -200,6 +200,7 @@ crate phi_ai_types
     ├── enum Message: pub
     ├── enum Modality: pub
     ├── struct Model: pub
+    ├── struct ReasoningControl: pub
     ├── enum StopReason: pub
     ├── struct StreamOptions: pub
     ├── enum ThinkingLevel: pub
@@ -224,7 +225,10 @@ crate phi
 │   ├── struct ChatSpec: pub
 │   ├── struct ChatState: pub(self)
 │   ├── enum Flow: pub(self)
+│   ├── struct ForkItem: pub(self)
 │   ├── struct NoticeCallbacks: pub(self)
+│   ├── enum Overlay: pub(self)
+│   ├── struct SlashCompletions: pub(self)
 │   └── enum UiMsg: pub(self)
 ├── mod cli: pub(crate)
 │   └── struct Args: pub
@@ -234,7 +238,9 @@ crate phi
 │   └── type SharedStore: pub
 ├── mod settings: pub(crate)
 │   └── struct Settings: pub
-└── mod transcript: pub(crate)
+├── mod transcript: pub(crate)
+└── mod tree_overlay: pub(crate)
+    └── enum TreeOutcome: pub
 ```
 
 ### `phi-grid`
@@ -283,6 +289,8 @@ crate phi_host
 ├── struct Host: pub
 ├── struct HostConfig: pub
 ├── type NativeToolFn: pub
+├── struct ProviderInfo: pub
+├── struct ProviderModelInfo: pub
 ├── struct ToolInfo: pub
 ├── struct ToolOutput: pub
 ├── mod convert: pub(crate)
@@ -303,12 +311,19 @@ crate phi_host
 
 crate phi_session
 ├── mod store: pub(crate)
+│   ├── struct Parsed: pub(crate)
+│   ├── struct ParsedEntry: pub(crate)
+│   ├── struct ParsedTree: pub
+│   └── struct RawMessage: pub(self)
 └── mod types: pub(crate)
-    ├── struct Entry: pub
+    ├── struct EntryFields: pub
     ├── struct Header: pub
+    ├── struct LabelEntry: pub
     ├── enum Line: pub(crate)
+    ├── struct MessageEntry: pub
     ├── struct SessionMeta: pub
-    └── struct SessionStore: pub
+    ├── struct SessionStore: pub
+    └── struct TreeNode: pub
 ```
 
 ### `phi-tui`
@@ -366,7 +381,20 @@ crate phi_tui
 │   ├── type WrapMarks: pub(self)
 │   ├── type WrappedAnsi: pub(self)
 │   └── struct Wrapper: pub(self)
-└── mod theme: pub
-    ├── enum Mode: pub
-    └── struct Theme: pub
+├── mod theme: pub
+│   ├── enum Mode: pub
+│   └── struct Theme: pub
+└── mod tree: pub
+    ├── struct DateParts: pub(self)
+    ├── enum FilterMode: pub
+    ├── struct FlatNode: pub(self)
+    ├── struct GutterInfo: pub(self)
+    ├── enum SegmentDir: pub(self)
+    ├── struct SrcEntry: pub(self)
+    ├── enum TreeAction: pub
+    ├── struct TreeBrowser: pub
+    ├── enum TreeKey: pub
+    ├── enum TreeMessage: pub
+    ├── struct TreeStyle: pub
+    └── struct TreeViewNode: pub
 ```

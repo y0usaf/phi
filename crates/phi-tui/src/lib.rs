@@ -17,6 +17,7 @@ pub mod style;
 pub mod symbols;
 pub mod terminal;
 pub mod theme;
+pub mod tree;
 
 pub use cells::{
     display_cell_width, truncate_line_in_place_to_width, truncate_line_preserving_suffix_to_width,

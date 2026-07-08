@@ -35,8 +35,8 @@
           craneLib = crane.mkLib pkgs;
 
           # crane's default filter strips non-Rust files; we need .json for
-          # include_str!() macros in phi-ai (models.json), and .lua for the
-          # embedded Lua defaults once the Lua host lands.
+          # include_str!() macros, and .lua for the embedded Lua builtins
+          # (phi-app/src/builtins: the provider catalog + default commands).
           src = pkgs.lib.cleanSourceWith {
             src = ./.;
             filter =

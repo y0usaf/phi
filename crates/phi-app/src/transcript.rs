@@ -1,12 +1,12 @@
 //! The transcript line vocabulary (PLAN.md WS3.2): every status line a
 //! frontend prints is built here, so the one-shot stderr renderer and the
-//! inline TUI speak identically. forgecode-minimal: one `●` glyph per
+//! inline TUI speak identically. forgecode-minimal: one `•` glyph per
 //! line, dim secondary text, red errors, no timestamps, no borders; the
 //! whole vocabulary uses two SGR attributes (dim, red).
 
 use serde_json::Value;
 
-/// Longest argument summary shown on a `●` line.
+/// Longest argument summary shown on a `•` line.
 const SUMMARY_MAX_CHARS: usize = 80;
 /// Verbose output block: lines shown before the `… +N lines` marker.
 const OUTPUT_MAX_LINES: usize = 10;
@@ -27,7 +27,7 @@ pub(crate) fn red(s: &str, color: bool) -> String {
     }
 }
 
-/// One line per tool call: `● name summary`, summary dim. edit/write get
+/// One line per tool call: `• name summary`, summary dim. edit/write get
 /// a compact diff stat computed from the arguments (the line prints before
 /// the call runs; for exact-match edits and whole-file writes the
 /// arguments determine the change).
@@ -39,20 +39,31 @@ pub(crate) fn tool_line(name: &str, arguments: &Value, color: bool) -> String {
     }
     .unwrap_or_else(|| summarize(arguments));
     if summary.is_empty() {
-        format!("● {name}")
+        format!("• {name}")
     } else {
-        format!("● {name} {}", dim(&summary, color))
+        format!("• {name} {}", dim(&summary, color))
     }
 }
 
-/// `● ERROR: <first line>` in red — the only tool output shown when not
+/// `• ERROR: <first line>` in red — the only tool output shown when not
 /// verbose.
 pub(crate) fn error_line(content: &str, color: bool) -> String {
     let first = content.lines().next().unwrap_or("").trim();
-    red(&format!("● ERROR: {first}"), color)
+    red(&format!("• ERROR: {first}"), color)
 }
 
-/// Verbose mode: the tool result under its `●` line, dim and indented.
+/// Streaming/reasoning trace block: dim, indented under a `• thinking`
+/// header. Same head-cap as tool output blocks so a long reasoning trace
+/// doesn't dominate scrollback.
+pub(crate) fn thinking_block(content: &str, color: bool) -> Vec<String> {
+    let mut out = vec![dim("• thinking", color)];
+    for line in output_block(content, color) {
+        out.push(line);
+    }
+    out
+}
+
+/// Verbose mode: the tool result under its `•` line, dim and indented.
 /// Head-capped — the tool layer already truncates the data; this cap is
 /// about scrollback.
 pub(crate) fn output_block(content: &str, color: bool) -> Vec<String> {
@@ -72,7 +83,7 @@ pub(crate) fn output_block(content: &str, color: bool) -> Vec<String> {
 }
 
 /// A slash-command reply (or login progress note) under its `❯` echo:
-/// `● first line`, continuation lines indented to align, all dim.
+/// `• first line`, continuation lines indented to align, all dim.
 pub(crate) fn notice_lines(text: &str, color: bool) -> Vec<String> {
     let mut out: Vec<String> = text
         .lines()
@@ -80,24 +91,24 @@ pub(crate) fn notice_lines(text: &str, color: bool) -> Vec<String> {
         .map(|(i, line)| {
             let line = line.trim_end();
             if i == 0 {
-                dim(&format!("● {line}"), color)
+                dim(&format!("• {line}"), color)
             } else {
                 dim(&format!("  {line}"), color)
             }
         })
         .collect();
     if out.is_empty() {
-        out.push(dim("●", color));
+        out.push(dim("•", color));
     }
     out
 }
 
 pub(crate) fn interrupted_line(color: bool) -> String {
-    dim("● interrupted", color)
+    dim("• interrupted", color)
 }
 
 pub(crate) fn retry_line(attempt: u32, max: u32, color: bool) -> String {
-    dim(&format!("● retrying ({attempt}/{max})"), color)
+    dim(&format!("• retrying ({attempt}/{max})"), color)
 }
 
 /// `path +added -removed` for an edit call, summed over its edits.
@@ -167,21 +178,21 @@ mod tests {
     fn notice_lines_golden() {
         assert_eq!(
             notice_lines("model set to anthropic/claude-opus-4-7", false),
-            vec!["● model set to anthropic/claude-opus-4-7"]
+            vec!["• model set to anthropic/claude-opus-4-7"]
         );
         assert_eq!(
             notice_lines("commands:\n/help — list available commands", false),
-            vec!["● commands:", "  /help — list available commands"]
+            vec!["• commands:", "  /help — list available commands"]
         );
-        assert_eq!(notice_lines("hi", true), vec!["\x1b[2m● hi\x1b[0m"]);
-        assert_eq!(notice_lines("", false), vec!["●"]);
+        assert_eq!(notice_lines("hi", true), vec!["\x1b[2m• hi\x1b[0m"]);
+        assert_eq!(notice_lines("", false), vec!["•"]);
     }
 
     #[test]
     fn tool_line_golden_with_color() {
         assert_eq!(
             tool_line("bash", &json!({ "command": "ls -la" }), true),
-            "● bash \x1b[2mls -la\x1b[0m"
+            "• bash \x1b[2mls -la\x1b[0m"
         );
     }
 
@@ -189,11 +200,11 @@ mod tests {
     fn tool_line_golden_plain() {
         assert_eq!(
             tool_line("bash", &json!({ "command": "ls -la" }), false),
-            "● bash ls -la"
+            "• bash ls -la"
         );
         assert_eq!(
             tool_line("read", &json!({ "path": "src/main.rs" }), false),
-            "● read src/main.rs"
+            "• read src/main.rs"
         );
     }
 
@@ -207,24 +218,24 @@ mod tests {
             ]
         });
         // edit 1: b → x,y = +2 -1; edit 2: gone → (empty) = +0 -1.
-        assert_eq!(tool_line("edit", &args, false), "● edit src/main.rs +2 -2");
+        assert_eq!(tool_line("edit", &args, false), "• edit src/main.rs +2 -2");
     }
 
     #[test]
     fn write_line_shows_added_lines() {
         let args = json!({ "path": "a/b.txt", "content": "one\ntwo\nthree" });
-        assert_eq!(tool_line("write", &args, false), "● write a/b.txt +3");
+        assert_eq!(tool_line("write", &args, false), "• write a/b.txt +3");
     }
 
     #[test]
     fn malformed_edit_args_fall_back_to_generic_summary() {
         assert_eq!(
             tool_line("edit", &json!({ "path": "x.txt" }), false),
-            "● edit x.txt"
+            "• edit x.txt"
         );
         assert_eq!(
             tool_line("edit", &json!({ "n": 1 }), false),
-            "● edit {\"n\":1}"
+            "• edit {\"n\":1}"
         );
     }
 
@@ -232,7 +243,7 @@ mod tests {
     fn empty_summary_leaves_a_bare_glyph_line() {
         assert_eq!(
             tool_line("bash", &json!({ "command": "" }), false),
-            "● bash"
+            "• bash"
         );
     }
 
@@ -260,9 +271,9 @@ mod tests {
     fn error_line_golden() {
         assert_eq!(
             error_line("boom\ndetail", true),
-            "\x1b[31m● ERROR: boom\x1b[0m"
+            "\x1b[31m• ERROR: boom\x1b[0m"
         );
-        assert_eq!(error_line("  padded  \nrest", false), "● ERROR: padded");
+        assert_eq!(error_line("  padded  \nrest", false), "• ERROR: padded");
     }
 
     #[test]
@@ -289,10 +300,29 @@ mod tests {
     }
 
     #[test]
+    fn thinking_block_dims_and_caps() {
+        let block = thinking_block("one\ntwo  \nthree", false);
+        assert_eq!(block[0], "• thinking");
+        assert_eq!(block[1], "  one");
+        assert_eq!(block[2], "  two");
+        assert_eq!(block[3], "  three");
+        assert_eq!(block[0], "• thinking");
+        // Empty trace still emits the header.
+        assert_eq!(thinking_block("", false), vec!["• thinking"]);
+    }
+
+    #[test]
+    fn thinking_block_with_color_dims() {
+        let block = thinking_block("x", true);
+        assert_eq!(block[0], "\x1b[2m• thinking\x1b[0m");
+        assert_eq!(block[1], "\x1b[2m  x\x1b[0m");
+    }
+
+    #[test]
     fn status_lines_golden() {
-        assert_eq!(interrupted_line(false), "● interrupted");
-        assert_eq!(interrupted_line(true), "\x1b[2m● interrupted\x1b[0m");
-        assert_eq!(retry_line(1, 3, false), "● retrying (1/3)");
+        assert_eq!(interrupted_line(false), "• interrupted");
+        assert_eq!(interrupted_line(true), "\x1b[2m• interrupted\x1b[0m");
+        assert_eq!(retry_line(1, 3, false), "• retrying (1/3)");
     }
 
     #[test]

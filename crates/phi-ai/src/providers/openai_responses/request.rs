@@ -41,13 +41,11 @@ pub(super) fn build_body(model: &Model, ctx: &Context, opts: &StreamOptions) -> 
 
     // Tool definitions: sent as the native OpenAI Responses `tools` array so
     // the model emits `function_call` items instead of text-based fences.
+    // Like pi, we don't force `tool_choice` — the model decides when to call
+    // tools vs. respond with text. Forcing `required` traps the agent loop
+    // (it can never produce a tool-free turn to settle).
     if !ctx.tools.is_empty() {
         body["tools"] = Value::Array(ctx.tools.iter().map(openai_responses_tool_schema).collect());
-        // Force the model to call a tool every turn. Without this, reasoning
-        // models (e.g. GPT-5.5) default to `auto` and loop in prose instead
-        // of emitting `function_call` items. OpenAI's Responses API supports
-        // `tool_choice: "required"` alongside `reasoning` with no conflict.
-        body["tool_choice"] = json!("required");
     }
 
     body
@@ -71,23 +69,27 @@ pub(super) fn convert_messages(messages: &[Message]) -> Vec<Value> {
                 "content": [{ "type": "input_text", "text": user.content }],
             })),
             Message::Assistant(assistant) => {
-                let mut content = Vec::new();
+                // Emit assistant text as a message item. Function calls are
+                // emitted as separate top-level `function_call` items — the
+                // Responses API does not accept `function_call` nested inside
+                // a message's `content` array (HTTP 400 on replay).
                 let text = assistant.text();
                 if !text.is_empty() {
-                    content.push(json!({ "type": "output_text", "text": text }));
+                    out.push(json!({
+                        "role": "assistant",
+                        "content": [{ "type": "output_text", "text": text }],
+                    }));
                 }
                 for block in &assistant.content {
                     if let AssistantContent::ToolCall(call) = block {
-                        content.push(json!({
+                        out.push(json!({
                             "type": "function_call",
                             "call_id": call.id,
                             "name": call.name,
-                            "arguments": call.arguments,
+                            "arguments": serde_json::to_string(&call.arguments)
+                                .unwrap_or_else(|_| "{}".to_owned()),
                         }));
                     }
-                }
-                if !content.is_empty() {
-                    out.push(json!({ "role": "assistant", "content": content }));
                 }
             }
             Message::ToolResult(result) => out.push(json!({
@@ -126,6 +128,7 @@ mod tests {
             headers: BTreeMap::new(),
             thinking_levels: None,
             adaptive_thinking: false,
+            reasoning_control: None,
         }
     }
 
@@ -186,7 +189,9 @@ mod tests {
     }
 
     #[test]
-    fn build_body_forces_tool_choice_required_when_tools_present() {
+    fn build_body_omits_tool_choice_when_tools_present() {
+        // Like pi, we don't force tool_choice — the model decides when to
+        // call tools. Forcing "required" traps the agent loop.
         let ctx = Context {
             system_prompt: Some("sys".to_owned()),
             messages: vec![Message::User(UserMessage::new("hi"))],
@@ -198,7 +203,7 @@ mod tests {
         };
         let opts = StreamOptions::new(Auth::ApiKey("k".to_owned()));
         let body = build_body(&model(), &ctx, &opts);
-        assert_eq!(body["tool_choice"], "required");
+        assert!(body.get("tool_choice").is_none());
     }
 
     #[test]
@@ -215,6 +220,9 @@ mod tests {
 
     #[test]
     fn convert_messages_serializes_assistant_tool_call() {
+        // Function calls are top-level items, not nested inside the
+        // assistant message content. Text and tool call produce two
+        // separate top-level items in the output array.
         let mut assistant = AssistantMessage::empty(&model());
         assistant.content.push(AssistantContent::Text {
             text: "let me check".to_owned(),
@@ -228,15 +236,17 @@ mod tests {
             }));
         let messages = vec![Message::Assistant(assistant)];
         let out = convert_messages(&messages);
-        assert_eq!(out.len(), 1);
+        assert_eq!(out.len(), 2);
+        // Text as an assistant message.
         assert_eq!(out[0]["role"], "assistant");
         let content = out[0]["content"].as_array().unwrap();
-        assert_eq!(content.len(), 2);
+        assert_eq!(content.len(), 1);
         assert_eq!(content[0]["type"], "output_text");
-        assert_eq!(content[1]["type"], "function_call");
-        assert_eq!(content[1]["call_id"], "call_abc");
-        assert_eq!(content[1]["name"], "repl");
-        assert_eq!(content[1]["arguments"]["code"], "print(1)");
+        // Tool call as a top-level function_call item.
+        assert_eq!(out[1]["type"], "function_call");
+        assert_eq!(out[1]["call_id"], "call_abc");
+        assert_eq!(out[1]["name"], "repl");
+        assert_eq!(out[1]["arguments"].as_str(), Some(r#"{"code":"print(1)"}"#));
     }
 
     #[test]
@@ -267,12 +277,35 @@ mod tests {
             Message::ToolResult(result),
         ];
         let out = convert_messages(&messages);
+        // user, function_call (top-level), function_call_output = 3 items
         assert_eq!(out.len(), 3);
-        let asst_content = out[1]["content"].as_array().unwrap();
-        assert_eq!(asst_content[0]["type"], "function_call");
-        assert_eq!(asst_content[0]["call_id"], "call_def");
+        assert_eq!(out[0]["role"], "user");
+        assert_eq!(out[1]["type"], "function_call");
+        assert_eq!(out[1]["call_id"], "call_def");
         assert_eq!(out[2]["type"], "function_call_output");
         assert_eq!(out[2]["call_id"], "call_def");
         assert_eq!(out[2]["output"], "ok");
+    }
+
+    #[test]
+    fn convert_messages_serializes_null_arguments_as_string() {
+        // A tool call whose arguments failed to parse (empty stream) becomes
+        // Value::Null. The Responses API requires `arguments` to be a string,
+        // never null — serializing it as JSON null triggers HTTP 400 on the
+        // next turn. Must serialize as the string "null".
+        let mut assistant = AssistantMessage::empty(&model());
+        assistant
+            .content
+            .push(AssistantContent::ToolCall(crate::types::ToolCall {
+                id: "call_null".to_owned(),
+                name: "bash".to_owned(),
+                arguments: serde_json::Value::Null,
+            }));
+        let messages = vec![Message::Assistant(assistant)];
+        let out = convert_messages(&messages);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0]["type"], "function_call");
+        assert_eq!(out[0]["call_id"], "call_null");
+        assert_eq!(out[0]["arguments"].as_str(), Some("null"));
     }
 }

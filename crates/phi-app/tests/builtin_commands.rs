@@ -18,7 +18,12 @@ fn host_with_builtins() -> Host {
 fn builtins_register_through_the_public_door() {
     let host = host_with_builtins();
     let names: Vec<String> = host.commands().into_iter().map(|c| c.name).collect();
-    assert_eq!(names, ["help", "quit", "clear", "model", "login", "logout"]);
+    assert_eq!(
+        names,
+        [
+            "help", "quit", "clear", "model", "tree", "fork", "login", "logout"
+        ]
+    );
     assert!(
         host.commands()
             .iter()

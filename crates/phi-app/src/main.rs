@@ -1,6 +1,7 @@
 //! Bare core (DESIGN.md doctrine 06): login, list-models, and a one-shot
-//! streamed completion with zero extensions loaded. Everything else arrives
-//! as packs on the Lua host.
+//! streamed completion. Extensions load before model resolution so
+//! `register_provider` models join the catalog; the login path alone stays
+//! extension-free. Everything else arrives as packs on the Lua host.
 
 use std::io::{IsTerminal, Read as _};
 use std::sync::Arc;
@@ -20,6 +21,7 @@ mod format;
 mod session;
 mod settings;
 mod transcript;
+mod tree_overlay;
 
 const DEFAULT_MODEL: &str = "claude-opus-4-7";
 
@@ -49,7 +51,28 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    let registry = Arc::new(Registry::builtin());
+    // Extension host: load before model resolution because the *entire*
+    // model catalog arrives through `phi.register_provider` — the
+    // first-party providers are builtins/providers.lua, registered through
+    // the same door user extensions use (The Rule). Builtins load first so
+    // a user extension can override a first-party provider by re-registering
+    // its name.
+    //
+    // The login path above stays extension-free (bare core); list-models
+    // runs on the grafted registry so all providers are visible.
+    let host = phi_host::Host::new()?;
+    extensions::load_builtins(&host).context("loading built-in commands")?;
+    extensions::load_discovered(&host)?;
+    let host = Arc::new(host);
+
+    // Graft every registered provider (builtins + extensions) onto the bare
+    // protocol registry. Inline api_keys become runtime-only auth overrides
+    // (never persisted).
+    let registry = Arc::new(extensions::graft_providers(
+        &Registry::builtin(),
+        &host,
+        &storage,
+    ));
 
     if let Some(pattern) = &args.list_models {
         for model in registry.supported_models() {
@@ -139,15 +162,9 @@ async fn main() -> Result<()> {
         }
     });
 
-    // Extension host: native tools go in through the same public registry
-    // extensions use, and before discovery so an extension colliding with a
-    // builtin fails as a load error on stderr, not an app abort. The login
-    // and list-models paths above stay extension-free (bare core).
-    let host = phi_host::Host::new()?;
+    // Native tools register onto the host after the cancel token exists
+    // (long-running tools like bash respect the run's cancellation).
     phi_agent::tools::register_all(&host, cancel.clone()).context("registering native tools")?;
-    extensions::load_builtins(&host).context("loading built-in commands")?;
-    extensions::load_discovered(&host)?;
-    let host = Arc::new(host);
     extensions::announce(
         &host,
         "session_start",
@@ -198,10 +215,12 @@ async fn main() -> Result<()> {
         }
     }
 }
-
 fn parse_thinking(level: Option<&str>) -> Result<ThinkingLevel> {
+    // Default when neither --thinking nor settings.json provides one: a
+    // reasoning model should reason by default (matching pi's
+    // DEFAULT_THINKING_LEVEL). Non-reasoning models ignore the level.
     let Some(level) = level else {
-        return Ok(ThinkingLevel::Off);
+        return Ok(ThinkingLevel::Medium);
     };
     ThinkingLevel::ALL
         .into_iter()

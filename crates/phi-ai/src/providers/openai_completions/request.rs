@@ -31,15 +31,27 @@ pub(super) fn build_body(
         body["temperature"] = json!(temperature);
     }
 
+    // Reasoning control: write the value the model declared for the
+    // requested `ThinkingLevel` at the model's declared dotted path. The
+    // wire field varies by upstream dialect (`chat_template_kwargs.
+    // enable_thinking` for vLLM/Qwen/GLM, `reasoning_effort` for
+    // OpenAI-shaped routers), so the field + value live on the model, not
+    // hand-wired here (doctrine 05: no provider matching at the seam). A
+    // level absent from the declared map is not written — the model keeps
+    // its upstream default. Anthropic/Responses providers ignore this and
+    // keep using `thinking_value`.
+    if let Some(rc) = &model.reasoning_control
+        && let Some(value) = rc.values.get(&opts.thinking)
+    {
+        set_dotted(&mut body, &rc.field, value.clone());
+    }
+
     // Tool definitions: sent as the native OpenAI `tools` array so the model
-    // emits `tool_calls` instead of text-based fences.
+    // emits `tool_calls` instead of text-based fences. Like pi, we don't force
+    // `tool_choice` — the model decides when to call tools vs. respond with
+    // text. Forcing `required` traps the agent loop.
     if !ctx.tools.is_empty() {
         body["tools"] = Value::Array(ctx.tools.iter().map(openai_tool_schema).collect());
-        // Force the model to call a tool every turn. Without this, reasoning
-        // models default to `auto` and loop in prose instead of emitting
-        // `tool_calls`. OpenAI's Chat Completions API supports
-        // `tool_choice: "required"` alongside reasoning with no conflict.
-        body["tool_choice"] = json!("required");
     }
 
     body
@@ -54,6 +66,26 @@ pub(super) fn openai_tool_schema(tool: &ToolDefinition) -> Value {
             "parameters": tool.input_schema,
         },
     })
+}
+
+/// Write `value` at a dotted `path` inside `body`, creating intermediate
+/// objects as needed (`a.b.c` → `body[a][b][c] = value`). Used to place a
+/// model-declared reasoning-control field (e.g.
+/// `chat_template_kwargs.enable_thinking`) without the request builder
+/// knowing the dialect.
+fn set_dotted(body: &mut Value, path: &str, value: Value) {
+    let parts: Vec<&str> = path.split('.').collect();
+    let Some((last, ancestors)) = parts.split_last() else {
+        return;
+    };
+    let mut cur = body;
+    for part in ancestors {
+        if cur.get(part).is_none() {
+            cur[part] = json!({});
+        }
+        cur = cur.get_mut(part).expect("just created above");
+    }
+    cur[*last] = value;
 }
 
 pub(super) fn convert_messages(messages: &[Message], system_prompt: Option<&str>) -> Vec<Value> {
@@ -131,7 +163,8 @@ mod tests {
     use super::{build_body, convert_messages, openai_tool_schema};
     use crate::types::{
         Api, AssistantContent, AssistantMessage, Auth, Context, CostRates, Message, Model,
-        StreamOptions, ToolDefinition, ToolResultMessage, UserMessage,
+        ReasoningControl, StreamOptions, ThinkingLevel, ToolDefinition, ToolResultMessage,
+        UserMessage,
     };
     use serde_json::json;
 
@@ -150,6 +183,7 @@ mod tests {
             headers: BTreeMap::new(),
             thinking_levels: None,
             adaptive_thinking: false,
+            reasoning_control: None,
         }
     }
 
@@ -208,6 +242,84 @@ mod tests {
         opts.max_tokens = Some(20_000);
         let body = build_body(&m, &ctx, &opts);
         assert_eq!(body["max_tokens"], 8192);
+    }
+
+    #[test]
+    fn build_body_writes_reasoning_control_at_declared_path() {
+        // A Completions model that declares its reasoning-control wire field
+        // gets the value for the requested ThinkingLevel written at the
+        // dotted path. The provider never matches on provider/model; it
+        // echoes whatever the model declared.
+        let mut m = model();
+        m.reasoning = true;
+        m.reasoning_control = Some(ReasoningControl {
+            field: "chat_template_kwargs.enable_thinking".to_owned(),
+            values: [
+                (ThinkingLevel::Off, json!(false)),
+                (ThinkingLevel::High, json!(true)),
+            ]
+            .into_iter()
+            .collect(),
+        });
+        let ctx = Context {
+            system_prompt: None,
+            messages: vec![Message::User(UserMessage::new("hi"))],
+            ..Default::default()
+        };
+
+        // Off → enable_thinking=false at the nested path.
+        let mut opts = StreamOptions::new(Auth::ApiKey("k".to_owned()));
+        opts.thinking = ThinkingLevel::Off;
+        let body = build_body(&m, &ctx, &opts);
+        assert_eq!(
+            body["chat_template_kwargs"]["enable_thinking"],
+            json!(false)
+        );
+
+        // High → enable_thinking=true.
+        let mut opts = StreamOptions::new(Auth::ApiKey("k".to_owned()));
+        opts.thinking = ThinkingLevel::High;
+        let body = build_body(&m, &ctx, &opts);
+        assert_eq!(body["chat_template_kwargs"]["enable_thinking"], json!(true));
+    }
+
+    #[test]
+    fn build_body_skips_reasoning_control_for_undeclared_levels() {
+        // A level absent from the declared `values` map is not written —
+        // the model keeps its upstream default. (Matches the live probe:
+        // GLM-5.2 reasons by default, so Medium-as-undeclared leaves the
+        let mut m = model();
+        m.reasoning = true;
+        m.reasoning_control = Some(ReasoningControl {
+            field: "chat_template_kwargs.enable_thinking".to_owned(),
+            values: [(ThinkingLevel::Off, json!(false))].into_iter().collect(),
+        });
+        let ctx = Context {
+            system_prompt: None,
+            messages: vec![Message::User(UserMessage::new("hi"))],
+            ..Default::default()
+        };
+        let mut opts = StreamOptions::new(Auth::ApiKey("k".to_owned()));
+        opts.thinking = ThinkingLevel::Medium;
+        let body = build_body(&m, &ctx, &opts);
+        assert!(body.get("chat_template_kwargs").is_none());
+    }
+
+    #[test]
+    fn build_body_no_reasoning_control_preserves_today_behavior() {
+        // A model with no `reasoning_control` declaration sends nothing —
+        // today's behavior, preserved. Kimi-K2.6 (no honored disable field
+        // in the probe) rides this until its upstream is determined.
+        let mut opts = StreamOptions::new(Auth::ApiKey("k".to_owned()));
+        opts.thinking = ThinkingLevel::High;
+        let ctx = Context {
+            system_prompt: None,
+            messages: vec![Message::User(UserMessage::new("hi"))],
+            ..Default::default()
+        };
+        let body = build_body(&model(), &ctx, &opts);
+        assert!(body.get("chat_template_kwargs").is_none());
+        assert!(body.get("reasoning_effort").is_none());
     }
 
     #[test]
@@ -341,7 +453,9 @@ line2"
     }
 
     #[test]
-    fn build_body_forces_tool_choice_required_when_tools_present() {
+    fn build_body_omits_tool_choice_when_tools_present() {
+        // Like pi, we don't force tool_choice — the model decides when to
+        // call tools. Forcing "required" traps the agent loop.
         let ctx = Context {
             system_prompt: Some("sys".to_owned()),
             messages: vec![Message::User(UserMessage::new("hi"))],
@@ -353,7 +467,7 @@ line2"
         };
         let opts = StreamOptions::new(Auth::ApiKey("k".to_owned()));
         let body = build_body(&model(), &ctx, &opts);
-        assert_eq!(body["tool_choice"], "required");
+        assert!(body.get("tool_choice").is_none());
     }
 
     #[test]

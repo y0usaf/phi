@@ -402,6 +402,7 @@ mod tests {
             headers: Default::default(),
             thinking_levels: None,
             adaptive_thinking: false,
+            reasoning_control: None,
         }
     }
 
@@ -425,24 +426,14 @@ mod tests {
     }
 
     #[test]
-    fn cursor_model_in_registry() {
-        let registry = crate::registry::Registry::builtin();
-        // composer-2.5 should be findable.
-        let model = registry.find("composer-2.5");
-        assert!(model.is_some(), "composer-2.5 should be in models.json");
-        let model = model.unwrap();
-        assert_eq!(model.api, Api::CursorNative);
-        assert_eq!(model.provider, "cursor");
-        assert!(registry.is_supported(model));
-    }
-
-    #[test]
     fn cursor_provider_registered() {
+        // The cursor-native protocol implementation is registered in the
+        // bare registry; cursor models themselves live in phi-app's
+        // builtins/providers.lua and graft on (The Rule).
         let registry = crate::registry::Registry::builtin();
-        let model = registry.first_for_provider("cursor");
-        assert!(model.is_some(), "cursor provider should have models");
-        let model = model.unwrap();
-        assert!(registry.is_supported(model));
+        let model = test_model();
+        assert_eq!(model.api, Api::CursorNative);
+        assert!(registry.is_supported(&model));
     }
 
     #[test]

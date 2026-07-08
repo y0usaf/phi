@@ -1,6 +1,6 @@
 -- Built-in slash commands (PLAN.md WS3.3), shipped as embedded Lua through
 -- the same phi.register_command door user extensions use (The Rule). A
--- handler returns { message } to print a ● line, and/or { action } — an
+-- handler returns { message } to print a • line, and/or { action } — an
 -- open string key the frontend dispatches on (never a closed enum), with
 -- any extra keys carried alongside as the action's arguments.
 
@@ -41,6 +41,22 @@ phi.register_command({
   description = "show or switch the model: /model [id]",
   handler = function(args)
     return { action = "set_model", query = args or "" }
+  end,
+})
+
+phi.register_command({
+  name = "tree",
+  description = "browse the session tree and navigate to a point",
+  handler = function()
+    return { action = "open_tree" }
+  end,
+})
+
+phi.register_command({
+  name = "fork",
+  description = "fork from a prior user message into a new session",
+  handler = function()
+    return { action = "fork" }
   end,
 })
 

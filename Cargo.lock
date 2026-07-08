@@ -1295,6 +1295,7 @@ dependencies = [
  "libc",
  "pulldown-cmark",
  "serde",
+ "serde_json",
  "syntect",
  "unicode-segmentation",
  "unicode-width",
