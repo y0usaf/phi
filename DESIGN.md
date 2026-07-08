@@ -61,7 +61,9 @@ Two standing corollaries carry over from the rebuild:
 | Extension language | Lua (divergence 1) | JS runtime considered for verbatim example reuse; rejected — embed weight, and translation-as-conformance is judged worth the cost. Final. |
 | Mechanism/policy line | Rust substrate = Lua runtime (registries, event bus, watchdog), provider transport (`packages/ai` port: HTTP/SSE/OAuth/streaming), terminal mechanism (`packages/tui` port: raw mode, differential cell renderer, input decoding, components) exposed as bindings, OS bindings (fs, process spawn, env, path). Lua = tools, agent loop orchestration, slash commands, frontend/chrome, compaction policy, skills, prompt templates, themes, session naming — everything with behavior. | Divergence 2 made mechanical. A placement that puts behavior in Rust needs a row here. |
 | Async seam | Lua handlers run as coroutines and may await host futures (LLM streams, subprocesses, timers) | Required for the loop and the frontend to be Lua-authored (divergence 2). Settled before the substrate lands because retrofitting it is the expensive mistake. |
-| Workspace layout | `crates/phi-ai{,-types,-auth}` ← `packages/ai`; `crates/phi-agent` ← `packages/agent`; `crates/phi-tui` ← `packages/tui`; `crates/phi-app` ← `packages/coding-agent` (binary `phi`); `crates/phi-host` ← `core/extensions` (JS runtime → Lua runtime); `crates/phi-session` ← `core/session-manager` types | Crate granularity may differ from package granularity (Rust conventions); *module structure inside each crate mirrors pi's `src/`* so parity audits are `diff`-shaped. |
+| Workspace layout | `crates/phi-ai{,-types,-auth}` ← `packages/ai`; `crates/phi-agent` ← `packages/agent`; `crates/phi-tui` ← `packages/tui`; `crates/phi-app` ← `packages/coding-agent` (binary `phi`); `crates/phi-host` ← `core/extensions` (JS runtime → Lua runtime); `crates/phi-session` ← `core/session-manager` types | Crate granularity may differ from package granularity (Rust conventions); *module structure inside each crate mirrors pi's `src/`* so parity audits are `diff`-shaped — except where a crate has a structural-compression row (see `phi-ai`), in which case parity is behavioral: golden fixtures, not module diffs. |
+| `phi-ai` structure | Layered, not pi-mirrored: `types → auth → transport (HTTP/SSE/retry/cancellation, written once) → protocols (wire mapping only) → registry (catalog + resolution)`; no upward deps. ~5 wire protocols as trait impls (anthropic, openai-completions, openai-responses, google, bedrock); everything else (azure, vertex, copilot, cloudflare, …) is a *variant* = catalog data row, zero Rust. The model catalog (pi's 17.5k-line `models.generated.ts`) is data — Lua tables / generated JSON via `register_provider`, never hand code. OAuth = one PKCE engine + one device-code engine + flows-as-data; irreducibly weird flows (codex exchange, copilot) stay code sharing the machinery. | Pi's per-provider file sprawl is the thing being compressed; mirroring it would forfeit the win. Parity contract instead: catalog diff vs pi's registry + recorded-fixture replay (real SSE transcripts captured from pi, replayed against phi's protocols). |
+| Code standard | Robust, minimalist, modular — enforced, not aspirational: typed errors per layer (`thiserror`), no `unwrap`/`expect`/`panic!` in library crates (clippy `deny`), cross-cutting mechanisms (retry, SSE decode, truncation, cancellation) written exactly once, behavior pinned by golden-fixture tests before refactors are allowed to touch it. | "Clean" must be checkable in CI or it erodes. |
 | `phi-grid` | Deleted from the workspace | Not in pi. Resurrect from the attic when the first-party mux pack returns. |
 | Shipped defaults | Embedded `.lua` via `include_str!`, loaded through the public API | Divergence 2. The flake source filter must include every embedded file type. |
 | Sandboxing / permissions | pi's stance: none in core, full user permissions; trust gates extension loading only (`core/project-trust` port) | Written decision so plain-Lua `os`/`io` access is a choice, not an accident. |
@@ -130,11 +132,12 @@ involved.
       bindings (fs/proc/env/path), discovery, trust gate, embedded-pack
       loading. *Accept: an example awaits a host future; a hung handler is
       killed; untrusted `.phi/` prompts.*
-- [ ] **WS2 — `packages/ai` parity.** Complete the phi-ai port: every
-      provider (anthropic, openai completions+responses, codex, google,
-      vertex, bedrock, azure, mistral, cloudflare, copilot, images),
-      overflow, model registry. *Accept: `--list-models` output matches pi's
-      catalog; streaming/auth verified per provider where credentials
+- [ ] **WS2 — `packages/ai` parity.** phi-ai per the structural-compression
+      row: transport once, ~5 protocol impls, variants as catalog data,
+      catalog as data, OAuth engines + flows-as-data. Resurrect the attic's
+      OAuth/protobuf work function-by-function into the new layering.
+      *Accept: `--list-models` matches pi's catalog; recorded-fixture replay
+      passes per protocol; streaming/auth verified live where credentials
       exist.*
 - [ ] **WS3 — `packages/tui` parity.** Port the component tree: differential
       renderer (`tui.ts`), editor, autocomplete, select-list, markdown,
