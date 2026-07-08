@@ -13,6 +13,7 @@ bytes = "1"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 getrandom = "0.3"
 httpdate = "1"
+indexmap = "2"
 libc = "0.2"
 mlua = { version = "0.11", features = ["lua54", "vendored", "async"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "http2"] }
@@ -27,6 +28,7 @@ phi-ai = { path = "crates/phi-ai" }
 phi-ai-auth = { path = "crates/phi-ai-auth" }
 phi-ai-types = { path = "crates/phi-ai-types" }
 phi-host = { path = "crates/phi-host" }
+phi-session = { path = "crates/phi-session" }
 phi-tui = { path = "crates/phi-tui" }
 
 # Code standard (DESIGN.md, locked): no unwrap/expect/panic in library

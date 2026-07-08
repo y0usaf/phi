@@ -30,6 +30,7 @@ graph TD
 | `phi-ai-types` | packages/ai type vocabulary: models, messages, content, usage, stream events |
 | `phi-app` | _no description in Cargo.toml_ |
 | `phi-host` | Lua extension host: coroutine async seam, event bus, watchdog |
+| `phi-session` | Session manager: append-only JSONL session trees (port of core/session-manager.ts) |
 | `phi-tui` | _no description in Cargo.toml_ |
 
 ## Module structure
@@ -295,6 +296,31 @@ crate phi_host
     ├── enum Msg: pub(crate)
     ├── struct WatchdogState: pub(self)
     └── struct Watched: pub(self)
+```
+
+### `phi-session`
+
+```
+
+crate phi_session
+├── mod messages: pub
+├── mod paths: pub
+│   └── struct PathInputOptions: pub
+├── mod session_manager: pub
+│   ├── type FileEntry: pub
+│   ├── enum Leaf: pub
+│   ├── struct NewSessionOptions: pub
+│   ├── type Result: pub(self)
+│   ├── struct SessionContext: pub
+│   ├── enum SessionError: pub
+│   ├── struct SessionInfo: pub
+│   ├── type SessionListProgress: pub
+│   ├── struct SessionManager: pub
+│   ├── struct SessionModel: pub
+│   └── struct SessionTreeNode: pub
+├── mod time: pub
+└── mod uuid: pub
+    └── struct State: pub(self)
 ```
 
 ### `phi-tui`

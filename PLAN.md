@@ -71,10 +71,16 @@ the visual bar now.
   trust-prompt → `projectTrusted` wiring is WS7 glue.
   `configureHttpDispatcher` (undici global) maps to phi-ai transport
   wiring — lands with the WS4 session that consumes
-  `getHttpIdleTimeoutMs`/`getProviderRetrySettings`. `getSessionDir`
-  consumer + the full `utils/paths.ts` port land with WS3.2/3.3.
-  Settings exposure to Lua (if a consumer needs it) requires an
-  exerciser in the same commit.
+  `getHttpIdleTimeoutMs`/`getProviderRetrySettings`. Settings exposure
+  to Lua (if a consumer needs it) requires an exerciser in the same
+  commit.
+- Session follow-ups: phi-session has no consumer yet — `--continue`/
+  `--resume`/session-picker wiring and the Lua session binding land with
+  WS4's agent session (exerciser rule applies to the binding, not the
+  crate). `utils/paths.ts` display helpers (`getCwdRelativePath`,
+  `formatPathRelativeToCwdOrAbsolute`, `markPathIgnoredByCloudSync`) land
+  with WS3.3 tools / WS7. `session-cwd.ts` and the selector/startup
+  session-name behaviors are WS8/WS9 modules.
 
 ## Current — WS3: `coding-agent` tools + sessions
 
@@ -88,9 +94,18 @@ bindings). Steps refine as the spec modules are read:
       branch (step 3) + `sdk.ts` thinking-level resolution wired into
       `main.rs` (divergences recorded in the module doc: sync write
       queue, JSON-map settings type, lexicographic key order).
-- [ ] **3.2 Session-manager.** `core/session-manager.ts` → JSONL store
-      (resurrect the attic's store as claimed); `phi-session` crate per
-      the workspace-layout row.
+- [x] **3.2 Session-manager.** `crates/phi-session` — `session_manager.rs`
+      1:1 (v1→v2→v3 migrations, tree traversal/branching/labels,
+      `buildSessionContext`, deferred-flush persistence, fork/list), plus
+      `messages.rs` (`core/messages.ts`), `paths.rs` (`utils/paths.ts`
+      slice), `uuid.rs` (uuidv7), `time.rs` (JS `Date` mechanism); pi's 7
+      session-manager test files ported as the golden suite. Attic store
+      consulted, not carried: its v2 header shape (leaf_id/model) lost to
+      the spec's v3. Divergences in the module doc: entries are
+      `serde_json::Value` (unknown fields survive rewrite; typed
+      AgentMessage lands WS4), sorted JSON keys, explicit
+      `agent_dir`/`sessions_dir` params instead of `config.ts` imports
+      (`get_sessions_dir()` added to phi-app config), synchronous listing.
 - [ ] **3.3 Tools as Lua.** read/edit/bash/write/grep/find/ls over the
       WS1 bindings with truncation + output-accumulator semantics; land
       the carried tool-`execute` params (signal, on_update, ctx) with
