@@ -173,13 +173,31 @@ CI-checked from then on.
       parser, `sanitize` identity + rationale, `headers`). Replay harness:
       `tests/anthropic.rs` over a loopback SSE server + fixtures
       (`tests/fixtures/anthropic/`, `.sse` added to the flake filter).
-      *Remaining:* openai-completions, openai-responses, google, bedrock;
-      the protocol-dispatch trait lands with the registry seam (2.4).
-      *Pending:* `replay_basic.sse` is hand-built to Anthropic's
-      documented shapes — replace with a live pi-captured transcript when
-      credentials exist; codex `parseErrorResponse` shaping still lands
-      with the codex protocol slice; `options.client` injection (Vertex)
-      lands with google-vertex.
+      *Landed (openai-completions slice):* `openai_completions.rs` ←
+      `openai-completions.ts` (compat detect/merge for the whole
+      openai-compatible fleet, request shaping incl. anthropic-format
+      cache control + thinking-format chain + routing passthrough,
+      chunk→event mapping with reasoning-field detection and tool-call
+      index/id bookkeeping; SDK reproduced explicitly:
+      `/chat/completions`, Bearer auth with the cloudflare null-header
+      suppression, 10-min default timeout, `[DONE]` sentinel) +
+      `openai_prompt_cache.rs`; shared `merge_header*`/
+      `resolve_cache_retention` lifted to `protocols::` (written once).
+      Fixtures: `tests/fixtures/openai-completions/`, harness
+      `tests/openai_completions.rs` (10 tests: replay, full params,
+      deepseek/openrouter/moonshot compat, tools:[] on tool history,
+      finish_reason errors, simple-options mapping, missing key).
+      *Remaining:* openai-responses, google, bedrock; the
+      protocol-dispatch trait lands with the registry seam (2.4).
+      *Pending:* both `replay_basic.sse` fixtures are hand-built to the
+      providers' documented shapes — replace with live pi-captured
+      transcripts when credentials exist; codex `parseErrorResponse`
+      shaping still lands with the codex protocol slice;
+      `options.client` injection (Vertex) lands with google-vertex;
+      openrouter `error.metadata.raw` append is done at the transport
+      seam (module-doc divergence note); `streamSimple`'s TS-cast
+      `toolChoice` smuggle is not represented — callers use the full
+      options type.
 - [ ] **2.4 Registry + catalog as data.** Catalog generated from pi's
       `models.generated.ts` as data (JSON/Lua tables, never hand code);
       variants (azure, vertex, copilot, …) as catalog rows;

@@ -33,12 +33,12 @@ use phi_ai_types::{
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde_json::{Map, Value, json};
 
-use super::ProtocolError;
 use super::cloudflare::resolve_cloudflare_base_url;
 use super::copilot_headers::{build_copilot_dynamic_headers, has_copilot_vision_input};
 use super::options::{SimpleStreamOptions, StreamOptions};
 use super::simple_options::{adjust_max_tokens_for_thinking, build_base_options};
 use super::transform_messages::transform_messages;
+use super::{ProtocolError, merge_header, merge_header_map, resolve_cache_retention};
 use crate::transport::{
     AbortSignal, AssistantMessageEventStream, RetryOptions, create_assistant_message_event_stream,
     post_with_retry, response_sse_reader,
@@ -144,18 +144,6 @@ pub struct AnthropicOptions {
     /// (default true; adaptive models skip the header regardless).
     pub interleaved_thinking: Option<bool>,
     pub tool_choice: Option<AnthropicToolChoice>,
-}
-
-/// Spec: `resolveCacheRetention` — default "short",
-/// `PI_CACHE_RETENTION=long` for backward compatibility.
-fn resolve_cache_retention(cache_retention: Option<CacheRetention>) -> CacheRetention {
-    if let Some(retention) = cache_retention {
-        return retention;
-    }
-    if std::env::var("PI_CACHE_RETENTION").as_deref() == Ok("long") {
-        return CacheRetention::Long;
-    }
-    CacheRetention::Short
 }
 
 /// Spec: `getCacheControl` — the `cache_control` block, with a 1h TTL for
@@ -336,23 +324,6 @@ struct PreparedRequest {
     url: String,
     headers: HeaderMap,
     is_oauth_token: bool,
-}
-
-fn merge_header(headers: &mut Vec<(String, String)>, key: &str, value: &str) {
-    let lower = key.to_ascii_lowercase();
-    if let Some(entry) = headers.iter_mut().find(|(k, _)| *k == lower) {
-        entry.1 = value.to_string();
-    } else {
-        headers.push((lower, value.to_string()));
-    }
-}
-
-fn merge_header_map(headers: &mut Vec<(String, String)>, map: Option<&BTreeMap<String, String>>) {
-    if let Some(map) = map {
-        for (key, value) in map {
-            merge_header(headers, key, value);
-        }
-    }
 }
 
 #[allow(clippy::too_many_arguments)]

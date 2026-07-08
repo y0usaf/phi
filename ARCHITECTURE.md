@@ -45,6 +45,13 @@ crate phi_ai
 │   │   └── struct ResolvedCompat: pub(self)
 │   ├── mod cloudflare: pub
 │   ├── mod copilot_headers: pub
+│   ├── mod openai_completions: pub
+│   │   ├── struct OpenAICompletionsOptions: pub
+│   │   ├── enum OpenAIToolChoice: pub
+│   │   ├── struct PreparedRequest: pub(self)
+│   │   ├── struct ResolvedCompat: pub(self)
+│   │   └── struct ToolMeta: pub(self)
+│   ├── mod openai_prompt_cache: pub
 │   ├── mod options: pub
 │   │   ├── type PayloadHook: pub
 │   │   ├── type ResponseHook: pub

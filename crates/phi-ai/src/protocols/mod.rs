@@ -12,18 +12,26 @@
 //! - [`cloudflare`] ← `providers/cloudflare.ts`.
 //! - [`copilot_headers`] ← `providers/github-copilot-headers.ts`.
 //! - [`anthropic`] ← `providers/anthropic.ts`.
+//! - [`openai_prompt_cache`] ← `providers/openai-prompt-cache.ts`.
+//! - [`openai_completions`] ← `providers/openai-completions.ts`.
 //!
-//! Remaining protocol families (openai-completions, openai-responses,
-//! google, bedrock) land here in later WS2.3 slices.
+//! Remaining protocol families (openai-responses, google, bedrock) land
+//! here in later WS2.3 slices.
 
 pub mod anthropic;
 pub mod cloudflare;
 pub mod copilot_headers;
+pub mod openai_completions;
+pub mod openai_prompt_cache;
 pub mod options;
 pub mod simple_options;
 pub mod transform_messages;
 
 pub use options::{PayloadHook, ResponseHook, SimpleStreamOptions, StreamOptions};
+
+use std::collections::BTreeMap;
+
+use phi_ai_types::CacheRetention;
 
 /// Protocol-layer error. The spec throws `Error(message)` and its stream
 /// functions fold every failure into `AssistantMessage.errorMessage`;
@@ -32,3 +40,39 @@ pub use options::{PayloadHook, ResponseHook, SimpleStreamOptions, StreamOptions}
 #[derive(Clone, Debug, thiserror::Error)]
 #[error("{0}")]
 pub struct ProtocolError(pub String);
+
+/// Spec: `resolveCacheRetention` — default "short",
+/// `PI_CACHE_RETENTION=long` for backward compatibility. Each spec
+/// provider file repeats this verbatim; written once here.
+pub(crate) fn resolve_cache_retention(cache_retention: Option<CacheRetention>) -> CacheRetention {
+    if let Some(retention) = cache_retention {
+        return retention;
+    }
+    if std::env::var("PI_CACHE_RETENTION").as_deref() == Ok("long") {
+        return CacheRetention::Long;
+    }
+    CacheRetention::Short
+}
+
+/// Case-insensitive header upsert (JS object spread over lowercased
+/// header names).
+pub(crate) fn merge_header(headers: &mut Vec<(String, String)>, key: &str, value: &str) {
+    let lower = key.to_ascii_lowercase();
+    if let Some(entry) = headers.iter_mut().find(|(k, _)| *k == lower) {
+        entry.1 = value.to_string();
+    } else {
+        headers.push((lower, value.to_string()));
+    }
+}
+
+/// Merge a header record over `headers` ([`merge_header`] per entry).
+pub(crate) fn merge_header_map(
+    headers: &mut Vec<(String, String)>,
+    map: Option<&BTreeMap<String, String>>,
+) {
+    if let Some(map) = map {
+        for (key, value) in map {
+            merge_header(headers, key, value);
+        }
+    }
+}
