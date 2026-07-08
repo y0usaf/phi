@@ -132,8 +132,32 @@ CI-checked from then on.
       normalized to f64. Options families (StreamOptions etc.) carry
       AbortSignal/callbacks → land with transport (2.2); event-stream
       mechanism likewise 2.2.
-- [ ] **2.2 Transport, written once.** HTTP + SSE decode + retry +
+- [x] **2.2 Transport, written once.** HTTP + SSE decode + retry +
       cancellation in one module; no protocol knowledge.
+      ✓ `crates/phi-ai/src/transport/` — spec is the one place pi hand-rolls
+      transport (`openai-codex-responses.ts`; everything else hides in
+      SDKs, pinned later by 2.3 fixture replay): `event_stream.rs` ←
+      `utils/event-stream.ts` (completing event resolves result *and* is
+      delivered; push-after-done dropped; divergence: `result()` resolves
+      `None` where the spec's promise would hang); `abort.rs` ←
+      `utils/abort-signals.ts` (`combineAbortSignals` → `select!` at await
+      sites); `sse.rs` ← `parseSSE` (byte-buffered, `\n\n` blocks, data
+      lines trimmed/joined; generalized with SSE-standard `event:` field
+      for anthropic; `[DONE]`/empty filtering stays protocol-side);
+      `retry.rs` ← codex retry helpers (terminal-quota list, retryable
+      statuses, `.?`-loose text patterns hand-rolled — regex build can
+      fail and `expect` is denied; retry-after-ms/seconds/HTTP-date;
+      cap 60s, 0 disables; backoff 1000·2^n; abortable sleep); `http.rs` ←
+      the fetch loop (spec nuance pinned: non-retryable statuses *do*
+      retry via the generic catch unless the text mentions "usage limit";
+      10s SSE header timeout; `"Request was aborted"` Display parity).
+      `node-http-proxy.ts` → reqwest built-in env proxy (compression).
+      Tests incl. a loopback raw-TCP HTTP server (sandbox-safe).
+      *Carried to 2.3:* `onPayload`/`onResponse` hooks (retry loop grows
+      the callback param when protocols own options); `json-parse.ts`,
+      `sanitize-unicode.ts`, `headers.ts` utils; codex
+      `parseErrorResponse` friendly-message shaping (transport returns
+      raw `Status{status,status_text,body}`).
 - [ ] **2.3 Protocols as trait impls.** anthropic first, with the
       recorded-fixture replay harness (real SSE transcripts captured from
       pi); then openai-completions, openai-responses, google, bedrock.

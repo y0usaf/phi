@@ -1,0 +1,18 @@
+[package]
+name = "phi-ai"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "packages/ai port: transport (HTTP/SSE/retry/cancellation), protocols, registry"
+
+[dependencies]
+bytes.workspace = true
+futures-util.workspace = true
+httpdate.workspace = true
+phi-ai-types.workspace = true
+reqwest.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true

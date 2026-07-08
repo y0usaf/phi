@@ -13,12 +13,14 @@ Internal (workspace-local) dependencies only. `A --> B` means A depends on B.
 
 ```mermaid
 graph TD
+  phi_ai["phi-ai"] --> phi_ai_types["phi-ai-types"]
 ```
 
 ## Crates
 
 | Crate | Description |
 |-------|-------------|
+| `phi-ai` | packages/ai port: transport (HTTP/SSE/retry/cancellation), protocols, registry |
 | `phi-ai-types` | packages/ai type vocabulary: models, messages, content, usage, stream events |
 | `phi-host` | Lua extension host: coroutine async seam, event bus, watchdog |
 
@@ -26,6 +28,30 @@ graph TD
 
 Per-crate module/item trees (`cargo modules structure`). Functions are
 omitted; types, traits, and module boundaries are the architecture.
+
+### `phi-ai`
+
+```
+
+crate phi_ai
+└── mod transport: pub
+    ├── enum TransportError: pub
+    ├── mod abort: pub
+    │   └── struct AbortSignal: pub
+    ├── mod event_stream: pub
+    │   ├── type AssistantMessageEventStream: pub
+    │   ├── type CompleteFn: pub(self)
+    │   ├── struct EventStream: pub
+    │   ├── enum ResultSlot: pub(self)
+    │   └── struct State: pub(self)
+    ├── mod http: pub
+    │   └── struct RetryOptions: pub
+    ├── mod retry: pub
+    └── mod sse: pub
+        ├── struct SseDecoder: pub
+        ├── struct SseEvent: pub
+        └── struct SseReader: pub
+```
 
 ### `phi-ai-types`
 
