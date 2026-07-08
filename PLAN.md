@@ -114,9 +114,24 @@ not module diffs. Steps refine as the spec modules are read; doctrine 06
 (bare core boots) is re-established at the end of this workstream and
 CI-checked from then on.
 
-- [ ] **2.1 `phi-ai-types`.** Port `packages/ai` core types (model,
+- [x] **2.1 `phi-ai-types`.** Port `packages/ai` core types (model,
       messages, content, usage/cost, stream events) as the shared
       vocabulary crate; serde shapes pinned by fixtures from pi.
+      ✓ `types.rs` ← `types.ts` (open-string Api/Provider + `KNOWN_*`
+      lists; TS literal `type`/`role` discriminants as single-variant
+      marker enums so unions stay untagged *and* validated — serde's
+      struct-level `tag` does not check on deserialize; `Model.compat`
+      stays raw JSON, decoded per-family via `Model::compat<T>()`);
+      `diagnostics.rs` ← `utils/diagnostics.ts`; `models.rs` ← the pure
+      half of `models.ts` (calculate_cost, get/clamp thinking levels,
+      models_are_equal — registry half is 2.4). Fixtures: real pi-recorded
+      session messages (recorder was v0.80.3 — `usage.reasoning` stripped,
+      not in the 0.79.0 spec; provenance in `tests/fixtures/README.md`) +
+      verbatim `models.generated.ts` rows + hand-built event/images/
+      diagnostics shapes; round-trip = Value equality with numbers
+      normalized to f64. Options families (StreamOptions etc.) carry
+      AbortSignal/callbacks → land with transport (2.2); event-stream
+      mechanism likewise 2.2.
 - [ ] **2.2 Transport, written once.** HTTP + SSE decode + retry +
       cancellation in one module; no protocol knowledge.
 - [ ] **2.3 Protocols as trait impls.** anthropic first, with the

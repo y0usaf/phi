@@ -19,12 +19,79 @@ graph TD
 
 | Crate | Description |
 |-------|-------------|
+| `phi-ai-types` | packages/ai type vocabulary: models, messages, content, usage, stream events |
 | `phi-host` | Lua extension host: coroutine async seam, event bus, watchdog |
 
 ## Module structure
 
 Per-crate module/item trees (`cargo modules structure`). Functions are
 omitted; types, traits, and module boundaries are the architecture.
+
+### `phi-ai-types`
+
+```
+
+crate phi_ai_types
+├── mod diagnostics: pub
+│   ├── struct AssistantMessageDiagnostic: pub
+│   ├── enum DiagnosticCode: pub
+│   └── struct DiagnosticErrorInfo: pub
+├── mod models: pub
+└── mod types: pub
+    ├── struct AnthropicMessagesCompat: pub
+    ├── type Api: pub
+    ├── enum AssistantContent: pub
+    ├── struct AssistantImages: pub
+    ├── struct AssistantMessage: pub
+    ├── enum AssistantMessageEvent: pub
+    ├── enum AssistantRole: pub
+    ├── enum CacheControlFormat: pub
+    ├── enum CacheRetention: pub
+    ├── struct Context: pub
+    ├── enum DataCollection: pub
+    ├── struct ImageContent: pub
+    ├── enum ImageType: pub
+    ├── type ImagesApi: pub
+    ├── struct ImagesContext: pub
+    ├── struct ImagesModel: pub
+    ├── type ImagesProvider: pub
+    ├── enum ImagesStopReason: pub
+    ├── enum MaxTokensField: pub
+    ├── enum Message: pub
+    ├── enum Modality: pub
+    ├── struct Model: pub
+    ├── struct ModelCost: pub
+    ├── enum ModelThinkingLevel: pub
+    ├── struct OpenAICompletionsCompat: pub
+    ├── struct OpenAIResponsesCompat: pub
+    ├── struct OpenRouterRouting: pub
+    ├── type Provider: pub
+    ├── struct ProviderResponse: pub
+    ├── enum StopReason: pub
+    ├── struct TextContent: pub
+    ├── enum TextOrImageContent: pub
+    ├── enum TextSignaturePhase: pub
+    ├── struct TextSignatureV1: pub
+    ├── enum TextType: pub
+    ├── struct ThinkingBudgets: pub
+    ├── struct ThinkingContent: pub
+    ├── enum ThinkingFormat: pub
+    ├── enum ThinkingLevel: pub
+    ├── type ThinkingLevelMap: pub
+    ├── enum ThinkingType: pub
+    ├── struct Tool: pub
+    ├── struct ToolCall: pub
+    ├── enum ToolCallType: pub
+    ├── struct ToolResultMessage: pub
+    ├── enum ToolResultRole: pub
+    ├── enum Transport: pub
+    ├── struct Usage: pub
+    ├── struct UsageCost: pub
+    ├── enum UserContent: pub
+    ├── struct UserMessage: pub
+    ├── enum UserRole: pub
+    └── struct VercelGatewayRouting: pub
+```
 
 ### `phi-host`
 
