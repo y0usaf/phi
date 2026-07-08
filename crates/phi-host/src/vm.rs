@@ -22,7 +22,7 @@ use std::time::Instant;
 use crate::api;
 use crate::convert::{json_to_lua, lua_to_json};
 use crate::error::{HostError, WATCHDOG_MARKER};
-use crate::{HostConfig, Outcome};
+use crate::{CommandInfo, HostConfig, Outcome, ToolInfo};
 
 /// Check the watchdog deadline every N VM instructions.
 const NTH_INSTRUCTION: u32 = 1000;
@@ -43,6 +43,29 @@ pub(crate) enum Msg {
         event: String,
         payload: serde_json::Value,
         reply: SyncSender<Vec<Outcome>>,
+    },
+    /// Host-side metadata mirror of registered tools (spec:
+    /// `runner.getAllRegisteredTools()` — first registration per name wins).
+    Tools {
+        reply: SyncSender<Result<Vec<ToolInfo>, HostError>>,
+    },
+    /// Host-side metadata mirror of registered commands (spec:
+    /// `runner.resolveRegisteredCommands()` — collisions get `name:N`).
+    Commands {
+        reply: SyncSender<Result<Vec<CommandInfo>, HostError>>,
+    },
+    /// Execute a registered tool on the coroutine path.
+    CallTool {
+        name: String,
+        tool_call_id: String,
+        params: serde_json::Value,
+        reply: SyncSender<Result<serde_json::Value, HostError>>,
+    },
+    /// Run a registered command handler on the coroutine path.
+    CallCommand {
+        invocation_name: String,
+        args: String,
+        reply: SyncSender<Result<Option<serde_json::Value>, HostError>>,
     },
 }
 
@@ -101,8 +124,103 @@ fn vm_main(config: HostConfig, rx: Receiver<Msg>, init_tx: SyncSender<Result<(),
                 let outcomes = emit(&lua, &rt, &config, &event, &payload);
                 let _ = reply.send(outcomes);
             }
+            Msg::Tools { reply } => {
+                let _ = reply.send(tools_mirror(&lua));
+            }
+            Msg::Commands { reply } => {
+                let _ = reply.send(commands_mirror(&lua));
+            }
+            Msg::CallTool {
+                name,
+                tool_call_id,
+                params,
+                reply,
+            } => {
+                let _ = reply.send(call_tool(&lua, &rt, &config, &name, &tool_call_id, &params));
+            }
+            Msg::CallCommand {
+                invocation_name,
+                args,
+                reply,
+            } => {
+                let _ = reply.send(call_command(&lua, &rt, &config, &invocation_name, &args));
+            }
         }
     }
+}
+
+fn tools_mirror(lua: &mlua::Lua) -> Result<Vec<ToolInfo>, HostError> {
+    let tools = api::all_tools(lua).map_err(|e| HostError::Lua(e.to_string()))?;
+    let mut out = Vec::with_capacity(tools.len());
+    for (source, name, def) in tools {
+        let meta = api::tool_meta(&def).map_err(|e| HostError::Lua(e.to_string()))?;
+        out.push(ToolInfo { name, source, meta });
+    }
+    Ok(out)
+}
+
+fn commands_mirror(lua: &mlua::Lua) -> Result<Vec<CommandInfo>, HostError> {
+    Ok(api::resolved_commands(lua)
+        .map_err(|e| HostError::Lua(e.to_string()))?
+        .into_iter()
+        .map(|c| CommandInfo {
+            name: c.name,
+            invocation_name: c.invocation_name,
+            source: c.source,
+            description: c.description,
+        })
+        .collect())
+}
+
+/// Execute `def.execute(tool_call_id, params)` under the watchdog. The
+/// result crosses the bridge as uninterpreted JSON (spec shape:
+/// `AgentToolResult`); the host never matches on it. The spec's remaining
+/// `execute` parameters (signal, on_update, ctx) arrive with their host
+/// mechanisms in later WS1 steps.
+fn call_tool(
+    lua: &mlua::Lua,
+    rt: &tokio::runtime::Runtime,
+    config: &HostConfig,
+    name: &str,
+    tool_call_id: &str,
+    params: &serde_json::Value,
+) -> Result<serde_json::Value, HostError> {
+    let found = api::find_tool(lua, name).map_err(|e| HostError::Lua(e.to_string()))?;
+    let Some((source, def)) = found else {
+        return Err(HostError::UnknownTool(name.to_owned()));
+    };
+    let execute: mlua::Function = def
+        .get("execute")
+        .map_err(|e| HostError::Lua(e.to_string()))?;
+    api::set_current_source(lua, &source);
+    let res = json_to_lua(lua, params)
+        .map_err(|e| HostError::Lua(e.to_string()))
+        .and_then(|arg| dispatch(lua, rt, config, execute, (tool_call_id.to_owned(), arg)))
+        .and_then(|v| lua_to_json(v).map_err(|e| HostError::Lua(e.to_string())));
+    api::set_current_source(lua, "<host>");
+    res
+}
+
+/// Run a command handler as `handler(args)` under the watchdog (spec
+/// signature `(args, ctx)`; ctx arrives with the context binding).
+fn call_command(
+    lua: &mlua::Lua,
+    rt: &tokio::runtime::Runtime,
+    config: &HostConfig,
+    invocation_name: &str,
+    args: &str,
+) -> Result<Option<serde_json::Value>, HostError> {
+    let commands = api::resolved_commands(lua).map_err(|e| HostError::Lua(e.to_string()))?;
+    let Some(cmd) = commands
+        .into_iter()
+        .find(|c| c.invocation_name == invocation_name)
+    else {
+        return Err(HostError::UnknownCommand(invocation_name.to_owned()));
+    };
+    api::set_current_source(lua, &cmd.source);
+    let res = dispatch(lua, rt, config, cmd.handler, args.to_owned()).and_then(value_to_reply);
+    api::set_current_source(lua, "<host>");
+    res
 }
 
 fn load_chunk(
@@ -163,7 +281,7 @@ fn dispatch(
     rt: &tokio::runtime::Runtime,
     config: &HostConfig,
     func: mlua::Function,
-    arg: mlua::Value,
+    args: impl mlua::IntoLuaMulti,
 ) -> Result<mlua::Value, HostError> {
     let budget_ms = config.dispatch_timeout_ms;
     let state = Arc::new(WatchdogState::new(budget_ms));
@@ -185,7 +303,7 @@ fn dispatch(
             .create_thread(func)
             .map_err(|e| HostError::Lua(e.to_string()))?;
         let fut = thread
-            .into_async::<mlua::Value>(arg)
+            .into_async::<mlua::Value>(args)
             .map_err(|e| HostError::Lua(e.to_string()))?;
         rt.block_on(Watched {
             inner: Box::pin(fut),

@@ -42,11 +42,20 @@ on a dedicated VM thread (current-thread tokio); the watchdog budget counts
       arch-fresh. Watchdog mechanics: global instruction hook + slice
       metering in `vm.rs` (`Watched` poll wrapper); dispatch is sequential
       per message, matching `runner.ts` emit order.
-- [ ] **1.2 Registries + event vocabulary.** `register_tool` /
-      `register_command` resurrected onto the coroutine path; emit semantics
-      per `runner.ts` (sequential, registration order, per-handler
-      attribution, one failure doesn't stop the rest); host-side metadata
-      mirror.
+- [x] **1.2 Registries + event vocabulary.** `pi.register_tool` /
+      `pi.register_command` on the coroutine path with `loader.ts`
+      semantics (per-extension maps, re-registration replaces in place);
+      host-side metadata mirror: `Host::tools()` (first registration per
+      name wins across extensions, functions stripped from meta),
+      `Host::commands()` (collision → `name:N` invocation names per
+      `resolveRegisteredCommands`), `Host::call_tool` / `Host::call_command`
+      under the watchdog. Exercisers: `hello.lua` (translation of pi's
+      `hello.ts`), `command-demo.lua`. ✓ emit semantics were already per
+      `runner.ts` from 1.1. *Pending:* tool `execute` receives
+      `(tool_call_id, params)` today — the spec's remaining params
+      (signal, on_update, ctx) land with their host mechanisms
+      (cancellation, update streaming, context binding) in later steps;
+      command handlers likewise run as `handler(args)` until ctx exists.
 - [ ] **1.3 OS bindings.** fs / process spawn / env / path — awaitable
       where pi's are async; each binding lands with an exerciser.
 - [ ] **1.4 Discovery + trust gate.** `loader.ts` + `project-trust.ts`

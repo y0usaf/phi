@@ -25,6 +25,14 @@ pub enum HostError {
     #[error("lua vm thread unresponsive (blocking call beyond watchdog reach)")]
     VmUnresponsive,
 
+    /// `call_tool` with a name no extension registered.
+    #[error("no registered tool named '{0}'")]
+    UnknownTool(String),
+
+    /// `call_command` with an invocation name no extension resolves to.
+    #[error("no registered command named '{0}'")]
+    UnknownCommand(String),
+
     #[error("json: {0}")]
     Json(#[from] serde_json::Error),
 }

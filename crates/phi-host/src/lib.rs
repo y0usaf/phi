@@ -52,6 +52,31 @@ pub struct Outcome {
     pub result: Result<Option<serde_json::Value>, String>,
 }
 
+/// Host-side metadata mirror of one registered tool (spec:
+/// `RegisteredTool`). `meta` is the JSON-able slice of the definition
+/// (name, label, description, parameters, …) with function fields
+/// stripped; the host hands it to callers uninterpreted.
+#[derive(Debug, Clone)]
+pub struct ToolInfo {
+    pub name: String,
+    /// Source key of the registering extension.
+    pub source: String,
+    pub meta: serde_json::Value,
+}
+
+/// Host-side metadata mirror of one registered command (spec:
+/// `ResolvedCommand`). When more than one extension registers the same
+/// name, `invocation_name` disambiguates as `name:N` (spec:
+/// `runner.resolveRegisteredCommands()`).
+#[derive(Debug, Clone)]
+pub struct CommandInfo {
+    pub name: String,
+    pub invocation_name: String,
+    /// Source key of the registering extension.
+    pub source: String,
+    pub description: Option<String>,
+}
+
 /// Handle to the Lua VM thread. Cheap to clone; all methods are
 /// synchronous from the caller's side (dispatch runs on the VM thread).
 #[derive(Clone)]
@@ -99,5 +124,65 @@ impl Host {
             })
             .map_err(|_| HostError::VmUnavailable)?;
         rx.recv().map_err(|_| HostError::VmUnavailable)
+    }
+
+    /// Metadata mirror of all registered tools, in extension load order;
+    /// first registration per name wins across extensions (spec:
+    /// `runner.getAllRegisteredTools()`).
+    pub fn tools(&self) -> Result<Vec<ToolInfo>, HostError> {
+        let (reply, rx) = sync_channel(1);
+        self.tx
+            .send(vm::Msg::Tools { reply })
+            .map_err(|_| HostError::VmUnavailable)?;
+        rx.recv().map_err(|_| HostError::VmUnavailable)?
+    }
+
+    /// Metadata mirror of all registered commands with resolved invocation
+    /// names (spec: `runner.getRegisteredCommands()`).
+    pub fn commands(&self) -> Result<Vec<CommandInfo>, HostError> {
+        let (reply, rx) = sync_channel(1);
+        self.tx
+            .send(vm::Msg::Commands { reply })
+            .map_err(|_| HostError::VmUnavailable)?;
+        rx.recv().map_err(|_| HostError::VmUnavailable)?
+    }
+
+    /// Execute a registered tool by name on the coroutine path (spec:
+    /// `ToolDefinition.execute`). The result is the tool's return value as
+    /// uninterpreted JSON (spec shape: `AgentToolResult`).
+    pub fn call_tool(
+        &self,
+        name: &str,
+        tool_call_id: &str,
+        params: &serde_json::Value,
+    ) -> Result<serde_json::Value, HostError> {
+        let (reply, rx) = sync_channel(1);
+        self.tx
+            .send(vm::Msg::CallTool {
+                name: name.to_owned(),
+                tool_call_id: tool_call_id.to_owned(),
+                params: params.clone(),
+                reply,
+            })
+            .map_err(|_| HostError::VmUnavailable)?;
+        rx.recv().map_err(|_| HostError::VmUnavailable)?
+    }
+
+    /// Run a registered command handler by invocation name on the
+    /// coroutine path (spec: `RegisteredCommand.handler(args, ctx)`).
+    pub fn call_command(
+        &self,
+        invocation_name: &str,
+        args: &str,
+    ) -> Result<Option<serde_json::Value>, HostError> {
+        let (reply, rx) = sync_channel(1);
+        self.tx
+            .send(vm::Msg::CallCommand {
+                invocation_name: invocation_name.to_owned(),
+                args: args.to_owned(),
+                reply,
+            })
+            .map_err(|_| HostError::VmUnavailable)?;
+        rx.recv().map_err(|_| HostError::VmUnavailable)?
     }
 }

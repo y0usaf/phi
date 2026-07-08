@@ -31,10 +31,13 @@ omitted; types, traits, and module boundaries are the architecture.
 ```
 
 crate phi_host
+├── struct CommandInfo: pub
 ├── struct Host: pub
 ├── struct HostConfig: pub
 ├── struct Outcome: pub
+├── struct ToolInfo: pub
 ├── mod api: pub(crate)
+│   └── struct ResolvedCommand: pub(crate)
 ├── mod convert: pub(crate)
 ├── mod error: pub(crate)
 │   └── enum HostError: pub
