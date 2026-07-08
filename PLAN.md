@@ -20,7 +20,7 @@ the visual bar now.
       `e8cb418`), per the locked decision. *Accept: `nix flake check`
       passes on the empty tree.* ✓ verified.
 
-## Current — WS1: Substrate (`phi-host` ← `core/extensions`, 3.6k lines)
+## Done — WS1: Substrate (`phi-host` ← `core/extensions`, 3.6k lines)
 
 Seam decisions made at 1.1 (recorded here, exercised by tests + example):
 extension chunks are called with the API table as their single argument
@@ -87,14 +87,51 @@ on a dedicated VM thread (current-thread tokio); the watchdog budget counts
       `emitProjectTrustEvent` stops dispatch at the first yes/no —
       `Host::emit` runs all handlers and the fold scans; revisit with the
       ctx binding if side-effect order becomes observable.
-- [ ] **1.5 Embedded-pack loading + acceptance.** `include_str!` packs
-      through the public load path; WS1 acceptance run: an example awaits a
-      host future, a hung handler is killed, untrusted `.phi/` prompts
-      (prompting itself is deferred to the frontend; the substrate exposes
-      the trust decision).
+- [x] **1.5 Embedded-pack loading + acceptance.** `EmbeddedPack` +
+      `Host::load_embedded` — `include_str!` chunks through the public
+      load path under synthetic `<name>` keys (spec: loader.ts `<inline>`
+      convention), per-pack errors in the `LoadReport` shape; one shared
+      registry with on-disk extensions (first-wins verified). WS1
+      acceptance run pinned as `tests/acceptance.rs` (one end-to-end
+      scenario: untrusted `.phi/` → `Ask` + discovery skip, embedded +
+      discovered load, await works, hang killed, survivor runs). ✓
+      `nix flake check`.
 
-## Next
+Carried out of WS1 (land with their host mechanisms): tool `execute`
+still receives `(tool_call_id, params)` — signal/on_update/ctx come with
+cancellation, update streaming, and the ctx binding (WS4/WS5); `pi.exec`
+`options.signal` same step; command handlers run as `handler(args)` until
+ctx exists; `package.json`-manifest analogue → WS5 package-manager
+decision; `emit` runs all `project_trust` handlers where the spec stops at
+the first yes/no — revisit with ctx if side-effect order becomes
+observable.
 
-WS2 ai parity (layered transport/protocols/registry, catalog as data,
-fixtures recorded from pi). Ladder steps get written here when the
-workstream opens.
+## Current — WS2: `packages/ai` parity (`phi-ai*`, ~31k lines compressed)
+
+Structure is the locked `phi-ai` row: layered `types → auth → transport →
+protocols → registry`, no upward deps; parity is behavioral (fixtures),
+not module diffs. Steps refine as the spec modules are read; doctrine 06
+(bare core boots) is re-established at the end of this workstream and
+CI-checked from then on.
+
+- [ ] **2.1 `phi-ai-types`.** Port `packages/ai` core types (model,
+      messages, content, usage/cost, stream events) as the shared
+      vocabulary crate; serde shapes pinned by fixtures from pi.
+- [ ] **2.2 Transport, written once.** HTTP + SSE decode + retry +
+      cancellation in one module; no protocol knowledge.
+- [ ] **2.3 Protocols as trait impls.** anthropic first, with the
+      recorded-fixture replay harness (real SSE transcripts captured from
+      pi); then openai-completions, openai-responses, google, bedrock.
+- [ ] **2.4 Registry + catalog as data.** Catalog generated from pi's
+      `models.generated.ts` as data (JSON/Lua tables, never hand code);
+      variants (azure, vertex, copilot, …) as catalog rows;
+      `pi.register_provider` binding + exerciser example.
+- [ ] **2.5 Auth.** `phi-ai-auth`: one PKCE engine + one device-code
+      engine + flows-as-data; resurrect the attic's OAuth/protobuf work
+      (`rebuild` @ `e8cb418`, `phi-ai*`) function-by-function; codex/
+      copilot stay code sharing the machinery.
+- [ ] **2.6 Bare core boots (doctrine 06).** Thin `phi` binary:
+      `--login`, `--list-models`, `phi "prompt"` streaming a raw
+      completion (no tool loop). *Accept: `--list-models` matches pi's
+      catalog; fixture replay per protocol; live streaming/auth where
+      credentials exist; bare-boot CI check.*

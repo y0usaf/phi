@@ -91,6 +91,26 @@ pub struct LoadReport {
     pub errors: Vec<LoadError>,
 }
 
+/// One embedded extension pack — a `.lua` chunk compiled into the binary
+/// (`include_str!`) and loaded through the same public path as on-disk
+/// extensions (locked decision: shipped defaults are embedded `.lua` via
+/// the public API; divergence 2). Its source key is the synthetic path
+/// `<name>`, the spec's convention for non-file extensions (loader.ts
+/// `createExtension`: paths wrapped in `<...>`, e.g. `<inline>`).
+#[derive(Debug, Clone, Copy)]
+pub struct EmbeddedPack {
+    pub name: &'static str,
+    pub source: &'static str,
+}
+
+impl EmbeddedPack {
+    /// The synthetic source key this pack loads under: `<name>`.
+    #[must_use]
+    pub fn source_key(&self) -> String {
+        format!("<{}>", self.name)
+    }
+}
+
 /// Host-side metadata mirror of one registered command (spec:
 /// `ResolvedCommand`). When more than one extension registers the same
 /// name, `invocation_name` disambiguates as `name:N` (spec:
@@ -139,6 +159,27 @@ impl Host {
         let source = std::fs::read_to_string(path)
             .map_err(|e| HostError::Io(format!("read '{path}': {e}")))?;
         self.load(path, &source)
+    }
+
+    /// Load embedded packs in order through the public load path,
+    /// collecting per-pack errors in the same report shape as
+    /// [`Host::load_extensions`]; the report's `path` is the synthetic
+    /// source key `<name>` (spec: `loadExtensionFromFactory` runs inline
+    /// factories through the same `createExtensionAPI` as file loads).
+    pub fn load_embedded(&self, packs: &[EmbeddedPack]) -> LoadReport {
+        let mut loaded = Vec::new();
+        let mut errors = Vec::new();
+        for pack in packs {
+            let key = pack.source_key();
+            match self.load(&key, pack.source) {
+                Ok(()) => loaded.push(key),
+                Err(e) => errors.push(LoadError {
+                    path: key,
+                    error: format!("Failed to load extension: {e}"),
+                }),
+            }
+        }
+        LoadReport { loaded, errors }
     }
 
     /// Load extension files in order, collecting per-path errors (spec:

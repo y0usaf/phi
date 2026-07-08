@@ -123,13 +123,13 @@ Port order = dependency order. Each workstream's acceptance is parity
 against `ref/pi`, module-by-module, plus the side-by-side test where UI is
 involved.
 
-- [ ] **WS0 — Re-found.** Land this document; **rm everything** — all
+- [x] **WS0 — Re-found.** Land this document; **rm everything** — all
       crates, examples, workspace files; stub flake (devshell + formatter);
       reset PLAN.md/README/AGENTS.md to the port premise. *Accept:
       `nix flake check` passes on the empty tree; docs are the only
       content.* Doctrine 06 (bare core boots) is re-established by WS2 and
       CI-checked from then on.
-- [ ] **WS1 — Substrate.** `phi-host` finalized: coroutine async seam, OS
+- [x] **WS1 — Substrate.** `phi-host` finalized: coroutine async seam, OS
       bindings (fs/proc/env/path), discovery, trust gate, embedded-pack
       loading. *Accept: an example awaits a host future; a hung handler is
       killed; untrusted `.phi/` prompts.*

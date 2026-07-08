@@ -32,6 +32,7 @@ omitted; types, traits, and module boundaries are the architecture.
 
 crate phi_host
 ├── struct CommandInfo: pub
+├── struct EmbeddedPack: pub
 ├── struct Host: pub
 ├── struct HostConfig: pub
 ├── struct LoadError: pub
