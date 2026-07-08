@@ -236,11 +236,30 @@ CI-checked from then on.
       merge/restore, models.json) lands with the consumer (2.5 oauth
       glue, 2.6 binary); post-load immediate application (spec: applies
       instantly once the runner is bound) likewise 2.6.
-- [ ] **2.5 Auth (anthropic).** `phi-ai-auth`: the PKCE engine +
+- [x] **2.5 Auth (anthropic).** `phi-ai-auth`: the PKCE engine +
       flow-as-data with the anthropic flow as first user; resurrect the
       attic's OAuth work (`rebuild` @ `e8cb418`, `phi-ai*`)
       function-by-function as claimed. Device-code engine + codex/copilot
       flows → WS5 breadth.
+      ✓ `crates/phi-ai-auth` ← `utils/oauth/` — `pkce.rs` ← `pkce.ts`;
+      `oauth_page.rs` ← `oauth-page.ts` (verbatim HTML — the post-login
+      browser page is part of the 1:1 test); `types.rs` ← `types.ts`
+      (open string ids; deprecated aliases not ported — no consumer);
+      `engine.rs` + `callback_server.rs` ← `anthropic.ts` mechanics with
+      constants lifted into `PkceFlow` data (locked row: one PKCE engine,
+      flows-as-data; callback server resurrected from the attic and
+      reshaped to spec pages/semantics; `PI_OAUTH_CALLBACK_HOST` env name
+      kept); `anthropic.rs` = the first flow row (a `PkceFlow` *is* an
+      `OAuthProviderInterface`); `registry.rs` ← `index.ts` (Map.set
+      in-place semantics, built-in restore on unregister,
+      `get_oauth_api_key` with expiry refresh; built-ins = anthropic only
+      until WS5). Spec error strings matched verbatim (tests pin them).
+      Divergences recorded in module docs: token responses decode with
+      required fields (spec's cast would mint corrupt credentials);
+      `state` is always the verifier until a WS5 flow parameterizes it;
+      callbacks `signal` lands with the WS5 device-code engine. No Lua
+      surface added (mechanism only, per the placement row) → no
+      exerciser required; the `--login` consumer is 2.6.
 - [ ] **2.6 Bare core boots (doctrine 06).** Thin `phi` binary:
       `--login`, `--list-models`, `phi "prompt"` streaming a raw
       completion (no tool loop). *Accept: `--list-models` matches the

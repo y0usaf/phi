@@ -14,6 +14,7 @@ Internal (workspace-local) dependencies only. `A --> B` means A depends on B.
 ```mermaid
 graph TD
   phi_ai["phi-ai"] --> phi_ai_types["phi-ai-types"]
+  phi_ai_auth["phi-ai-auth"] --> phi_ai_types["phi-ai-types"]
 ```
 
 ## Crates
@@ -21,6 +22,7 @@ graph TD
 | Crate | Description |
 |-------|-------------|
 | `phi-ai` | packages/ai port: transport (HTTP/SSE/retry/cancellation), protocols, registry |
+| `phi-ai-auth` | packages/ai oauth port: PKCE engine, flows as data, provider registry |
 | `phi-ai-types` | packages/ai type vocabulary: models, messages, content, usage, stream events |
 | `phi-host` | Lua extension host: coroutine async seam, event bus, watchdog |
 
@@ -94,6 +96,40 @@ crate phi_ai
     │   ├── struct Parser: pub(self)
     │   └── enum PartialJsonError: pub
     └── mod sanitize: pub
+```
+
+### `phi-ai-auth`
+
+```
+
+crate phi_ai_auth
+├── mod anthropic: pub(crate)
+├── mod callback_server: pub(crate)
+│   ├── struct CallbackCode: pub
+│   ├── struct CallbackPages: pub
+│   └── struct CallbackServer: pub
+├── mod engine: pub(crate)
+│   ├── struct PkceFlow: pub
+│   └── struct TokenResponse: pub(self)
+├── mod error: pub(crate)
+│   └── enum AuthError: pub
+├── mod oauth_page: pub(crate)
+│   └── struct PageOptions: pub(self)
+├── mod pkce: pub(crate)
+│   └── struct Pkce: pub
+├── mod registry: pub(crate)
+│   └── struct OAuthApiKeyResult: pub
+└── mod types: pub(crate)
+    ├── type AuthFuture: pub
+    ├── struct OAuthAuthInfo: pub
+    ├── struct OAuthCredentials: pub
+    ├── struct OAuthDeviceCodeInfo: pub
+    ├── trait OAuthLoginCallbacks: pub
+    ├── struct OAuthPrompt: pub
+    ├── type OAuthProviderId: pub
+    ├── trait OAuthProviderInterface: pub
+    ├── struct OAuthSelectOption: pub
+    └── struct OAuthSelectPrompt: pub
 ```
 
 ### `phi-ai-types`
