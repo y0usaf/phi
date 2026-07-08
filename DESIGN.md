@@ -57,7 +57,7 @@ Two standing corollaries carry over from the rebuild:
 |---|---|---|
 | Spec | pi v0.79.0, `ref/pi` @ `c5582102`, frozen | The port targets a snapshot and then diverges into first-party work. Upstream pi changes are cherry-picked deliberately, each recorded here — never tracked wholesale. |
 | Port vs rebuild-with-own-choices | Exact port | The rebuild's own design choices (forgecode chrome, own event vocabulary) produced a tool that is not pi-polished. Pi's ~65k lines of behavior are the product; transcribing beats re-deriving. |
-| From scratch vs continue | New trunk from `rebuild`, salvage by transplant | Spec-first beats tree-first: the workspace mirrors pi's packages so parity is auditable module-by-module. Transplants: `phi-ai*` OAuth/SSE work, crane flake, `phi-host` thread/watchdog, `phi-tui` terminal layer. Everything else is replaced by ports; resurrect from branch history when a port wants it. |
+| From scratch vs continue | New trunk from `rebuild`, **rm everything**; salvage by resurrection, not by carrying | Spec-first beats tree-first: the workspace mirrors pi's packages so parity is auditable module-by-module. WS0 deletes all code; each workstream resurrects what it claims from the attic (`rebuild` @ `e8cb418`: OAuth/protobuf work, thread/watchdog, terminal layer, JSONL store) and reshapes it into the new layering. Nothing rides along unclaimed. |
 | Extension language | Lua (divergence 1) | JS runtime considered for verbatim example reuse; rejected — embed weight, and translation-as-conformance is judged worth the cost. Final. |
 | Mechanism/policy line | Rust substrate = Lua runtime (registries, event bus, watchdog), provider transport (`packages/ai` port: HTTP/SSE/OAuth/streaming), terminal mechanism (`packages/tui` port: raw mode, differential cell renderer, input decoding, components) exposed as bindings, OS bindings (fs, process spawn, env, path). Lua = tools, agent loop orchestration, slash commands, frontend/chrome, compaction policy, skills, prompt templates, themes, session naming — everything with behavior. | Divergence 2 made mechanical. A placement that puts behavior in Rust needs a row here. |
 | Async seam | Lua handlers run as coroutines and may await host futures (LLM streams, subprocesses, timers) | Required for the loop and the frontend to be Lua-authored (divergence 2). Settled before the substrate lands because retrofitting it is the expensive mistake. |
@@ -123,11 +123,12 @@ Port order = dependency order. Each workstream's acceptance is parity
 against `ref/pi`, module-by-module, plus the side-by-side test where UI is
 involved.
 
-- [ ] **WS0 — Re-found.** Land this document; realign the workspace to the
-      layout table (delete `phi-grid`, delete the forgecode chrome and the
-      rebuild's own frontend); reset PLAN.md as the port tracker; regenerate
-      ARCHITECTURE.md. *Accept: `nix flake check` passes on the stripped
-      tree; bare core (doctrine 06) still boots.*
+- [ ] **WS0 — Re-found.** Land this document; **rm everything** — all
+      crates, examples, workspace files; stub flake (devshell + formatter);
+      reset PLAN.md/README/AGENTS.md to the port premise. *Accept:
+      `nix flake check` passes on the empty tree; docs are the only
+      content.* Doctrine 06 (bare core boots) is re-established by WS2 and
+      CI-checked from then on.
 - [ ] **WS1 — Substrate.** `phi-host` finalized: coroutine async seam, OS
       bindings (fs/proc/env/path), discovery, trust gate, embedded-pack
       loading. *Accept: an example awaits a host future; a hung handler is

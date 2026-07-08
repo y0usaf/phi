@@ -12,17 +12,18 @@ the visual bar now.
 
 ## Current — WS0: Re-found
 
-- [ ] **0.1 Land DESIGN.md (port premise).** This commit.
-- [ ] **0.2 Realign workspace.** Delete `phi-grid`; delete the rebuild's
-      frontend (`chat.rs`, forgecode chrome in `transcript.rs`) and anything
-      no port workstream claims. Keep transplants: `phi-ai*`, flake,
-      `phi-host` thread/watchdog, `phi-tui` terminal layer, `phi-session`
-      store. *Accept: `nix flake check` passes; bare core boots
-      (`--login`, `--list-models`, one-shot raw completion).*
-- [ ] **0.3 Regenerate ARCHITECTURE.md** (`scripts/gen-arch.sh`) and update
-      README to the port premise.
+- [x] **0.1 Land DESIGN.md (port premise + phi-ai compression + code
+      standard).**
+- [x] **0.2 rm everything.** All crates, examples, workspace files deleted;
+      stub flake (devshell + formatter); README/AGENTS.md reset to the port
+      premise. Salvage is by resurrection from the attic (`rebuild` @
+      `e8cb418`), per the locked decision. *Accept: `nix flake check`
+      passes on the empty tree.*
 
 ## Next
 
-WS1 substrate (coroutine async seam first — see the locked decision), then
-WS2 ai parity. Ladder steps get written here when their workstream opens.
+WS1 substrate: workspace + crane wiring return with `phi-host`; the
+coroutine async seam is the first thing designed (locked decision —
+retrofitting it is the expensive mistake). Then WS2 ai parity (layered
+transport/protocols/registry, catalog as data, fixtures recorded from pi).
+Ladder steps get written here when their workstream opens.
