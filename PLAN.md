@@ -21,8 +21,8 @@ frontend. From the first UI slice, compare deterministic PTY/cell snapshots
 and real adjacent-terminal sessions against pi v0.79.0. Parallel sessions must
 own disjoint crates/files; the critical-path session owns PLAN.md.
 
-**Immediate handoff:** implement WS4.2 from the concrete ladder below, then drive
-straight through the WS4.3 one-shot tool-using gate without detouring into WS5.
+**Immediate handoff:** implement WS4.3's one-shot tool-using gate next; do not
+detour into WS5 before the working-agent milestone.
 
 ## Done (details in the commit bodies)
 
@@ -117,11 +117,12 @@ WS5/WS7 consumers rather than entering the core loop.
       State copies/reset behavior and all bindings are exercised by examples
       and pi-derived tests. Full active-run subscriber/hook signal propagation
       lands with the lifecycle that owns it in 4.4.
-- [ ] **4.2 Deterministic streamed turn.** Port `streamAssistantResponse`,
-      lifecycle ordering, `transformContext` before `convertToLlm`, dynamic
-      API-key resolution, partial-message replacement, and replaceable
-      `StreamFn`. Accept the custom-message/transform tests plus fixture
-      streams for text, thinking, and fragmented tool calls.
+- [x] **4.2 Deterministic streamed turn.** The embedded Lua pack now ports
+      `streamAssistantResponse` and one-turn lifecycle ordering, transforms
+      context before LLM conversion, resolves dynamic API keys per request,
+      replaces partial transcript messages, and accepts a replaceable stream
+      function. Public example plus pi-derived fixtures cover text, thinking,
+      fragmented tool calls, custom-message filtering, and callback ordering.
 - [ ] **4.3 First working-agent gate — sequential tool round trip.** Port
       lookup, argument preparation/validation, hooks, updates,
       error-as-tool-result, transcript insertion, and the automatic second
