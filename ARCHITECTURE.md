@@ -27,6 +27,7 @@ graph TD
   phi_host["phi-host"] --> phi_ai["phi-ai"]
   phi_host["phi-host"] --> phi_ai_types["phi-ai-types"]
   phi_host["phi-host"] --> phi_session["phi-session"]
+  phi_host["phi-host"] --> phi_tui["phi-tui"]
 ```
 
 ## Crates
@@ -352,6 +353,11 @@ crate phi_session
 ```
 
 crate phi_tui
+├── mod component: pub
+│   ├── trait Component: pub
+│   ├── struct Container: pub
+│   ├── struct Renderer: pub
+│   └── struct Text: pub
 └── mod fuzzy: pub
     └── struct FuzzyMatch: pub
 ```
