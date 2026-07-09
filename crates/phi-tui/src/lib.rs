@@ -9,4 +9,5 @@ pub mod component;
 pub mod editor;
 pub mod fuzzy;
 pub mod kill_ring;
+pub mod select_list;
 pub mod undo_stack;

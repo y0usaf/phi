@@ -170,13 +170,13 @@ module-by-module, plus the side-by-side test where UI is involved.
       WS4 when capacity permits; never delay WS6–WS8 for it. *Accept:
       `--list-models` matches pi's full catalog; recorded-fixture replay
       passes per protocol.*
-- [x] **WS6 — `packages/tui` parity (interactive critical path).** Port the
+- [ ] **WS6 — `packages/tui` parity (interactive critical path).** Port the
       component tree: differential renderer (`tui.ts`), editor,
       autocomplete, select-list, markdown, loaders, kill-ring, undo-stack,
-      images — with Lua bindings for every component. Start immediately
-      after WS4; component and Lua-binding slices may proceed in parallel
-      only with disjoint ownership. *Accept: component behavior matches
-      pi's; bindings exercised by examples.*
+      images — with Lua bindings for every component. Renderer, editor state,
+      editor core, and the first select-list slice are landed; autocomplete,
+      markdown, loaders, images, and full component parity remain. *Accept:
+      component behavior matches pi's; bindings exercised by examples.*
 - [ ] **WS7 — `coding-agent` remainder (interactive-required slices share
       the critical path with WS6).** resource-loader (skills,
       prompt-templates, themes), compaction, keybindings, slash commands,

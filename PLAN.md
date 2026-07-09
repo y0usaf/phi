@@ -151,7 +151,7 @@ WS5/WS7 consumers rather than entering the core loop.
       Live credentialed verification of `phi "fix the failing test"` remains
       pending.
 
-## Next — WS6: `packages/tui` parity
+## Current — WS6: `packages/tui` parity
 
 - [x] **6.1 Differential renderer seam.** Ported the first `tui.ts` component
       slice over public Lua bindings and pinned it with deterministic
@@ -168,3 +168,9 @@ WS5/WS7 consumers rather than entering the core loop.
 - [x] **6.3 Editor core.** Port `editor-component.ts`, input editing,
       undo/redo, kill/yank, word navigation, and key decoding; expose each
       mechanism through Lua bindings and add an example exerciser.
+
+- [x] **6.4 Select-list foundation.** Port the core filtered selection,
+      wrapping keyboard navigation, viewport rendering, and Lua userdata seam;
+      exercise it in `examples/extensions/tui-select-list-demo.lua`.
+      Remaining WS6 work: autocomplete, markdown, loaders, terminal images,
+      and exact theme/layout parity.

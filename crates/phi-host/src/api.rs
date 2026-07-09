@@ -32,6 +32,36 @@
 use mlua::{UserData, UserDataMethods};
 use std::collections::{HashMap, HashSet};
 
+struct LuaSelectList(phi_tui::select_list::SelectList);
+impl UserData for LuaSelectList {
+    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+        methods.add_method_mut("filter", |_, this, filter: String| {
+            this.0.set_filter(&filter);
+            Ok(())
+        });
+        methods.add_method("selected", |lua, this, ()| {
+            this.0
+                .selected()
+                .map(|item| {
+                    let table = lua.create_table()?;
+                    table.set("value", item.value.clone())?;
+                    table.set("label", item.label.clone())?;
+                    table.set("description", item.description.clone())?;
+                    Ok(table)
+                })
+                .transpose()
+        });
+        methods.add_method("render", |lua, this, width: usize| {
+            let result = lua.create_table()?;
+            for line in this.0.render(width) {
+                result.push(line)?;
+            }
+            Ok(result)
+        });
+        methods.add_method_mut("input", |_, this, data: String| Ok(this.0.handle(&data)))
+    }
+}
+
 struct LuaEditor(phi_tui::editor::Editor);
 impl UserData for LuaEditor {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
@@ -458,6 +488,24 @@ pub(crate) fn build(lua: &mlua::Lua, cwd: &str) -> mlua::Result<mlua::Table> {
         lua.create_function(|lua, value: Option<String>| {
             lua.create_userdata(LuaEditor(phi_tui::editor::Editor::new(
                 value.unwrap_or_default(),
+            )))
+        })?,
+    )?;
+    tui.set(
+        "select_list",
+        lua.create_function(|lua, (items, max_visible): (mlua::Table, Option<usize>)| {
+            let mut values = Vec::new();
+            for item in items.sequence_values::<mlua::Table>() {
+                let item = item?;
+                values.push(phi_tui::select_list::SelectItem {
+                    value: item.get("value")?,
+                    label: item.get("label")?,
+                    description: item.get("description")?,
+                });
+            }
+            lua.create_userdata(LuaSelectList(phi_tui::select_list::SelectList::new(
+                values,
+                max_visible.unwrap_or(5),
             )))
         })?,
     )?;
