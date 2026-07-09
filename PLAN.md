@@ -21,8 +21,8 @@ frontend. From the first UI slice, compare deterministic PTY/cell snapshots
 and real adjacent-terminal sessions against pi v0.79.0. Parallel sessions must
 own disjoint crates/files; the critical-path session owns PLAN.md.
 
-**Immediate handoff:** implement WS4.3's one-shot tool-using gate next; do not
-detour into WS5 before the working-agent milestone.
+**Immediate handoff:** implement WS4.4's stateful Agent lifecycle and settlement
+next; do not detour into WS5 before the working-agent milestone.
 
 ## Done (details in the commit bodies)
 
@@ -123,12 +123,12 @@ WS5/WS7 consumers rather than entering the core loop.
       replaces partial transcript messages, and accepts a replaceable stream
       function. Public example plus pi-derived fixtures cover text, thinking,
       fragmented tool calls, custom-message filtering, and callback ordering.
-- [ ] **4.3 First working-agent gate — sequential tool round trip.** Port
-      lookup, argument preparation/validation, hooks, updates,
-      error-as-tool-result, transcript insertion, and the automatic second
-      provider turn. Accept the core tool-call tests and a public-path gate:
-      Lua prompt → fixture tool call → embedded WS3 tool → result in request
-      two → final text, with no pending tool IDs.
+- [x] **4.3 First working-agent gate — sequential tool round trip.** The Lua
+      loop resolves public registered tools, prepares and validates arguments,
+      runs before/after hooks and updates, converts failures to tool results,
+      inserts results into the transcript, and automatically streams request
+      two. A public fixture drives the embedded WS3 `write` tool from prompt to
+      final text; pi-derived tests pin missing/invalid/throwing tool behavior.
 - [ ] **4.4 Stateful Agent + settlement.** Port prompt/continue,
       subscriptions, state reduction before listeners, waitForIdle, run
       exclusion, reset/abort, transcript continuity, and exactly-once

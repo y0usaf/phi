@@ -80,22 +80,125 @@ local function stream_assistant_response(context, config, signal, emit, stream_f
   return final_message
 end
 
--- Deterministic one-turn low-level loop slice. Tool continuation is added by
--- WS4.3; this already preserves pi's prompt and assistant lifecycle ordering.
+local function error_text(value)
+  local text = tostring(value)
+  text = text:match("^(.-)\nstack traceback:") or text
+  text = text:gsub("^runtime error: ", "")
+  return text:match("^.-:%d+: (.*)$") or text
+end
+
+local function error_tool_result(message)
+  return { content = { { type = "text", text = message } }, details = {} }
+end
+
+local function find_tool(tools, name)
+  for _, tool in ipairs(tools or {}) do
+    if tool.name == name then return tool end
+  end
+  return nil
+end
+
+local function execute_sequential_tool_calls(context, assistant_message, tool_calls,
+                                             config, signal, emit)
+  local messages = {}
+  local ctx = { cwd = pi.cwd(), signal = signal, isIdle = false }
+  for _, original_call in ipairs(tool_calls) do
+    emit({ type = "tool_execution_start", toolCallId = original_call.id,
+           toolName = original_call.name, args = original_call.arguments })
+    local tool = find_tool(context.tools, original_call.name)
+    local result, is_error
+    local args = original_call.arguments
+    if not tool then
+      result, is_error = error_tool_result("Tool " .. original_call.name .. " not found"), true
+    else
+      local ok, prepared_or_error = pcall(function()
+        if tool.prepare_arguments then args = tool.prepare_arguments(args) end
+        args = pi.validate_tool_arguments(tool.name, tool.parameters or {}, args)
+        if config.beforeToolCall then
+          local before = config.beforeToolCall({ assistantMessage = assistant_message,
+            toolCall = original_call, args = args, context = context }, signal)
+          if signal and signal:is_aborted() then error("Operation aborted", 0) end
+          if before and before.block then error(before.reason or "Tool execution was blocked", 0) end
+        end
+        if signal and signal:is_aborted() then error("Operation aborted", 0) end
+        return args
+      end)
+      if not ok then
+        result, is_error = error_tool_result(error_text(prepared_or_error)), true
+      else
+        args = prepared_or_error
+        local updates = function(partial)
+          emit({ type = "tool_execution_update", toolCallId = original_call.id,
+                 toolName = original_call.name, args = original_call.arguments,
+                 partialResult = partial })
+        end
+        local executed, value = pcall(tool.execute, original_call.id, args, signal, updates, ctx)
+        if executed then result, is_error = value, false
+        else result, is_error = error_tool_result(error_text(value)), true end
+        if config.afterToolCall then
+          local finalized, after = pcall(config.afterToolCall,
+            { assistantMessage = assistant_message, toolCall = original_call, args = args,
+              result = result, isError = is_error, context = context }, signal)
+          if not finalized then result, is_error = error_tool_result(error_text(after)), true
+          elseif after then
+            result = { content = after.content or result.content,
+                       details = after.details or result.details,
+                       terminate = after.terminate == nil and result.terminate or after.terminate }
+            if after.isError ~= nil then is_error = after.isError end
+          end
+        end
+      end
+    end
+    emit({ type = "tool_execution_end", toolCallId = original_call.id,
+           toolName = original_call.name, result = result, isError = is_error })
+    local message = { role = "toolResult", toolCallId = original_call.id,
+      toolName = original_call.name, content = result.content, details = result.details,
+      isError = is_error, timestamp = os.time() * 1000 }
+    emit({ type = "message_start", message = message })
+    emit({ type = "message_end", message = message })
+    messages[#messages + 1] = message
+    if signal and signal:is_aborted() then break end
+  end
+  return messages
+end
+
+
+-- Deterministic sequential loop through the first working-agent gate.
 local function run_turn(prompts, context, config, emit, signal, stream_fn)
   prompts = prompts or {}
   context.messages = copy_array(context.messages)
+  context.tools = context.tools or pi.registered_tools()
   emit({ type = "agent_start" })
   emit({ type = "turn_start" })
+  local result = copy_array(prompts)
   for _, prompt in ipairs(prompts) do
     context.messages[#context.messages + 1] = prompt
     emit({ type = "message_start", message = prompt })
     emit({ type = "message_end", message = prompt })
   end
-  local message = stream_assistant_response(context, config, signal, emit, stream_fn)
-  emit({ type = "turn_end", message = message, toolResults = {} })
-  local result = copy_array(prompts)
-  result[#result + 1] = message
+  local first_turn = true
+  while true do
+    if not first_turn then emit({ type = "turn_start" }) end
+    first_turn = false
+    local message = stream_assistant_response(context, config, signal, emit, stream_fn)
+    result[#result + 1] = message
+    if message.stopReason == "error" or message.stopReason == "aborted" then
+      emit({ type = "turn_end", message = message, toolResults = {} })
+      break
+    end
+    local calls = {}
+    for _, content in ipairs(message.content or {}) do
+      if content.type == "toolCall" then calls[#calls + 1] = content end
+    end
+    local tool_results = execute_sequential_tool_calls(
+      context, message, calls, config, signal, emit)
+    for _, tool_result in ipairs(tool_results) do
+      context.messages[#context.messages + 1] = tool_result
+      result[#result + 1] = tool_result
+    end
+    emit({ type = "turn_end", message = message, toolResults = tool_results })
+    if #calls == 0 or (signal and signal:is_aborted()) then break end
+  end
   emit({ type = "agent_end", messages = result })
   return result
 end

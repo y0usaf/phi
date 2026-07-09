@@ -115,6 +115,32 @@ pub(crate) fn build(lua: &mlua::Lua, cwd: &str) -> mlua::Result<mlua::Table> {
     )?;
     pi.set("json", json)?;
 
+    // Mechanisms used by the Lua-authored agent loop. Definitions stay in
+    // Lua (including execute/prepare functions); this returns the resolved
+    // first-registration-wins view rather than a JSON metadata mirror.
+    pi.set(
+        "registered_tools",
+        lua.create_function(|lua, ()| {
+            let result = lua.create_table()?;
+            for (_, _, def) in all_tools(lua)? {
+                result.push(def)?;
+            }
+            Ok(result)
+        })?,
+    )?;
+    pi.set(
+        "validate_tool_arguments",
+        lua.create_function(
+            |lua, (name, schema, arguments): (String, mlua::Value, mlua::Value)| {
+                let schema = crate::convert::lua_to_json(schema)?;
+                let arguments = crate::convert::lua_to_json(arguments)?;
+                let validated = crate::schema::validate_tool_arguments(&name, &schema, &arguments)
+                    .map_err(|error| mlua::Error::runtime(error.to_string()))?;
+                crate::convert::json_to_lua(lua, &validated)
+            },
+        )?,
+    )?;
+
     let on = lua.create_function(|lua, (event, handler): (String, mlua::Function)| {
         if event.trim().is_empty() {
             return Err(mlua::Error::runtime(
