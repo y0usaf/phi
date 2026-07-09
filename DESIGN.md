@@ -68,7 +68,7 @@ Two standing corollaries carry over from the rebuild:
 | Shipped defaults | Embedded `.lua` via `include_str!`, loaded through the public API | Divergence 2. The flake source filter must include every embedded file type. |
 | Sandboxing / permissions | pi's stance: none in core, full user permissions; trust gates extension loading only (`core/project-trust` port) | Written decision so plain-Lua `os`/`io` access is a choice, not an accident. |
 | Extension distribution | pi's package-manager installs from npm; phi adapts to Lua distribution | Mechanism undecided — decide when the WS7 port reaches `package-manager.ts`, not before. |
-| Workstream order | Vertical slice first: one protocol (anthropic) end-to-end → tools/sessions → agent loop → breadth (remaining protocols, TUI, interactive) | Reordered 2026-07-08 (supersedes the original package-order ladder; WS2–WS9 renumbered WS2–WS11). A working coding agent is the earliest meaningful acceptance test and everything it needs is depth, not breadth: one streaming protocol, auth for it, tools, the loop. Deferred items keep their pi-parity acceptance unchanged — nothing is built twice, breadth is backfilled behind a working agent. |
+| Workstream order | Interactive vertical slice first: one protocol (anthropic) end-to-end → tools/sessions → agent loop → TUI + interactive-required coding-agent behavior → interactive frontend; provider breadth and non-interactive periphery backfill in parallel or afterward | Reordered 2026-07-08 toward a working coding agent; sharpened 2026-07-09 toward the earliest exact interactive Phi. One protocol is enough to exercise the complete product. WS5 breadth does not gate WS6–WS8, but full v0.79.0 parity still requires every workstream. Nothing is prototyped twice and no parity criterion is relaxed. |
 | 1:1 acceptance | Every UI-touching workstream closes with a side-by-side session against pi v0.79.0 | "Looks and feels exactly like pi" is testable or it is nothing. |
 
 ## Architecture
@@ -120,10 +120,13 @@ internal detail:
 
 ## Roadmap
 
-Port order = dependency order toward the earliest *working coding agent*
-(see the workstream-order locked row); breadth backfills behind it. Each
-workstream's acceptance is parity against `ref/pi`, module-by-module, plus
-the side-by-side test where UI is involved.
+Port order follows the **interactive critical path**: WS3 → WS4 →
+WS6 + the interactive-required parts of WS7 → WS8. WS5 provider breadth may
+run in parallel once WS4 works, but it does not gate interactive Anthropic
+use. WS9–WS10 close full-product parity after the exact default frontend is
+usable. Workstream numbers preserve the package map rather than execution
+order. Each workstream's acceptance is parity against `ref/pi`,
+module-by-module, plus the side-by-side test where UI is involved.
 
 - [x] **WS0 — Re-found.** Land this document; **rm everything** — all
       crates, examples, workspace files; stub flake (devshell + formatter);
@@ -156,26 +159,36 @@ the side-by-side test where UI is involved.
       follow-up queue, error-as-tool-result) in embedded Lua. *Accept:
       one-shot `phi "fix the failing test"` edits and runs bash end to end;
       loop replaceable via config.* **The working-coding-agent milestone.**
-- [ ] **WS5 — `packages/ai` breadth.** Remaining protocols
-      (openai-completions, openai-responses, google, bedrock) as trait
-      impls with fixture replay; full catalog as data; variants as catalog
-      rows; remaining auth flows (codex exchange, copilot device-code)
-      sharing the engines. *Accept: `--list-models` matches pi's full
-      catalog; recorded-fixture replay passes per protocol.*
-- [ ] **WS6 — `packages/tui` parity.** Port the component tree: differential
-      renderer (`tui.ts`), editor, autocomplete, select-list, markdown,
-      loaders, kill-ring, undo-stack, images — with Lua bindings for every
-      component. *Accept: component behavior matches pi's; bindings
-      exercised by examples.*
-- [ ] **WS7 — `coding-agent` remainder.** resource-loader (skills,
+- [ ] **WS5 — `packages/ai` breadth (parallel/backfill; not an interactive
+      gate).** Remaining protocols (openai-completions,
+      openai-responses, google, bedrock) as trait impls with fixture replay;
+      full catalog as data; variants as catalog rows; remaining auth flows
+      (codex exchange, copilot device-code) sharing the engines. Begin after
+      WS4 when capacity permits; never delay WS6–WS8 for it. *Accept:
+      `--list-models` matches pi's full catalog; recorded-fixture replay
+      passes per protocol.*
+- [ ] **WS6 — `packages/tui` parity (interactive critical path).** Port the
+      component tree: differential renderer (`tui.ts`), editor,
+      autocomplete, select-list, markdown, loaders, kill-ring, undo-stack,
+      images — with Lua bindings for every component. Start immediately
+      after WS4; component and Lua-binding slices may proceed in parallel
+      only with disjoint ownership. *Accept: component behavior matches
+      pi's; bindings exercised by examples.*
+- [ ] **WS7 — `coding-agent` remainder (interactive-required slices share
+      the critical path with WS6).** resource-loader (skills,
       prompt-templates, themes), compaction, keybindings, slash commands,
       package-manager (distribution decision lands here), project-trust UI
-      glue. *Accept: each module has a named pi counterpart with matching
-      behavior; placement per the mechanism/policy line.*
-- [ ] **WS8 — Interactive mode.** pi's `modes/interactive` (~15k) as the
-      default Lua frontend pack over `phi-tui` bindings. *Accept: the
-      side-by-side test — chrome, keybindings, overlays, footer, theming
-      indistinguishable from pi v0.79.0.*
+      glue. Prioritize dependencies consumed by the next WS8 vertical slice;
+      defer unrelated cleanup, not behavior. *Accept: each module has a named
+      pi counterpart with matching behavior; placement per the
+      mechanism/policy line.*
+- [ ] **WS8 — Interactive mode (first delivery target).** pi's
+      `modes/interactive` (~15k) as the default Lua frontend pack over
+      `phi-tui` bindings. Build exact vertical slices and compare deterministic
+      PTY/cell snapshots against pi from the first slice; no temporary Rust UI
+      and no approximate frontend. *Accept: the side-by-side test — chrome,
+      keybindings, overlays, footer, theming indistinguishable from pi
+      v0.79.0.*
 - [ ] **WS9 — Modes & periphery.** print-mode, RPC mode, export-html,
       session-picker, startup UI, cli args parity. *Accept: `phi --help`
       surface matches pi's; RPC demo example runs.*

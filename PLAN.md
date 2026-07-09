@@ -10,6 +10,21 @@ module-by-module against it; UI parity is judged side-by-side. The rebuild's
 forgecode-visual calibration is retired: pi sets *both* the behavioral and
 the visual bar now.
 
+## Delivery target — exact interactive Phi, fastest non-throwaway path
+
+The execution critical path is **finish WS3 → WS4 working agent → WS6 plus
+interactive-required WS7 slices → WS8 exact default frontend**. WS5 provider
+breadth is parallel/backfill work and must not block an Anthropic-backed
+interactive Phi. This changes priority, never scope or acceptance: no
+temporary UI, no Rust product-behavior shortcut, and no "close enough"
+frontend. From the first UI slice, compare deterministic PTY/cell snapshots
+and real adjacent-terminal sessions against pi v0.79.0. Parallel sessions must
+own disjoint crates/files; the critical-path session owns PLAN.md.
+
+**Immediate handoff:** implement 3.3d and close WS3. Then replace the current
+section with a concrete WS4 ladder derived from `packages/agent` before coding;
+drive it to the one-shot tool-using acceptance without detouring into WS5.
+
 ## Done (details in the commit bodies)
 
 - [x] **WS0 — Re-found.** DESIGN.md landed; tree emptied; stub flake.
