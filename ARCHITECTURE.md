@@ -358,6 +358,10 @@ crate phi_tui
 │   ├── struct Container: pub
 │   ├── struct Renderer: pub
 │   └── struct Text: pub
-└── mod fuzzy: pub
-    └── struct FuzzyMatch: pub
+├── mod fuzzy: pub
+│   └── struct FuzzyMatch: pub
+├── mod kill_ring: pub
+│   └── struct KillRing: pub
+└── mod undo_stack: pub
+    └── struct UndoStack: pub
 ```

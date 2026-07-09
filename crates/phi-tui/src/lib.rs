@@ -7,3 +7,5 @@
 
 pub mod component;
 pub mod fuzzy;
+pub mod kill_ring;
+pub mod undo_stack;

@@ -159,3 +159,12 @@ WS5/WS7 consumers rather than entering the core loop.
       `pi.tui.text_render` and `pi.tui.differential_render` are public
       mechanism bindings, exercised by `examples/extensions/tui-render-demo.lua`;
       Keep WS5 provider breadth parallel and non-blocking.
+
+- [x] **6.2 Editor state primitives.** Ported the spec's clone-on-push
+      `UndoStack` and Emacs-style `KillRing` mechanisms with focused
+      conformance tests. These are crate mechanisms only; editor bindings
+      and the interactive editor remain open for 6.3.
+
+- [ ] **6.3 Editor core.** Port `editor-component.ts`, input editing,
+      undo/redo, kill/yank, word navigation, and key decoding; expose each
+      mechanism through Lua bindings and add an example exerciser.
