@@ -10,6 +10,7 @@ libc.workspace = true
 futures-util.workspace = true
 phi-ai.workspace = true
 phi-ai-types.workspace = true
+phi-session.workspace = true
 serde.workspace = true
 mlua.workspace = true
 serde_json.workspace = true

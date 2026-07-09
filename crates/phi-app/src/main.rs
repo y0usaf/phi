@@ -5,21 +5,15 @@
 //! selection, sessions, and the Lua frontends land with WS3+; this file
 //! stays a thin dispatcher (spec: `main.ts`).
 
-use std::io::{IsTerminal, Write};
+use std::io::IsTerminal;
 use std::process::ExitCode;
 
-use phi_ai::protocols::SimpleStreamOptions;
-use phi_ai_types::{
-    AssistantMessageEvent, Context, Message, ModelThinkingLevel, ThinkingLevel, UserMessage,
-    clamp_thinking_level,
-};
 use phi_app::cli::args::{Args, help_text, parse_args};
 use phi_app::cli::list_models::render_model_list;
 use phi_app::cli::login::run_login;
 use phi_app::config::VERSION;
 use phi_app::core::auth_guidance::format_no_models_available_message;
 use phi_app::core::auth_storage::AuthStorage;
-use phi_app::core::defaults::DEFAULT_THINKING_LEVEL;
 use phi_app::core::model_registry::{ModelRegistry, ResolvedRequestAuth};
 use phi_app::core::model_resolver::{find_initial_model, resolve_cli_model};
 use phi_app::core::settings_manager::{SettingsManager, SettingsManagerCreateOptions};
@@ -176,77 +170,77 @@ async fn run(args: Args) -> ExitCode {
             .set_runtime_api_key(&model.provider, api_key);
     }
 
-    let ResolvedRequestAuth::Ok { api_key, headers } =
-        model_registry.get_api_key_and_headers(&model).await
+    let ResolvedRequestAuth::Ok {
+        api_key,
+        headers: _,
+    } = model_registry.get_api_key_and_headers(&model).await
     else {
         error_line(&format_no_models_available_message());
         return ExitCode::FAILURE;
     };
 
     let prompt = args.messages.join("\n\n");
-    let context = Context {
-        system_prompt: None,
-        messages: vec![Message::User(UserMessage::text(prompt))],
-        tools: None,
-    };
-
-    // Spec (`sdk.ts`): CLI/suffix thinking wins, else the settings
-    // default, else DEFAULT_THINKING_LEVEL; clamped to the model.
-    let thinking_level = cli_thinking
-        .or_else(|| settings_manager.get_default_thinking_level())
-        .unwrap_or(DEFAULT_THINKING_LEVEL);
-    let thinking_level = clamp_thinking_level(&model, thinking_level);
-
-    let mut options = SimpleStreamOptions::default();
-    options.base.api_key = api_key;
-    options.base.headers = headers;
-    options.reasoning = match thinking_level {
-        ModelThinkingLevel::Off => None,
-        ModelThinkingLevel::Minimal => Some(ThinkingLevel::Minimal),
-        ModelThinkingLevel::Low => Some(ThinkingLevel::Low),
-        ModelThinkingLevel::Medium => Some(ThinkingLevel::Medium),
-        ModelThinkingLevel::High => Some(ThinkingLevel::High),
-        ModelThinkingLevel::XHigh => Some(ThinkingLevel::XHigh),
-    };
-
-    let stream = match phi_ai::registry::stream_simple(&model, &context, Some(options)) {
-        Ok(stream) => stream,
+    // The CLI is a thin consumer of the public Lua agent pack. Rust resolves
+    // model/auth and supplies only mechanism values; loop policy is Lua.
+    let cwd_string = cwd.to_string_lossy().into_owned();
+    let agent_dir = phi_app::config::get_agent_dir()
+        .to_string_lossy()
+        .into_owned();
+    let session = match phi_session::SessionManager::create(&cwd_string, None, &agent_dir, None) {
+        Ok(session) => session,
         Err(error) => {
-            error_line(&format!("Error: {error}"));
+            error_line(&format!("Error creating session: {error}"));
             return ExitCode::FAILURE;
         }
     };
-
-    let mut printed_text = false;
-    while let Some(event) = stream.next().await {
-        match event {
-            AssistantMessageEvent::TextDelta { delta, .. } => {
-                print!("{delta}");
-                printed_text = true;
-                let _ = std::io::stdout().flush();
+    let Some(session_path) = session.get_session_file().map(str::to_owned) else {
+        error_line("Error creating session: no session path");
+        return ExitCode::FAILURE;
+    };
+    let host = match phi_host::Host::new(phi_host::HostConfig {
+        cwd: Some(cwd_string.clone()),
+        ..Default::default()
+    }) {
+        Ok(host) => host,
+        Err(error) => {
+            error_line(&format!("Error starting Lua host: {error}"));
+            return ExitCode::FAILURE;
+        }
+    };
+    let packs = [
+        phi_agent::PACK,
+        phi_app::builtins::TOOLS_PACK,
+        phi_app::builtins::CODING_AGENT_PACK,
+    ];
+    let report = host.load_embedded(&packs);
+    if let Some(error) = report.errors.first() {
+        error_line(&format!("Error loading {}: {}", error.path, error.error));
+        return ExitCode::FAILURE;
+    }
+    let request = serde_json::json!({
+        "model": model, "apiKey": api_key, "prompt": prompt,
+        "sessionPath": session_path,
+    });
+    match host.call_command("phi-run", &request.to_string()) {
+        Ok(Some(result)) => {
+            if result
+                .get("text")
+                .and_then(serde_json::Value::as_str)
+                .is_some()
+            {
+                println!();
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
             }
-            AssistantMessageEvent::Done { .. } => {
-                if printed_text {
-                    println!();
-                }
-                return ExitCode::SUCCESS;
-            }
-            AssistantMessageEvent::Error { error, .. } => {
-                if printed_text {
-                    println!();
-                }
-                let message = error
-                    .error_message
-                    .unwrap_or_else(|| "Unknown error".to_owned());
-                error_line(&format!("Error: {message}"));
-                return ExitCode::FAILURE;
-            }
-            _ => {}
+        }
+        Ok(None) => {
+            error_line("Error: agent returned no result");
+            ExitCode::FAILURE
+        }
+        Err(error) => {
+            error_line(&format!("Error: {error}"));
+            ExitCode::FAILURE
         }
     }
-
-    if printed_text {
-        println!();
-    }
-    ExitCode::SUCCESS
 }

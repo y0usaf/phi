@@ -13,6 +13,12 @@ use phi_host::EmbeddedPack;
 
 /// The builtin tools pack (spec: `core/tools/`). Loads under the
 /// synthetic source key `<tools>`.
+/// The Lua-authored default CLI agent pack (spec: coding-agent main loop).
+pub const CODING_AGENT_PACK: EmbeddedPack = EmbeddedPack {
+    name: "coding-agent",
+    source: include_str!("coding-agent.lua"),
+};
+
 pub const TOOLS_PACK: EmbeddedPack = EmbeddedPack {
     name: "tools",
     source: concat!(

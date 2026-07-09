@@ -143,6 +143,35 @@ pub(crate) fn build(lua: &mlua::Lua, cwd: &str) -> mlua::Result<mlua::Table> {
         )?,
     )?;
 
+    // Session persistence is a mechanism binding; Lua owns the policy of which
+    // standard messages to append (the agent pack subscribes to message_end).
+    let session_append = lua.create_function(|_, (path, message): (String, mlua::Value)| {
+        let message = crate::convert::lua_to_json(message)?;
+        let cwd = std::env::current_dir().map_err(mlua::Error::external)?;
+        let agent_dir = crate::discover::agent_dir();
+        let mut manager = if std::path::Path::new(&path).exists() {
+            phi_session::SessionManager::open(&path, None, Some(&cwd.to_string_lossy()), &agent_dir)
+                .map_err(|e| mlua::Error::external(e.to_string()))?
+        } else {
+            phi_session::SessionManager::open(&path, None, Some(&cwd.to_string_lossy()), &agent_dir)
+                .map_err(|e| mlua::Error::external(e.to_string()))?
+        };
+        manager
+            .append_message(message)
+            .map_err(|e| mlua::Error::external(e.to_string()))?;
+        Ok(())
+    })?;
+    pi.set("session_append", session_append)?;
+    // Thin CLI output mechanism; formatting and event policy remain Lua.
+    pi.set(
+        "output",
+        lua.create_function(|_, text: String| {
+            use std::io::Write as _;
+            print!("{text}");
+            std::io::stdout().flush().map_err(mlua::Error::external)
+        })?,
+    )?;
+
     let on = lua.create_function(|lua, (event, handler): (String, mlua::Function)| {
         if event.trim().is_empty() {
             return Err(mlua::Error::runtime(

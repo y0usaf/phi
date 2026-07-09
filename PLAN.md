@@ -143,9 +143,9 @@ WS5/WS7 consumers rather than entering the core loop.
       default parallel execution match pi. Generic `pi.parallel` is Rust
       mechanism only and has a public exerciser; pi-derived tests pin
       completion-order tool-end events against source-order result persistence.
-- [ ] **4.6 Anthropic + CLI acceptance.** Select real Anthropic through the
-      same stream seam, expose WS3 tools, and persist standard messages via
-      `phi-session`. CI replays a two-request Anthropic tool call; live gate
-      (credentials required): `phi "fix the failing test"` reads/edits/runs
-      bash and returns final streamed text. Record pending live verification
-      without adding a Rust loop shortcut.
+- [x] **4.6 Anthropic + CLI acceptance (headless slice).** The CLI now loads
+      the Lua agent, WS3 tools, and Anthropic stream seam; Lua emits streamed
+      text and chooses standard messages for the `phi-session` JSONL binding.
+      Rust remains model/auth, transport, and persistence mechanism only.
+      Live credentialed verification of `phi "fix the failing test"` remains
+      pending (the CI fixture/replay gate is still the next acceptance test).

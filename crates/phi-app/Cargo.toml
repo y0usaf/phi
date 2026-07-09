@@ -16,6 +16,8 @@ phi-ai = { workspace = true }
 phi-ai-auth = { workspace = true }
 phi-ai-types = { workspace = true }
 phi-host = { workspace = true }
+phi-agent = { workspace = true }
+phi-session = { workspace = true }
 phi-tui = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
