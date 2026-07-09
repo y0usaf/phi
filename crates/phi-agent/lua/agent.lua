@@ -9,6 +9,11 @@ local UNKNOWN_MODEL = {
   contextWindow = 0, maxTokens = 0,
 }
 
+local EMPTY_USAGE = {
+  input = 0, output = 0, cacheRead = 0, cacheWrite = 0, totalTokens = 0,
+  cost = { input = 0, output = 0, cacheRead = 0, cacheWrite = 0, total = 0 },
+}
+
 local function copy_array(values)
   local result = {}
   for i, value in ipairs(values or {}) do result[i] = value end
@@ -211,6 +216,7 @@ local function new_agent(options)
   local messages = copy_array(initial.messages)
   local steering = {}
   local follow_up = {}
+  local active_run = nil
   local state = {
     systemPrompt = initial.systemPrompt or "",
     model = initial.model or UNKNOWN_MODEL,
@@ -219,10 +225,86 @@ local function new_agent(options)
     pendingToolCalls = {},
   }
 
+  local function notify(event)
+    if event.type == "message_start" or event.type == "message_update" then
+      state.streamingMessage = event.message
+    elseif event.type == "message_end" then
+      state.streamingMessage = nil
+      messages[#messages + 1] = event.message
+    elseif event.type == "tool_execution_start" then
+      local pending = shallow_copy(state.pendingToolCalls)
+      pending[event.toolCallId] = true
+      state.pendingToolCalls = pending
+    elseif event.type == "tool_execution_end" then
+      local pending = shallow_copy(state.pendingToolCalls)
+      pending[event.toolCallId] = nil
+      state.pendingToolCalls = pending
+    elseif event.type == "turn_end" then
+      if event.message and event.message.role == "assistant" and event.message.errorMessage then
+        state.errorMessage = event.message.errorMessage
+      end
+    elseif event.type == "agent_end" then
+      state.streamingMessage = nil
+    end
+    if not active_run then error("Agent listener invoked outside active run", 0) end
+    -- Snapshot insertion order. Unsubscribing during dispatch affects the next event.
+    local snapshot = copy_array(listeners)
+    for _, listener in ipairs(snapshot) do listener(event, active_run.signal) end
+  end
+
+  local function failure_message(err, aborted)
+    return {
+      role = "assistant", content = { { type = "text", text = "" } },
+      api = state.model.api, provider = state.model.provider, model = state.model.id,
+      usage = shallow_copy(EMPTY_USAGE), stopReason = aborted and "aborted" or "error",
+      errorMessage = error_text(err), timestamp = os.time() * 1000,
+    }
+  end
+
+  local function context_snapshot()
+    return { systemPrompt = state.systemPrompt, messages = copy_array(messages), tools = copy_array(tools) }
+  end
+
+  local function loop_config()
+    local config = shallow_copy(options)
+    config.model = state.model
+    config.reasoning = state.thinkingLevel == "off" and nil or state.thinkingLevel
+    return config
+  end
+
+  local function run_with_lifecycle(prompts)
+    if active_run then error("Agent is already processing.", 0) end
+    local signal = pi.abort_signal()
+    active_run = { signal = signal }
+    state.isStreaming = true
+    state.streamingMessage = nil
+    state.errorMessage = nil
+    local ok, err = pcall(run_turn, prompts, context_snapshot(), loop_config(), notify,
+                          signal, options.streamFn)
+    if not ok then
+      local failed = failure_message(err, signal:is_aborted())
+      notify({ type = "message_start", message = failed })
+      notify({ type = "message_end", message = failed })
+      notify({ type = "turn_end", message = failed, toolResults = {} })
+      notify({ type = "agent_end", messages = { failed } })
+    end
+    state.isStreaming = false
+    state.streamingMessage = nil
+    state.pendingToolCalls = {}
+    active_run = nil
+  end
+
+  local function drain_one(queue)
+    if #queue == 0 then return {} end
+    local value = table.remove(queue, 1)
+    return { value }
+  end
+
   local agent = {}
   function agent:get_state()
     state.tools = tools
     state.messages = messages
+    state.signal = active_run and active_run.signal or nil
     return state
   end
   function agent:set_system_prompt(value) state.systemPrompt = value end
@@ -233,6 +315,9 @@ local function new_agent(options)
   function agent:append_message(value) messages[#messages + 1] = value end
   function agent:clear_messages() messages = {} end
   function agent:subscribe(listener)
+    for _, candidate in ipairs(listeners) do
+      if candidate == listener then return function() end end
+    end
     listeners[#listeners + 1] = listener
     local active = true
     return function()
@@ -249,7 +334,10 @@ local function new_agent(options)
   function agent:clear_steering_queue() steering = {} end
   function agent:clear_follow_up_queue() follow_up = {} end
   function agent:clear_all_queues() steering = {}; follow_up = {} end
-  function agent:abort() if state.signal then state.signal:abort() end end
+  function agent:abort() if active_run then active_run.signal:abort() end end
+  -- Lua calls already await coroutine completion, so this is the settled equivalent
+  -- of waitForIdle after prompt/continue returns.
+  function agent:wait_for_idle() return not active_run end
   function agent:reset()
     messages = {}
     state.isStreaming = false
@@ -258,6 +346,32 @@ local function new_agent(options)
     state.errorMessage = nil
     steering = {}
     follow_up = {}
+  end
+  function agent:prompt(input, images)
+    if active_run then
+      error("Agent is already processing a prompt. Use steer() or followUp() to queue messages, or wait for completion.", 0)
+    end
+    local prompts
+    if type(input) == "string" then
+      local content = { { type = "text", text = input } }
+      for _, image in ipairs(images or {}) do content[#content + 1] = image end
+      prompts = { { role = "user", content = content, timestamp = os.time() * 1000 } }
+    elseif input and input.role then prompts = { input }
+    else prompts = input or {} end
+    run_with_lifecycle(prompts)
+  end
+  function agent:continue()
+    if active_run then error("Agent is already processing. Wait for completion before continuing.", 0) end
+    local last = messages[#messages]
+    if not last then error("No messages to continue from", 0) end
+    if last.role == "assistant" then
+      local queued = drain_one(steering)
+      if #queued == 0 then queued = drain_one(follow_up) end
+      if #queued == 0 then error("Cannot continue from message role: assistant", 0) end
+      run_with_lifecycle(queued)
+      return
+    end
+    run_with_lifecycle({})
   end
   return agent
 end

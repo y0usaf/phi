@@ -21,8 +21,8 @@ frontend. From the first UI slice, compare deterministic PTY/cell snapshots
 and real adjacent-terminal sessions against pi v0.79.0. Parallel sessions must
 own disjoint crates/files; the critical-path session owns PLAN.md.
 
-**Immediate handoff:** implement WS4.4's stateful Agent lifecycle and settlement
-next; do not detour into WS5 before the working-agent milestone.
+**Immediate handoff:** implement WS4.5's complete loop policy next: queues,
+turn preparation/termination, and parallel tool execution.
 
 ## Done (details in the commit bodies)
 
@@ -69,8 +69,9 @@ next; do not detour into WS5 before the working-agent milestone.
 ## Carried notes (land with their host mechanisms)
 
 - Tool `execute` receives `(tool_call_id, params, signal, on_update, ctx)`;
-  commands receive `(args, ctx)`. `pi.exec` `options.signal` is still pending
-  the process-cancellation consumer in WS4.3/4.4.
+  commands receive `(args, ctx)`. The Agent's active signal now reaches tools,
+  hooks, and subscribers; `pi.exec` process cancellation lands with its WS4.6
+  CLI consumer.
 - `emit` runs all `project_trust` handlers where the spec stops at the
   first yes/no — revisit with ctx if side-effect order becomes
   observable. `package.json`-manifest analogue → WS7 package-manager
@@ -129,11 +130,12 @@ WS5/WS7 consumers rather than entering the core loop.
       inserts results into the transcript, and automatically streams request
       two. A public fixture drives the embedded WS3 `write` tool from prompt to
       final text; pi-derived tests pin missing/invalid/throwing tool behavior.
-- [ ] **4.4 Stateful Agent + settlement.** Port prompt/continue,
-      subscriptions, state reduction before listeners, waitForIdle, run
-      exclusion, reset/abort, transcript continuity, and exactly-once
-      terminal events. Accept the subscription/failure/abort/concurrent-run
-      tests and multi-turn `e2e.test.ts` cases.
+- [x] **4.4 Stateful Agent + settlement.** The embedded Lua Agent now owns
+      prompt/continue, transcript continuity, ordered subscriptions with
+      reduction-before-listener state, active-run exclusion and abort signals,
+      reset, terminal failure synthesis, and settlement after `agent_end`
+      listeners. A public lifecycle example plus pi-derived tests cover
+      multi-turn context, failure, abort, continuation, and runtime cleanup.
 - [ ] **4.5 Complete loop policy.** Port steering/follow-up queues,
       prepareNextTurn/shouldStopAfterTurn, termination rules, parallel and
       sequential tool modes, completion-order events, and source-order
