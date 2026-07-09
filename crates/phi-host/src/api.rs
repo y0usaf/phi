@@ -283,6 +283,7 @@ pub(crate) fn build(lua: &mlua::Lua, cwd: &str) -> mlua::Result<mlua::Table> {
     })?;
     pi.set("unregister_provider", unregister_provider)?;
 
+    crate::ai::install(lua, &pi)?;
     crate::exec::install(lua, &pi, cwd)?;
     crate::os::install(lua, &pi, cwd)?;
 

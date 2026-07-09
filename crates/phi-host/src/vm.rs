@@ -92,7 +92,7 @@ pub(crate) fn spawn(config: HostConfig) -> Result<Sender<Msg>, HostError> {
 }
 
 fn vm_main(config: HostConfig, rx: Receiver<Msg>, init_tx: SyncSender<Result<(), String>>) {
-    let init = || -> Result<(mlua::Lua, mlua::Table, tokio::runtime::Runtime), String> {
+    let init = || -> Result<(mlua::Lua, mlua::Table, tokio::runtime::Runtime, String), String> {
         let lua = mlua::Lua::new();
         // Host cwd for the OS bindings (spec: the loader's injected cwd).
         let cwd = config.cwd.clone().unwrap_or_else(|| {
@@ -107,9 +107,9 @@ fn vm_main(config: HostConfig, rx: Receiver<Msg>, init_tx: SyncSender<Result<(),
             .enable_all()
             .build()
             .map_err(|e| e.to_string())?;
-        Ok((lua, pi, rt))
+        Ok((lua, pi, rt, cwd))
     };
-    let (lua, pi, rt) = match init() {
+    let (lua, pi, rt, cwd) = match init() {
         Ok(parts) => {
             let _ = init_tx.send(Ok(()));
             parts
@@ -158,10 +158,13 @@ fn vm_main(config: HostConfig, rx: Receiver<Msg>, init_tx: SyncSender<Result<(),
                     &lua,
                     &rt,
                     &config,
-                    &name,
-                    &tool_call_id,
-                    &params,
-                    on_update,
+                    ToolInvocation {
+                        name: &name,
+                        tool_call_id: &tool_call_id,
+                        params: &params,
+                        on_update,
+                        cwd: &cwd,
+                    },
                 ));
             }
             Msg::CallCommand {
@@ -169,7 +172,14 @@ fn vm_main(config: HostConfig, rx: Receiver<Msg>, init_tx: SyncSender<Result<(),
                 args,
                 reply,
             } => {
-                let _ = reply.send(call_command(&lua, &rt, &config, &invocation_name, &args));
+                let _ = reply.send(call_command(
+                    &lua,
+                    &rt,
+                    &config,
+                    &invocation_name,
+                    &args,
+                    &cwd,
+                ));
             }
         }
     }
@@ -212,19 +222,30 @@ fn commands_mirror(lua: &mlua::Lua) -> Result<Vec<CommandInfo>, HostError> {
         .collect())
 }
 
-/// Run optional `def.prepare_arguments(params)`, then execute
-/// `def.execute(tool_call_id, params, nil, on_update)` under the watchdog.
-/// Results and updates cross the bridge as uninterpreted JSON; cancellation
-/// signal and context remain carried to WS4 with their owning mechanisms.
+/// Run optional `def.prepare_arguments(params)`, coerce and validate against
+/// `def.parameters`, then execute `(tool_call_id, params, signal, on_update,
+/// ctx)` under the watchdog. Results and updates cross as uninterpreted JSON.
+struct ToolInvocation<'a> {
+    name: &'a str,
+    tool_call_id: &'a str,
+    params: &'a serde_json::Value,
+    on_update: Option<ToolUpdateCallback>,
+    cwd: &'a str,
+}
+
 fn call_tool(
     lua: &mlua::Lua,
     rt: &tokio::runtime::Runtime,
     config: &HostConfig,
-    name: &str,
-    tool_call_id: &str,
-    params: &serde_json::Value,
-    on_update: Option<ToolUpdateCallback>,
+    invocation: ToolInvocation<'_>,
 ) -> Result<serde_json::Value, HostError> {
+    let ToolInvocation {
+        name,
+        tool_call_id,
+        params,
+        on_update,
+        cwd,
+    } = invocation;
     let found = api::find_tool(lua, name).map_err(|e| HostError::Lua(e.to_string()))?;
     let Some((source, def)) = found else {
         return Err(HostError::UnknownTool(name.to_owned()));
@@ -243,6 +264,22 @@ fn call_tool(
             },
         )
         .and_then(|arg| {
+            let raw = lua_to_json(arg).map_err(|error| HostError::Lua(error.to_string()))?;
+            let schema = def
+                .get::<Option<mlua::Value>>("parameters")
+                .map_err(|error| HostError::Lua(error.to_string()))?
+                .map(lua_to_json)
+                .transpose()
+                .map_err(|error| HostError::Lua(error.to_string()))?
+                .unwrap_or_else(|| serde_json::json!({}));
+            let validated = crate::schema::validate_tool_arguments(name, &schema, &raw)
+                .map_err(|error| HostError::Lua(error.to_string()))?;
+            let arg =
+                json_to_lua(lua, &validated).map_err(|error| HostError::Lua(error.to_string()))?;
+            let signal = phi_ai::transport::AbortSignal::new();
+            let signal_value = crate::ai::signal_userdata(lua, signal)
+                .map_err(|error| HostError::Lua(error.to_string()))?;
+            let ctx = invocation_context(lua, cwd, signal_value.clone())?;
             let callback = on_update.map(|sink| {
                 lua.create_function(move |_, value: mlua::Value| {
                     let update = lua_to_json(value)
@@ -257,7 +294,7 @@ fn call_tool(
                     rt,
                     config,
                     execute,
-                    (tool_call_id.to_owned(), arg, mlua::Nil, callback),
+                    (tool_call_id.to_owned(), arg, signal_value, callback, ctx),
                 ),
                 Some(Err(error)) => Err(HostError::Lua(error.to_string())),
                 None => dispatch(
@@ -265,7 +302,7 @@ fn call_tool(
                     rt,
                     config,
                     execute,
-                    (tool_call_id.to_owned(), arg, mlua::Nil, mlua::Nil),
+                    (tool_call_id.to_owned(), arg, signal_value, mlua::Nil, ctx),
                 ),
             }
         })
@@ -274,14 +311,14 @@ fn call_tool(
     res
 }
 
-/// Run a command handler as `handler(args)` under the watchdog (spec
-/// signature `(args, ctx)`; ctx arrives with the context binding).
+/// Run a command handler as `handler(args, ctx)` under the watchdog.
 fn call_command(
     lua: &mlua::Lua,
     rt: &tokio::runtime::Runtime,
     config: &HostConfig,
     invocation_name: &str,
     args: &str,
+    cwd: &str,
 ) -> Result<Option<serde_json::Value>, HostError> {
     let commands = api::resolved_commands(lua).map_err(|e| HostError::Lua(e.to_string()))?;
     let Some(cmd) = commands
@@ -291,9 +328,31 @@ fn call_command(
         return Err(HostError::UnknownCommand(invocation_name.to_owned()));
     };
     api::set_current_source(lua, &cmd.source);
-    let res = dispatch(lua, rt, config, cmd.handler, args.to_owned()).and_then(value_to_reply);
+    let signal = phi_ai::transport::AbortSignal::new();
+    let res = crate::ai::signal_userdata(lua, signal)
+        .map_err(|error| HostError::Lua(error.to_string()))
+        .and_then(|signal| invocation_context(lua, cwd, signal))
+        .and_then(|ctx| dispatch(lua, rt, config, cmd.handler, (args.to_owned(), ctx)))
+        .and_then(value_to_reply);
     api::set_current_source(lua, "<host>");
     res
+}
+
+fn invocation_context(
+    lua: &mlua::Lua,
+    cwd: &str,
+    signal: mlua::AnyUserData,
+) -> Result<mlua::Table, HostError> {
+    let ctx = lua
+        .create_table()
+        .map_err(|error| HostError::Lua(error.to_string()))?;
+    ctx.set("cwd", cwd)
+        .map_err(|error| HostError::Lua(error.to_string()))?;
+    ctx.set("signal", signal)
+        .map_err(|error| HostError::Lua(error.to_string()))?;
+    ctx.set("isIdle", false)
+        .map_err(|error| HostError::Lua(error.to_string()))?;
+    Ok(ctx)
 }
 
 fn load_chunk(

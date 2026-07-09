@@ -21,7 +21,7 @@ frontend. From the first UI slice, compare deterministic PTY/cell snapshots
 and real adjacent-terminal sessions against pi v0.79.0. Parallel sessions must
 own disjoint crates/files; the critical-path session owns PLAN.md.
 
-**Immediate handoff:** implement WS4.1 from the concrete ladder below, then drive
+**Immediate handoff:** implement WS4.2 from the concrete ladder below, then drive
 straight through the WS4.3 one-shot tool-using gate without detouring into WS5.
 
 ## Done (details in the commit bodies)
@@ -68,10 +68,9 @@ straight through the WS4.3 one-shot tool-using gate without detouring into WS5.
 
 ## Carried notes (land with their host mechanisms)
 
-- Tool `execute` now receives `(tool_call_id, params, nil, on_update)`;
-  signal / ctx come with cancellation and the ctx binding (WS4). `pi.exec`
-  `options.signal` same step; command handlers run as `handler(args)` until
-  ctx exists.
+- Tool `execute` receives `(tool_call_id, params, signal, on_update, ctx)`;
+  commands receive `(args, ctx)`. `pi.exec` `options.signal` is still pending
+  the process-cancellation consumer in WS4.3/4.4.
 - `emit` runs all `project_trust` handlers where the spec stops at the
   first yes/no — revisit with ctx if side-effect order becomes
   observable. `package.json`-manifest analogue → WS7 package-manager
@@ -110,12 +109,14 @@ behavior is embedded Lua; Rust supplies only stream/cancellation/schema and
 coroutine-safe dispatch mechanisms. `proxy.ts` and `harness/**` remain later
 WS5/WS7 consumers rather than entering the core loop.
 
-- [ ] **4.1 Contract + host mechanisms.** Seed `phi-agent` types and the
-      embedded Lua pack; expose the existing `phi-ai` stream to Lua, one
-      active abort signal through providers/tools/hooks/subscribers, schema
-      validation, and command/tool ctx. Provider failures settle as final
-      assistant error/aborted messages. Accept the basic state/mutator tests
-      from `agent.test.ts`; exercise every new public binding in `examples/`.
+- [x] **4.1 Contract + host mechanisms.** `phi-agent` now owns the embedded
+      Lua state/mutator pack and typed open event envelope. `pi.ai.stream_simple`
+      drains the existing typed stream into Lua and folds immediate failures
+      into terminal assistant messages; cloneable abort signals, command/tool
+      ctx, and prepare-then-coerce/validate tool arguments are public bindings.
+      State copies/reset behavior and all bindings are exercised by examples
+      and pi-derived tests. Full active-run subscriber/hook signal propagation
+      lands with the lifecycle that owns it in 4.4.
 - [ ] **4.2 Deterministic streamed turn.** Port `streamAssistantResponse`,
       lifecycle ordering, `transformContext` before `convertToLlm`, dynamic
       API-key resolution, partial-message replacement, and replaceable

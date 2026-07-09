@@ -13,6 +13,8 @@ Internal (workspace-local) dependencies only. `A --> B` means A depends on B.
 
 ```mermaid
 graph TD
+  phi_agent["phi-agent"] --> phi_ai_types["phi-ai-types"]
+  phi_agent["phi-agent"] --> phi_host["phi-host"]
   phi_ai["phi-ai"] --> phi_ai_types["phi-ai-types"]
   phi_ai_auth["phi-ai-auth"] --> phi_ai_types["phi-ai-types"]
   phi_app["phi-app"] --> phi_ai["phi-ai"]
@@ -20,12 +22,15 @@ graph TD
   phi_app["phi-app"] --> phi_ai_types["phi-ai-types"]
   phi_app["phi-app"] --> phi_host["phi-host"]
   phi_app["phi-app"] --> phi_tui["phi-tui"]
+  phi_host["phi-host"] --> phi_ai["phi-ai"]
+  phi_host["phi-host"] --> phi_ai_types["phi-ai-types"]
 ```
 
 ## Crates
 
 | Crate | Description |
 |-------|-------------|
+| `phi-agent` | packages/agent port: Lua-authored agent policy pack |
 | `phi-ai` | packages/ai port: transport (HTTP/SSE/retry/cancellation), protocols, registry |
 | `phi-ai-auth` | packages/ai oauth port: PKCE engine, flows as data, provider registry |
 | `phi-ai-types` | packages/ai type vocabulary: models, messages, content, usage, stream events |
@@ -38,6 +43,14 @@ graph TD
 
 Per-crate module/item trees (`cargo modules structure`). Functions are
 omitted; types, traits, and module boundaries are the architecture.
+
+### `phi-agent`
+
+```
+
+crate phi_agent
+└── struct AgentEvent: pub
+```
 
 ### `phi-ai`
 
@@ -274,6 +287,8 @@ crate phi_host
 ├── struct ProviderInfo: pub
 ├── struct ToolInfo: pub
 ├── type ToolUpdateCallback: pub
+├── mod ai: pub(crate)
+│   └── struct LuaAbortSignal: pub(crate)
 ├── mod api: pub(crate)
 │   └── struct ResolvedCommand: pub(crate)
 ├── mod convert: pub(crate)
@@ -284,6 +299,8 @@ crate phi_host
 │   └── struct ExecResult: pub(crate)
 ├── mod os: pub(crate)
 ├── mod paths: pub(crate)
+├── mod schema: pub(crate)
+│   └── struct SchemaError: pub(crate)
 ├── mod trust: pub
 │   ├── struct ProjectTrustStore: pub
 │   ├── struct ResolveProjectTrust: pub
@@ -297,6 +314,7 @@ crate phi_host
 │   └── struct TrustUpdate: pub
 └── mod vm: pub(crate)
     ├── enum Msg: pub(crate)
+    ├── struct ToolInvocation: pub(self)
     ├── struct WatchdogState: pub(self)
     └── struct Watched: pub(self)
 ```

@@ -714,6 +714,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
+name = "phi-agent"
+version = "0.1.0"
+dependencies = [
+ "phi-ai-types",
+ "phi-host",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "phi-ai"
 version = "0.1.0"
 dependencies = [
@@ -774,6 +785,9 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "mlua",
+ "phi-ai",
+ "phi-ai-types",
+ "serde",
  "serde_json",
  "tempfile",
  "thiserror",

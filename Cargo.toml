@@ -28,6 +28,7 @@ unicode-normalization = "0.1"
 phi-ai = { path = "crates/phi-ai" }
 phi-ai-auth = { path = "crates/phi-ai-auth" }
 phi-ai-types = { path = "crates/phi-ai-types" }
+phi-agent = { path = "crates/phi-agent" }
 phi-host = { path = "crates/phi-host" }
 phi-session = { path = "crates/phi-session" }
 phi-tui = { path = "crates/phi-tui" }

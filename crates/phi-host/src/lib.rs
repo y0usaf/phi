@@ -16,6 +16,7 @@
 
 use std::sync::mpsc::{Sender, sync_channel};
 
+mod ai;
 mod api;
 mod convert;
 pub mod discover;
@@ -23,6 +24,7 @@ mod error;
 mod exec;
 mod os;
 mod paths;
+mod schema;
 pub mod trust;
 mod vm;
 
