@@ -19,6 +19,8 @@ pi.register_command("os-demo", {
     local text = pi.fs.read_file(file)
     local raw = pi.fs.read_bytes(file) -- Buffer read: binary-safe Lua string
     local real = pi.fs.realpath(dir) -- canonical path (symlinks resolved)
+    local normalized = pi.text.nfkc("ＡＢＣ１２３") -- JS String.normalize("NFKC") mechanism
+    local decoded = pi.json.decode([[{"ok":true}]]) -- JSON.parse mechanism
     local st = pi.fs.stat(file)
     local names = pi.fs.read_dir(dir)
     pi.fs.remove_file(file)
@@ -32,7 +34,7 @@ pi.register_command("os-demo", {
       pi.path.basename(real),
       select(2, text:gsub("\n", "\n")),
       #names,
-      tostring(pi.fs.exists(file))
+      tostring(pi.fs.exists(file)) .. ":" .. normalized .. ":" .. tostring(decoded.ok)
     )
   end,
 })

@@ -202,8 +202,9 @@ fn commands_mirror(lua: &mlua::Lua) -> Result<Vec<CommandInfo>, HostError> {
         .collect())
 }
 
-/// Execute `def.execute(tool_call_id, params)` under the watchdog. The
-/// result crosses the bridge as uninterpreted JSON (spec shape:
+/// Run optional `def.prepare_arguments(params)`, then execute
+/// `def.execute(tool_call_id, params)` under the watchdog. The result
+/// crosses the bridge as uninterpreted JSON (spec shape:
 /// `AgentToolResult`); the host never matches on it. The spec's remaining
 /// `execute` parameters (signal, on_update, ctx) arrive with their host
 /// mechanisms in later WS1 steps.
@@ -225,6 +226,13 @@ fn call_tool(
     api::set_current_source(lua, &source);
     let res = json_to_lua(lua, params)
         .map_err(|e| HostError::Lua(e.to_string()))
+        .and_then(
+            |arg| match def.get::<Option<mlua::Function>>("prepare_arguments") {
+                Ok(Some(prepare)) => dispatch(lua, rt, config, prepare, arg),
+                Ok(None) => Ok(arg),
+                Err(error) => Err(HostError::Lua(error.to_string())),
+            },
+        )
         .and_then(|arg| dispatch(lua, rt, config, execute, (tool_call_id.to_owned(), arg)))
         .and_then(|v| lua_to_json(v).map_err(|e| HostError::Lua(e.to_string())));
     api::set_current_source(lua, "<host>");

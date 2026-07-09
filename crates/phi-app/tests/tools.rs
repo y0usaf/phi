@@ -1,4 +1,4 @@
-//! Golden port of the read/write/ls sections of the spec's
+//! Golden port of the read/write/ls/edit sections of the spec's
 //! `test/tools.test.ts` (pi v0.79.0), run against the embedded builtin
 //! tools pack through the public host path (`load_embedded` +
 //! `call_tool`) — the same seam the WS4 agent loop will use.
@@ -53,7 +53,7 @@ fn pack_registers_the_slice_tools_in_order() {
         .into_iter()
         .map(|t| t.name)
         .collect();
-    assert_eq!(names, ["read", "write", "ls"]);
+    assert_eq!(names, ["read", "edit", "write", "ls"]);
 }
 
 // ---------------------------------------------------------------------------
@@ -366,4 +366,155 @@ fn ls_defaults_to_the_tool_cwd() {
 
     let result = call(&host(dir.path()), "ls", json!({})).unwrap();
     assert!(text_output(&result).contains("here.txt"));
+}
+
+// ---------------------------------------------------------------------------
+// edit tool (spec tools.test.ts edit/fuzzy/CRLF sections)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn edit_replaces_and_returns_details() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("edit.txt");
+    std::fs::write(&file, "Hello, world!").unwrap();
+    let result = call(
+        &host(dir.path()),
+        "edit",
+        json!({"path": file, "edits": [{"oldText":"world","newText":"testing"}]}),
+    )
+    .unwrap();
+    assert!(text_output(&result).contains("Successfully replaced 1 block(s)"));
+    assert!(
+        result["details"]["diff"]
+            .as_str()
+            .unwrap()
+            .contains("testing")
+    );
+    let patch = result["details"]["patch"].as_str().unwrap();
+    assert!(patch.contains("--- ") && patch.contains("+++ ") && patch.contains("@@"));
+    assert!(patch.contains("-Hello, world!") && patch.contains("+Hello, testing!"));
+    assert_eq!(std::fs::read_to_string(file).unwrap(), "Hello, testing!");
+}
+
+#[test]
+fn edit_validates_failures_without_partial_writes() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("edit.txt");
+    let original = "one\ntwo\nthree\n";
+    std::fs::write(&file, original).unwrap();
+    let h = host(dir.path());
+    let cases = [
+        (json!({"path": file, "edits": []}), "edits must contain"),
+        (
+            json!({"path": file, "edits": [{"oldText":"","newText":"x"}]}),
+            "oldText must not be empty",
+        ),
+        (
+            json!({"path": file, "edits": [{"oldText":"missing","newText":"x"}]}),
+            "Could not find",
+        ),
+        (
+            json!({"path": file, "edits": [{"oldText":"one\ntwo\n","newText":"x"},{"oldText":"two\nthree\n","newText":"y"}]}),
+            "overlap",
+        ),
+    ];
+    for (params, message) in cases {
+        let err = call(&h, "edit", params).unwrap_err();
+        assert!(err.contains(message), "{err}");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), original);
+    }
+    std::fs::write(&file, "foo foo foo").unwrap();
+    let err = call(
+        &h,
+        "edit",
+        json!({"path": file, "edits": [{"oldText":"foo","newText":"bar"}]}),
+    )
+    .unwrap_err();
+    assert!(err.contains("Found 3 occurrences"), "{err}");
+}
+
+#[test]
+fn edit_applies_disjoint_edits_against_original() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("multi.txt");
+    std::fs::write(&file, "foo\nbar\nbaz\n").unwrap();
+    call(
+        &host(dir.path()),
+        "edit",
+        json!({"path": file, "edits": [
+            {"oldText":"foo\n","newText":"foo bar\n"},
+            {"oldText":"bar\n","newText":"BAR\n"}
+        ]}),
+    )
+    .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(file).unwrap(),
+        "foo bar\nBAR\nbaz\n"
+    );
+}
+
+#[test]
+fn edit_fuzzy_matches_nfkc_quotes_spaces_and_whitespace() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("fuzzy.txt");
+    std::fs::write(
+        &file,
+        "ＡＢＣ１２３   \ncafe\u{301}\nconsole.log(‘hello’);\nhello\u{a0}world\n",
+    )
+    .unwrap();
+    call(
+        &host(dir.path()),
+        "edit",
+        json!({"path": file, "edits": [
+            {"oldText":"ABC123\ncafé\n","newText":"XYZ789\ncoffee\n"},
+            {"oldText":"console.log('hello');\n","newText":"console.log('world');\n"},
+            {"oldText":"hello world\n","newText":"hello universe\n"}
+        ]}),
+    )
+    .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(file).unwrap(),
+        "XYZ789\ncoffee\nconsole.log('world');\nhello universe\n"
+    );
+}
+
+#[test]
+fn edit_preserves_crlf_and_bom() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("crlf.txt");
+    std::fs::write(&file, "\u{feff}first\r\nsecond\r\nthird\r\n").unwrap();
+    call(
+        &host(dir.path()),
+        "edit",
+        json!({"path": file, "edits": [{"oldText":"second\n","newText":"REPLACED\n"}]}),
+    )
+    .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(file).unwrap(),
+        "\u{feff}first\r\nREPLACED\r\nthird\r\n"
+    );
+}
+
+#[test]
+fn edit_prepares_legacy_and_stringified_arguments() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("legacy.txt");
+    std::fs::write(&file, "before\nsecond\n").unwrap();
+    let h = host(dir.path());
+    call(
+        &h,
+        "edit",
+        json!({"path": file, "oldText":"before", "newText":"after"}),
+    )
+    .unwrap();
+    call(
+        &h,
+        "edit",
+        json!({
+            "path": file,
+            "edits": "[{\"oldText\":\"second\",\"newText\":\"next\"}]"
+        }),
+    )
+    .unwrap();
+    assert_eq!(std::fs::read_to_string(file).unwrap(), "after\nnext\n");
 }

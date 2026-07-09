@@ -129,9 +129,16 @@ bindings). Steps refine as the spec modules are read:
         unicode-normalize binding; render callbacks land with WS6
         bindings; signal/on_update/ctx still pending (3.3c lands
         on_update with bash).
-  - [ ] **3.3b Edit.** `edit.lua` + `edit-diff.lua` (fuzzy matching,
-        multi-edit, diff collapse) with the spec’s edit sections +
-        fuzzy-matching suite as goldens.
+  - [x] **3.3b Edit.** `edit.lua` + `edit-diff.lua`: exact/fuzzy
+        matching (NFKC, whitespace, quote/dash/space normalization),
+        atomic multi-edit against original content, overlap/duplicate
+        rejection, BOM + CRLF preservation, display diff + unified patch.
+        `pi.text.nfkc` is the Rust Unicode mechanism and is exercised by
+        `os-demo.lua`; edit policy remains embedded Lua. Golden coverage
+        ports the spec's edit/fuzzy/CRLF + legacy/stringified-argument
+        sections; the host now invokes optional `prepare_arguments` and
+        `pi.json.decode` supplies JSON.parse mechanism (both exercised).
+        Carried: render callbacks land with WS6, signal/ctx with WS4.
   - [ ] **3.3c Bash.** `bash.lua` + output-accumulator + `utils/shell.ts`
         slice; needs host mechanisms: streaming exec (`onData`) +
         `on_update` tool param + process-tree kill — land together with

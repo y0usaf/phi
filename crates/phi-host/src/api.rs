@@ -89,6 +89,32 @@ pub(crate) fn build(lua: &mlua::Lua, cwd: &str) -> mlua::Result<mlua::Table> {
 
     let pi = lua.create_table()?;
 
+    // JavaScript String.prototype.normalize mechanism. Lua 5.4 has no
+    // Unicode normalization; product policy (which form and when) stays
+    // in Lua. Exercised by examples/extensions/os-demo.lua.
+    let text = lua.create_table()?;
+    text.set(
+        "nfkc",
+        lua.create_function(|_, value: String| {
+            use unicode_normalization::UnicodeNormalization;
+            Ok(value.nfkc().collect::<String>())
+        })?,
+    )?;
+    pi.set("text", text)?;
+
+    // JSON.parse mechanism for model argument recovery (some providers
+    // stringify structured arguments). Validation and fallback stay Lua.
+    let json = lua.create_table()?;
+    json.set(
+        "decode",
+        lua.create_function(|lua, value: String| {
+            let parsed: serde_json::Value = serde_json::from_str(&value)
+                .map_err(|error| mlua::Error::runtime(error.to_string()))?;
+            crate::convert::json_to_lua(lua, &parsed)
+        })?,
+    )?;
+    pi.set("json", json)?;
+
     let on = lua.create_function(|lua, (event, handler): (String, mlua::Function)| {
         if event.trim().is_empty() {
             return Err(mlua::Error::runtime(
