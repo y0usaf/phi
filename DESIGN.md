@@ -175,7 +175,8 @@ module-by-module, plus the side-by-side test where UI is involved.
       autocomplete, select-list, markdown, loaders, kill-ring, undo-stack,
       images — with Lua bindings for every component. Renderer, editor state,
       editor core, select-list foundation, and autocomplete foundation are
-      landed; markdown, loaders, images, and full component parity remain. *Accept:
+      landed; loaders, images, and full component parity remain. Markdown
+      foundation landed in WS6.6. *Accept:
       component behavior matches pi's; bindings exercised by examples.*
 - [ ] **WS7 — `coding-agent` remainder (interactive-required slices share
       the critical path with WS6).** resource-loader (skills,

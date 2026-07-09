@@ -177,5 +177,13 @@ WS5/WS7 consumers rather than entering the core loop.
       completion and completion-application mechanisms from
       `packages/tui/src/autocomplete.ts`; expose them through `pi.tui` and
       exercise the public seam in `examples/extensions/tui-autocomplete-demo.lua`.
-      Remaining WS6 work: markdown, loaders, terminal images, and exact
-      theme/layout parity.
+      Remaining WS6 work: loaders, terminal images, and exact theme/layout parity.
+
+- [x] **6.6 Markdown foundation.** Ported the terminal-safe markdown subset
+      (headings, lists, quotes, fences, links, inline markup, wrapping and
+      padding) with deterministic cell fixtures. Exposed `pi.tui.markdown_render`
+      and exercised it in `examples/extensions/tui-markdown-demo.lua`.
+
+- [ ] **6.7 Loaders and terminal images.** Port pi's loader animation and
+      terminal-image capability/render seams; pin deterministic snapshots and
+      expose both through Lua before exact theme/layout work.

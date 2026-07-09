@@ -468,6 +468,12 @@ pub(crate) fn build(lua: &mlua::Lua, cwd: &str) -> mlua::Result<mlua::Table> {
         for line in lines { result.push(line)?; }
         Ok(result)
     })?)?;
+    tui.set("markdown_render", lua.create_function(|lua, (text, width, padding_x, padding_y): (String, usize, Option<usize>, Option<usize>)| {
+        let lines = phi_tui::markdown::render_markdown(&text, width, padding_x.unwrap_or(0), padding_y.unwrap_or(0));
+        let result = lua.create_table()?;
+        for line in lines { result.push(line)?; }
+        Ok(result)
+    })?)?;
     tui.set(
         "differential_render",
         lua.create_function(
