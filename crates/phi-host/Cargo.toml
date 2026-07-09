@@ -7,6 +7,7 @@ description = "Lua extension host: coroutine async seam, event bus, watchdog"
 
 [dependencies]
 libc.workspace = true
+futures-util.workspace = true
 phi-ai.workspace = true
 phi-ai-types.workspace = true
 serde.workspace = true

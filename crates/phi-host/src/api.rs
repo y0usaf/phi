@@ -12,6 +12,8 @@
 //! - `pi.sleep(ms)` — first awaitable host future: suspends the handler
 //!   coroutine without burning watchdog budget (superset of pi's
 //!   `await new Promise(setTimeout)`; divergence 3).
+//! - `pi.parallel(tasks)` — structured concurrency for awaitable Lua callbacks;
+//!   completion-order outcomes let Lua policy reproduce Promise semantics.
 //! - `pi.register_tool(def)` — spec `registerTool` (`loader.ts`):
 //!   per-extension map, re-registration replaces in place.
 //! - `pi.register_command(name, opts)` — spec `registerCommand`
@@ -172,6 +174,40 @@ pub(crate) fn build(lua: &mlua::Lua, cwd: &str) -> mlua::Result<mlua::Table> {
         Ok(())
     })?;
     pi.set("sleep", sleep)?;
+    // Generic structured concurrency mechanism. Policy (which tasks to group,
+    // and how to order their results) remains in Lua. Results are reported in
+    // completion order so callers can reproduce Promise completion semantics.
+    let parallel = lua.create_async_function(|lua, tasks: mlua::Table| async move {
+        use futures_util::stream::{FuturesUnordered, StreamExt};
+
+        let pending = FuturesUnordered::new();
+        for (offset, task) in tasks.sequence_values::<mlua::Function>().enumerate() {
+            let task = task?;
+            pending.push(async move {
+                let result = task.call_async::<mlua::Value>(()).await;
+                (offset + 1, result)
+            });
+        }
+        let completed = lua.create_table()?;
+        let mut pending = pending;
+        while let Some((index, result)) = pending.next().await {
+            let entry = lua.create_table()?;
+            entry.set("index", index)?;
+            match result {
+                Ok(value) => {
+                    entry.set("ok", true)?;
+                    entry.set("value", value)?;
+                }
+                Err(error) => {
+                    entry.set("ok", false)?;
+                    entry.set("error", error.to_string())?;
+                }
+            }
+            completed.push(entry)?;
+        }
+        Ok(completed)
+    })?;
+    pi.set("parallel", parallel)?;
     let epoch = std::time::Instant::now();
     pi.set(
         "monotonic_ms",

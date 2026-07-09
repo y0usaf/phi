@@ -103,72 +103,135 @@ local function find_tool(tools, name)
   return nil
 end
 
-local function execute_sequential_tool_calls(context, assistant_message, tool_calls,
-                                             config, signal, emit)
-  local messages = {}
-  local ctx = { cwd = pi.cwd(), signal = signal, isIdle = false }
-  for _, original_call in ipairs(tool_calls) do
-    emit({ type = "tool_execution_start", toolCallId = original_call.id,
-           toolName = original_call.name, args = original_call.arguments })
-    local tool = find_tool(context.tools, original_call.name)
-    local result, is_error
-    local args = original_call.arguments
-    if not tool then
-      result, is_error = error_tool_result("Tool " .. original_call.name .. " not found"), true
-    else
-      local ok, prepared_or_error = pcall(function()
-        if tool.prepare_arguments then args = tool.prepare_arguments(args) end
-        args = pi.validate_tool_arguments(tool.name, tool.parameters or {}, args)
-        if config.beforeToolCall then
-          local before = config.beforeToolCall({ assistantMessage = assistant_message,
-            toolCall = original_call, args = args, context = context }, signal)
-          if signal and signal:is_aborted() then error("Operation aborted", 0) end
-          if before and before.block then error(before.reason or "Tool execution was blocked", 0) end
-        end
-        if signal and signal:is_aborted() then error("Operation aborted", 0) end
-        return args
-      end)
-      if not ok then
-        result, is_error = error_tool_result(error_text(prepared_or_error)), true
+local function prepare_tool_call(context, assistant_message, original_call, config, signal, emit)
+  emit({ type = "tool_execution_start", toolCallId = original_call.id,
+         toolName = original_call.name, args = original_call.arguments })
+  local tool = find_tool(context.tools, original_call.name)
+  if not tool then
+    return { call = original_call, immediate = true,
+      result = error_tool_result("Tool " .. original_call.name .. " not found"), isError = true }
+  end
+  local args = original_call.arguments
+  local ok, prepared_or_error = pcall(function()
+    if tool.prepare_arguments then args = tool.prepare_arguments(args) end
+    args = pi.validate_tool_arguments(tool.name, tool.parameters or {}, args)
+    if config.beforeToolCall then
+      local before = config.beforeToolCall({ assistantMessage = assistant_message,
+        toolCall = original_call, args = args, context = context }, signal)
+      if signal and signal:is_aborted() then error("Operation aborted", 0) end
+      if before and before.block then error(before.reason or "Tool execution was blocked", 0) end
+    end
+    if signal and signal:is_aborted() then error("Operation aborted", 0) end
+    return args
+  end)
+  if not ok then
+    return { call = original_call, immediate = true,
+      result = error_tool_result(error_text(prepared_or_error)), isError = true }
+  end
+  return { call = original_call, tool = tool, args = prepared_or_error }
+end
+
+local function execute_prepared(context, assistant_message, prepared, config, signal, emit)
+  if prepared.immediate then return prepared end
+  local call, tool, args = prepared.call, prepared.tool, prepared.args
+  local updates = function(partial)
+    emit({ type = "tool_execution_update", toolCallId = call.id,
+           toolName = call.name, args = call.arguments, partialResult = partial })
+  end
+  local executed, value = pcall(tool.execute, call.id, args, signal, updates,
+    { cwd = pi.cwd(), signal = signal, isIdle = false })
+  local result, is_error
+  if executed then result, is_error = value, false
+  else result, is_error = error_tool_result(error_text(value)), true end
+  if config.afterToolCall then
+    local finalized, after = pcall(config.afterToolCall,
+      { assistantMessage = assistant_message, toolCall = call, args = args,
+        result = result, isError = is_error, context = context }, signal)
+    if not finalized then result, is_error = error_tool_result(error_text(after)), true
+    elseif after then
+      result = { content = after.content or result.content,
+                 details = after.details or result.details,
+                 terminate = after.terminate == nil and result.terminate or after.terminate }
+      if after.isError ~= nil then is_error = after.isError end
+    end
+  end
+  return { call = call, result = result, isError = is_error }
+end
+
+local function emit_tool_end(outcome, emit)
+  emit({ type = "tool_execution_end", toolCallId = outcome.call.id,
+         toolName = outcome.call.name, result = outcome.result, isError = outcome.isError })
+end
+
+local function emit_tool_message(outcome, emit)
+  local message = { role = "toolResult", toolCallId = outcome.call.id,
+    toolName = outcome.call.name, content = outcome.result.content, details = outcome.result.details,
+    isError = outcome.isError, timestamp = os.time() * 1000 }
+  emit({ type = "message_start", message = message })
+  emit({ type = "message_end", message = message })
+  return message
+end
+
+local function should_terminate(outcomes)
+  if #outcomes == 0 then return false end
+  for _, outcome in ipairs(outcomes) do
+    if outcome.result.terminate ~= true then return false end
+  end
+  return true
+end
+
+local function execute_tool_calls(context, assistant_message, tool_calls, config, signal, emit)
+  local sequential = config.toolExecution == "sequential"
+  for _, call in ipairs(tool_calls) do
+    local tool = find_tool(context.tools, call.name)
+    if tool and tool.executionMode == "sequential" then sequential = true end
+  end
+  local outcomes = {}
+  if sequential then
+    for _, call in ipairs(tool_calls) do
+      local outcome = execute_prepared(context, assistant_message,
+        prepare_tool_call(context, assistant_message, call, config, signal, emit),
+        config, signal, emit)
+      emit_tool_end(outcome, emit)
+      outcomes[#outcomes + 1] = outcome
+      if signal and signal:is_aborted() then break end
+    end
+  else
+    local tasks, immediate = {}, {}
+    for index, call in ipairs(tool_calls) do
+      local prepared = prepare_tool_call(context, assistant_message, call, config, signal, emit)
+      if prepared.immediate then
+        emit_tool_end(prepared, emit)
+        immediate[index] = prepared
       else
-        args = prepared_or_error
-        local updates = function(partial)
-          emit({ type = "tool_execution_update", toolCallId = original_call.id,
-                 toolName = original_call.name, args = original_call.arguments,
-                 partialResult = partial })
-        end
-        local executed, value = pcall(tool.execute, original_call.id, args, signal, updates, ctx)
-        if executed then result, is_error = value, false
-        else result, is_error = error_tool_result(error_text(value)), true end
-        if config.afterToolCall then
-          local finalized, after = pcall(config.afterToolCall,
-            { assistantMessage = assistant_message, toolCall = original_call, args = args,
-              result = result, isError = is_error, context = context }, signal)
-          if not finalized then result, is_error = error_tool_result(error_text(after)), true
-          elseif after then
-            result = { content = after.content or result.content,
-                       details = after.details or result.details,
-                       terminate = after.terminate == nil and result.terminate or after.terminate }
-            if after.isError ~= nil then is_error = after.isError end
-          end
+        tasks[#tasks + 1] = function()
+          return { sourceIndex = index, outcome = execute_prepared(
+            context, assistant_message, prepared, config, signal, emit) }
         end
       end
+      if signal and signal:is_aborted() then break end
     end
-    emit({ type = "tool_execution_end", toolCallId = original_call.id,
-           toolName = original_call.name, result = result, isError = is_error })
-    local message = { role = "toolResult", toolCallId = original_call.id,
-      toolName = original_call.name, content = result.content, details = result.details,
-      isError = is_error, timestamp = os.time() * 1000 }
-    emit({ type = "message_start", message = message })
-    emit({ type = "message_end", message = message })
-    messages[#messages + 1] = message
-    if signal and signal:is_aborted() then break end
+    for _, completed in ipairs(pi.parallel(tasks)) do
+      if not completed.ok then error(completed.error, 0) end
+      local value = completed.value
+      emit_tool_end(value.outcome, emit)
+      outcomes[value.sourceIndex] = value.outcome
+    end
+    for index, outcome in pairs(immediate) do outcomes[index] = outcome end
   end
-  return messages
+  local messages, ordered = {}, {}
+  for index = 1, #tool_calls do
+    local outcome = outcomes[index]
+    if outcome then
+      ordered[#ordered + 1] = outcome
+      messages[#messages + 1] = emit_tool_message(outcome, emit)
+    end
+  end
+  return messages, should_terminate(ordered)
 end
 
 
--- Deterministic sequential loop through the first working-agent gate.
+-- Port of agent-loop.ts runLoop: tool turns, steering, follow-ups and hooks.
 local function run_turn(prompts, context, config, emit, signal, stream_fn)
   prompts = prompts or {}
   context.messages = copy_array(context.messages)
@@ -182,27 +245,61 @@ local function run_turn(prompts, context, config, emit, signal, stream_fn)
     emit({ type = "message_end", message = prompt })
   end
   local first_turn = true
+  local pending = config.getSteeringMessages and config.getSteeringMessages() or {}
   while true do
-    if not first_turn then emit({ type = "turn_start" }) end
-    first_turn = false
-    local message = stream_assistant_response(context, config, signal, emit, stream_fn)
-    result[#result + 1] = message
-    if message.stopReason == "error" or message.stopReason == "aborted" then
-      emit({ type = "turn_end", message = message, toolResults = {} })
-      break
+    local has_more_tools = true
+    while has_more_tools or #pending > 0 do
+      if not first_turn then emit({ type = "turn_start" }) else first_turn = false end
+      for _, message in ipairs(pending) do
+        emit({ type = "message_start", message = message })
+        emit({ type = "message_end", message = message })
+        context.messages[#context.messages + 1] = message
+        result[#result + 1] = message
+      end
+      pending = {}
+      local message = stream_assistant_response(context, config, signal, emit, stream_fn)
+      result[#result + 1] = message
+      if message.stopReason == "error" or message.stopReason == "aborted" then
+        emit({ type = "turn_end", message = message, toolResults = {} })
+        emit({ type = "agent_end", messages = result })
+        return result
+      end
+      local calls = {}
+      for _, content in ipairs(message.content or {}) do
+        if content.type == "toolCall" then calls[#calls + 1] = content end
+      end
+      local tool_results, terminate = {}, false
+      has_more_tools = false
+      if #calls > 0 then
+        tool_results, terminate = execute_tool_calls(context, message, calls, config, signal, emit)
+        has_more_tools = not terminate
+        for _, tool_result in ipairs(tool_results) do
+          context.messages[#context.messages + 1] = tool_result
+          result[#result + 1] = tool_result
+        end
+      end
+      emit({ type = "turn_end", message = message, toolResults = tool_results })
+      local turn = { message = message, toolResults = tool_results,
+        context = context, newMessages = result }
+      local snapshot = config.prepareNextTurn and config.prepareNextTurn(turn) or nil
+      if snapshot then
+        context = snapshot.context or context
+        config.model = snapshot.model or config.model
+        if snapshot.thinkingLevel ~= nil then
+          config.reasoning = snapshot.thinkingLevel == "off" and nil or snapshot.thinkingLevel
+        end
+      end
+      turn.context = context
+      if config.shouldStopAfterTurn and config.shouldStopAfterTurn(turn) then
+        emit({ type = "agent_end", messages = result })
+        return result
+      end
+      pending = config.getSteeringMessages and config.getSteeringMessages() or {}
+      if signal and signal:is_aborted() then has_more_tools = false end
     end
-    local calls = {}
-    for _, content in ipairs(message.content or {}) do
-      if content.type == "toolCall" then calls[#calls + 1] = content end
-    end
-    local tool_results = execute_sequential_tool_calls(
-      context, message, calls, config, signal, emit)
-    for _, tool_result in ipairs(tool_results) do
-      context.messages[#context.messages + 1] = tool_result
-      result[#result + 1] = tool_result
-    end
-    emit({ type = "turn_end", message = message, toolResults = tool_results })
-    if #calls == 0 or (signal and signal:is_aborted()) then break end
+    local follow_up = config.getFollowUpMessages and config.getFollowUpMessages() or {}
+    if #follow_up == 0 then break end
+    pending = follow_up
   end
   emit({ type = "agent_end", messages = result })
   return result
@@ -217,6 +314,8 @@ local function new_agent(options)
   local steering = {}
   local follow_up = {}
   local active_run = nil
+  local steering_mode = options.steeringMode or "one-at-a-time"
+  local follow_up_mode = options.followUpMode or "one-at-a-time"
   local state = {
     systemPrompt = initial.systemPrompt or "",
     model = initial.model or UNKNOWN_MODEL,
@@ -265,22 +364,41 @@ local function new_agent(options)
     return { systemPrompt = state.systemPrompt, messages = copy_array(messages), tools = copy_array(tools) }
   end
 
-  local function loop_config()
+  local function drain(queue, mode)
+    if #queue == 0 then return {} end
+    if mode == "all" then
+      local values = copy_array(queue)
+      for index = #queue, 1, -1 do queue[index] = nil end
+      return values
+    end
+    return { table.remove(queue, 1) }
+  end
+
+  local function loop_config(skip_initial_steering)
     local config = shallow_copy(options)
     config.model = state.model
     config.reasoning = state.thinkingLevel == "off" and nil or state.thinkingLevel
+    if options.prepareNextTurn then
+      config.prepareNextTurn = function() return options.prepareNextTurn(active_run.signal) end
+    end
+    local skip = skip_initial_steering == true
+    config.getSteeringMessages = function()
+      if skip then skip = false; return {} end
+      return drain(steering, steering_mode)
+    end
+    config.getFollowUpMessages = function() return drain(follow_up, follow_up_mode) end
     return config
   end
 
-  local function run_with_lifecycle(prompts)
+  local function run_with_lifecycle(prompts, skip_initial_steering)
     if active_run then error("Agent is already processing.", 0) end
     local signal = pi.abort_signal()
     active_run = { signal = signal }
     state.isStreaming = true
     state.streamingMessage = nil
     state.errorMessage = nil
-    local ok, err = pcall(run_turn, prompts, context_snapshot(), loop_config(), notify,
-                          signal, options.streamFn)
+    local ok, err = pcall(run_turn, prompts, context_snapshot(),
+                          loop_config(skip_initial_steering), notify, signal, options.streamFn)
     if not ok then
       local failed = failure_message(err, signal:is_aborted())
       notify({ type = "message_start", message = failed })
@@ -294,11 +412,6 @@ local function new_agent(options)
     active_run = nil
   end
 
-  local function drain_one(queue)
-    if #queue == 0 then return {} end
-    local value = table.remove(queue, 1)
-    return { value }
-  end
 
   local agent = {}
   function agent:get_state()
@@ -329,6 +442,10 @@ local function new_agent(options)
     end
   end
   function agent:steer(message) steering[#steering + 1] = message end
+  function agent:set_steering_mode(mode) steering_mode = mode end
+  function agent:get_steering_mode() return steering_mode end
+  function agent:set_follow_up_mode(mode) follow_up_mode = mode end
+  function agent:get_follow_up_mode() return follow_up_mode end
   function agent:follow_up(message) follow_up[#follow_up + 1] = message end
   function agent:has_queued_messages() return #steering > 0 or #follow_up > 0 end
   function agent:clear_steering_queue() steering = {} end
@@ -365,8 +482,9 @@ local function new_agent(options)
     local last = messages[#messages]
     if not last then error("No messages to continue from", 0) end
     if last.role == "assistant" then
-      local queued = drain_one(steering)
-      if #queued == 0 then queued = drain_one(follow_up) end
+      local queued = drain(steering, steering_mode)
+      if #queued > 0 then run_with_lifecycle(queued, true); return end
+      queued = drain(follow_up, follow_up_mode)
       if #queued == 0 then error("Cannot continue from message role: assistant", 0) end
       run_with_lifecycle(queued)
       return

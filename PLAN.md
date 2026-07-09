@@ -136,11 +136,13 @@ WS5/WS7 consumers rather than entering the core loop.
       reset, terminal failure synthesis, and settlement after `agent_end`
       listeners. A public lifecycle example plus pi-derived tests cover
       multi-turn context, failure, abort, continuation, and runtime cleanup.
-- [ ] **4.5 Complete loop policy.** Port steering/follow-up queues,
-      prepareNextTurn/shouldStopAfterTurn, termination rules, parallel and
-      sequential tool modes, completion-order events, and source-order
-      persisted results. Accept the remaining `agent-loop.test.ts` and
-      `agent.test.ts` suites.
+- [x] **4.5 Complete loop policy.** The Lua loop now drains steering before
+      and between turns and follow-ups only at idle, with one-at-a-time/all
+      queue modes and assistant-tail continuation. Turn preparation/stopping,
+      all-results termination, global/per-tool sequential overrides, and
+      default parallel execution match pi. Generic `pi.parallel` is Rust
+      mechanism only and has a public exerciser; pi-derived tests pin
+      completion-order tool-end events against source-order result persistence.
 - [ ] **4.6 Anthropic + CLI acceptance.** Select real Anthropic through the
       same stream seam, expose WS3 tools, and persist standard messages via
       `phi-session`. CI replays a two-request Anthropic tool call; live gate
