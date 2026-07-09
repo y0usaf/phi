@@ -484,6 +484,58 @@ pub(crate) fn build(lua: &mlua::Lua, cwd: &str) -> mlua::Result<mlua::Table> {
         )?,
     )?;
     tui.set(
+        "autocomplete",
+        lua.create_function(
+            |lua, (commands, base, line, force): (mlua::Table, String, String, Option<bool>)| {
+                let mut parsed = Vec::new();
+                for command in commands.sequence_values::<mlua::Table>() {
+                    let command = command?;
+                    parsed.push(phi_tui::autocomplete::SlashCommand {
+                        name: command.get("name").or_else(|_| command.get("value"))?,
+                        description: command.get("description")?,
+                    });
+                }
+                let Some(suggestions) = phi_tui::autocomplete::suggestions(
+                    &parsed,
+                    std::path::Path::new(&base),
+                    &line,
+                    force.unwrap_or(false),
+                ) else {
+                    return Ok(mlua::Value::Nil);
+                };
+                let result = lua.create_table()?;
+                result.set("prefix", suggestions.prefix)?;
+                let items = lua.create_table()?;
+                for item in suggestions.items {
+                    let value = lua.create_table()?;
+                    value.set("value", item.value)?;
+                    value.set("label", item.label)?;
+                    value.set("description", item.description)?;
+                    items.push(value)?;
+                }
+                result.set("items", items)?;
+                Ok(mlua::Value::Table(result))
+            },
+        )?,
+    )?;
+    tui.set(
+        "apply_completion",
+        lua.create_function(
+            |lua, (line, cursor, item, prefix): (String, usize, mlua::Table, String)| {
+                let item = phi_tui::autocomplete::AutocompleteItem {
+                    value: item.get("value")?,
+                    label: item.get("label")?,
+                    description: item.get("description")?,
+                };
+                let (line, cursor) = phi_tui::autocomplete::apply(&line, cursor, &item, &prefix);
+                let result = lua.create_table()?;
+                result.set("line", line)?;
+                result.set("cursor", cursor)?;
+                Ok(result)
+            },
+        )?,
+    )?;
+    tui.set(
         "editor",
         lua.create_function(|lua, value: Option<String>| {
             lua.create_userdata(LuaEditor(phi_tui::editor::Editor::new(

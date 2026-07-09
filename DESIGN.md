@@ -174,8 +174,8 @@ module-by-module, plus the side-by-side test where UI is involved.
       component tree: differential renderer (`tui.ts`), editor,
       autocomplete, select-list, markdown, loaders, kill-ring, undo-stack,
       images — with Lua bindings for every component. Renderer, editor state,
-      editor core, and the first select-list slice are landed; autocomplete,
-      markdown, loaders, images, and full component parity remain. *Accept:
+      editor core, select-list foundation, and autocomplete foundation are
+      landed; markdown, loaders, images, and full component parity remain. *Accept:
       component behavior matches pi's; bindings exercised by examples.*
 - [ ] **WS7 — `coding-agent` remainder (interactive-required slices share
       the critical path with WS6).** resource-loader (skills,

@@ -21,8 +21,8 @@ frontend. From the first UI slice, compare deterministic PTY/cell snapshots
 and real adjacent-terminal sessions against pi v0.79.0. Parallel sessions must
 own disjoint crates/files; the critical-path session owns PLAN.md.
 
-**Immediate handoff:** begin WS6.1's differential renderer seam; keep WS5's
-provider breadth parallel and non-blocking.
+**Immediate handoff:** implement the next WS6 component slice; keep WS5's provider
+breadth parallel and non-blocking.
 ## Done (details in the commit bodies)
 
 - [x] **WS0 — Re-found.** DESIGN.md landed; tree emptied; stub flake.
@@ -172,5 +172,10 @@ WS5/WS7 consumers rather than entering the core loop.
 - [x] **6.4 Select-list foundation.** Port the core filtered selection,
       wrapping keyboard navigation, viewport rendering, and Lua userdata seam;
       exercise it in `examples/extensions/tui-select-list-demo.lua`.
-      Remaining WS6 work: autocomplete, markdown, loaders, terminal images,
-      and exact theme/layout parity.
+
+- [x] **6.5 Autocomplete foundation.** Port the deterministic command/path
+      completion and completion-application mechanisms from
+      `packages/tui/src/autocomplete.ts`; expose them through `pi.tui` and
+      exercise the public seam in `examples/extensions/tui-autocomplete-demo.lua`.
+      Remaining WS6 work: markdown, loaders, terminal images, and exact
+      theme/layout parity.
