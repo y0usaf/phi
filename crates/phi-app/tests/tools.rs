@@ -53,7 +53,7 @@ fn pack_registers_the_slice_tools_in_order() {
         .into_iter()
         .map(|t| t.name)
         .collect();
-    assert_eq!(names, ["read", "edit", "write", "ls"]);
+    assert_eq!(names, ["read", "bash", "edit", "write", "ls"]);
 }
 
 // ---------------------------------------------------------------------------
@@ -517,4 +517,178 @@ fn edit_prepares_legacy_and_stringified_arguments() {
     )
     .unwrap();
     assert_eq!(std::fs::read_to_string(file).unwrap(), "after\nnext\n");
+}
+
+// ---------------------------------------------------------------------------
+// bash tool — named ports from the spec's tools.test.ts
+// ---------------------------------------------------------------------------
+
+#[test]
+fn bash_executes_simple_commands() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let result = call(
+        &host(dir.path()),
+        "bash",
+        json!({ "command": "echo 'test output'" }),
+    )
+    .unwrap();
+    assert!(text_output(&result).contains("test output"));
+    assert!(result.get("details").is_none());
+}
+
+#[test]
+fn bash_handles_command_errors() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let error = call(&host(dir.path()), "bash", json!({ "command": "exit 1" })).unwrap_err();
+    assert!(error.contains("Command exited with code 1"), "got: {error}");
+}
+
+#[test]
+fn bash_respects_timeout() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let error = call(
+        &host(dir.path()),
+        "bash",
+        json!({ "command": "sleep 5", "timeout": 0.05 }),
+    )
+    .unwrap_err();
+    assert!(
+        error.contains("Command timed out after 0.05 seconds"),
+        "got: {error}"
+    );
+}
+
+#[test]
+fn bash_streams_updates() {
+    use std::sync::{Arc, Mutex};
+    let dir = tempfile::tempdir().expect("tempdir");
+    let updates = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let sink = Arc::clone(&updates);
+    let result = host(dir.path())
+        .call_tool_with_updates(
+            "bash",
+            "streaming-test",
+            &json!({ "command": "printf first; sleep 0.02; printf second" }),
+            Some(Arc::new(move |update| {
+                sink.lock().expect("updates lock").push(update)
+            })),
+        )
+        .expect("bash runs");
+    assert_eq!(text_output(&result), "firstsecond");
+    let updates = updates.lock().expect("updates lock");
+    assert!(!updates.is_empty());
+    assert!(
+        updates[0]["content"].as_array().is_some_and(Vec::is_empty)
+            || updates[0]["content"]
+                .as_object()
+                .is_some_and(serde_json::Map::is_empty)
+    );
+    assert!(
+        updates
+            .iter()
+            .any(|update| text_output(update).contains("second"))
+    );
+}
+
+#[test]
+fn bash_does_not_count_trailing_newline_as_an_extra_truncated_line() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let result = call(&host(dir.path()), "bash", json!({ "command": "seq 4000" })).unwrap();
+    let output = text_output(&result);
+    assert_eq!(result["details"]["truncation"]["totalLines"], 4000);
+    assert_eq!(result["details"]["truncation"]["outputLines"], 2000);
+    assert!(output.contains("[Showing lines 2001-4000 of 4000. Full output: "));
+}
+
+#[test]
+fn bash_persists_full_output_when_truncated_by_line_count() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let result = call(&host(dir.path()), "bash", json!({ "command": "seq 3000" })).unwrap();
+    assert_eq!(result["details"]["truncation"]["truncatedBy"], "lines");
+    let path = result["details"]["fullOutputPath"]
+        .as_str()
+        .expect("full output path");
+    let full = std::fs::read_to_string(path).expect("full output file");
+    assert!(full.starts_with("1\n2\n3\n"));
+    assert!(full.ends_with("2998\n2999\n3000\n"));
+}
+
+#[test]
+fn bash_persists_all_chunks_and_coalesces_updates() {
+    use std::sync::{Arc, Mutex};
+    let dir = tempfile::tempdir().unwrap();
+    let updates = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let sink = Arc::clone(&updates);
+    let result = host(dir.path())
+        .call_tool_with_updates(
+            "bash",
+            "complete-spill",
+            &json!({"command": "head -c 60000 /dev/zero | tr '\\000' x; sleep 0.15; printf THE_END"}),
+            Some(Arc::new(move |v| sink.lock().unwrap().push(v))),
+        )
+        .unwrap();
+    let path = result["details"]["fullOutputPath"].as_str().unwrap();
+    let full = std::fs::read(path).unwrap();
+    assert_eq!(full.len(), 60007);
+    assert!(full.ends_with(b"THE_END"));
+    let updates = updates.lock().unwrap();
+    assert!(
+        updates.len() <= 4,
+        "updates were not coalesced: {}",
+        updates.len()
+    );
+    assert!(text_output(updates.last().unwrap()).ends_with("THE_END"));
+}
+
+#[test]
+fn bash_disables_nonpositive_timeouts() {
+    let dir = tempfile::tempdir().unwrap();
+    for timeout in [0.0, -1.0] {
+        let result = call(
+            &host(dir.path()),
+            "bash",
+            json!({"command":"printf ok", "timeout":timeout}),
+        )
+        .unwrap();
+        assert_eq!(text_output(&result), "ok");
+    }
+}
+
+#[test]
+fn streaming_exec_and_tool_update_example_exercises_both_callbacks() {
+    use std::sync::{Arc, Mutex};
+    let dir = tempfile::tempdir().expect("tempdir");
+    let host = Host::new(HostConfig {
+        cwd: Some(dir.path().to_string_lossy().into_owned()),
+        ..HostConfig::default()
+    })
+    .expect("host");
+    host.load(
+        "examples/extensions/streaming-tool-demo.lua",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../examples/extensions/streaming-tool-demo.lua"
+        )),
+    )
+    .expect("example loads");
+    let updates = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let sink = Arc::clone(&updates);
+    let result = host
+        .call_tool_with_updates(
+            "streaming-demo",
+            "example",
+            &json!({}),
+            Some(Arc::new(move |update| {
+                sink.lock().expect("lock").push(update)
+            })),
+        )
+        .expect("tool runs");
+    assert_eq!(text_output(&result), "firstsecond");
+    assert!(
+        updates
+            .lock()
+            .expect("lock")
+            .iter()
+            .any(|update| text_output(update).contains("second"))
+    );
 }

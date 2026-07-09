@@ -22,7 +22,7 @@ use std::time::Instant;
 use crate::api;
 use crate::convert::{json_to_lua, lua_to_json};
 use crate::error::{HostError, WATCHDOG_MARKER};
-use crate::{CommandInfo, HostConfig, Outcome, ProviderInfo, ToolInfo};
+use crate::{CommandInfo, HostConfig, Outcome, ProviderInfo, ToolInfo, ToolUpdateCallback};
 
 /// Check the watchdog deadline every N VM instructions.
 const NTH_INSTRUCTION: u32 = 1000;
@@ -64,6 +64,7 @@ pub(crate) enum Msg {
         name: String,
         tool_call_id: String,
         params: serde_json::Value,
+        on_update: Option<ToolUpdateCallback>,
         reply: SyncSender<Result<serde_json::Value, HostError>>,
     },
     /// Run a registered command handler on the coroutine path.
@@ -150,9 +151,18 @@ fn vm_main(config: HostConfig, rx: Receiver<Msg>, init_tx: SyncSender<Result<(),
                 name,
                 tool_call_id,
                 params,
+                on_update,
                 reply,
             } => {
-                let _ = reply.send(call_tool(&lua, &rt, &config, &name, &tool_call_id, &params));
+                let _ = reply.send(call_tool(
+                    &lua,
+                    &rt,
+                    &config,
+                    &name,
+                    &tool_call_id,
+                    &params,
+                    on_update,
+                ));
             }
             Msg::CallCommand {
                 invocation_name,
@@ -203,11 +213,9 @@ fn commands_mirror(lua: &mlua::Lua) -> Result<Vec<CommandInfo>, HostError> {
 }
 
 /// Run optional `def.prepare_arguments(params)`, then execute
-/// `def.execute(tool_call_id, params)` under the watchdog. The result
-/// crosses the bridge as uninterpreted JSON (spec shape:
-/// `AgentToolResult`); the host never matches on it. The spec's remaining
-/// `execute` parameters (signal, on_update, ctx) arrive with their host
-/// mechanisms in later WS1 steps.
+/// `def.execute(tool_call_id, params, nil, on_update)` under the watchdog.
+/// Results and updates cross the bridge as uninterpreted JSON; cancellation
+/// signal and context remain carried to WS4 with their owning mechanisms.
 fn call_tool(
     lua: &mlua::Lua,
     rt: &tokio::runtime::Runtime,
@@ -215,6 +223,7 @@ fn call_tool(
     name: &str,
     tool_call_id: &str,
     params: &serde_json::Value,
+    on_update: Option<ToolUpdateCallback>,
 ) -> Result<serde_json::Value, HostError> {
     let found = api::find_tool(lua, name).map_err(|e| HostError::Lua(e.to_string()))?;
     let Some((source, def)) = found else {
@@ -233,7 +242,33 @@ fn call_tool(
                 Err(error) => Err(HostError::Lua(error.to_string())),
             },
         )
-        .and_then(|arg| dispatch(lua, rt, config, execute, (tool_call_id.to_owned(), arg)))
+        .and_then(|arg| {
+            let callback = on_update.map(|sink| {
+                lua.create_function(move |_, value: mlua::Value| {
+                    let update = lua_to_json(value)
+                        .map_err(|error| mlua::Error::runtime(error.to_string()))?;
+                    sink(update);
+                    Ok(())
+                })
+            });
+            match callback {
+                Some(Ok(callback)) => dispatch(
+                    lua,
+                    rt,
+                    config,
+                    execute,
+                    (tool_call_id.to_owned(), arg, mlua::Nil, callback),
+                ),
+                Some(Err(error)) => Err(HostError::Lua(error.to_string())),
+                None => dispatch(
+                    lua,
+                    rt,
+                    config,
+                    execute,
+                    (tool_call_id.to_owned(), arg, mlua::Nil, mlua::Nil),
+                ),
+            }
+        })
         .and_then(|v| lua_to_json(v).map_err(|e| HostError::Lua(e.to_string())));
     api::set_current_source(lua, "<host>");
     res

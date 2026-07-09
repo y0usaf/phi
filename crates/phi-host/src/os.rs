@@ -221,17 +221,46 @@ fn install_fs(lua: &mlua::Lua, pi: &mlua::Table) -> mlua::Result<()> {
 
     fs.set(
         "append_file",
-        lua.create_async_function(|_, (path, contents): (String, mlua::String)| async move {
-            use tokio::io::AsyncWriteExt;
-            let mut file = tokio::fs::OpenOptions::new()
+        lua.create_function(|_, (path, contents): (String, mlua::String)| {
+            use std::io::Write;
+            let mut file = std::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
                 .open(&path)
-                .await
                 .map_err(|e| io_err("append_file", &path, &e))?;
             file.write_all(&contents.as_bytes())
-                .await
                 .map_err(|e| io_err("append_file", &path, &e))
+        })?,
+    )?;
+
+    // Secure persisted scratch file for streaming tools. These two bindings
+    // are synchronous because `append_file` is called from pi.exec's onData
+    // callback, where yielding across the callback's C boundary is invalid.
+    fs.set(
+        "create_temp_file",
+        lua.create_function(|_, (prefix, contents): (String, mlua::String)| {
+            use std::io::Write;
+            let safe_prefix: String = prefix
+                .chars()
+                .map(|c| {
+                    if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') {
+                        c
+                    } else {
+                        '-'
+                    }
+                })
+                .collect();
+            let mut file = tempfile::Builder::new()
+                .prefix(&safe_prefix)
+                .suffix(".log")
+                .tempfile()
+                .map_err(|e| io_err("create_temp_file", &safe_prefix, &e))?;
+            file.write_all(&contents.as_bytes())
+                .map_err(|e| io_err("create_temp_file", &safe_prefix, &e))?;
+            let (_file, path) = file
+                .keep()
+                .map_err(|e| io_err("create_temp_file", &safe_prefix, &e.error))?;
+            Ok(path.to_string_lossy().into_owned())
         })?,
     )?;
 

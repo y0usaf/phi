@@ -47,6 +47,7 @@ fn spawn_failure() -> ExecResult {
     }
 }
 
+#[cfg(unix)]
 fn send_signal(pid: Option<u32>, signal: i32) {
     if let Some(pid) = pid
         && let Ok(pid) = i32::try_from(pid)
@@ -54,7 +55,10 @@ fn send_signal(pid: Option<u32>, signal: i32) {
         // SAFETY: kill(2) on a pid we spawned; no pointers, no aliasing —
         // the only effect is signal delivery.
         unsafe {
-            libc::kill(pid, signal);
+            // The child starts a new process group; negative pid targets the tree.
+            if libc::kill(-pid, signal) != 0 {
+                libc::kill(pid, signal);
+            }
         }
     }
 }
@@ -62,17 +66,27 @@ fn send_signal(pid: Option<u32>, signal: i32) {
 /// Drain a pipe into a shared buffer in chunks. The buffer borrow is
 /// never held across an await, so partial output stays readable even if
 /// this future is abandoned mid-stream (the stdio grace path).
-async fn drain<R: tokio::io::AsyncRead + Unpin>(pipe: Option<R>, buf: Rc<RefCell<Vec<u8>>>) {
+async fn drain<R: tokio::io::AsyncRead + Unpin>(
+    pipe: Option<R>,
+    buf: Rc<RefCell<Vec<u8>>>,
+    on_data: Option<mlua::Function>,
+) -> mlua::Result<()> {
     let Some(mut pipe) = pipe else {
-        return;
+        return Ok(());
     };
     let mut chunk = [0u8; 8192];
     loop {
         match pipe.read(&mut chunk).await {
             Ok(0) | Err(_) => break,
-            Ok(n) => buf.borrow_mut().extend_from_slice(&chunk[..n]),
+            Ok(n) => {
+                buf.borrow_mut().extend_from_slice(&chunk[..n]);
+                if let Some(callback) = &on_data {
+                    callback.call::<()>(mlua::String::wrap(&chunk[..n]))?;
+                }
+            }
         }
     }
+    Ok(())
 }
 
 /// The spec's `execCommand`.
@@ -81,17 +95,30 @@ pub(crate) async fn exec_command(
     args: &[String],
     cwd: &str,
     timeout_ms: Option<u64>,
-) -> ExecResult {
-    let spawned = tokio::process::Command::new(command)
+    on_data: Option<mlua::Function>,
+) -> mlua::Result<ExecResult> {
+    let mut command_builder = tokio::process::Command::new(command);
+    command_builder
         .args(args)
         .current_dir(cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn();
+        .stderr(Stdio::piped());
+    #[cfg(unix)]
+    // SAFETY: pre_exec runs after fork and calls only async-signal-safe setpgid.
+    unsafe {
+        command_builder.pre_exec(|| {
+            if libc::setpgid(0, 0) == 0 {
+                Ok(())
+            } else {
+                Err(std::io::Error::last_os_error())
+            }
+        });
+    }
+    let spawned = command_builder.spawn();
     let mut child = match spawned {
         Ok(child) => child,
-        Err(_) => return spawn_failure(),
+        Err(_) => return Ok(spawn_failure()),
     };
     let pid = child.id();
 
@@ -100,10 +127,11 @@ pub(crate) async fn exec_command(
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     let read = async {
-        tokio::join!(
-            drain(stdout, Rc::clone(&out)),
-            drain(stderr, Rc::clone(&err))
+        let (outcome, errcome) = tokio::join!(
+            drain(stdout, Rc::clone(&out), on_data.clone()),
+            drain(stderr, Rc::clone(&err), on_data)
         );
+        outcome.and(errcome)
     };
     tokio::pin!(read);
 
@@ -113,14 +141,17 @@ pub(crate) async fn exec_command(
     let collect_fut = async {
         tokio::select! {
             status = child.wait() => {
-                let _ = tokio::time::timeout(
+                if let Ok(read_result) = tokio::time::timeout(
                     Duration::from_millis(EXIT_STDIO_GRACE_MS),
                     &mut read,
                 )
-                .await;
-                status.ok()
+                .await { read_result?; }
+                Ok::<_, mlua::Error>(status.ok())
             }
-            _ = &mut read => child.wait().await.ok(),
+            read_result = &mut read => {
+                read_result?;
+                Ok(child.wait().await.ok())
+            },
         }
     };
     tokio::pin!(collect_fut);
@@ -128,32 +159,45 @@ pub(crate) async fn exec_command(
     let (status, killed) = match timeout_ms {
         Some(ms) if ms > 0 => {
             tokio::select! {
-                status = &mut collect_fut => (status, false),
+                status = &mut collect_fut => (status?, false),
                 () = tokio::time::sleep(Duration::from_millis(ms)) => {
-                    send_signal(pid, libc::SIGTERM);
-                    let status = tokio::select! {
-                        status = &mut collect_fut => status,
-                        () = tokio::time::sleep(Duration::from_millis(SIGKILL_DELAY_MS)) => {
-                            send_signal(pid, libc::SIGKILL);
-                            (&mut collect_fut).await
-                        }
-                    };
-                    (status, true)
+                    #[cfg(unix)]
+                    {
+                        send_signal(pid, libc::SIGTERM);
+                        let status = tokio::select! {
+                            status = &mut collect_fut => {
+                                // The leader may exit on TERM while a descendant ignores it.
+                                // Kill the still-owned process group before returning.
+                                send_signal(pid, libc::SIGKILL);
+                                status?
+                            },
+                            () = tokio::time::sleep(Duration::from_millis(SIGKILL_DELAY_MS)) => {
+                                send_signal(pid, libc::SIGKILL);
+                                (&mut collect_fut).await?
+                            }
+                        };
+                        (status, true)
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        let _ = child.start_kill();
+                        ((&mut collect_fut).await?, true)
+                    }
                 }
             }
         }
-        _ => ((&mut collect_fut).await, false),
+        _ => ((&mut collect_fut).await?, false),
     };
 
     let stdout_bytes = std::mem::take(&mut *out.borrow_mut());
     let stderr_bytes = std::mem::take(&mut *err.borrow_mut());
-    ExecResult {
+    Ok(ExecResult {
         stdout: String::from_utf8_lossy(&stdout_bytes).into_owned(),
         stderr: String::from_utf8_lossy(&stderr_bytes).into_owned(),
         // Spec: `code ?? 0` (signal death → null → 0); wait failure → 1.
         code: status.map_or(1, |s| s.code().map_or(0, i64::from)),
         killed,
-    }
+    })
 }
 
 /// Install `pi.exec(command, args?, options?)` on the API table.
@@ -171,15 +215,20 @@ pub(crate) fn install(lua: &mlua::Lua, pi: &mlua::Table, default_cwd: &str) -> m
                 }
                 let mut cwd = default_cwd;
                 let mut timeout_ms = None;
+                let mut on_data = None;
                 if let Some(opts) = options {
                     if let Some(dir) = opts.get::<Option<String>>("cwd")? {
                         cwd = dir;
                     }
-                    if let Some(ms) = opts.get::<Option<u64>>("timeout")? {
-                        timeout_ms = Some(ms);
+                    if let Some(ms) = opts.get::<Option<f64>>("timeout")?
+                        && ms.is_finite()
+                        && ms > 0.0
+                    {
+                        timeout_ms = Some(ms.min(u64::MAX as f64) as u64);
                     }
+                    on_data = opts.get::<Option<mlua::Function>>("onData")?;
                 }
-                let result = exec_command(&command, &arg_vec, &cwd, timeout_ms).await;
+                let result = exec_command(&command, &arg_vec, &cwd, timeout_ms, on_data).await?;
                 let reply = lua.create_table()?;
                 reply.set("stdout", result.stdout)?;
                 reply.set("stderr", result.stderr)?;

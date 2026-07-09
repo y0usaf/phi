@@ -146,6 +146,13 @@ pub(crate) fn build(lua: &mlua::Lua, cwd: &str) -> mlua::Result<mlua::Table> {
         Ok(())
     })?;
     pi.set("sleep", sleep)?;
+    let epoch = std::time::Instant::now();
+    pi.set(
+        "monotonic_ms",
+        lua.create_function(move |_, ()| {
+            Ok(u64::try_from(epoch.elapsed().as_millis()).unwrap_or(u64::MAX))
+        })?,
+    )?;
 
     // Spec `registerTool` (loader.ts): validate the mechanism-required
     // fields, then per-extension `Map.set` — re-registration of the same

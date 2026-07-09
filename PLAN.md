@@ -47,10 +47,10 @@ the visual bar now.
 
 ## Carried notes (land with their host mechanisms)
 
-- Tool `execute` still receives `(tool_call_id, params)`; signal /
-  on_update / ctx come with cancellation, update streaming, and the ctx
-  binding (WS3/WS4). `pi.exec` `options.signal` same step; command
-  handlers run as `handler(args)` until ctx exists.
+- Tool `execute` now receives `(tool_call_id, params, nil, on_update)`;
+  signal / ctx come with cancellation and the ctx binding (WS4). `pi.exec`
+  `options.signal` same step; command handlers run as `handler(args)` until
+  ctx exists.
 - `emit` runs all `project_trust` handlers where the spec stops at the
   first yes/no — revisit with ctx if side-effect order becomes
   observable. `package.json`-manifest analogue → WS7 package-manager
@@ -127,8 +127,8 @@ bindings). Steps refine as the spec modules are read:
         (Photon) needs an image mechanism — images pass through
         unresized; resolveReadPath NFD variants need a
         unicode-normalize binding; render callbacks land with WS6
-        bindings; signal/on_update/ctx still pending (3.3c lands
-        on_update with bash).
+        bindings; signal/ctx still pending (on_update landed with bash in
+        3.3c).
   - [x] **3.3b Edit.** `edit.lua` + `edit-diff.lua`: exact/fuzzy
         matching (NFKC, whitespace, quote/dash/space normalization),
         atomic multi-edit against original content, overlap/duplicate
@@ -139,10 +139,18 @@ bindings). Steps refine as the spec modules are read:
         sections; the host now invokes optional `prepare_arguments` and
         `pi.json.decode` supplies JSON.parse mechanism (both exercised).
         Carried: render callbacks land with WS6, signal/ctx with WS4.
-  - [ ] **3.3c Bash.** `bash.lua` + output-accumulator + `utils/shell.ts`
-        slice; needs host mechanisms: streaming exec (`onData`) +
-        `on_update` tool param + process-tree kill — land together with
-        exercisers.
+  - [x] **3.3c Bash.** `bash.lua` + `output-accumulator.lua` +
+        `utils/shell.ts` slice. `pi.exec` now streams binary chunks through
+        `options.onData` and launches a process group so timeout kills the
+        process tree; `Host::call_tool_with_updates` forwards the tool
+        `on_update` callback. Product behavior (shell selection, tail
+        truncation, full-output persistence, errors/result shape) remains
+        embedded Lua. Both callbacks are exercised by
+        `streaming-tool-demo.lua`; named bash golden tests cover execution,
+        errors, timeout, updates, trailing-newline counts, and persistence.
+        Carried: AbortSignal + ctx land with WS4 cancellation/context;
+        render callbacks and configurable factory hooks land with their
+        consumers.
   - [ ] **3.3d Grep + find.** `grep.lua`, `find.lua` (ripgrep/fd
         subprocess ports, flag-like pattern handling, gitignore
         semantics) with their spec test sections.

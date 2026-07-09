@@ -234,6 +234,75 @@ fn cwd_is_the_configured_host_cwd() {
 }
 
 #[test]
+fn exec_streams_data_before_completion() {
+    let out = run(
+        &host(),
+        r#"
+            local chunks = {}
+            local result = pi.exec("sh", { "-c", "printf one; sleep 0.02; printf two" }, {
+                onData = function(chunk) chunks[#chunks + 1] = chunk end,
+            })
+            return { joined = table.concat(chunks), code = result.code }
+        "#,
+    );
+    assert_eq!(out, serde_json::json!({ "joined": "onetwo", "code": 0 }));
+}
+
+#[cfg(unix)]
+#[test]
+fn exec_timeout_kills_the_process_group() {
+    let dir = std::env::temp_dir().join(format!("phi-tree-kill-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("tempdir");
+    let pid_file = dir.join("descendant.pid");
+    let script = format!(
+        "sh -c \"trap '' TERM; while :; do sleep 1; done\" & echo $! > {}; wait",
+        pid_file.display()
+    );
+    let out = run(
+        &host(),
+        &format!(
+            r#"return pi.exec("sh", {{ "-c", {:?} }}, {{ timeout = 30 }})"#,
+            script
+        ),
+    );
+    assert_eq!(out["killed"], true);
+    let pid: i32 = std::fs::read_to_string(pid_file)
+        .expect("descendant pid")
+        .trim()
+        .parse()
+        .expect("numeric pid");
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    // A killed child may briefly remain as a zombie, but it must not be running.
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
+    assert!(
+        stat.is_empty() || stat.split_whitespace().nth(2) == Some("Z"),
+        "descendant still running: {stat}"
+    );
+}
+
+#[test]
+fn exec_nonpositive_timeout_is_disabled_and_callback_errors_propagate() {
+    let out = run(
+        &host(),
+        r#"
+        local zero = pi.exec("sh", { "-c", "printf zero" }, { timeout = 0 })
+        local negative = pi.exec("sh", { "-c", "printf negative" }, { timeout = -10 })
+        local ok, err = pcall(pi.exec, "sh", { "-c", "printf callback" }, {
+            onData = function() error("callback exploded") end,
+        })
+        return { zero = zero.stdout, negative = negative.stdout, ok = ok,
+            callback_error = tostring(err):find("callback exploded") ~= nil }
+    "#,
+    );
+    assert_eq!(
+        out,
+        serde_json::json!({
+            "zero": "zero", "negative": "negative", "ok": false, "callback_error": true
+        })
+    );
+}
+
+#[test]
 fn exec_demo_exerciser_loads_and_runs() {
     let host = host();
     let source = include_str!(concat!(

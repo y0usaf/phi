@@ -6,10 +6,8 @@
 //! The tools pack is the `core/tools/` port (spec: pi v0.79.0), one
 //! fragment file per spec module concatenated into a single chunk so the
 //! fragments share the chunk-local helpers (`prelude.lua`) while parity
-//! audits stay file-shaped. Fragment order is load order: shared
-//! substrate first, then tool registrations in the spec's
-//! `createAllTools` order (read … write … ls; bash/edit/grep/find slot in
-//! as their WS3.3 slices land).
+//! audits stay file-shaped. Fragment order is dependency order followed by
+//! the spec's `createAllTools` registration order.
 
 use phi_host::EmbeddedPack;
 
@@ -28,7 +26,13 @@ pub const TOOLS_PACK: EmbeddedPack = EmbeddedPack {
         "\n",
         include_str!("tools/file-mutation-queue.lua"),
         "\n",
+        include_str!("tools/shell.lua"),
+        "\n",
+        include_str!("tools/output-accumulator.lua"),
+        "\n",
         include_str!("tools/read.lua"),
+        "\n",
+        include_str!("tools/bash.lua"),
         "\n",
         include_str!("tools/edit-diff.lua"),
         "\n",

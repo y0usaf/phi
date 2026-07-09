@@ -73,6 +73,9 @@ pub struct ToolInfo {
     pub source: String,
     pub meta: serde_json::Value,
 }
+/// Thread-safe sink for partial tool results (`ToolDefinition.execute`'s
+/// `onUpdate` parameter). Callbacks run synchronously on the Lua VM thread.
+pub type ToolUpdateCallback = std::sync::Arc<dyn Fn(serde_json::Value) + Send + Sync>;
 
 /// One extension path that failed to load (spec: the `errors` array of
 /// `LoadExtensionsResult` — `{ path, error }`).
@@ -266,14 +269,24 @@ impl Host {
         rx.recv().map_err(|_| HostError::VmUnavailable)?
     }
 
-    /// Execute a registered tool by name on the coroutine path (spec:
-    /// `ToolDefinition.execute`). The result is the tool's return value as
-    /// uninterpreted JSON (spec shape: `AgentToolResult`).
+    /// Execute a registered tool without observing partial updates.
     pub fn call_tool(
         &self,
         name: &str,
         tool_call_id: &str,
         params: &serde_json::Value,
+    ) -> Result<serde_json::Value, HostError> {
+        self.call_tool_with_updates(name, tool_call_id, params, None)
+    }
+
+    /// Execute a registered tool and synchronously forward each partial
+    /// result emitted through the spec's `onUpdate` parameter.
+    pub fn call_tool_with_updates(
+        &self,
+        name: &str,
+        tool_call_id: &str,
+        params: &serde_json::Value,
+        on_update: Option<ToolUpdateCallback>,
     ) -> Result<serde_json::Value, HostError> {
         let (reply, rx) = sync_channel(1);
         self.tx
@@ -281,6 +294,7 @@ impl Host {
                 name: name.to_owned(),
                 tool_call_id: tool_call_id.to_owned(),
                 params: params.clone(),
+                on_update,
                 reply,
             })
             .map_err(|_| HostError::VmUnavailable)?;

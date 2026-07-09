@@ -273,6 +273,7 @@ crate phi_host
 ├── struct Outcome: pub
 ├── struct ProviderInfo: pub
 ├── struct ToolInfo: pub
+├── type ToolUpdateCallback: pub
 ├── mod api: pub(crate)
 │   └── struct ResolvedCommand: pub(crate)
 ├── mod convert: pub(crate)

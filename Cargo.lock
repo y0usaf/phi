@@ -775,6 +775,7 @@ dependencies = [
  "libc",
  "mlua",
  "serde_json",
+ "tempfile",
  "thiserror",
  "tokio",
  "unicode-normalization",
