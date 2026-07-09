@@ -124,7 +124,6 @@ async fn run(args: Args) -> ExitCode {
     // (a `:<thinking>` suffix applies unless --thinking is explicit),
     // else the settings default, else the first available model
     // preferring provider defaults.
-    let mut cli_thinking = args.thinking;
     let model = if args.model.is_some() {
         let resolved = resolve_cli_model(
             args.provider.as_deref(),
@@ -137,9 +136,6 @@ async fn run(args: Args) -> ExitCode {
         if let Some(error) = &resolved.error {
             error_line(&format!("Error: {error}"));
             return ExitCode::FAILURE;
-        }
-        if cli_thinking.is_none() {
-            cli_thinking = resolved.thinking_level;
         }
         resolved.model
     } else {

@@ -21,9 +21,8 @@ frontend. From the first UI slice, compare deterministic PTY/cell snapshots
 and real adjacent-terminal sessions against pi v0.79.0. Parallel sessions must
 own disjoint crates/files; the critical-path session owns PLAN.md.
 
-**Immediate handoff:** implement WS4.5's complete loop policy next: queues,
-turn preparation/termination, and parallel tool execution.
-
+**Immediate handoff:** begin WS6.1's differential renderer seam; keep WS5's
+provider breadth parallel and non-blocking.
 ## Done (details in the commit bodies)
 
 - [x] **WS0 — Re-found.** DESIGN.md landed; tree emptied; stub flake.
@@ -143,9 +142,18 @@ WS5/WS7 consumers rather than entering the core loop.
       default parallel execution match pi. Generic `pi.parallel` is Rust
       mechanism only and has a public exerciser; pi-derived tests pin
       completion-order tool-end events against source-order result persistence.
-- [x] **4.6 Anthropic + CLI acceptance (headless slice).** The CLI now loads
+- [x] **4.6 Anthropic + CLI acceptance (headless slice).** The CLI loads
       the Lua agent, WS3 tools, and Anthropic stream seam; Lua emits streamed
-      text and chooses standard messages for the `phi-session` JSONL binding.
+      text and persists standard user/toolResult/assistant messages through
+      the `phi-session` JSONL binding. The two-request local SSE replay in
+      `crates/phi-app/tests/anthropic_replay.rs` is the CI acceptance gate.
       Rust remains model/auth, transport, and persistence mechanism only.
       Live credentialed verification of `phi "fix the failing test"` remains
-      pending (the CI fixture/replay gate is still the next acceptance test).
+      pending.
+
+## Next — WS6: `packages/tui` parity
+
+- [ ] **6.1 Differential renderer seam.** Port the first `tui.ts` component
+      slice over public Lua bindings and pin it with a deterministic
+      component/cell fixture before adding interactive frontend behavior.
+      Keep WS5 provider breadth parallel and non-blocking.

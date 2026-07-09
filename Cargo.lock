@@ -768,10 +768,12 @@ dependencies = [
 name = "phi-app"
 version = "0.1.0"
 dependencies = [
+ "phi-agent",
  "phi-ai",
  "phi-ai-auth",
  "phi-ai-types",
  "phi-host",
+ "phi-session",
  "phi-tui",
  "serde",
  "serde_json",
@@ -789,6 +791,7 @@ dependencies = [
  "mlua",
  "phi-ai",
  "phi-ai-types",
+ "phi-session",
  "serde",
  "serde_json",
  "tempfile",

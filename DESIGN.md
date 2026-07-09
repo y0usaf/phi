@@ -154,11 +154,14 @@ module-by-module, plus the side-by-side test where UI is involved.
       session-manager (JSONL store), settings-manager. *Accept: each
       module has a named pi counterpart with matching behavior; placement
       per the mechanism/policy line.*
-- [ ] **WS4 — `packages/agent` as a Lua pack.** Loop primitives in
+- [x] **WS4 — `packages/agent` as a Lua pack.** Loop primitives in
       `phi-agent`; orchestration (`agent-loop.ts` semantics: steering,
-      follow-up queue, error-as-tool-result) in embedded Lua. *Accept:
-      one-shot `phi "fix the failing test"` edits and runs bash end to end;
-      loop replaceable via config.* **The working-coding-agent milestone.**
+      follow-up queue, error-as-tool-result) in embedded Lua. The Anthropic
+      CLI slice is accepted by a two-request CI replay covering streamed text,
+      a tool round trip, and JSONL persistence. Live credentialed one-shot
+      verification remains pending. *Accept: one-shot `phi "fix the failing
+      test"` edits and runs bash end to end; loop replaceable via config.*
+      **The working-coding-agent milestone.**
 - [ ] **WS5 — `packages/ai` breadth (parallel/backfill; not an interactive
       gate).** Remaining protocols (openai-completions,
       openai-responses, google, bedrock) as trait impls with fixture replay;

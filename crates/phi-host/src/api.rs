@@ -159,6 +159,9 @@ pub(crate) fn build(lua: &mlua::Lua, cwd: &str) -> mlua::Result<mlua::Table> {
         manager
             .append_message(message)
             .map_err(|e| mlua::Error::external(e.to_string()))?;
+        manager
+            .flush()
+            .map_err(|e| mlua::Error::external(e.to_string()))?;
         Ok(())
     })?;
     pi.set("session_append", session_append)?;

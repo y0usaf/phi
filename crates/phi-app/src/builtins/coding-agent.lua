@@ -21,6 +21,12 @@ pi.register_command("phi-run", { handler = function(args, ctx)
       pi.session_append(request.sessionPath, event.message)
     end
   end)
+  if request.sessionPath then
+    pi.session_append(request.sessionPath, {
+      role = "user", content = {{ type = "text", text = request.prompt }},
+      timestamp = os.time() * 1000,
+    })
+  end
   agent:prompt(request.prompt)
   local state = agent:get_state()
   local last = state.messages[#state.messages]

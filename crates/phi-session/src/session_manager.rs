@@ -968,6 +968,22 @@ impl SessionManager {
         Ok(id)
     }
 
+    /// Commit entries held by a short-lived binding consumer.
+    pub fn flush(&mut self) -> Result<()> {
+        let Some(file) = self.persist.then_some(self.session_file.clone()).flatten() else {
+            return Ok(());
+        };
+        if self.flushed {
+            return Ok(());
+        }
+        let mut fd = std::fs::File::create(file)?;
+        for entry in &self.file_entries {
+            writeln!(fd, "{}", serde_json::to_string(entry)?)?;
+        }
+        self.flushed = true;
+        Ok(())
+    }
+
     fn next_id(&self) -> String {
         generate_id(|id| self.by_id.contains_key(id))
     }
