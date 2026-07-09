@@ -29,7 +29,59 @@
 //! - `pi.fs` / `pi.path` / `pi.env` / `pi.cwd()` — OS bindings (`os.rs`;
 //!   ambient Node in the spec, explicit bindings under divergence 1).
 
+use mlua::{UserData, UserDataMethods};
 use std::collections::{HashMap, HashSet};
+
+struct LuaEditor(phi_tui::editor::Editor);
+impl UserData for LuaEditor {
+    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+        methods.add_method("value", |_, this, ()| Ok(this.0.value().to_owned()));
+        methods.add_method("cursor", |_, this, ()| Ok(this.0.cursor()));
+        methods.add_method_mut("input", |_, this, data: String| {
+            Ok(this.0.handle(&data).is_some())
+        });
+        methods.add_method_mut("insert", |_, this, text: String| {
+            this.0.insert(&text);
+            Ok(())
+        });
+        methods.add_method_mut("backspace", |_, this, ()| {
+            this.0.backspace();
+            Ok(())
+        });
+        methods.add_method_mut("delete", |_, this, ()| {
+            this.0.delete();
+            Ok(())
+        });
+        methods.add_method_mut("undo", |_, this, ()| {
+            this.0.undo();
+            Ok(())
+        });
+        methods.add_method_mut("yank", |_, this, ()| {
+            this.0.yank();
+            Ok(())
+        });
+        methods.add_method_mut("yank_pop", |_, this, ()| {
+            this.0.yank_pop();
+            Ok(())
+        });
+        methods.add_method_mut("kill_to_start", |_, this, ()| {
+            this.0.kill_to_start();
+            Ok(())
+        });
+        methods.add_method_mut("kill_to_end", |_, this, ()| {
+            this.0.kill_to_end();
+            Ok(())
+        });
+        methods.add_method_mut("word_left", |_, this, ()| {
+            this.0.move_word_left();
+            Ok(())
+        });
+        methods.add_method_mut("word_right", |_, this, ()| {
+            this.0.move_word_right();
+            Ok(())
+        });
+    }
+}
 
 /// Key of the registration table in the Lua named registry.
 pub(crate) const REGISTRY_KEY: &str = "phi-host";
@@ -400,6 +452,22 @@ pub(crate) fn build(lua: &mlua::Lua, cwd: &str) -> mlua::Result<mlua::Table> {
                 ))
             },
         )?,
+    )?;
+    tui.set(
+        "editor",
+        lua.create_function(|lua, value: Option<String>| {
+            lua.create_userdata(LuaEditor(phi_tui::editor::Editor::new(
+                value.unwrap_or_default(),
+            )))
+        })?,
+    )?;
+    tui.set(
+        "decode_key",
+        lua.create_function(|_, data: String| Ok(phi_tui::editor::decode_key(&data)))?,
+    )?;
+    tui.set(
+        "decode_printable",
+        lua.create_function(|_, data: String| Ok(phi_tui::editor::decode_printable(&data)))?,
     )?;
     pi.set("tui", tui)?;
 

@@ -165,6 +165,6 @@ WS5/WS7 consumers rather than entering the core loop.
       conformance tests. These are crate mechanisms only; editor bindings
       and the interactive editor remain open for 6.3.
 
-- [ ] **6.3 Editor core.** Port `editor-component.ts`, input editing,
+- [x] **6.3 Editor core.** Port `editor-component.ts`, input editing,
       undo/redo, kill/yank, word navigation, and key decoding; expose each
       mechanism through Lua bindings and add an example exerciser.

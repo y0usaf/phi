@@ -6,6 +6,7 @@
 //! WS2 bare binary needs: [`fuzzy`] (`--list-models` search).
 
 pub mod component;
+pub mod editor;
 pub mod fuzzy;
 pub mod kill_ring;
 pub mod undo_stack;

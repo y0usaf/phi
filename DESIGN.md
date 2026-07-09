@@ -170,7 +170,7 @@ module-by-module, plus the side-by-side test where UI is involved.
       WS4 when capacity permits; never delay WS6–WS8 for it. *Accept:
       `--list-models` matches pi's full catalog; recorded-fixture replay
       passes per protocol.*
-- [ ] **WS6 — `packages/tui` parity (interactive critical path).** Port the
+- [x] **WS6 — `packages/tui` parity (interactive critical path).** Port the
       component tree: differential renderer (`tui.ts`), editor,
       autocomplete, select-list, markdown, loaders, kill-ring, undo-stack,
       images — with Lua bindings for every component. Start immediately
