@@ -5,4 +5,5 @@
 //! autocomplete, …). The crate is seeded early with the one module the
 //! WS2 bare binary needs: [`fuzzy`] (`--list-models` search).
 
+pub mod component;
 pub mod fuzzy;

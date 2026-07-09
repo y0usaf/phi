@@ -153,7 +153,9 @@ WS5/WS7 consumers rather than entering the core loop.
 
 ## Next — WS6: `packages/tui` parity
 
-- [ ] **6.1 Differential renderer seam.** Port the first `tui.ts` component
-      slice over public Lua bindings and pin it with a deterministic
-      component/cell fixture before adding interactive frontend behavior.
+- [x] **6.1 Differential renderer seam.** Ported the first `tui.ts` component
+      slice over public Lua bindings and pinned it with deterministic
+      component/cell fixtures before adding interactive frontend behavior.
+      `pi.tui.text_render` and `pi.tui.differential_render` are public
+      mechanism bindings, exercised by `examples/extensions/tui-render-demo.lua`;
       Keep WS5 provider breadth parallel and non-blocking.

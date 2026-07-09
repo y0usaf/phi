@@ -377,6 +377,32 @@ pub(crate) fn build(lua: &mlua::Lua, cwd: &str) -> mlua::Result<mlua::Table> {
     })?;
     pi.set("unregister_provider", unregister_provider)?;
 
+    // TUI mechanism bindings. Components and differential cell output remain
+    // policy-free Rust mechanism; Lua owns composition and frontend behavior.
+    let tui = lua.create_table()?;
+    tui.set("text_render", lua.create_function(|lua, (text, width, padding_x, padding_y): (String, usize, Option<usize>, Option<usize>)| {
+        let lines = phi_tui::component::render_text(&text, width, padding_x.unwrap_or(1), padding_y.unwrap_or(1));
+        let result = lua.create_table()?;
+        for line in lines { result.push(line)?; }
+        Ok(result)
+    })?)?;
+    tui.set(
+        "differential_render",
+        lua.create_function(
+            |_, (previous, lines, clear): (mlua::Table, mlua::Table, Option<bool>)| {
+                let previous: Vec<String> =
+                    previous.sequence_values().collect::<mlua::Result<_>>()?;
+                let lines: Vec<String> = lines.sequence_values().collect::<mlua::Result<_>>()?;
+                Ok(phi_tui::component::differential_render(
+                    &previous,
+                    &lines,
+                    clear.unwrap_or(false),
+                ))
+            },
+        )?,
+    )?;
+    pi.set("tui", tui)?;
+
     crate::ai::install(lua, &pi)?;
     crate::exec::install(lua, &pi, cwd)?;
     crate::os::install(lua, &pi, cwd)?;

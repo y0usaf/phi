@@ -792,6 +792,7 @@ dependencies = [
  "phi-ai",
  "phi-ai-types",
  "phi-session",
+ "phi-tui",
  "serde",
  "serde_json",
  "tempfile",
