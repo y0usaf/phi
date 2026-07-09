@@ -1,6 +1,6 @@
-//! Golden port of the read/write/ls/edit sections of the spec's
-//! `test/tools.test.ts` (pi v0.79.0), run against the embedded builtin
-//! tools pack through the public host path (`load_embedded` +
+//! Golden port of the read/write/ls/edit/bash/grep/find sections of the
+//! spec's `test/tools.test.ts` (pi v0.79.0), run against the embedded
+//! builtin tools pack through the public host path (`load_embedded` +
 //! `call_tool`) — the same seam the WS4 agent loop will use.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -53,7 +53,10 @@ fn pack_registers_the_slice_tools_in_order() {
         .into_iter()
         .map(|t| t.name)
         .collect();
-    assert_eq!(names, ["read", "bash", "edit", "write", "ls"]);
+    assert_eq!(
+        names,
+        ["read", "bash", "edit", "write", "grep", "find", "ls"]
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -691,4 +694,174 @@ fn streaming_exec_and_tool_update_example_exercises_both_callbacks() {
             .iter()
             .any(|update| text_output(update).contains("second"))
     );
+}
+
+// ---------------------------------------------------------------------------
+// grep / find tools
+// ---------------------------------------------------------------------------
+
+#[test]
+fn grep_includes_filename_for_single_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("example.txt");
+    std::fs::write(&file, "first line\nmatch line\nlast line").unwrap();
+    let result = call(
+        &host(dir.path()),
+        "grep",
+        json!({"pattern":"match", "path":file}),
+    )
+    .unwrap();
+    assert!(
+        text_output(&result).contains("example.txt:2: match line"),
+        "{}",
+        text_output(&result)
+    );
+}
+
+#[test]
+fn grep_respects_global_limit_and_context() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("context.txt");
+    std::fs::write(
+        &file,
+        "before\nmatch one\nafter\nmiddle\nmatch two\nafter two",
+    )
+    .unwrap();
+    let result = call(
+        &host(dir.path()),
+        "grep",
+        json!({"pattern":"match", "path":file, "limit":1, "context":1}),
+    )
+    .unwrap();
+    let output = text_output(&result);
+    assert!(output.contains("context.txt-1- before"), "{output}");
+    assert!(output.contains("context.txt:2: match one"));
+    assert!(output.contains("context.txt-3- after"));
+    assert!(output.contains("[1 matches limit reached. Use limit=2 for more, or refine pattern]"));
+    assert!(!output.contains("match two"));
+    assert_eq!(result["details"]["matchLimitReached"], 1);
+}
+
+#[test]
+fn grep_treats_flag_like_pattern_as_text() {
+    let dir = tempfile::tempdir().unwrap();
+    let marker = dir.path().join("grep-injection-marker");
+    let payload = dir.path().join("payload.sh");
+    std::fs::write(
+        &payload,
+        format!(
+            "#!/bin/sh\necho executed > {}\ncat \"$1\"\n",
+            marker.display()
+        ),
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("target.txt"), "target\n").unwrap();
+    let result = call(
+        &host(dir.path()),
+        "grep",
+        json!({"pattern":format!("--pre={}", payload.display()), "path":dir.path()}),
+    )
+    .unwrap();
+    assert!(text_output(&result).contains("No matches found"));
+    assert!(!marker.exists());
+}
+
+#[test]
+fn grep_supports_literal_case_glob_and_truncates_long_lines() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("one.txt"),
+        format!("PREFIX A.B {}", "x".repeat(600)),
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("two.rs"), "prefix axb").unwrap();
+    let result = call(&host(dir.path()), "grep", json!({"pattern":"a.b", "path":dir.path(), "glob":"*.txt", "ignoreCase":true, "literal":true})).unwrap();
+    let output = text_output(&result);
+    assert!(output.contains("one.txt:1: PREFIX A.B"), "{output}");
+    assert!(!output.contains("two.rs"));
+    assert!(output.contains("... [truncated]"));
+    assert_eq!(result["details"]["linesTruncated"], true);
+}
+
+#[test]
+fn find_includes_hidden_files_and_respects_gitignore() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join(".secret")).unwrap();
+    std::fs::write(dir.path().join(".secret/hidden.txt"), "hidden").unwrap();
+    std::fs::write(dir.path().join("visible.txt"), "visible").unwrap();
+    std::fs::write(dir.path().join("ignored.txt"), "ignored").unwrap();
+    std::fs::write(dir.path().join(".gitignore"), "ignored.txt\n").unwrap();
+    let result = call(
+        &host(dir.path()),
+        "find",
+        json!({"pattern":"**/*.txt", "path":dir.path()}),
+    )
+    .unwrap();
+    let output = text_output(&result);
+    assert!(output.contains("visible.txt"));
+    assert!(output.contains(".secret/hidden.txt"));
+    assert!(!output.contains("ignored.txt"));
+}
+
+#[test]
+fn find_surfaces_glob_errors_and_treats_flags_as_patterns() {
+    let dir = tempfile::tempdir().unwrap();
+    let err = call(
+        &host(dir.path()),
+        "find",
+        json!({"pattern":"[", "path":dir.path()}),
+    )
+    .unwrap_err();
+    assert!(
+        err.to_lowercase().contains("glob") || err.contains("fd exited with code"),
+        "{err}"
+    );
+    let result = call(
+        &host(dir.path()),
+        "find",
+        json!({"pattern":"--help", "path":dir.path()}),
+    )
+    .unwrap();
+    assert!(text_output(&result).contains("No files found matching pattern"));
+}
+
+#[test]
+fn find_matches_path_globs_and_reports_limits() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("src/nested")).unwrap();
+    std::fs::write(dir.path().join("src/a.spec.ts"), "").unwrap();
+    std::fs::write(dir.path().join("src/nested/b.spec.ts"), "").unwrap();
+    std::fs::write(dir.path().join("root.spec.ts"), "").unwrap();
+    for pattern in ["src/**/*.spec.ts", "**/src/**/*.spec.ts"] {
+        let result = call(
+            &host(dir.path()),
+            "find",
+            json!({"pattern":pattern, "path":dir.path()}),
+        )
+        .unwrap();
+        let output = text_output(&result);
+        assert!(
+            output.contains("src/a.spec.ts"),
+            "pattern={pattern}: {output}"
+        );
+        assert!(
+            output.contains("src/nested/b.spec.ts"),
+            "pattern={pattern}: {output}"
+        );
+        assert!(
+            !output.contains("root.spec.ts"),
+            "pattern={pattern}: {output}"
+        );
+    }
+    let result = call(
+        &host(dir.path()),
+        "find",
+        json!({"pattern":"*.spec.ts", "path":dir.path(), "limit":1}),
+    )
+    .unwrap();
+    assert!(
+        text_output(&result)
+            .contains("[1 results limit reached. Use limit=2 for more, or refine pattern]")
+    );
+    assert_eq!(result["details"]["resultLimitReached"], 1);
 }

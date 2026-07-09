@@ -84,7 +84,7 @@
           inherit (c) src cargoArtifacts;
           pname = "phi";
           version = "0.1.0";
-          inherit (c.commonEnv) RUSTUP_HOME RUSTUP_TOOLCHAIN nativeBuildInputs;
+          nativeBuildInputs = c.commonEnv.nativeBuildInputs ++ [ c.pkgs.ripgrep c.pkgs.fd ];
           cargoExtraArgs = "-p phi-app";
           doCheck = false;
         };
@@ -148,7 +148,7 @@
           inherit (c) src cargoArtifacts;
           pname = "phi-test";
           version = "0.1.0";
-          inherit (c.commonEnv) RUSTUP_HOME RUSTUP_TOOLCHAIN nativeBuildInputs;
+          nativeBuildInputs = c.commonEnv.nativeBuildInputs ++ [ c.pkgs.ripgrep c.pkgs.fd ];
           cargoExtraArgs = "--workspace";
         };
 
@@ -229,6 +229,7 @@
               cargo-modules
               jq
               ripgrep
+              fd
             ];
           };
         }

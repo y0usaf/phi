@@ -21,9 +21,8 @@ frontend. From the first UI slice, compare deterministic PTY/cell snapshots
 and real adjacent-terminal sessions against pi v0.79.0. Parallel sessions must
 own disjoint crates/files; the critical-path session owns PLAN.md.
 
-**Immediate handoff:** implement 3.3d and close WS3. Then replace the current
-section with a concrete WS4 ladder derived from `packages/agent` before coding;
-drive it to the one-shot tool-using acceptance without detouring into WS5.
+**Immediate handoff:** implement WS4.1 from the concrete ladder below, then drive
+straight through the WS4.3 one-shot tool-using gate without detouring into WS5.
 
 ## Done (details in the commit bodies)
 
@@ -59,6 +58,13 @@ drive it to the one-shot tool-using acceptance without detouring into WS5.
     guidance; `ANTHROPIC_API_KEY` → exactly the 24 anthropic catalog
     rows). Live-verified: `phi --model openrouter/… "prompt"` streams
     end-to-end.
+
+- [x] **WS3 — `coding-agent` tools + sessions.** Settings manager and
+  `phi-session` JSONL session trees landed in Rust mechanism crates. The
+  complete read/bash/edit/write/grep/find/ls product tool set is embedded
+  Lua over public bindings, with pi-derived golden tests. `rg`/`fd` are in
+  the flake test/runtime environment; grep/find preserve gitignore, glob,
+  context, limits, truncation, and flag-like-pattern behavior.
 
 ## Carried notes (land with their host mechanisms)
 
@@ -97,75 +103,43 @@ drive it to the one-shot tool-using acceptance without detouring into WS5.
   with WS3.3 tools / WS7. `session-cwd.ts` and the selector/startup
   session-name behaviors are WS8/WS9 modules.
 
-## Current — WS3: `coding-agent` tools + sessions
+## Current — WS4: `packages/agent` as a Lua pack
 
-Depends only on WS1 bindings (mechanism/policy line: tools are Lua over
-bindings). Steps refine as the spec modules are read:
+Scope is the spec's `types.ts`, `agent-loop.ts`, and `agent.ts`. Product
+behavior is embedded Lua; Rust supplies only stream/cancellation/schema and
+coroutine-safe dispatch mechanisms. `proxy.ts` and `harness/**` remain later
+WS5/WS7 consumers rather than entering the core loop.
 
-- [x] **3.1 Settings-manager.** `core/settings_manager.rs` — scoped
-      global/project settings, per-field + nested-key persistence,
-      migrations, trust gating, drainErrors; `core/http_dispatcher.rs`
-      (pure parts), `core/defaults.rs`; `findInitialModel` settings
-      branch (step 3) + `sdk.ts` thinking-level resolution wired into
-      `main.rs` (divergences recorded in the module doc: sync write
-      queue, JSON-map settings type, lexicographic key order).
-- [x] **3.2 Session-manager.** `crates/phi-session` — `session_manager.rs`
-      1:1 (v1→v2→v3 migrations, tree traversal/branching/labels,
-      `buildSessionContext`, deferred-flush persistence, fork/list), plus
-      `messages.rs` (`core/messages.ts`), `paths.rs` (`utils/paths.ts`
-      slice), `uuid.rs` (uuidv7), `time.rs` (JS `Date` mechanism); pi's 7
-      session-manager test files ported as the golden suite. Attic store
-      consulted, not carried: its v2 header shape (leaf_id/model) lost to
-      the spec's v3. Divergences in the module doc: entries are
-      `serde_json::Value` (unknown fields survive rewrite; typed
-      AgentMessage lands WS4), sorted JSON keys, explicit
-      `agent_dir`/`sessions_dir` params instead of `config.ts` imports
-      (`get_sessions_dir()` added to phi-app config), synchronous listing.
-- [ ] **3.3 Tools as Lua.** read/edit/bash/write/grep/find/ls over the
-      WS1 bindings with truncation + output-accumulator semantics; land
-      the carried tool-`execute` params (signal, on_update, ctx) with
-      their host mechanisms. Sliced:
-  - [x] **3.3a Substrate + read/write/ls.** Embedded pack
-        `crates/phi-app/src/builtins/tools/` (one fragment per spec
-        module, concatenated into one chunk by `builtins/mod.rs`):
-        `truncate.lua`, `path-utils.lua` (+ `utils/paths.ts`
-        normalize/resolve slice), `mime.lua`, `file-mutation-queue.lua`
-        (passthrough — vm.rs runs one dispatch at a time; real queuing
-        with WS4 parallel dispatch), `read.lua`, `write.lua`, `ls.lua`.
-        Host mechanisms: `pi.fs.read_bytes` (Buffer read),
-        `pi.fs.realpath` (exercised in os-demo.lua). Golden suite:
-        `crates/phi-app/tests/tools.rs` ports the spec’s
-        `tools.test.ts` read/write/ls sections. Divergences in the
-        fragment docs: `truncatedBy: null` → absent key; byte counts
-        where JS counts UTF-16 units; per-byte U+FFFD; ls sort is
-        lowercased byte order, not ICU. Carried: image auto-resize
-        (Photon) needs an image mechanism — images pass through
-        unresized; resolveReadPath NFD variants need a
-        unicode-normalize binding; render callbacks land with WS6
-        bindings; signal/ctx still pending (on_update landed with bash in
-        3.3c).
-  - [x] **3.3b Edit.** `edit.lua` + `edit-diff.lua`: exact/fuzzy
-        matching (NFKC, whitespace, quote/dash/space normalization),
-        atomic multi-edit against original content, overlap/duplicate
-        rejection, BOM + CRLF preservation, display diff + unified patch.
-        `pi.text.nfkc` is the Rust Unicode mechanism and is exercised by
-        `os-demo.lua`; edit policy remains embedded Lua. Golden coverage
-        ports the spec's edit/fuzzy/CRLF + legacy/stringified-argument
-        sections; the host now invokes optional `prepare_arguments` and
-        `pi.json.decode` supplies JSON.parse mechanism (both exercised).
-        Carried: render callbacks land with WS6, signal/ctx with WS4.
-  - [x] **3.3c Bash.** `bash.lua` + `output-accumulator.lua` +
-        `utils/shell.ts` slice. `pi.exec` now streams binary chunks through
-        `options.onData` and launches a process group so timeout kills the
-        process tree; `Host::call_tool_with_updates` forwards the tool
-        `on_update` callback. Product behavior (shell selection, tail
-        truncation, full-output persistence, errors/result shape) remains
-        embedded Lua. Both callbacks are exercised by
-        `streaming-tool-demo.lua`; named bash golden tests cover execution,
-        errors, timeout, updates, trailing-newline counts, and persistence.
-        Carried: AbortSignal + ctx land with WS4 cancellation/context;
-        render callbacks and configurable factory hooks land with their
-        consumers.
-  - [ ] **3.3d Grep + find.** `grep.lua`, `find.lua` (ripgrep/fd
-        subprocess ports, flag-like pattern handling, gitignore
-        semantics) with their spec test sections.
+- [ ] **4.1 Contract + host mechanisms.** Seed `phi-agent` types and the
+      embedded Lua pack; expose the existing `phi-ai` stream to Lua, one
+      active abort signal through providers/tools/hooks/subscribers, schema
+      validation, and command/tool ctx. Provider failures settle as final
+      assistant error/aborted messages. Accept the basic state/mutator tests
+      from `agent.test.ts`; exercise every new public binding in `examples/`.
+- [ ] **4.2 Deterministic streamed turn.** Port `streamAssistantResponse`,
+      lifecycle ordering, `transformContext` before `convertToLlm`, dynamic
+      API-key resolution, partial-message replacement, and replaceable
+      `StreamFn`. Accept the custom-message/transform tests plus fixture
+      streams for text, thinking, and fragmented tool calls.
+- [ ] **4.3 First working-agent gate — sequential tool round trip.** Port
+      lookup, argument preparation/validation, hooks, updates,
+      error-as-tool-result, transcript insertion, and the automatic second
+      provider turn. Accept the core tool-call tests and a public-path gate:
+      Lua prompt → fixture tool call → embedded WS3 tool → result in request
+      two → final text, with no pending tool IDs.
+- [ ] **4.4 Stateful Agent + settlement.** Port prompt/continue,
+      subscriptions, state reduction before listeners, waitForIdle, run
+      exclusion, reset/abort, transcript continuity, and exactly-once
+      terminal events. Accept the subscription/failure/abort/concurrent-run
+      tests and multi-turn `e2e.test.ts` cases.
+- [ ] **4.5 Complete loop policy.** Port steering/follow-up queues,
+      prepareNextTurn/shouldStopAfterTurn, termination rules, parallel and
+      sequential tool modes, completion-order events, and source-order
+      persisted results. Accept the remaining `agent-loop.test.ts` and
+      `agent.test.ts` suites.
+- [ ] **4.6 Anthropic + CLI acceptance.** Select real Anthropic through the
+      same stream seam, expose WS3 tools, and persist standard messages via
+      `phi-session`. CI replays a two-request Anthropic tool call; live gate
+      (credentials required): `phi "fix the failing test"` reads/edits/runs
+      bash and returns final streamed text. Record pending live verification
+      without adding a Rust loop shortcut.

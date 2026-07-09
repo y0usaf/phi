@@ -40,6 +40,10 @@ pub const TOOLS_PACK: EmbeddedPack = EmbeddedPack {
         "\n",
         include_str!("tools/write.lua"),
         "\n",
+        include_str!("tools/grep.lua"),
+        "\n",
+        include_str!("tools/find.lua"),
+        "\n",
         include_str!("tools/ls.lua"),
     ),
 };

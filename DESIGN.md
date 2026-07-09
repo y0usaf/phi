@@ -147,7 +147,7 @@ module-by-module, plus the side-by-side test where UI is involved.
       passes; `--list-models` matches the anthropic rows of pi's catalog;
       streaming/auth verified live where credentials exist; bare-boot CI
       check.*
-- [ ] **WS3 — `coding-agent` tools + sessions.** Pulled forward from
+- [x] **WS3 — `coding-agent` tools + sessions.** Pulled forward from
       coding-agent parity — depends only on WS1 bindings, may run parallel
       to WS2's tail: tools (read/edit/bash/write/grep/find/ls + truncation
       and output-accumulator semantics) as Lua over bindings;
