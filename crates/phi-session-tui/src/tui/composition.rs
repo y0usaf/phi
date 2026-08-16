@@ -27,7 +27,6 @@ impl Ui {
         self.flush_pending_to_transcript();
 
         let (chrome, chrome_cursor) = self.chrome_lines();
-        let transcript_height = self.term.height().saturating_sub(chrome.len()).max(1);
         let live_blocks = self.current_live_transcript_blocks();
 
         // Keep the render cache current. It fully rebuilds only when the
@@ -69,9 +68,7 @@ impl Ui {
             });
         }
 
-        let frame = self
-            .transcript
-            .render(transcript_height, self.transcript_generation, &specs);
+        let frame = self.transcript.render(self.transcript_generation, &specs);
 
         let transcript_live_len = frame.live.len();
         let mut live = frame.live;

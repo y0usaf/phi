@@ -145,17 +145,10 @@ pub struct PackedCell {
 // StringInterner
 // ---------------------------------------------------------------------------
 
-/// Circuit breaker: once we exceed this many interned strings we stop
-/// growing the map and fall back to a side-table so streaming random unicode
-/// noise can't exhaust memory (~2 MB cap).
-const INTERNER_CAP: usize = 50_000;
-
 #[derive(Clone, Default)]
 pub struct StringInterner {
     map: HashMap<String, u32>,
     strings: Vec<String>,
-    /// Side-table for overflow entries once `strings.len()` hits the cap.
-    overflow: Vec<String>,
 }
 
 impl StringInterner {
@@ -167,28 +160,15 @@ impl StringInterner {
         if let Some(&idx) = self.map.get(text) {
             return PackedText::interned(idx);
         }
-        if self.strings.len() < INTERNER_CAP {
-            let idx = self.strings.len() as u32;
-            self.strings.push(text.to_string());
-            self.map.insert(text.to_string(), idx);
-            PackedText::interned(idx)
-        } else {
-            // Overflow: store in the side-table and encode the index
-            // offset by the cap so resolve can find it.
-            let idx = self.overflow.len() as u32;
-            self.overflow.push(text.to_string());
-            PackedText::interned(idx + INTERNER_CAP as u32)
-        }
+        let idx = self.strings.len() as u32;
+        self.strings.push(text.to_string());
+        self.map.insert(text.to_string(), idx);
+        PackedText::interned(idx)
     }
 
     pub fn resolve(&self, text: PackedText) -> &str {
         if text.is_interned() {
-            let idx = text.index();
-            if idx < INTERNER_CAP {
-                &self.strings[idx]
-            } else {
-                &self.overflow[idx - INTERNER_CAP]
-            }
+            &self.strings[text.index()]
         } else {
             // SAFETY: PackedText::ascii is only produced for single ASCII
             // codepoints (get_or_intern checks `is_ascii()`), so the byte
@@ -211,7 +191,7 @@ impl StringInterner {
 
     /// Number of interned (non-ascii) strings.
     pub fn len(&self) -> usize {
-        self.strings.len() + self.overflow.len()
+        self.strings.len()
     }
 
     pub fn is_empty(&self) -> bool {

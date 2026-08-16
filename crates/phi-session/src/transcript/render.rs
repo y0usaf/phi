@@ -59,12 +59,7 @@ impl Transcript {
     /// net, a prefix that diverges from the cache (key or line-count mismatch,
     /// shrunk block list) also triggers a rebuild, so a missed bump self-heals
     /// on any structural change.
-    pub fn render<'a>(
-        &mut self,
-        _viewport_height: usize,
-        generation: u64,
-        blocks: &[BlockSpec<'a>],
-    ) -> Frame {
+    pub fn render<'a>(&mut self, generation: u64, blocks: &[BlockSpec<'a>]) -> Frame {
         let prefix_len = blocks
             .iter()
             .position(|block| !block.finalized)
@@ -97,16 +92,7 @@ impl Transcript {
             // contributions never end blank, so exactly one blank separator
             // goes between visible blocks.
             for block in &blocks[self.durable_blocks.len()..prefix_len] {
-                let contribution = strip_plain_blank_edges(block.lines);
-                self.durable_blocks
-                    .push((block.key.to_owned(), block.lines.len()));
-                if contribution.is_empty() {
-                    continue;
-                }
-                if !self.durable.is_empty() {
-                    self.durable.push(String::new());
-                }
-                self.durable.extend_from_slice(contribution);
+                self.append_block(block.key, block.lines.len(), block.lines);
             }
         } else {
             // Rebuild: assemble the new durable prefix into a fresh buffer,
@@ -116,16 +102,7 @@ impl Transcript {
             self.durable_blocks.clear();
             self.generation = generation;
             for block in &blocks[..prefix_len] {
-                let contribution = strip_plain_blank_edges(block.lines);
-                self.durable_blocks
-                    .push((block.key.to_owned(), block.lines.len()));
-                if contribution.is_empty() {
-                    continue;
-                }
-                if !self.durable.is_empty() {
-                    self.durable.push(String::new());
-                }
-                self.durable.extend_from_slice(contribution);
+                self.append_block(block.key, block.lines.len(), block.lines);
             }
             // Keep commit progress only up to the first diverging row: rows
             // at and past it are new content that must re-emit. Cap at the
@@ -157,11 +134,6 @@ impl Transcript {
                 live_rows.push(String::new());
             }
             live_rows.extend_from_slice(contribution);
-        }
-
-        let total_rows = self.durable.len() + live_sep + live_rows.len();
-        if self.committed_rows > total_rows {
-            self.committed_rows = 0;
         }
 
         let live_region_start = (!live_rows.is_empty()).then(|| self.durable.len() + live_sep);
@@ -210,5 +182,23 @@ impl Transcript {
             live_region_start,
             committed_rows: self.committed_rows,
         }
+    }
+
+    /// Append one finalized block to the cached durable assembly, inserting
+    /// a single blank separator before it exactly when the assembly is
+    /// non-empty and the block contributes any visible rows (stripped
+    /// contributions never end blank). Shared by the append-only fast path
+    /// and the rebuild path so edge/blank-separator handling stays in one
+    /// place.
+    fn append_block(&mut self, key: &str, len: usize, lines: &[String]) {
+        let contribution = strip_plain_blank_edges(lines);
+        self.durable_blocks.push((key.to_owned(), len));
+        if contribution.is_empty() {
+            return;
+        }
+        if !self.durable.is_empty() {
+            self.durable.push(String::new());
+        }
+        self.durable.extend_from_slice(contribution);
     }
 }

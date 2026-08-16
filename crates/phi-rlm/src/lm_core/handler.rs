@@ -139,13 +139,16 @@ impl LmHandler {
         cancel: &CancellationToken,
     ) -> Result<Completion, String> {
         let model = self.root.name();
+        // Streaming always, with a no-op delta sink when the caller asked for
+        // none: `complete_streaming`'s default impl falls back to a single
+        // non-streamed completion, so this is equivalent to the old dedicated
+        // non-streaming path.
         let completion = match (on_delta, on_thinking, on_tool_call) {
             (Some(sink), thinking, tool_call) => {
                 self.root
                     .complete_streaming(prompt, sink, thinking, tool_call, cancel)
                     .await?
             }
-            (None, None, None) => self.root.complete(prompt, cancel).await?,
             (None, thinking, tool_call) => {
                 self.root
                     .complete_streaming(
@@ -162,6 +165,14 @@ impl LmHandler {
         Ok(completion)
     }
 
+    /// Resolve an optional model name to the sub model to use: a named model
+    /// when present, otherwise the default sub model.
+    fn sub_model(&self, model: Option<&str>) -> &Arc<dyn LanguageModel> {
+        model
+            .and_then(|name| self.named.get(name))
+            .unwrap_or(&self.sub)
+    }
+
     /// Sub-LLM completion for `llm_query` (and `subagent` at max depth).
     /// Unknown model names fall back to the default sub model.
     pub async fn complete_sub(
@@ -170,9 +181,7 @@ impl LmHandler {
         model: Option<&str>,
         cancel: &CancellationToken,
     ) -> Result<Completion, String> {
-        let lm = model
-            .and_then(|name| self.named.get(name))
-            .unwrap_or(&self.sub);
+        let lm = self.sub_model(model);
         let model_name = lm.name();
         let messages = [ChatMessage {
             role: Role::User,
@@ -185,10 +194,7 @@ impl LmHandler {
     }
 
     pub fn sub_name(&self, model: Option<&str>) -> String {
-        model
-            .and_then(|name| self.named.get(name))
-            .unwrap_or(&self.sub)
-            .name()
+        self.sub_model(model).name()
     }
 }
 

@@ -42,11 +42,6 @@ pub(crate) struct MuxView {
     /// Whether the focused session's screen was in the alternate screen last
     /// frame; a transition drops scroll history and forces a full repaint.
     pub(crate) alt_screen_active: bool,
-    /// Cached total scrollback lines for the focused session. Recomputed only
-    /// when a scrollback-affecting event occurs (session switch, new content),
-    /// not every frame — avoiding the set_scrollback(MAX)/restore dance that
-    /// mutates shared vt100 state on every render.
-    pub(crate) cached_scrollback_total: usize,
     pub(crate) render_failures: u32,
     pub(crate) renderer_invalidated: bool,
 }
@@ -68,7 +63,6 @@ impl MuxView {
             selection: TerminalSelection::default(),
             note: None,
             alt_screen_active: false,
-            cached_scrollback_total: 0,
             render_failures: 0,
             renderer_invalidated: false,
         }

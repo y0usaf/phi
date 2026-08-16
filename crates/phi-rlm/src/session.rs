@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use phi_ai::Usage;
-use phi_repl::{ReplEnv, ReplResult};
+use phi_repl::{PythonRepl, ReplResult};
 use tokio_util::sync::CancellationToken;
 
 use phi_ext::AppRuntime;
@@ -29,7 +29,7 @@ pub struct RlmSession {
     pub payload: ContextPayload,
     pub handler: Arc<LmHandler>,
     pub run: RunState,
-    pub env: Option<Box<dyn ReplEnv>>,
+    pub env: Option<PythonRepl>,
     pub exchanges: usize,
     pub contexts: usize,
     /// In-band conversational transcript: prior (user prompt, final answer)

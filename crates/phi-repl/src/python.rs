@@ -11,22 +11,13 @@ use tokio::task::JoinHandle;
 
 use crate::protocol::DriverFrame;
 use crate::{
-    AnswerState, EnvSetup, ReplEnv, ReplError, ReplResult, SubcallHandler, SubcallRequest,
-    SubcallResponse, ToolEvent,
+    AnswerState, EnvSetup, ReplError, ReplResult, SubcallHandler, SubcallRequest, SubcallResponse,
+    ToolEvent,
 };
 
-const DRIVER: &str = concat!(
-    include_str!("builtins.py"),
-    include_str!("jobs.py"),
-    include_str!("router.py"),
-);
+const DRIVER: &str = concat!(include_str!("builtins.py"), include_str!("router.py"),);
 const SETUP_TIMEOUT: Duration = Duration::from_secs(30);
 const ANSWER_STATE_TIMEOUT: Duration = Duration::from_secs(10);
-/// Extra wait beyond the driver's soft timeout. The driver backgrounds
-/// long-running code and replies within the soft timeout on its own; the
-/// hard timeout only fires when the driver itself is wedged, and that path
-/// still kills and respawns the interpreter.
-const EXEC_GRACE: Duration = Duration::from_secs(15);
 const STDERR_CAP: usize = 64 * 1024;
 
 type PendingMap = Arc<Mutex<std::collections::HashMap<u64, oneshot::Sender<DriverFrame>>>>;
@@ -182,10 +173,9 @@ impl PythonRepl {
                                         Ok(SubcallResponse::Text(text)) => {
                                             json!({"type": "subcall_result", "id": id, "text": text})
                                         }
-                                        // Json and Value both land in the "value" field so
-                                        // the Python side receives the dict/value verbatim.
-                                        Ok(SubcallResponse::Json(value))
-                                        | Ok(SubcallResponse::Value(value)) => {
+                                        // Value (subagent dict / HostFn return) lands in the
+                                        // "value" field so Python receives it verbatim.
+                                        Ok(SubcallResponse::Value(value)) => {
                                             json!({"type": "subcall_result", "id": id, "value": value})
                                         }
                                         Err(error) => {
@@ -268,7 +258,6 @@ impl PythonRepl {
         let frame = json!({
             "type": "setup",
             "context": setup.context,
-            "context_str": setup.context_str,
             "setup_code": setup.setup_code,
             "cwd": setup.cwd,
             "host_fns": setup.host_fns,
@@ -356,15 +345,14 @@ impl PythonRepl {
     }
 }
 
-#[async_trait]
-impl ReplEnv for PythonRepl {
-    async fn start(&mut self, setup: EnvSetup) -> Result<(), ReplError> {
+impl PythonRepl {
+    pub async fn start(&mut self, setup: EnvSetup) -> Result<(), ReplError> {
         self.setup = Some(setup);
         self.kill_current().await;
         self.spawn().await
     }
 
-    async fn exec(&mut self, code: &str, timeout: Duration) -> Result<ReplResult, ReplError> {
+    pub async fn exec(&mut self, code: &str, timeout: Duration) -> Result<ReplResult, ReplError> {
         let start = Instant::now();
         self.next_id += 1;
         let id = self.next_id;
@@ -384,7 +372,7 @@ impl ReplEnv for PythonRepl {
             return Err(ReplError::Crashed(stderr_msg));
         }
 
-        let wait_timeout = timeout + EXEC_GRACE;
+        let wait_timeout = timeout;
         let frame = self.wait_frame(id, wait_timeout, "exec").await?;
 
         match frame {
@@ -409,7 +397,7 @@ impl ReplEnv for PythonRepl {
         }
     }
 
-    async fn answer_state(&mut self) -> Result<AnswerState, ReplError> {
+    pub async fn answer_state(&mut self) -> Result<AnswerState, ReplError> {
         self.next_id += 1;
         let id = self.next_id;
         let proc = self.proc.as_mut().ok_or(ReplError::NotStarted)?;
@@ -423,7 +411,7 @@ impl ReplEnv for PythonRepl {
         }
     }
 
-    async fn shutdown(&mut self) {
+    pub async fn shutdown(&mut self) {
         if let Some(mut proc) = self.proc.take() {
             let _ = Self::send(&proc.stdin, &json!({"type": "shutdown"})).await;
             if tokio::time::timeout(Duration::from_secs(2), proc.child.wait())
@@ -549,20 +537,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn batched_queries_preserve_order() {
-        let mut repl = started(EnvSetup::default()).await;
-        let r = repl
-            .exec(
-                "print(llm_query_batched(['a', 'b', 'c', 'd', 'e']))",
-                EXEC_TIMEOUT,
-            )
-            .await
-            .unwrap();
-        assert_eq!(r.stdout, "['llm:a', 'llm:b', 'llm:c', 'llm:d', 'llm:e']\n");
-        repl.shutdown().await;
-    }
-
-    #[tokio::test]
     async fn host_fns_round_trip_and_raise() {
         let setup = EnvSetup {
             host_fns: vec!["add".into(), "boom".into()],
@@ -591,86 +565,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn soft_timeout_backgrounds_long_exec() {
-        let mut repl = started(EnvSetup::default()).await;
-        let r = repl
-            .exec(
-                "import time\nprint('starting')\ntime.sleep(30)",
-                Duration::from_millis(500),
-            )
-            .await
-            .unwrap();
-        assert!(r.stdout.contains("starting"), "{}", r.stdout);
-        assert!(r.stdout.contains("background job 1"), "{}", r.stdout);
-        // The interpreter survives: namespace intact, no respawn.
-        let r = repl
-            .exec("x = 7\nprint('alive')", EXEC_TIMEOUT)
-            .await
-            .unwrap();
-        assert_eq!(r.stdout, "alive\n");
-        let r = repl.exec("print(x)", EXEC_TIMEOUT).await.unwrap();
-        assert_eq!(r.stdout, "7\n");
-        let r = repl
-            .exec("print(job_status(1))", EXEC_TIMEOUT)
-            .await
-            .unwrap();
-        assert!(r.stdout.contains("running"), "{}", r.stdout);
-        repl.shutdown().await;
-    }
-
-    #[tokio::test]
-    async fn bg_jobs_run_and_write_back() {
-        let mut repl = started(EnvSetup::default()).await;
-        let r = repl
-            .exec(
-                "jid = bg(\"import time\\ntime.sleep(0.3)\\nx = 99\\nprint('marker')\")\nprint(jid > 0)",
-                EXEC_TIMEOUT,
-            )
-            .await
-            .unwrap();
-        assert_eq!(r.stdout, "True\n");
-
-        let mut status = String::new();
-        for _ in 0..50 {
-            let r = repl
-                .exec("print(job_status(jid))", EXEC_TIMEOUT)
-                .await
-                .unwrap();
-            status = r.stdout;
-            if status.contains("[done") {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-        assert!(status.contains("[done"), "{status}");
-
-        let r = repl
-            .exec("print(job_output(jid))", EXEC_TIMEOUT)
-            .await
-            .unwrap();
-        assert!(r.stdout.contains("marker"), "{}", r.stdout);
-        // Variables assigned by the job land in the shared namespace.
-        let r = repl.exec("print(x)", EXEC_TIMEOUT).await.unwrap();
-        assert_eq!(r.stdout, "99\n");
-        repl.shutdown().await;
-    }
-
-    #[tokio::test]
-    async fn job_output_isolated_from_foreground() {
-        let mut repl = started(EnvSetup::default()).await;
-        let r = repl
-            .exec(
-                "jid = bg(\"import time\\ntime.sleep(0.5)\\nprint('from bg')\")\nprint('fg only')",
-                EXEC_TIMEOUT,
-            )
-            .await
-            .unwrap();
-        assert!(r.stdout.contains("fg only"), "{}", r.stdout);
-        assert!(!r.stdout.contains("from bg"), "{}", r.stdout);
-        repl.shutdown().await;
-    }
-
-    #[tokio::test]
     async fn output_is_truncated() {
         let setup = EnvSetup {
             max_output_chars: 1000,
@@ -687,7 +581,7 @@ mod tests {
     #[tokio::test]
     async fn context_loads_and_scaffold_restores() {
         let setup = EnvSetup {
-            context_str: Some("hello".into()),
+            context: Some(json!("hello")),
             ..EnvSetup::default()
         };
         let mut repl = started(setup).await;

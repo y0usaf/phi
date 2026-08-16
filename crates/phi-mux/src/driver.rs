@@ -184,20 +184,12 @@ pub async fn spawn(
 /// have accumulated during a suspend or mode switch, discarding them so
 /// they don't fire as phantom input on resume.
 pub fn drain_pending_terminal_events() {
-    use phi_tui::crossterm::event::{self, Event};
+    use phi_tui::crossterm::event::{self};
     use std::time::Duration;
 
     while event::poll(Duration::from_millis(0)).unwrap_or(false) {
-        match event::read() {
-            Ok(
-                Event::Key(_)
-                | Event::Mouse(_)
-                | Event::Paste(_)
-                | Event::Resize(_, _)
-                | Event::FocusGained
-                | Event::FocusLost,
-            ) => {}
-            Err(_) => break,
+        if event::read().is_err() {
+            break;
         }
     }
 }

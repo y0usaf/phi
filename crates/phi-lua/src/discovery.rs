@@ -7,8 +7,7 @@ pub fn discover_extensions(cwd: &Path, include_project: bool) -> Vec<PathBuf> {
     let mut results = Vec::new();
 
     // 1. Global config dir: <config>/phi/extensions/*.lua
-    if let Some(proj_dirs) = directories::ProjectDirs::from("", "", "phi") {
-        let config_dir = proj_dirs.config_dir();
+    if let Some(config_dir) = crate::config::global_config_dir() {
         let global_ext_dir = config_dir.join("extensions");
         collect_lua_files(&global_ext_dir, &mut results);
     }
@@ -36,7 +35,7 @@ fn collect_lua_files(dir: &Path, out: &mut Vec<PathBuf>) {
         .filter_map(|entry| {
             let entry = entry.ok()?;
             let path = entry.path();
-            if path.is_file() && path.extension().map(|e| e == "lua").unwrap_or(false) {
+            if path.is_file() && path.extension().is_some_and(|e| e == "lua") {
                 Some(path)
             } else {
                 None

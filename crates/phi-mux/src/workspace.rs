@@ -197,15 +197,6 @@ impl Focus {
     }
 }
 
-/// Rescan a project while preserving a view's selection across the rebuild.
-pub fn refresh_project_with_focus(
-    ws: &mut Workspace,
-    focus: &mut Focus,
-    index: usize,
-) -> RefreshDelta {
-    refresh_project_with_focuses(ws, &mut [focus], index)
-}
-
 /// Rescan a project while preserving every attached view's selection across
 /// the rebuild: one [`Focus::mark`]/[`Focus::restore`] pair per view.
 pub fn refresh_project_with_focuses(
@@ -337,7 +328,7 @@ impl Workspace {
     /// deleted by another process) so the caller can surface a status-bar note.
     ///
     /// The rebuild reorders sessions (newest-first sort), so callers holding
-    /// a [`Focus`] must go through [`refresh_project_with_focus`] to keep
+    /// a [`Focus`] must go through [`refresh_project_with_focuses`] to keep
     /// their selection pointing at the same session.
     pub fn refresh_project(&mut self, index: usize) -> RefreshDelta {
         let Some(project) = self.projects.get_mut(index) else {
@@ -446,20 +437,6 @@ impl Workspace {
         }
     }
 
-    pub fn visible_session_indices(&self, project_index: usize) -> Vec<usize> {
-        self.projects
-            .get(project_index)
-            .map(|project| {
-                project
-                    .sessions
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(i, session)| session.is_sidebar_visible().then_some(i))
-                    .collect()
-            })
-            .unwrap_or_default()
-    }
-
     /// Remove the session at `selected` if it is an unmaterialized draft.
     /// The caller re-clamps its [`Focus`] afterwards.
     pub fn discard_unmaterialized_draft(&mut self, project_index: usize, selected: usize) -> bool {
@@ -492,7 +469,12 @@ mod tests {
         ws.new_draft(0).unwrap();
         assert_eq!(ws.projects[0].sessions.len(), 1);
         assert!(ws.projects[0].sessions[0].is_unmaterialized_draft());
-        assert!(ws.visible_session_indices(0).is_empty());
+        assert!(
+            ws.projects[0]
+                .sessions
+                .iter()
+                .all(|s| !s.is_sidebar_visible())
+        );
         // A second ctrl+n reuses the idle draft instead of stacking.
         ws.new_draft(0).unwrap();
         assert_eq!(ws.projects[0].sessions.len(), 1);
@@ -679,7 +661,7 @@ mod tests {
         ];
         focus.set_selected_session(0, 1); // user is on the draft
 
-        let _ = refresh_project_with_focus(&mut ws, &mut focus, 0);
+        let _ = refresh_project_with_focuses(&mut ws, &mut [&mut focus], 0);
 
         // The draft must survive with a real (non-zero) key.
         let draft_idx = ws.projects[0]
@@ -722,7 +704,7 @@ mod tests {
         ];
         focus.set_selected_session(0, 1); // on "gone", which will be dropped
 
-        let _ = refresh_project_with_focus(&mut ws, &mut focus, 0);
+        let _ = refresh_project_with_focuses(&mut ws, &mut [&mut focus], 0);
 
         // "gone" was dropped (2 sessions remain: a, b).  The selected key (2)
         // is no longer found, so the fallback should use the original index

@@ -121,7 +121,7 @@ impl MuxApp {
         if matches!(key.code, KeyCode::Char(':'))
             && key.modifiers.difference(KeyModifiers::SHIFT).is_empty()
         {
-            view.command_line = Some(CommandLineState::with_input(""));
+            view.command_line = Some(CommandLineState::new());
             return;
         }
 

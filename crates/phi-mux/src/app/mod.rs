@@ -222,6 +222,24 @@ pub(crate) struct MuxReceivers {
     pub(crate) watcher_rx: mpsc::UnboundedReceiver<usize>,
 }
 
+/// Derive the mux palette from the host terminal colors, honoring a theme
+/// registered by an active visual-runtime extension if one exists (falling
+/// back to the built-in derivation for missing roles).
+pub(crate) fn resolve_palette(
+    visual_runtime: Option<&AppRuntime>,
+    terminal_colors: &phi_tui::TerminalColors,
+) -> ScenePalette {
+    if let Some(rt) = visual_runtime {
+        if let Some(theme_spec) = rt.active_theme() {
+            ScenePalette::from_extension_theme(theme_spec, terminal_colors)
+        } else {
+            ScenePalette::from_terminal_colors(terminal_colors)
+        }
+    } else {
+        ScenePalette::from_terminal_colors(terminal_colors)
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn build_app(
     shared: SharedResources,
@@ -250,15 +268,7 @@ fn build_app(
     // via the active style pack when one is set. Otherwise, use the
     // built-in `generate_theme` path — the same gray ramp / ANSI mapping
     // as before.
-    let palette = if let Some(rt) = &visual_runtime {
-        if let Some(theme_spec) = rt.active_theme() {
-            ScenePalette::from_extension_theme(theme_spec, &terminal_colors)
-        } else {
-            ScenePalette::from_terminal_colors(&terminal_colors)
-        }
-    } else {
-        ScenePalette::from_terminal_colors(&terminal_colors)
-    };
+    let palette = resolve_palette(visual_runtime.as_deref(), &terminal_colors);
 
     let (status_tx, status_rx) = mpsc::unbounded_channel();
     let (redraw_tx, redraw_rx) = mpsc::unbounded_channel();

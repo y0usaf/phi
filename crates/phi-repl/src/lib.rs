@@ -1,5 +1,6 @@
-//! REPL environments for the RLM engine: `ReplEnv` trait + Python
-//! subprocess backend (ndjson over stdio). Later: Lua, Docker.
+//! REPL environments for the RLM engine: a concrete Python subprocess
+//! backend (`PythonRepl`, ndjson over stdio). Inlined as a concrete type;
+//! there is only one implementation.
 
 mod protocol;
 pub mod python;
@@ -28,10 +29,9 @@ pub enum ReplError {
 /// Environment setup: context payload, prelude configuration, host fns.
 #[derive(Clone, Debug)]
 pub struct EnvSetup {
-    /// Structured context, exposed as `context_0` / `context`.
+    /// Context payload, exposed as `context_0` / `context`. String context
+    /// arrives as a packed `Value::String`, dict/list as their JSON value.
     pub context: Option<Value>,
-    /// String context; takes precedence over `context` if both are set.
-    pub context_str: Option<String>,
     /// Code executed once after setup (output discarded).
     pub setup_code: Option<String>,
     /// Working directory for executed code; defaults to a scratch temp dir.
@@ -47,7 +47,6 @@ impl Default for EnvSetup {
     fn default() -> Self {
         Self {
             context: None,
-            context_str: None,
             setup_code: None,
             cwd: None,
             host_fns: Vec::new(),
@@ -113,9 +112,7 @@ pub enum SubcallRequest {
 pub enum SubcallResponse {
     /// For `llm_query`: the plain response text.
     Text(String),
-    /// For `subagent`: a structured result dict, returned verbatim to the REPL.
-    Json(Value),
-    /// For HostFn: a JSON value returned to the REPL.
+    /// JSON value (subagent dict, HostFn return) returned verbatim to the REPL.
     Value(Value),
 }
 
@@ -150,14 +147,4 @@ pub trait SubcallHandler: Send + Sync {
     /// Observe a chat message sent from REPL code via `message(...)`.
     /// Fire-and-forget, display-only. Default: ignored.
     fn notify_message(&self, _text: String) {}
-}
-
-#[async_trait]
-pub trait ReplEnv: Send {
-    async fn start(&mut self, setup: EnvSetup) -> Result<(), ReplError>;
-    /// Execute code in the persistent namespace. On `Timeout`/`Crashed` the
-    /// environment is respawned with a fresh namespace (setup re-applied).
-    async fn exec(&mut self, code: &str, timeout: Duration) -> Result<ReplResult, ReplError>;
-    async fn answer_state(&mut self) -> Result<AnswerState, ReplError>;
-    async fn shutdown(&mut self);
 }

@@ -80,26 +80,9 @@ impl MuxApp {
                     dirty = true;
                 }
                 Some(project_index) = watcher_rx.recv() => {
-                    // Coalesce all pending watcher events: collect the set
-                    // of project indices that changed, then refresh each.
-                    // This naturally debounces bursts of writes.
-                    let mut changed = std::collections::HashSet::new();
-                    changed.insert(project_index);
-                    while let Ok(idx) = watcher_rx.try_recv() {
-                        changed.insert(idx);
-                    }
-                    let mut notes = Vec::new();
-                    for index in changed {
-                        let delta = self.refresh_project_all_views(index);
-                        notes.extend(delta.archived);
-                    }
-                    if !notes.is_empty() {
-                        self.set_note(
-                            format!("session archived externally: {}", notes.join(", ")),
-                            StatusNoteKind::Ok,
-                        );
-                    }
-                    dirty = true;
+                    // Coalesce all pending watcher events (debouncing
+                    // bursts of writes) and refresh the affected projects.
+                    dirty |= self.drain_watcher_events(&mut watcher_rx, Some(project_index));
                 }
                 // Debounced per-session size recompute: fires once the last
                 // focus/size change is SIZE_RECOMPUTE_DEBOUNCE old.
@@ -157,26 +140,7 @@ impl MuxApp {
                 dirty = true;
             }
             // Drain any queued watcher events and refresh affected projects.
-            {
-                let mut changed = std::collections::HashSet::new();
-                while let Ok(idx) = watcher_rx.try_recv() {
-                    changed.insert(idx);
-                }
-                if !changed.is_empty() {
-                    let mut notes = Vec::new();
-                    for index in changed {
-                        let delta = self.refresh_project_all_views(index);
-                        notes.extend(delta.archived);
-                    }
-                    if !notes.is_empty() {
-                        self.set_note(
-                            format!("session archived externally: {}", notes.join(", ")),
-                            StatusNoteKind::Ok,
-                        );
-                    }
-                    dirty = true;
-                }
-            }
+            dirty |= self.drain_watcher_events(&mut watcher_rx, None);
 
             // Reconcile per-session watch state and chrome animation with
             // the (possibly changed) view topology. Cheap diff — only
@@ -294,15 +258,7 @@ impl MuxApp {
                 if let Some(tc) = &info.terminal_colors {
                     if tc != &self.terminal_colors {
                         self.terminal_colors = tc.clone();
-                        self.palette = if let Some(rt) = &self.visual_runtime {
-                            if let Some(theme_spec) = rt.active_theme() {
-                                ScenePalette::from_extension_theme(theme_spec, tc)
-                            } else {
-                                ScenePalette::from_terminal_colors(tc)
-                            }
-                        } else {
-                            ScenePalette::from_terminal_colors(tc)
-                        };
+                        self.palette = resolve_palette(self.visual_runtime.as_deref(), tc);
                     }
                 }
                 // WS8.3: per-invocation --model reaching a running daemon.
@@ -486,6 +442,40 @@ impl MuxApp {
             .map(|(i, p)| (i, &p.cwd))
             .collect();
         self.session_watcher.sync(&projects);
+    }
+
+    /// Coalesce pending watcher events into the set of changed project
+    /// indices, refresh each affected project, and surface any
+    /// externally-archived session titles as a status note. Returns whether
+    /// a redraw is warranted. Used by both the blocking `watcher_rx.recv()`
+    /// arm and the per-loop non-blocking drain.
+    fn drain_watcher_events(
+        &mut self,
+        watcher_rx: &mut mpsc::UnboundedReceiver<usize>,
+        first: Option<usize>,
+    ) -> bool {
+        let mut changed = std::collections::HashSet::new();
+        if let Some(index) = first {
+            changed.insert(index);
+        }
+        while let Ok(index) = watcher_rx.try_recv() {
+            changed.insert(index);
+        }
+        if changed.is_empty() {
+            return false;
+        }
+        let mut notes = Vec::new();
+        for index in changed {
+            let delta = self.refresh_project_all_views(index);
+            notes.extend(delta.archived);
+        }
+        if !notes.is_empty() {
+            self.set_note(
+                format!("session archived externally: {}", notes.join(", ")),
+                StatusNoteKind::Ok,
+            );
+        }
+        true
     }
 
     pub(crate) fn persist_now(&self) {
@@ -760,7 +750,6 @@ impl MuxApp {
         }
         if let Some(view) = self.views.get_mut(&vid) {
             view.selection.clear();
-            view.cached_scrollback_total = 0;
             // The new focused session's content is unrelated to the previous
             // frame's row hashes; drop them so scroll detection can't mistake
             // the session switch for a scroll, and force a clean repaint.

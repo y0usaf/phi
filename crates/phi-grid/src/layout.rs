@@ -34,6 +34,24 @@ impl CellRect {
             && col < self.col + self.cols
             && row < self.row + self.rows
     }
+
+    /// The maximal intersection with `other`, or `None` if they don't overlap.
+    pub fn intersection(&self, other: &CellRect) -> Option<CellRect> {
+        let col = self.col.max(other.col);
+        let row = self.row.max(other.row);
+        let right = (self.col + self.cols).min(other.col + other.cols);
+        let bottom = (self.row + self.rows).min(other.row + other.rows);
+        if right > col && bottom > row {
+            Some(CellRect {
+                col,
+                row,
+                cols: right - col,
+                rows: bottom - row,
+            })
+        } else {
+            None
+        }
+    }
 }
 
 const STATUSBAR_ROWS: i32 = 1;

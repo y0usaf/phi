@@ -85,14 +85,9 @@ impl MuxApp {
             snap
         });
 
-        // Use the cached scrollback total when available; update the cache
-        // when it changes so the scrollbar stays accurate without recomputing
-        // on every frame if the value hasn't changed.
+        // The snapshot already carries the total scrollback line count
+        // computed under the parser lock; pass it straight through.
         let scrollback_total = snapshot.as_ref().map(|s| s.scrollback_total).unwrap_or(0);
-        if scrollback_total > view.cached_scrollback_total {
-            view.cached_scrollback_total = scrollback_total;
-        }
-        let scrollback_total = view.cached_scrollback_total.max(scrollback_total);
 
         // Alt-screen transition hook (Priority 4): entering/leaving the
         // alternate screen replaces the whole pane, so drop scroll history and

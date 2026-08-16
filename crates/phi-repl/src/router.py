@@ -1,6 +1,6 @@
 """phi REPL driver: persistent Python namespace, ndjson protocol over stdio.
 
-Frames from host: setup, exec {id, code, timeout?}, subcall_result
+Frames from host: setup, exec {id, code}, subcall_result
 {id, text|value|error}, answer_state {id}, shutdown.
 Frames to host: ready {error?}, exec_result {id, stdout, stderr, vars,
 final_answer, final_summary, truncated}, subcall {id, kind, ...}, answer_state
@@ -9,18 +9,16 @@ final_answer, final_summary, truncated}, subcall {id, kind, ...}, answer_state
 The main thread reads stdin and dispatches; setup/exec run on a single worker
 thread so subcall round-trips (which block the worker) can still be served.
 
-Every execution runs on its own thread as a job. Foreground execs join that
-thread up to the soft `timeout`; if the code is still running it keeps going
-as a background job and the exec_result reports the job id plus output so
-far, instead of the host killing the interpreter (which would lose the
-namespace). `bg()` / `jobs()` / `job_status()` / `job_output()` expose the
-same machinery to REPL code. Note: the host only reads our stdout while it
-waits on a foreground exec, so `llm_query` etc. issued from a background job
-block until the next foreground exec is pumping.
+Executions run serially on the worker thread and complete within the host's
+hard timeout. If the host decides a run is wedged, it kills and respawns the
+interpreter with a fresh namespace (one lifetime model); there is no
+software soft-timeout / background-job layer. Subcalls (`llm_query`/`subagent`)
+and host fns issued by exec code block on the round-trip reply pumped by this
+same process.
 """
 
 # The driver script is spawned from a temp file, so the system temp dir
-# lands on sys.path[0]. That lets unrelated files shadow stdlib modules — a
+# lands on sys.path[0]. That lets unrelated files shadow stdlib modules -- a
 # stray /tmp/inspect.py breaks 'import inspect' inside traceback and kills
 # the driver at startup. Drop the script dir from the import path before any
 # stdlib import below.
@@ -35,41 +33,11 @@ import queue
 import sys
 import tempfile
 import threading
-import time
 import traceback
-from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 
 _real_stdout = sys.stdout
 _send_lock = threading.Lock()
-
-
-class _Router(io.TextIOBase):
-    """stdout/stderr replacement routing writes to the buffer registered for
-    the current thread, so concurrent jobs capture output independently."""
-
-    def __init__(self):
-        self._local = threading.local()
-
-    def register(self, buf):
-        self._local.buf = buf
-
-    def writable(self):
-        return True
-
-    def write(self, s):
-        buf = getattr(self._local, "buf", None)
-        if buf is not None:
-            buf.write(s)
-        return len(s)
-
-    def flush(self):
-        pass
-
-
-_stdout_router = _Router()
-_stderr_router = _Router()
-sys.stdout = _stdout_router
-sys.stderr = _stderr_router
 
 
 def _send(frame):
@@ -84,7 +52,7 @@ _next_id = 0
 
 
 def _subcall(payload):
-    """Send a subcall frame and block until the host replies."""
+    """Send a subcall and block until the host replies."""
     global _next_id
     event = threading.Event()
     with _pending_lock:
@@ -144,10 +112,6 @@ def _ext_tool(name, args):
 
 def _clean(text):
     return text.encode("utf-8", "replace").decode("utf-8")
-
-
-
-
 
 
 class _AnswerDict(dict):
@@ -261,13 +225,7 @@ class Env:
             "__name__": "__main__",
             "SHOW_VARS": self._show_vars,
             "llm_query": self._llm_query,
-            "llm_query_batched": self._llm_query_batched,
             "subagent": self._subagent,
-            "subagent_batched": self._subagent_batched,
-            "bg": self._bg,
-            "jobs": self._jobs_fn,
-            "job_status": self._job_status,
-            "job_output": self._job_output,
             "__phi_tool_event__": _tool_event,
             "__phi_ext_tool__": _ext_tool,
             "__phi_native_call__": self._native_call,
@@ -279,30 +237,19 @@ class Env:
             self.globals[name] = _make_host_fn(name)
         self._load_context(setup)
         if setup.get("setup_code"):
-            self.execute(setup["setup_code"])
+            self._run_code(setup["setup_code"])
         # Scaffold snapshot: everything the host installed (context vars plus
         # every prelude-defined tool, which lands in locals via the setup_code
         # exec above). `_restore_scaffold` reasserts these bindings after every
         # exec so model code can't corrupt the environment by rebinding
-        # `read_file`, `context`, etc. `answer` is excluded — it has its own
-        # re-wrap logic that must not resurrect stale content.
+        # `read_file`, `context`, etc.
         self._scaffold = {k: v for k, v in self.locals.items() if k != "answer"}
 
     def _load_context(self, setup):
-        context_str = setup.get("context_str")
         context = setup.get("context")
-        if context_str is not None:
-            path = os.path.join(self.temp_dir, "context_0.txt")
-            with open(path, "w") as f:
-                f.write(context_str)
-            self.locals["context_0"] = context_str
-        elif context is not None:
-            path = os.path.join(self.temp_dir, "context_0.json")
-            with open(path, "w") as f:
-                json.dump(context, f)
+        if context is not None:
             self.locals["context_0"] = context
-        if "context_0" in self.locals:
-            self.locals["context"] = self.locals["context_0"]
+            self.locals["context"] = context
 
     def _capture_answer(self, content):
         # A spilled subcall result assigned to answer['content'] must submit
@@ -363,33 +310,16 @@ class Env:
             value["text"] = self._spill(value.get("text", ""))
         return value
 
-    def _batched(self, fn, prompts, model, **kwargs):
-        prompts = list(prompts)
-        if not prompts:
-            return []
-        if len(prompts) == 1:
-            return [fn(prompts[0], model, **kwargs)]
-        workers = min(self.max_concurrent, len(prompts))
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            return list(pool.map(lambda p: fn(p, model, **kwargs), prompts))
-
-    def _llm_query_batched(self, prompts, model=None):
-        return self._batched(self._llm_query, prompts, model)
-
-    def _subagent_batched(self, prompts, model=None, preamble=None):
-        return self._batched(self._subagent, prompts, model, preamble=preamble)
-
     def _restore_scaffold(self):
         """Undo model overwrites of scaffold names so the next cell still works.
 
         The function scaffold in ``self.globals`` (llm_query, subagent, host
-        fns, ...) is copy-protected by construction — each exec runs against a
+        fns, ...) is copy-protected by construction -- each exec runs against a
         fresh ``dict(self.globals)`` and the copy-back loop skips global names.
         What model code CAN corrupt persistently: prelude tools and context
         vars (they live in ``self.locals``), the ``answer`` dict, and the
         shared ``__builtins__`` dict (mutated in place). All three are
-        restored here after every exec (upstream: ``_restore_scaffold``,
-        ref/rlm/rlm/environments/local_repl.py).
+        restored here after every exec.
         """
         # __builtins__ is shared by reference into every exec's namespace
         # copy, so in-place mutation would otherwise persist.
@@ -427,59 +357,31 @@ class Env:
         return text[: self.max_output] + "... + [%d chars...]" % extra, True
 
     def _run_code(self, code):
-        """Run a code string (or callable) against the shared namespace."""
-        if callable(code):
-            code()
-            with self._ns_lock:
-                self._restore_scaffold()
-            return
+        """Run a code string against the shared namespace, capturing stdout
+        and stderr; an execution error is folded into the stderr string so the
+        environment survives and the namespace still advances."""
         with self._ns_lock:
             combined = dict(self.globals)
             combined.update(self.locals)
-        exec(code, combined, combined)
+        out = io.StringIO()
+        err = io.StringIO()
+        real_out, real_err = sys.stdout, sys.stderr
+        sys.stdout, sys.stderr = out, err
+        try:
+            exec(code, combined, combined)
+        except BaseException as e:
+            err.write("\n%s: %s" % (type(e).__name__, e))
+        finally:
+            sys.stdout, sys.stderr = real_out, real_err
         with self._ns_lock:
             for key, value in combined.items():
                 if key not in self.globals and not key.startswith("_"):
                     self.locals[key] = value
             self._restore_scaffold()
+        return out.getvalue(), err.getvalue()
 
-    def _bg(self, code):
-        if not (isinstance(code, str) or callable(code)):
-            raise TypeError("bg(): pass a code string or a zero-argument callable")
-        return _Job(code, self).id
-
-    def _jobs_fn(self):
-        with _jobs_lock:
-            items = sorted(_jobs.values(), key=lambda j: j.id)
-        if not items:
-            return "No background jobs."
-        return "\n".join(j.describe() for j in items)
-
-    def _job_status(self, jid):
-        return _get_job(jid).describe()
-
-    def _job_output(self, jid):
-        return _get_job(jid).output()
-
-    def execute(self, code, soft_timeout=None):
-        job = _Job(code, self)
-        job.thread.join(soft_timeout)
-        if job.thread.is_alive():
-            out = job.out.getvalue()
-            if out and not out.endswith("\n"):
-                out += "\n"
-            stdout = out + (
-                "[still running after %.0fs: continuing as background job %d; "
-                "use job_status(%d) / job_output(%d) to check on it]"
-                % (job.runtime(), job.id, job.id, job.id)
-            )
-            stderr = job.err.getvalue()
-        else:
-            # Finished foreground runs don't clutter the job table.
-            with _jobs_lock:
-                _jobs.pop(job.id, None)
-            stdout = job.out.getvalue()
-            stderr = job.err.getvalue()
+    def execute(self, code):
+        stdout, stderr = self._run_code(code)
         stdout, t_out = self._truncate(_clean(stdout))
         stderr, t_err = self._truncate(_clean(stderr))
         final = self.final_answer
@@ -498,7 +400,7 @@ class Env:
 
         Read from the live answer dict on every exec (rather than captured on
         ``ready``) so a summary set before a prose finish still reaches the
-        host — the summary is a standing declaration, valid regardless of how
+        host -- the summary is a standing declaration, valid regardless of how
         the run ends. Bounding happens host-side; a spilled value submits its
         full text, same rule as ``_capture_answer``.
         """
@@ -514,23 +416,23 @@ class Env:
         return summary if summary.strip() else None
 
 
-_exec_queue = queue.Queue()
-_env = None
+exec_queue = queue.Queue()
+env = None
 
 
 def _worker():
-    global _env
+    global env
     while True:
-        frame = _exec_queue.get()
+        frame = exec_queue.get()
         if frame is None:
             return
         kind = frame.get("type")
         try:
             if kind == "setup":
-                _env = Env(frame)
+                env = Env(frame)
                 _send({"type": "ready"})
             elif kind == "exec":
-                result = _env.execute(frame.get("code") or "", frame.get("timeout"))
+                result = env.execute(frame.get("code") or "")
                 result["type"] = "exec_result"
                 result["id"] = frame.get("id")
                 _send(result)
@@ -542,7 +444,9 @@ def _worker():
 
 
 def main():
-    threading.Thread(target=_worker, daemon=True).start()
+    threading.Thread(
+        target=_worker, daemon=True
+    ).start()
     for line in sys.stdin:
         line = line.strip()
         if not line:
@@ -550,7 +454,7 @@ def main():
         frame = json.loads(line)
         kind = frame.get("type")
         if kind in ("setup", "exec"):
-            _exec_queue.put(frame)
+            exec_queue.put(frame)
         elif kind == "subcall_result":
             with _pending_lock:
                 entry = _pending.get(frame.get("id"))
@@ -558,7 +462,7 @@ def main():
                 entry[1] = frame
                 entry[0].set()
         elif kind == "answer_state":
-            ans = _env.locals.get("answer") if _env is not None else None
+            ans = env.locals.get("answer") if env is not None else None
             content = str(ans.get("content", "")) if isinstance(ans, dict) else ""
             ready = bool(ans.get("ready")) if isinstance(ans, dict) else False
             _send(

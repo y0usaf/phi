@@ -173,9 +173,10 @@ fn default_thinking_value(model: &Model, level: ThinkingLevel) -> String {
 }
 
 /// Default token budgets for budget-based thinking (non-adaptive Anthropic
-/// Messages models). Matches the `ANTHROPIC_BUDGETS` table in
-/// `xtask/generate_models/models_dev.rs` and Pi's `ANTHROPIC_THINKING`.
-fn default_thinking_budget(level: ThinkingLevel) -> u64 {
+/// Messages models). This is the single canonical source for the Anthropic
+/// budget table; `xtask/generate_models/models_dev.rs` references it instead
+/// of maintaining its own copy. Matches Pi's `ANTHROPIC_THINKING`.
+pub fn default_thinking_budget(level: ThinkingLevel) -> u64 {
     match level {
         ThinkingLevel::Off => 0,
         ThinkingLevel::Minimal => 1024,
@@ -242,6 +243,19 @@ pub enum StopReason {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+/// A single tool call the model emitted, pairing by `id` with the
+/// [`ToolResultMessage`] that answers it. This is the canonical representation
+/// of a *call* in the message model (used by `ChatMessage.tool_calls` and
+/// [`AssistantContent::ToolCall`]).
+///
+/// The three tool-adjacent representations in this crate are intentionally
+/// distinct and are not unified:
+/// - [`ToolCall`] — the emitted call (id/name/arguments).
+/// - [`ToolResultMessage`] — the tool's result, keyed by `tool_use_id`.
+/// - [`ToolDefinition`] — the schema sent to the API describing a callable
+///   tool.    ///
+/// Each carries a different payload, so a common struct would just bolt on
+/// unused fields or a tag; no change is warranted.
 pub struct ToolCall {
     pub id: String,
     pub name: String,

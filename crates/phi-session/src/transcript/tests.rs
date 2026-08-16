@@ -1,19 +1,10 @@
 use super::*;
 
-fn render(
-    tx: &mut Transcript,
-    viewport_height: usize,
-    inputs: &[(&str, Vec<String>, bool)],
-) -> Frame {
-    render_gen(tx, viewport_height, 0, inputs)
+fn render(tx: &mut Transcript, inputs: &[(&str, Vec<String>, bool)]) -> Frame {
+    render_gen(tx, 0, inputs)
 }
 
-fn render_gen(
-    tx: &mut Transcript,
-    viewport_height: usize,
-    generation: u64,
-    inputs: &[(&str, Vec<String>, bool)],
-) -> Frame {
+fn render_gen(tx: &mut Transcript, generation: u64, inputs: &[(&str, Vec<String>, bool)]) -> Frame {
     let specs: Vec<BlockSpec<'_>> = inputs
         .iter()
         .map(|(key, lines, finalized)| BlockSpec {
@@ -22,7 +13,7 @@ fn render_gen(
             finalized: *finalized,
         })
         .collect();
-    tx.render(viewport_height, generation, &specs)
+    tx.render(generation, &specs)
 }
 
 #[test]
@@ -30,7 +21,6 @@ fn exactly_one_blank_separator_between_visible_blocks() {
     let mut tx = Transcript::new();
     let frame = render(
         &mut tx,
-        20,
         &[
             ("a", vec!["".into(), "a".into(), "".into()], true),
             ("b", vec!["b".into()], true),
@@ -45,7 +35,6 @@ fn earliest_unfinalized_block_starts_live_region() {
     let mut tx = Transcript::new();
     let frame = render(
         &mut tx,
-        20,
         &[
             ("done", vec!["done".into()], true),
             ("pending", vec!["pending".into()], false),
@@ -62,7 +51,6 @@ fn non_finalized_block_does_not_enter_scrollback() {
     let mut tx = Transcript::new();
     let frame = render(
         &mut tx,
-        3,
         &[
             ("history", vec!["history".into()], true),
             (
@@ -88,7 +76,6 @@ fn finalized_blocks_flush_to_scrollback_immediately() {
     let mut tx = Transcript::new();
     let frame = render(
         &mut tx,
-        3,
         &[
             ("a", vec!["a".into()], true),
             ("b", vec!["b".into()], true),
@@ -108,9 +95,9 @@ fn steady_state_render_emits_no_new_scrollback() {
         ("a", vec!["a".into()], true),
         ("live", vec!["typing...".into()], false),
     ];
-    let first = render(&mut tx, 20, &blocks);
+    let first = render(&mut tx, &blocks);
     assert_eq!(first.scrollback, vec!["a", ""]);
-    let second = render(&mut tx, 20, &blocks);
+    let second = render(&mut tx, &blocks);
     assert_eq!(second.scrollback, Vec::<String>::new());
     assert_eq!(second.live, vec!["typing..."]);
     assert_eq!(second.committed_rows, first.committed_rows);
@@ -121,7 +108,6 @@ fn live_block_finalizing_commits_only_its_rows() {
     let mut tx = Transcript::new();
     let frame = render(
         &mut tx,
-        20,
         &[
             ("done", vec!["done".into()], true),
             ("pending", vec!["pending".into()], false),
@@ -132,7 +118,6 @@ fn live_block_finalizing_commits_only_its_rows() {
     // the exact position the separator was already committed for.
     let frame = render(
         &mut tx,
-        20,
         &[
             ("done", vec!["done".into()], true),
             ("pending", vec!["pending".into()], true),
@@ -146,10 +131,9 @@ fn live_block_finalizing_commits_only_its_rows() {
 #[test]
 fn appended_finalized_block_extends_durable_cache() {
     let mut tx = Transcript::new();
-    render(&mut tx, 20, &[("a", vec!["a".into()], true)]);
+    render(&mut tx, &[("a", vec!["a".into()], true)]);
     let frame = render(
         &mut tx,
-        20,
         &[("a", vec!["a".into()], true), ("b", vec!["b".into()], true)],
     );
     assert_eq!(frame.scrollback, vec!["", "b"]);
@@ -159,11 +143,11 @@ fn appended_finalized_block_extends_durable_cache() {
 #[test]
 fn generation_bump_rebuilds_but_preserves_commit_progress() {
     let mut tx = Transcript::new();
-    render_gen(&mut tx, 20, 0, &[("a", vec!["a".into()], true)]);
+    render_gen(&mut tx, 0, &[("a", vec!["a".into()], true)]);
     assert_eq!(tx.committed_rows(), 1);
     // Same content re-supplied under a new generation (e.g. an expand
     // toggle that happened to render identically): no duplicate scrollback.
-    let frame = render_gen(&mut tx, 20, 1, &[("a", vec!["a".into()], true)]);
+    let frame = render_gen(&mut tx, 1, &[("a", vec!["a".into()], true)]);
     assert_eq!(frame.scrollback, Vec::<String>::new());
     assert_eq!(frame.committed_rows, 1);
     assert_eq!(tx.durable_rows(), ["a"]);
@@ -174,7 +158,6 @@ fn shrunken_content_resets_and_reemits() {
     let mut tx = Transcript::new();
     render_gen(
         &mut tx,
-        20,
         0,
         &[("a", vec!["a".into()], true), ("b", vec!["b".into()], true)],
     );
@@ -185,7 +168,7 @@ fn shrunken_content_resets_and_reemits() {
     // new row re-emits as scrollback. (If the surviving content were
     // byte-identical, it would correctly NOT re-emit — see
     // `generation_bump_rebuilds_but_preserves_commit_progress`.)
-    let frame = render_gen(&mut tx, 20, 1, &[("a", vec!["a2".into()], true)]);
+    let frame = render_gen(&mut tx, 1, &[("a", vec!["a2".into()], true)]);
     assert_eq!(frame.scrollback, vec!["a2"]);
     assert_eq!(frame.committed_rows, 1);
 }
@@ -193,12 +176,12 @@ fn shrunken_content_resets_and_reemits() {
 #[test]
 fn prefix_divergence_without_generation_bump_self_heals() {
     let mut tx = Transcript::new();
-    render(&mut tx, 20, &[("a", vec!["a".into()], true)]);
+    render(&mut tx, &[("a", vec!["a".into()], true)]);
     // Same generation, different key at index 0: the fingerprint mismatch
     // rebuilds the assembly. Content-addressed commit progress finds the
     // divergence at row 0 (the content changed entirely), so both new rows
     // re-emit as scrollback — the previously-committed "a" is stale.
-    let frame = render(&mut tx, 20, &[("z", vec!["z1".into(), "z2".into()], true)]);
+    let frame = render(&mut tx, &[("z", vec!["z1".into(), "z2".into()], true)]);
     assert_eq!(tx.durable_rows(), ["z1", "z2"]);
     assert_eq!(frame.scrollback, vec!["z1", "z2"]);
 }
@@ -207,9 +190,9 @@ fn prefix_divergence_without_generation_bump_self_heals() {
 fn reset_reemits_everything_as_scrollback() {
     let mut tx = Transcript::new();
     let blocks = [("a", vec!["a".into()], true), ("b", vec!["b".into()], true)];
-    render(&mut tx, 20, &blocks);
+    render(&mut tx, &blocks);
     tx.reset();
-    let frame = render(&mut tx, 20, &blocks);
+    let frame = render(&mut tx, &blocks);
     assert_eq!(frame.scrollback, vec!["a", "", "b"]);
 }
 // ── WS6.4: prefix-stability invariant audit ──────────────────────────────
@@ -233,12 +216,12 @@ fn reset_reemits_everything_as_scrollback() {
 #[test]
 fn content_change_same_key_and_len_keeps_commit_point() {
     let mut tx = Transcript::new();
-    render(&mut tx, 20, &[("a", vec!["x".into(), "y".into()], true)]);
+    render(&mut tx, &[("a", vec!["x".into(), "y".into()], true)]);
     assert_eq!(tx.committed_rows(), 2);
     // Same key, same length, different content, NO generation bump: the
     // (key, len) fingerprint still matches, so the cache is trusted. The
     // commit point stays at 2 — no misalignment.
-    let frame = render(&mut tx, 20, &[("a", vec!["x".into(), "Z".into()], true)]);
+    let frame = render(&mut tx, &[("a", vec!["x".into(), "Z".into()], true)]);
     assert_eq!(frame.scrollback, Vec::<String>::new());
     assert_eq!(frame.committed_rows, 2);
     assert_eq!(frame.live, Vec::<String>::new());
@@ -256,7 +239,6 @@ fn gen_bump_shrunken_prefix_with_live_does_not_swallow_live_rows() {
     // Two finalized blocks → durable = [a1, a2, "", b1, b2], all committed.
     render_gen(
         &mut tx,
-        20,
         0,
         &[
             ("a", vec!["a1".into(), "a2".into()], true),
@@ -271,7 +253,6 @@ fn gen_bump_shrunken_prefix_with_live_does_not_swallow_live_rows() {
     // committed_rows=5 would skip all live rows.
     let frame = render_gen(
         &mut tx,
-        20,
         1,
         &[
             ("a", vec!["a1".into()], true),
@@ -305,7 +286,6 @@ fn tool_summary_run_merge_does_not_corrupt_commit_point() {
     // Stable history + a finalized summary card + a live streaming block.
     render_gen(
         &mut tx,
-        20,
         0,
         &[
             ("hist", vec!["h".into()], true),
@@ -319,7 +299,6 @@ fn tool_summary_run_merge_does_not_corrupt_commit_point() {
     // live block keeps streaming.
     let frame = render_gen(
         &mut tx,
-        20,
         1,
         &[
             ("hist", vec!["h".into()], true),
@@ -354,9 +333,9 @@ fn committed_rows_monotonic_within_generation() {
         ("a", vec!["a".into()], true),
         ("live", vec!["typing".into()], false),
     ];
-    let f1 = render(&mut tx, 20, &blocks);
-    let f2 = render(&mut tx, 20, &blocks);
-    let f3 = render(&mut tx, 20, &blocks);
+    let f1 = render(&mut tx, &blocks);
+    let f2 = render(&mut tx, &blocks);
+    let f3 = render(&mut tx, &blocks);
     assert_eq!(f1.committed_rows, f2.committed_rows);
     assert_eq!(f2.committed_rows, f3.committed_rows);
     assert!(f2.scrollback.is_empty());

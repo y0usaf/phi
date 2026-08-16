@@ -63,12 +63,10 @@ impl AnsiStyle {
 // ---------------------------------------------------------------------------
 
 #[derive(Clone, Debug)]
-#[allow(dead_code)]
 enum Patch {
     Move { row: u16, col: u16 },
     Text { string: String, width: u16 },
     Style(AnsiStyle),
-    Newline,
 }
 
 struct PatchOptimizer {
@@ -217,65 +215,11 @@ impl AnsiCodegen {
     }
 
     fn write_fg(&mut self, color: Color) {
-        if color == DEFAULT_FG {
-            self.buf.push_str("\x1b[39m");
-            return;
-        }
-        if let Some(index) = color.ansi_index_value() {
-            match index {
-                0..=7 => {
-                    use std::fmt::Write;
-                    let _ = write!(self.buf, "\x1b[{}m", 30 + index);
-                }
-                8..=15 => {
-                    use std::fmt::Write;
-                    let _ = write!(self.buf, "\x1b[{}m", 90 + index - 8);
-                }
-                _ => {
-                    use std::fmt::Write;
-                    let _ = write!(self.buf, "\x1b[38;5;{index}m");
-                }
-            }
-            return;
-        }
-        let (r, g, b) = color.rgb_components();
-        use std::fmt::Write;
-        if phi_tui::has_truecolor() {
-            let _ = write!(self.buf, "\x1b[38;2;{r};{g};{b}m");
-        } else {
-            let _ = write!(self.buf, "\x1b[38;5;{}m", phi_tui::rgb_to_xterm256(r, g, b));
-        }
+        write_color(&mut self.buf, color, true);
     }
 
     fn write_bg(&mut self, color: Color) {
-        if color == DEFAULT_BG {
-            self.buf.push_str("\x1b[49m");
-            return;
-        }
-        if let Some(index) = color.ansi_index_value() {
-            match index {
-                0..=7 => {
-                    use std::fmt::Write;
-                    let _ = write!(self.buf, "\x1b[{}m", 40 + index);
-                }
-                8..=15 => {
-                    use std::fmt::Write;
-                    let _ = write!(self.buf, "\x1b[{}m", 100 + index - 8);
-                }
-                _ => {
-                    use std::fmt::Write;
-                    let _ = write!(self.buf, "\x1b[48;5;{index}m");
-                }
-            }
-            return;
-        }
-        let (r, g, b) = color.rgb_components();
-        use std::fmt::Write;
-        if phi_tui::has_truecolor() {
-            let _ = write!(self.buf, "\x1b[48;2;{r};{g};{b}m");
-        } else {
-            let _ = write!(self.buf, "\x1b[48;5;{}m", phi_tui::rgb_to_xterm256(r, g, b));
-        }
+        write_color(&mut self.buf, color, false);
     }
 
     /// Emit a cursor move. Uses a relative forward move (`\x1b[NC`) only when
@@ -691,14 +635,7 @@ fn collect_full_row_patches(
 
 fn cell_text_width(surface: &CellSurface, cell: &PackedCell) -> u16 {
     let text = surface.interner.resolve(cell.text);
-    text.chars()
-        .map(|c| {
-            unicode_width::UnicodeWidthChar::width(c)
-                .unwrap_or(1)
-                .max(if cell.style.continuation() { 0 } else { 1 }) as u16
-        })
-        .sum::<u16>()
-        .max(1)
+    phi_tui::display_cell_width(text).max(1) as u16
 }
 
 fn emit_patches<W: Write>(
@@ -714,11 +651,6 @@ fn emit_patches<W: Write>(
             Patch::Move { row, col } => codegen.emit_move(*row, *col),
             Patch::Style(style) => codegen.apply_style(*style),
             Patch::Text { string, width } => codegen.emit_text(string, *width),
-            Patch::Newline => {
-                codegen.buf.push('\n');
-                codegen.cur_row += 1;
-                codegen.cur_col = 1;
-            }
         }
     }
     let buf = codegen.finish();
@@ -740,59 +672,81 @@ fn render_hardware_cursor<W: Write>(
     }
 }
 
+/// Emit an SGR color foreground/background select sequence into a `String`
+/// buffer. This is the single shared color emitter routed to by both the diff
+/// codegen (`AnsiCodegen::write_fg/write_bg`) and the full-repaint style
+/// writer (`write_style_full`).
+fn write_color(buf: &mut String, color: Color, foreground: bool) {
+    use std::fmt::Write;
+    if foreground {
+        if color == DEFAULT_FG {
+            let _ = write!(buf, "\x1b[39m");
+            return;
+        }
+        if let Some(index) = color.ansi_index_value() {
+            match index {
+                0..=7 => {
+                    let _ = write!(buf, "\x1b[{}m", 30 + index);
+                }
+                8..=15 => {
+                    let _ = write!(buf, "\x1b[{}m", 90 + index - 8);
+                }
+                _ => {
+                    let _ = write!(buf, "\x1b[38;5;{index}m");
+                }
+            }
+            return;
+        }
+        let (r, g, b) = color.rgb_components();
+        if phi_tui::has_truecolor() {
+            let _ = write!(buf, "\x1b[38;2;{r};{g};{b}m");
+        } else {
+            let _ = write!(buf, "\x1b[38;5;{}m", phi_tui::rgb_to_xterm256(r, g, b));
+        }
+    } else {
+        if color == DEFAULT_BG {
+            let _ = write!(buf, "\x1b[49m");
+            return;
+        }
+        if let Some(index) = color.ansi_index_value() {
+            match index {
+                0..=7 => {
+                    let _ = write!(buf, "\x1b[{}m", 40 + index);
+                }
+                8..=15 => {
+                    let _ = write!(buf, "\x1b[{}m", 100 + index - 8);
+                }
+                _ => {
+                    let _ = write!(buf, "\x1b[48;5;{index}m");
+                }
+            }
+            return;
+        }
+        let (r, g, b) = color.rgb_components();
+        if phi_tui::has_truecolor() {
+            let _ = write!(buf, "\x1b[48;2;{r};{g};{b}m");
+        } else {
+            let _ = write!(buf, "\x1b[48;5;{}m", phi_tui::rgb_to_xterm256(r, g, b));
+        }
+    }
+}
+
 /// Full style write (used by `render_full`): reset + fg/bg + booleans.
 fn write_style_full<W: Write>(out: &mut W, style: AnsiStyle) -> io::Result<()> {
-    write!(out, "\x1b[0m")?;
-    write_fg(out, style.fg)?;
-    write_bg(out, style.bg)?;
+    let mut buf = String::new();
+    buf.push_str("\x1b[0m");
+    write_color(&mut buf, style.fg, true);
+    write_color(&mut buf, style.bg, false);
     if style.bold {
-        write!(out, "\x1b[1m")?;
+        buf.push_str("\x1b[1m");
     }
     if style.underline {
-        write!(out, "\x1b[4m")?;
+        buf.push_str("\x1b[4m");
     }
     if style.reverse {
-        write!(out, "\x1b[7m")?;
+        buf.push_str("\x1b[7m");
     }
-    Ok(())
-}
-
-fn write_fg<W: Write>(out: &mut W, color: Color) -> io::Result<()> {
-    if color == DEFAULT_FG {
-        return write!(out, "\x1b[39m");
-    }
-    if let Some(index) = color.ansi_index_value() {
-        return match index {
-            0..=7 => write!(out, "\x1b[{}m", 30 + index),
-            8..=15 => write!(out, "\x1b[{}m", 90 + index - 8),
-            _ => write!(out, "\x1b[38;5;{index}m"),
-        };
-    }
-    let (r, g, b) = color.rgb_components();
-    if phi_tui::has_truecolor() {
-        write!(out, "\x1b[38;2;{r};{g};{b}m")
-    } else {
-        write!(out, "\x1b[38;5;{}m", phi_tui::rgb_to_xterm256(r, g, b))
-    }
-}
-
-fn write_bg<W: Write>(out: &mut W, color: Color) -> io::Result<()> {
-    if color == DEFAULT_BG {
-        return write!(out, "\x1b[49m");
-    }
-    if let Some(index) = color.ansi_index_value() {
-        return match index {
-            0..=7 => write!(out, "\x1b[{}m", 40 + index),
-            8..=15 => write!(out, "\x1b[{}m", 100 + index - 8),
-            _ => write!(out, "\x1b[48;5;{index}m"),
-        };
-    }
-    let (r, g, b) = color.rgb_components();
-    if phi_tui::has_truecolor() {
-        write!(out, "\x1b[48;2;{r};{g};{b}m")
-    } else {
-        write!(out, "\x1b[48;5;{}m", phi_tui::rgb_to_xterm256(r, g, b))
-    }
+    out.write_all(buf.as_bytes())
 }
 
 #[cfg(test)]

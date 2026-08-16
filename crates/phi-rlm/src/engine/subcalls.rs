@@ -113,7 +113,7 @@ impl EngineSubcalls {
     /// child inherits the parent's config with the *remaining* budget and
     /// timeout; its usage rolls up into the parent's handler.
     ///
-    /// Returns `SubcallResponse::Json` in both paths so the REPL always sees
+    /// Returns `SubcallResponse::Value` in both paths so the REPL always sees
     /// the structured dict `{'text', 'summary', 'stop', 'iterations', 'ok'}`.
     /// The depth-cap path sets `stop='fallback'` so the caller can distinguish
     /// "ran without a REPL" from a child that finished normally.
@@ -133,7 +133,7 @@ impl EngineSubcalls {
             // the REPL sees it as an error string rather than a partial dict.
             let flat = self.query(prompt, model, "RLM").await;
             return match flat {
-                Ok(SubcallResponse::Text(text)) => Ok(SubcallResponse::Json(json!({
+                Ok(SubcallResponse::Text(text)) => Ok(SubcallResponse::Value(json!({
                     "text": text,
                     "summary": bound_summary(&text).unwrap_or_default(),
                     "stop": "fallback",
@@ -159,7 +159,7 @@ impl EngineSubcalls {
                     "Error: Budget exhausted (spent ${:.6} of ${:.6})",
                     usage.cost.total, max_budget
                 );
-                return Ok(SubcallResponse::Json(json!({
+                return Ok(SubcallResponse::Value(json!({
                     "text": err,
                     "summary": err,
                     "stop": "failed",
@@ -178,7 +178,7 @@ impl EngineSubcalls {
                     elapsed.as_secs_f64(),
                     max_timeout.as_secs_f64()
                 );
-                return Ok(SubcallResponse::Json(json!({
+                return Ok(SubcallResponse::Value(json!({
                     "text": err,
                     "summary": err,
                     "stop": "failed",
@@ -258,7 +258,7 @@ impl EngineSubcalls {
             .clone()
             .or_else(|| bound_summary(&completion.response))
             .unwrap_or_default();
-        Ok(SubcallResponse::Json(json!({
+        Ok(SubcallResponse::Value(json!({
             "text": completion.response,
             "summary": summary,
             "stop": stop_str,

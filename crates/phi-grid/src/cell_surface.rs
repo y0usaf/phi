@@ -146,6 +146,12 @@ impl CellSurface {
         }
     }
 
+    // Non-styled `set_cell`/`put_text`/`put_text_bold` wrappers are kept (not
+    // dropped) because they are still called from outside this module:
+    // `set_cell` from `draw_box`/`render_cell_scrollbar` here plus
+    // phi-mux scene/statusbar/tests, and `put_text`/`put_text_bold` from the
+    // mux rendering pipeline, phi-builtins overlays, and phi-lua.  Only the
+    // non-styled `put_cell_span` had no external callers and was dropped.
     pub fn set_cell(
         &mut self,
         col: i32,
@@ -185,19 +191,6 @@ impl CellSurface {
                 text: packed_text,
             },
         );
-    }
-
-    pub fn put_cell_span(
-        &mut self,
-        col: i32,
-        row: i32,
-        span: i32,
-        text: &str,
-        fg: Color,
-        bg: Color,
-        underline: bool,
-    ) {
-        self.put_cell_span_styled(col, row, span, text, fg, bg, underline, false, false);
     }
 
     pub fn put_cell_span_styled(
@@ -382,9 +375,8 @@ pub fn render_cell_scrollbar(
 }
 
 pub fn char_cell_width(ch: char) -> i32 {
-    unicode_width::UnicodeWidthChar::width(ch)
-        .unwrap_or(1)
-        .max(1) as i32
+    let mut buf = [0u8; 4];
+    phi_tui::display_cell_width(ch.encode_utf8(&mut buf)) as i32
 }
 
 pub use phi_tui::{display_cell_width, truncate_to_cells};

@@ -2,9 +2,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use phi_repl::{
-    EnvSetup, PythonRepl, ReplEnv, SubcallHandler, SubcallRequest, SubcallResponse, ToolEvent,
-};
+use phi_repl::{EnvSetup, PythonRepl, SubcallHandler, SubcallRequest, SubcallResponse, ToolEvent};
 
 use super::CODING_PRELUDE;
 
@@ -47,7 +45,7 @@ impl SubcallHandler for SizedSubcalls {
                 } else {
                     "small-result".to_owned()
                 };
-                Ok(SubcallResponse::Json(serde_json::json!({
+                Ok(SubcallResponse::Value(serde_json::json!({
                     "text": text,
                     "stop": "answer",
                     "iterations": 1,
@@ -1169,7 +1167,7 @@ async fn subagent_spills_oversized_text_field() {
 async fn scaffold_restores_prelude_tools_and_context_after_overwrite() {
     let handler = Arc::new(NoSubcalls::default());
     let setup = EnvSetup {
-        context_str: Some("the real context".to_owned()),
+        context: Some(serde_json::json!("the real context")),
         ..EnvSetup::default()
     };
     let (mut repl, _h) = started_with(handler, setup).await;

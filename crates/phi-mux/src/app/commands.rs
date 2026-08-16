@@ -460,16 +460,8 @@ impl MuxApp {
                 StatusNoteKind::Error,
             );
         }
-        self.palette = match self
-            .visual_runtime
-            .as_deref()
-            .and_then(|rt| rt.active_theme())
-        {
-            Some(spec) => {
-                crate::ui::palette::ScenePalette::from_extension_theme(spec, &self.terminal_colors)
-            }
-            None => crate::ui::palette::ScenePalette::from_terminal_colors(&self.terminal_colors),
-        };
+        self.palette =
+            super::resolve_palette(self.visual_runtime.as_deref(), &self.terminal_colors);
         // Committed frames have the old palette baked in: force every view
         // to repaint from scratch (the alt-screen-transition mechanics).
         for view in self.views.values_mut() {

@@ -44,7 +44,7 @@ impl ScreenSnapshot {
 
         // scrollback_total is set to the offset as a placeholder; the caller
         // (MuxApp::draw) computes the true total under the lock and updates
-        // this field. See cached_scrollback_total in MuxApp for the cache.
+        // this field.
         let scrollback_total = scrollback_offset;
 
         Self {

@@ -22,7 +22,7 @@ use std::sync::Arc;
 
 use base64::Engine as _;
 use phi_ai::Usage;
-use phi_repl::ReplEnv;
+use phi_repl::PythonRepl;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
@@ -108,7 +108,7 @@ impl Rlm {
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn maybe_compact(
         &self,
-        env: &mut Box<dyn ReplEnv>,
+        env: &mut PythonRepl,
         handler: &Arc<LmHandler>,
         history: &mut Vec<ChatMessage>,
         last_usage: &Usage,

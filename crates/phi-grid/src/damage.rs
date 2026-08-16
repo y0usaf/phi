@@ -2,48 +2,14 @@
 //! Drawing primitives mark a `DirtyRegion`; the diff loop can then skip clean
 //! regions entirely, dropping complexity from O(Cols * Rows) to O(DirtyCells).
 
-/// A rectangular region of the cell grid.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct Rect {
-    pub x: i32,
-    pub y: i32,
-    pub width: i32,
-    pub height: i32,
-}
+use crate::layout::CellRect;
 
-impl Rect {
-    pub fn new(x: i32, y: i32, width: i32, height: i32) -> Self {
-        Self {
-            x,
-            y,
-            width,
-            height,
-        }
-    }
-
-    pub fn intersection(&self, other: &Rect) -> Option<Rect> {
-        let x1 = self.x.max(other.x);
-        let y1 = self.y.max(other.y);
-        let x2 = (self.x + self.width).min(other.x + other.width);
-        let y2 = (self.y + self.height).min(other.y + other.height);
-
-        if x2 > x1 && y2 > y1 {
-            Some(Rect {
-                x: x1,
-                y: y1,
-                width: x2 - x1,
-                height: y2 - y1,
-            })
-        } else {
-            None
-        }
-    }
-}
-
-/// A collection of dirty rectangles.
+/// A collection of dirty rectangles. Reuses `layout::CellRect` as the rect
+/// type (the single 4-i32 cell-rect in the grid, coalesced from the former
+/// `damage::Rect`).
 #[derive(Debug, Default, Clone)]
 pub struct DirtyRegion {
-    rects: Vec<Rect>,
+    rects: Vec<CellRect>,
 }
 
 impl DirtyRegion {
@@ -59,8 +25,8 @@ impl DirtyRegion {
         self.rects.clear();
     }
 
-    pub fn add(&mut self, rect: Rect) {
-        if rect.width <= 0 || rect.height <= 0 {
+    pub fn add(&mut self, rect: CellRect) {
+        if rect.cols <= 0 || rect.rows <= 0 {
             return;
         }
         // Simple, fast union: coalesce with the last rect if they overlap or
@@ -68,25 +34,25 @@ impl DirtyRegion {
         // count bounded without a full sweep-line merge.
         if let Some(last) = self.rects.last_mut() {
             // Same single row, horizontally adjacent/overlapping → extend.
-            if last.y == rect.y
-                && last.height == rect.height
-                && rect.x <= last.x + last.width
-                && last.x <= rect.x + rect.width
+            if last.row == rect.row
+                && last.rows == rect.rows
+                && rect.col <= last.col + last.cols
+                && last.col <= rect.col + rect.cols
             {
-                let new_right = (last.x + last.width).max(rect.x + rect.width);
-                last.x = last.x.min(rect.x);
-                last.width = new_right - last.x;
+                let new_right = (last.col + last.cols).max(rect.col + rect.cols);
+                last.col = last.col.min(rect.col);
+                last.cols = new_right - last.col;
                 return;
             }
             // Same columns, vertically adjacent/overlapping → extend.
-            if last.x == rect.x
-                && last.width == rect.width
-                && rect.y <= last.y + last.height
-                && last.y <= rect.y + rect.height
+            if last.col == rect.col
+                && last.cols == rect.cols
+                && rect.row <= last.row + last.rows
+                && last.row <= rect.row + rect.rows
             {
-                let new_bottom = (last.y + last.height).max(rect.y + rect.height);
-                last.y = last.y.min(rect.y);
-                last.height = new_bottom - last.y;
+                let new_bottom = (last.row + last.rows).max(rect.row + rect.rows);
+                last.row = last.row.min(rect.row);
+                last.rows = new_bottom - last.row;
                 return;
             }
         }
@@ -96,27 +62,28 @@ impl DirtyRegion {
     /// Mark the entire region dirty by pushing a full-screen rect.
     pub fn add_full(&mut self, cols: i32, rows: i32) {
         self.rects.clear();
-        self.rects.push(Rect::new(0, 0, cols, rows));
+        self.rects.push(CellRect::new(0, 0, cols, rows));
     }
 
-    pub fn add_rect(&mut self, x: i32, y: i32, width: i32, height: i32) {
-        self.add(Rect::new(x, y, width, height));
+    pub fn add_rect(&mut self, col: i32, row: i32, cols: i32, rows: i32) {
+        self.add(CellRect::new(col, row, cols, rows));
     }
 
     /// Iterate flat row-major cell indices covered by the dirty rects,
     /// clamped to `(cols, rows)`.
     pub fn iter_indices(&self, cols: i32, rows: i32) -> impl Iterator<Item = usize> + '_ {
         let cols_us = cols as usize;
-        let bounds = Rect::new(0, 0, cols, rows);
+        let bounds = CellRect::new(0, 0, cols, rows);
         self.rects
             .iter()
             .filter_map(move |r| r.intersection(&bounds))
             .flat_map(move |r| {
-                let start_x = r.x as usize;
-                let start_y = r.y as usize;
-                let end_x = (r.x + r.width) as usize;
-                let end_y = (r.y + r.height) as usize;
-                (start_y..end_y).flat_map(move |y| (start_x..end_x).map(move |x| y * cols_us + x))
+                let start_col = r.col.max(0) as usize;
+                let start_row = r.row.max(0) as usize;
+                let end_col = (r.col + r.cols).max(0) as usize;
+                let end_row = (r.row + r.rows).max(0) as usize;
+                (start_row..end_row)
+                    .flat_map(move |y| (start_col..end_col).map(move |x| y * cols_us + x))
             })
     }
 }
@@ -132,7 +99,7 @@ mod tests {
         d.add_rect(1, 0, 1, 1);
         d.add_rect(2, 0, 1, 1);
         assert_eq!(d.rects.len(), 1);
-        assert_eq!(d.rects[0], Rect::new(0, 0, 3, 1));
+        assert_eq!(d.rects[0], CellRect::new(0, 0, 3, 1));
     }
 
     #[test]

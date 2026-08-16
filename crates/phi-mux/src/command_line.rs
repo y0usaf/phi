@@ -20,7 +20,19 @@ pub struct CommandLineState {
 }
 
 impl CommandLineState {
-    pub fn with_input(input: impl Into<String>) -> Self {
+    /// An empty command line (the only production construction site: `:`
+    /// always opens blank).
+    pub fn new() -> Self {
+        Self {
+            input: String::new(),
+            cursor: 0,
+        }
+    }
+
+    /// Test-only: start with pre-filled input so key handling can be
+    /// exercised on realistic text.
+    #[cfg(test)]
+    fn with_input(input: impl Into<String>) -> Self {
         let input = input.into();
         let cursor = input.len();
         Self { input, cursor }

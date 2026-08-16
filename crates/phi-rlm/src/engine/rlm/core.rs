@@ -7,7 +7,7 @@ use std::sync::LazyLock;
 use std::time::Instant;
 
 use phi_ai::ToolDefinition;
-use phi_repl::{EnvSetup, ReplEnv, ReplResult, SubcallHandler};
+use phi_repl::{EnvSetup, PythonRepl, ReplResult, SubcallHandler};
 use serde_json::json;
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 use tokio_util::sync::CancellationToken;
@@ -326,15 +326,15 @@ impl Rlm {
         handler: &Arc<LmHandler>,
         payload: ContextPayload,
         run: RunState,
-    ) -> Result<Box<dyn ReplEnv>, String> {
+    ) -> Result<PythonRepl, String> {
         let subcalls = Arc::new(EngineSubcalls {
             rlm: self.clone(),
             handler: handler.clone(),
             run,
         });
-        let (context, context_str) = match payload {
-            ContextPayload::Str(s) => (None, Some(s)),
-            ContextPayload::Json(v) => (Some(v), None),
+        let context = match payload {
+            ContextPayload::Str(s) => Some(serde_json::Value::String(s)),
+            ContextPayload::Json(v) => Some(v),
         };
         let mut env = PythonEnvFactory {
             python: self.python.clone(),
@@ -342,7 +342,6 @@ impl Rlm {
         .create(subcalls);
         let setup = EnvSetup {
             context,
-            context_str,
             setup_code: self.config.setup_code.clone(),
             cwd: self.config.cwd.clone(),
             host_fns: self.config.host_fns.clone(),
@@ -405,7 +404,7 @@ impl Rlm {
     #[allow(clippy::too_many_arguments)]
     pub async fn run_loop(
         &self,
-        env: &mut Box<dyn ReplEnv>,
+        env: &mut PythonRepl,
         handler: &Arc<LmHandler>,
         history: &mut Vec<ChatMessage>,
         history_count: usize,

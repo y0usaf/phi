@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use phi_ai::Usage;
-use phi_repl::{PythonRepl, ReplEnv, SubcallHandler};
+use phi_repl::{PythonRepl, SubcallHandler};
 use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::mpsc::UnboundedSender;
@@ -272,10 +272,10 @@ impl Events {
     }
 }
 
-/// Creates a fresh `ReplEnv` per completion, wired to the engine's
+/// Creates a fresh `PythonRepl` per completion, wired to the engine's
 /// subcall handler.
 pub(crate) trait EnvFactory: Send + Sync {
-    fn create(&self, handler: Arc<dyn SubcallHandler>) -> Box<dyn ReplEnv>;
+    fn create(&self, handler: Arc<dyn SubcallHandler>) -> PythonRepl;
 }
 
 pub(crate) struct PythonEnvFactory {
@@ -291,7 +291,7 @@ impl Default for PythonEnvFactory {
 }
 
 impl EnvFactory for PythonEnvFactory {
-    fn create(&self, handler: Arc<dyn SubcallHandler>) -> Box<dyn ReplEnv> {
-        Box::new(PythonRepl::with_python(self.python.clone(), handler))
+    fn create(&self, handler: Arc<dyn SubcallHandler>) -> PythonRepl {
+        PythonRepl::with_python(self.python.clone(), handler)
     }
 }
