@@ -101,7 +101,6 @@ fn walk(base: &Path) -> Vec<(String, bool)> {
     let mut out = Vec::new();
     let walker = ignore::WalkBuilder::new(base)
         .hidden(false)
-        .follow_links(true)
         .require_git(false)
         .filter_entry(|e| e.file_name() != ".git")
         .build();
@@ -146,8 +145,14 @@ fn score_entry(path: &str, query: &str, is_dir: bool) -> i32 {
 
 fn completion_value(path: &str, is_dir: bool) -> String {
     let full = format!("{path}{}", if is_dir { "/" } else { "" });
-    if full.contains(' ') {
-        format!("@\"{full}\"")
+    // Quote (and escape) whenever the path carries a space, a double-quote,
+    // a backslash, or any control character — not just spaces.
+    let needs_quote = full
+        .chars()
+        .any(|c| c == ' ' || c == '"' || c == '\\' || c.is_control());
+    if needs_quote {
+        let escaped = full.replace('\\', "\\\\").replace('\"', "\\\"");
+        format!("@\"{escaped}\"")
     } else {
         format!("@{full}")
     }
@@ -213,6 +218,16 @@ mod tests {
     #[test]
     fn values_with_spaces_are_quoted() {
         assert_eq!(completion_value("a b/c.txt", false), "@\"a b/c.txt\"");
+        assert_eq!(completion_value("src/main.rs", false), "@src/main.rs");
+    }
+
+    #[test]
+    fn values_with_quotes_or_control_chars_are_quoted_and_escaped() {
+        // A double-quote inside a path must be escaped inside the @"...".
+        assert_eq!(completion_value("a\"b/c.txt", false), "@\"a\\\"b/c.txt\"");
+        // A control character (newline) also forces quoting.
+        assert_eq!(completion_value("a\nb", false), "@\"a\nb\"");
+        // A plain single-word path stays unquoted.
         assert_eq!(completion_value("src/main.rs", false), "@src/main.rs");
     }
 }

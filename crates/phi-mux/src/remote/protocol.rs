@@ -46,8 +46,6 @@ pub enum ClientMsg {
     ClipboardText(Option<String>),
     /// Terminate the daemon (sent by `phi --mux --kill`).
     Kill,
-    /// Courtesy goodbye; closing the socket has the same effect.
-    Detach,
 }
 
 /// Server → client.

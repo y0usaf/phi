@@ -188,7 +188,6 @@ pub async fn run(shared: SharedResources, mux_config: MuxConfig, cwd: PathBuf) -
             let _ = events_tx.send(RemoteEvent::Kill);
         }
     });
-    daemon::signal_ready();
 
     // The first client's handshake seeds the canvas size and terminal
     // colors (the daemon has no tty to probe). Its cwd/projects were
@@ -330,7 +329,6 @@ async fn handle_connection(
             ClientMsg::EditResult(result) => RemoteEvent::EditResult { id, result },
             ClientMsg::ClipboardText(text) => RemoteEvent::ClipboardText { id, text },
             ClientMsg::Kill => RemoteEvent::Kill,
-            ClientMsg::Detach => break,
         };
         if events_tx.send(event).is_err() {
             break;

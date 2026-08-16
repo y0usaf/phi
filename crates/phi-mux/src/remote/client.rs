@@ -118,8 +118,7 @@ pub async fn run(cwd: PathBuf, projects: Vec<String>, model: Option<String>) -> 
         }
     };
 
-    // Courtesy goodbye; socket close alone also detaches us server-side.
-    let _ = send(&mut write_half, &ClientMsg::Detach).await;
+    // Socket close alone detaches us server-side.
     let _ = write_half.shutdown().await;
 
     let _ = phi_tui::crossterm::execute!(stdout, DisableMouseCapture);

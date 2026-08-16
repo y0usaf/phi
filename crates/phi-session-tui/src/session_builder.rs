@@ -70,12 +70,27 @@ pub fn resolve_project_trust(cwd: &Path, allow_prompt: bool) -> ProjectTrust {
         },
         None if allow_prompt => {
             let trusted = prompt_project_trust(cwd);
-            let _ = store.set(cwd, trusted);
-            ProjectTrust {
-                trusted,
-                notice: (!trusted).then(|| {
-                    "project .phi/ extensions not loaded — /trust to enable them".to_owned()
-                }),
+            match store.set(cwd, trusted) {
+                Ok(()) => ProjectTrust {
+                    trusted,
+                    notice: (!trusted).then(|| {
+                        "project .phi/ extensions not loaded — /trust to enable them".to_owned()
+                    }),
+                },
+                Err(e) => {
+                    // A failed persist must not silently diverge from the
+                    // store: don't report the project as trusted when the
+                    // decision didn't actually get recorded, and surface the
+                    // failure so the mismatch isn't silent.
+                    eprintln!("Warning: failed to persist project trust decision: {e:#}");
+                    ProjectTrust {
+                        trusted: false,
+                        notice: Some(
+                            "trust decision could not be saved — .phi/ not loaded — /trust to retry"
+                                .to_owned(),
+                        ),
+                    }
+                }
             }
         }
         None => ProjectTrust {
@@ -101,7 +116,10 @@ fn prompt_project_trust(cwd: &Path) -> bool {
     if std::io::stdin().read_line(&mut line).is_err() {
         return false;
     }
-    matches!(line.trim(), "y" | "Y" | "yes" | "Yes")
+    // Trim, compare the whole (trimmed) line case-insensitively so "yes",
+    // "YES", " y ", "Yes" all count; a blank line or anything else falls
+    // back to the default "No".
+    matches!(line.trim().to_lowercase().as_str(), "y" | "yes")
 }
 
 /// Build a ready-to-run interactive session rooted at `cwd`. Each call loads
@@ -426,7 +444,14 @@ fn build_rlm_config(
         custom_system_prompt: prompt_override.or_else(|| Some(phi_rlm::CODING_IDENTITY.to_owned())),
         append_system_prompt: append_prompt,
         setup_code: Some(setup_code),
-        tools_section: Some(coding_tools_section()),
+        // Advertise the native coding-tools section to the model only when
+        // the hybrid native surface is actually enabled; otherwise no tools
+        // section is advertised.
+        tools_section: if settings.coding_tools_native {
+            Some(coding_tools_section())
+        } else {
+            None
+        },
         env_info: Some(env_info_block(cwd, shell)),
         cwd: Some(cwd.display().to_string()),
         orchestrator: false,
@@ -516,9 +541,27 @@ pub fn extension_provider_models(
                 provider: config.name.clone(),
                 base_url: base_url.to_owned(),
                 reasoning: m.reasoning,
+                // Preserve the requested modality instead of forcing text:
+                // an image-only model stays image-only, and non-text/non-image
+                // (audio, unknown) entries are dropped with a notice rather than
+                // relabeled as text. Only an omitted/empty list defaults to
+                // text-only.
                 input: match &m.input {
-                    Some(modalities) if modalities.iter().any(|i| i == "image") => {
-                        vec![Modality::Text, Modality::Image]
+                    Some(modalities) if !modalities.is_empty() => {
+                        let mut parsed = Vec::new();
+                        for s in modalities {
+                            match serde_json::from_value::<Modality>(serde_json::Value::String(
+                                s.clone(),
+                            )) {
+                                Ok(modality) => parsed.push(modality),
+                                Err(_) => notices.push(format!(
+                                    "extension provider '{}' model '{}': \
+                                     unsupported input modality '{s}' — dropped",
+                                    config.name, m.id
+                                )),
+                            }
+                        }
+                        parsed
                     }
                     _ => vec![Modality::Text],
                 },
@@ -669,7 +712,13 @@ pub fn register_supported_named_models(
     storage: Arc<AuthStorage>,
     thinking: ThinkingLevel,
 ) {
-    for model in registry.supported_models() {
+    // Building a ProviderLm per catalog model is expensive for large catalogs
+    // (thousands of entries) and almost none are ever addressed by
+    // `llm_query(model=..)`. Cap the eagerly-built set: the /model selector
+    // already switches providers on demand from the registry, and unknown
+    // named models fall back to the default sub model.
+    const NAMED_MODEL_CAP: usize = 64;
+    for model in registry.supported_models().take(NAMED_MODEL_CAP) {
         let name = format!("{}/{}", model.provider, model.id);
         let lm = Arc::new(ProviderLm::new(
             registry.clone(),
@@ -977,6 +1026,32 @@ mod extension_provider_tests {
         // The dropped level is reported, not silently eaten.
         assert_eq!(notices.len(), 1);
         assert!(notices[0].contains("bogus"));
+    }
+
+    #[test]
+    fn modalities_are_preserved_not_relabeled() {
+        let mut cfg = config(None, Some("https://r.example"));
+        // Image-only stays image-only (no forced text).
+        cfg.models[0].input = Some(vec!["image".to_owned()]);
+        let mut notices = Vec::new();
+        let models = extension_provider_models(&cfg, &mut notices);
+        assert_eq!(models[0].input, vec![Modality::Image]);
+        assert!(notices.is_empty());
+
+        // Explicit text+image is preserved as-is.
+        cfg.models[0].input = Some(vec!["text".to_owned(), "image".to_owned()]);
+        let mut notices = Vec::new();
+        let models = extension_provider_models(&cfg, &mut notices);
+        assert_eq!(models[0].input, vec![Modality::Text, Modality::Image]);
+        assert!(notices.is_empty());
+
+        // Audio is dropped (not relabeled as text), with a notice.
+        cfg.models[0].input = Some(vec!["text".to_owned(), "audio".to_owned()]);
+        let mut notices = Vec::new();
+        let models = extension_provider_models(&cfg, &mut notices);
+        assert_eq!(models[0].input, vec![Modality::Text]);
+        assert_eq!(notices.len(), 1);
+        assert!(notices[0].contains("audio"));
     }
 
     #[test]

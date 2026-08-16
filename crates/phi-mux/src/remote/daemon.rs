@@ -1,22 +1,18 @@
 //! Daemon lifecycle: socket/lock paths, the flock-based single-daemon
-//! guarantee, stale-socket reaping, detached spawn, and the ready-fd
-//! handshake. Patterns follow jcode's socket.rs: a live daemon holds the
-//! lock for its whole life, so "socket refuses connections AND the lock is
-//! acquirable" proves the socket is stale and safe to unlink.
+//! guarantee, stale-socket reaping, and detached spawn. Patterns follow
+//! jcode's socket.rs: a live daemon holds the lock for its whole life, so
+//! "socket refuses connections AND the lock is acquirable" proves the
+//! socket is stale and safe to unlink.
 
 use std::fs::OpenOptions;
-use std::io::Read as _;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, bail};
 
-/// Env var carrying the write end of the ready pipe to the spawned daemon.
-pub const READY_FD_ENV: &str = "PHI_MUX_READY_FD";
-
-/// How long the spawning client waits for the daemon's ready byte before
-/// falling back to connect-polling.
+/// How long the spawning client waits for the socket to answer before
+/// giving up.
 const READY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Runtime directory for the socket and lock. `$XDG_RUNTIME_DIR/phi` on
@@ -117,10 +113,9 @@ pub fn ensure_running() -> Result<()> {
 }
 
 /// Spawn `current_exe() --mux-server` fully detached (own session via
-/// setsid, no tty), with a pipe handshake so this returns as soon as the
-/// daemon's accept loop is live.
+/// setsid, no tty). The caller's `wait_for_socket` connect-poll covers
+/// readiness.
 fn spawn_detached() -> Result<()> {
-    use std::os::fd::FromRawFd as _;
     use std::os::unix::process::CommandExt as _;
     use std::process::{Command, Stdio};
 
@@ -131,15 +126,8 @@ fn spawn_detached() -> Result<()> {
         .open(log_path())
         .ok();
 
-    let mut fds = [0i32; 2];
-    if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
-        bail!("pipe for daemon ready handshake failed");
-    }
-    let (read_fd, write_fd) = (fds[0], fds[1]);
-
     let mut cmd = Command::new(exe);
     cmd.arg("--mux-server")
-        .env(READY_FD_ENV, write_fd.to_string())
         .stdin(Stdio::null())
         .stdout(Stdio::null());
     match log {
@@ -156,32 +144,7 @@ fn spawn_detached() -> Result<()> {
             Ok(())
         });
     }
-    let spawned = cmd.spawn().context("spawn mux daemon");
-    // Parent must close its copy of the write end, or the ready-read below
-    // never sees EOF when the daemon dies before signaling.
-    unsafe { libc::close(write_fd) };
-    let mut ready = unsafe { std::fs::File::from_raw_fd(read_fd) };
-    spawned?;
-
-    // Wait for the single ready byte (or EOF on daemon death). A poll
-    // timeout falls through to connect-polling in `wait_for_socket`.
-    let ready_fd = {
-        use std::os::fd::AsRawFd as _;
-        ready.as_raw_fd()
-    };
-    let mut pfd = libc::pollfd {
-        fd: ready_fd,
-        events: libc::POLLIN,
-        revents: 0,
-    };
-    let timeout_ms = READY_TIMEOUT.as_millis() as i32;
-    let n = unsafe { libc::poll(&mut pfd, 1, timeout_ms) };
-    if n > 0 {
-        let mut byte = [0u8; 1];
-        let _ = ready.read(&mut byte);
-    }
-    // `ready` drops here, closing the read end; a poll timeout falls
-    // through to connect-polling in `wait_for_socket`.
+    cmd.spawn().context("spawn mux daemon")?;
     Ok(())
 }
 
@@ -200,25 +163,6 @@ fn wait_for_socket(path: &Path, timeout: Duration) -> Result<()> {
             );
         }
         std::thread::sleep(Duration::from_millis(25));
-    }
-}
-
-/// Daemon side: write the ready byte to the fd inherited via
-/// [`READY_FD_ENV`] (if any) and close it. Call once, right after the
-/// accept loop is listening.
-pub fn signal_ready() {
-    let Some(fd) = std::env::var(READY_FD_ENV)
-        .ok()
-        .and_then(|s| s.parse::<i32>().ok())
-    else {
-        return;
-    };
-    unsafe {
-        let byte = [1u8; 1];
-        libc::write(fd, byte.as_ptr().cast(), 1);
-        libc::close(fd);
-        // Don't leak the fd number into session subprocess environments.
-        std::env::remove_var(READY_FD_ENV);
     }
 }
 

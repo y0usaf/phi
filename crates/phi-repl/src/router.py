@@ -136,85 +136,52 @@ class _AnswerDict(dict):
 # a tmp file and printing the value shows a preview + the path instead of the
 # whole thing. REPL stdout enters the model's conversation history (and is
 # truncated at max_output_chars), so dumping a huge subagent result there
-# both blows context and loses the tail. Ported from upstream rlm's
-# SubagentResult (ref/rlm/rlm/environments/local_repl.py).
+# both blows context and loses the tail.
 SPILL_THRESHOLD = 50_000
 
 
+@dataclass(frozen=False)
 class SubagentResult:
-    """String-like wrapper for large subcall results.
+    """Preview wrapper for oversized subcall results.
 
-    Below SPILL_THRESHOLD the raw ``str`` is returned instead of this class,
-    so a wrapper only ever exists for spilled results. ``str(result)`` (and
-    thus ``print``) yields a short preview plus the tmp-file path; the full
-    text stays available as ``result.full_result``, by slicing, or by reading
-    the file. Non-dunder string methods delegate to the full text.
+    ``str(result)`` (and thus ``print``) yields a short preview plus the
+    tmp-file path; the full text stays available as ``result.full_result`` or
+    by reading ``result.tmp_path``. A plain dataclass: it does not pretend to
+    be a string, so no string operators delegate to the full text.
     """
 
-    __slots__ = ("full_result", "tmp_path", "_char_count")
+    full_result: str
+    tmp_path: str
 
-    def __init__(self, response, tmp_dir):
-        self.full_result = response
-        self._char_count = len(response)
-        fd, self.tmp_path = tempfile.mkstemp(
+    @classmethod
+    def spill(cls, response, tmp_dir):
+        fd, path = tempfile.mkstemp(
             prefix="phi-subagent-", suffix=".log", dir=tmp_dir
         )
         with os.fdopen(fd, "w") as f:
             f.write(response)
+        return cls(response, path)
 
-    def __getattr__(self, name):
-        if name.startswith("_") or name == "full_result":
-            raise AttributeError(name)
-        return getattr(self.full_result, name)
+    def __len__(self):
+        return len(self.full_result)
+
+    def __getitem__(self, item):
+        return self.full_result[item]
 
     def __str__(self):
         preview = self.full_result[:500]
         return (
-            "%s\n... + [%d chars]\n[Full output: %s — access via .full_result, "
-            "slicing, or read_file]" % (preview, self._char_count - 500, self.tmp_path)
+            "%s\n... + [%d chars]\n[Full output: %s]"
+            % (preview, len(self.full_result) - 500, self.tmp_path)
         )
 
     def __repr__(self):
-        return "SubagentResult(%d chars -> %s)" % (self._char_count, self.tmp_path)
-
-    def __len__(self):
-        return self._char_count
-
-    def __getitem__(self, key):
-        return self.full_result[key]
-
-    def __iter__(self):
-        return iter(self.full_result)
-
-    def __contains__(self, item):
-        return item in self.full_result
-
-    def __eq__(self, other):
-        if isinstance(other, SubagentResult):
-            return self.full_result == other.full_result
-        return self.full_result == other
-
-    def __hash__(self):
-        return hash(self.full_result)
-
-    def __add__(self, other):
-        if isinstance(other, SubagentResult):
-            return self.full_result + other.full_result
-        return self.full_result + other
-
-    def __radd__(self, other):
-        return other + self.full_result
-
-
-
-
-
+        return "SubagentResult(%d chars -> %s)" % (len(self.full_result), self.tmp_path)
 
 
 class Env:
     def __init__(self, setup):
         self.max_output = int(setup.get("max_output_chars") or 20000)
-        self.max_concurrent = int(setup.get("max_concurrent_subcalls") or 4)
         self.temp_dir = tempfile.mkdtemp(prefix="phi_repl_")
         self.work_dir = setup.get("cwd") or self.temp_dir
         os.chdir(self.work_dir)
@@ -286,7 +253,7 @@ class Env:
     def _spill(self, text):
         """Wrap oversized subcall text so printing it can't flood stdout."""
         if isinstance(text, str) and len(text) > SPILL_THRESHOLD:
-            return SubagentResult(text, self.temp_dir)
+            return SubagentResult.spill(text, self.temp_dir)
         return text
 
     def _llm_query(self, prompt, model=None):

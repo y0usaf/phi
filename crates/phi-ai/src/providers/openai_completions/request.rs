@@ -32,14 +32,11 @@ pub(super) fn build_body(
     }
 
     // Tool definitions: sent as the native OpenAI `tools` array so the model
-    // emits `tool_calls` instead of text-based fences.
+    // emits `tool_calls` instead of text-based fences. `tool_choice` is left to
+    // the model default (`auto`), so it may answer directly in one prose turn
+    // rather than being forced to call a tool every turn.
     if !ctx.tools.is_empty() {
         body["tools"] = Value::Array(ctx.tools.iter().map(openai_tool_schema).collect());
-        // Force the model to call a tool every turn. Without this, reasoning
-        // models default to `auto` and loop in prose instead of emitting
-        // `tool_calls`. OpenAI's Chat Completions API supports
-        // `tool_choice: "required"` alongside reasoning with no conflict.
-        body["tool_choice"] = json!("required");
     }
 
     body
@@ -341,7 +338,8 @@ line2"
     }
 
     #[test]
-    fn build_body_forces_tool_choice_required_when_tools_present() {
+    #[test]
+    fn build_body_sends_tools_but_no_tool_choice_when_tools_present() {
         let ctx = Context {
             system_prompt: Some("sys".to_owned()),
             messages: vec![Message::User(UserMessage::new("hi"))],
@@ -353,7 +351,15 @@ line2"
         };
         let opts = StreamOptions::new(Auth::ApiKey("k".to_owned()));
         let body = build_body(&model(), &ctx, &opts);
-        assert_eq!(body["tool_choice"], "required");
+        let tools = body.get("tools").expect("tools present => tools array");
+        assert!(
+            !tools.as_array().unwrap().is_empty(),
+            "tools array non-empty"
+        );
+        assert!(
+            body.get("tool_choice").is_none(),
+            "tool_choice left to model default"
+        );
     }
 
     #[test]
