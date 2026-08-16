@@ -12,9 +12,10 @@ use tokio_util::sync::CancellationToken;
 /// Per-model usage breakdown for a set of completions.
 // (UsageBreakdown now lives in phi_ai::lm)
 
+/// Per-model cumulative usage. Totals are derived on demand by summing the
+/// `by_model` map, which is kept in sync with every `track_model` write.
 #[derive(Clone, Default)]
 struct UsageLedger {
-    total: Usage,
     by_model: BTreeMap<String, Usage>,
 }
 
@@ -51,16 +52,17 @@ impl LmHandler {
     }
 
     pub fn usage(&self) -> Usage {
-        self.usage.lock().unwrap_or_else(|e| e.into_inner()).total
-    }
-
-    /// Add usage from a child RLM completion (rolls up the recursion tree).
-    pub fn add_child_usage(&self, child_usage: &Usage) {
-        self.usage
+        let mut total = Usage::default();
+        for usage in self
+            .usage
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .total
-            .add(child_usage);
+            .by_model
+            .values()
+        {
+            total.add(usage);
+        }
+        total
     }
 
     pub fn usage_by_model(&self) -> Vec<phi_ai::UsageBreakdown> {
@@ -120,7 +122,6 @@ impl LmHandler {
             return;
         }
         let mut ledger = self.usage.lock().unwrap_or_else(|e| e.into_inner());
-        ledger.total.add(usage);
         ledger.by_model.entry(model.into()).or_default().add(usage);
     }
 

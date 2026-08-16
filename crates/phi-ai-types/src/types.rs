@@ -128,29 +128,35 @@ pub struct Model {
 }
 
 impl Model {
-    /// Clamp to the nearest supported level at or below the requested one,
-    /// returning the provider-specific value for it.
+    /// Clamp to the nearest supported level, returning the provider-specific
+    /// value for it.
+    ///
+    /// Returns `None` when thinking is genuinely off or unsupported (level
+    /// `Off`, or the model isn't a reasoning model, or the model declares no
+    /// supported levels). Otherwise returns the provider value for the nearest
+    /// supported level: the requested level if supported, else the next-lower
+    /// supported level, else (when the request is below every supported level)
+    /// the lowest supported level. Thinking is never silently dropped.
     pub fn thinking_value(&self, level: ThinkingLevel) -> Option<String> {
         if level == ThinkingLevel::Off || !self.reasoning {
             return None;
         }
-        // If the model has explicit thinking levels, clamp to the nearest
-        // supported level at or below the requested one.
         if let Some(map) = self.thinking_levels.as_ref() {
-            let mut candidates: Vec<&ThinkingLevel> = map
+            let supported: Vec<&ThinkingLevel> = map
                 .iter()
-                .filter(|(l, v)| **l != ThinkingLevel::Off && v.is_some() && **l <= level)
+                .filter(|(l, v)| **l != ThinkingLevel::Off && v.is_some())
                 .map(|(l, _)| l)
                 .collect();
-            candidates.sort();
-            let chosen = candidates.last()?;
-            return map.get(chosen).cloned().flatten();
+            let chosen = supported
+                .iter()
+                .copied()
+                .filter(|l| **l <= level)
+                .max()
+                .or_else(|| supported.iter().copied().min())
+                .copied();
+            let chosen = chosen?;
+            return map.get(&chosen).cloned().flatten();
         }
-        // Fallback: the model supports reasoning but has no explicit thinking
-        // levels (e.g. Vercel AI Gateway models where the gateway API doesn't
-        // expose reasoning_options metadata). Without this, thinking would be
-        // silently dropped for all such models regardless of the configured
-        // thinking level. Use sensible defaults so thinking is actually sent.
         Some(default_thinking_value(self, level))
     }
 }
@@ -218,6 +224,11 @@ impl Usage {
     }
 
     pub fn add(&mut self, other: &Usage) {
+        // Accumulate each field independently. `total_tokens` and `cost.total`
+        // are *not* always derived from the component fields — providers and
+        // callers may set them directly (e.g. a flat per-call cost with no
+        // input/output breakdown). Recomputing them from the components here
+        // would silently drop such values, so add them directly instead.
         self.input += other.input;
         self.output += other.output;
         self.cache_read += other.cache_read;
