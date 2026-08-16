@@ -19,6 +19,15 @@ waits on a foreground exec, so `llm_query` etc. issued from a background job
 block until the next foreground exec is pumping.
 """
 
+# The driver script is spawned from a temp file, so the system temp dir
+# lands on sys.path[0]. That lets unrelated files shadow stdlib modules — a
+# stray /tmp/inspect.py breaks 'import inspect' inside traceback and kills
+# the driver at startup. Drop the script dir from the import path before any
+# stdlib import below.
+import sys as _sys
+import os as _os
+_phi_script_dir = _os.path.dirname(_os.path.abspath(__file__))
+_sys.path = [p for p in _sys.path if _os.path.abspath(p) != _phi_script_dir]
 import io
 import json
 import os
