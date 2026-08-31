@@ -265,7 +265,12 @@ pub async fn build_runtime(
             "phi-style-crush",
             phi_builtins::defaults::STYLE_CRUSH_LUA.to_owned(),
         )?;
+        let fx_style_ext = phi_lua::LuaExtension::from_source(
+            "phi-style-fx",
+            phi_builtins::defaults::STYLE_FX_LUA.to_owned(),
+        )?;
         rt_builder = rt_builder.register_extension(crush_style_ext);
+        rt_builder = rt_builder.register_extension(fx_style_ext);
 
         // Tool render metadata (last-write-wins, so a user spec can restyle).
         let tool_render_ext = phi_lua::LuaExtension::from_source(

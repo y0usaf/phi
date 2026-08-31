@@ -35,4 +35,3 @@ phi.register_thinking_expression("phi:default", {
 -- empty: absent members fall back to the base registrations above (and the
 -- Rust theme resolver), so `/style phi` means "the defaults" and switching
 -- back from another pack restores them.
-phi.register_style("phi", {})

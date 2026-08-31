@@ -77,7 +77,6 @@ impl RuntimeBuilder {
             host.thinking_expressions,
             host.text_effects,
             host.overlays,
-            host.styles,
         ))
     }
 }

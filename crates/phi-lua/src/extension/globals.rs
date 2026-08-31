@@ -256,24 +256,6 @@ pub(super) fn setup_phi_global(lua: &mlua::Lua) -> mlua::Result<()> {
         })?;
     phi.set("register_thinking_expression", register_thinking_expr_fn)?;
 
-    // phi.register_style(name, opts) — a style pack (WS10): a bundle of the
-    // existing visual shapes activated as a unit by `/style <name>`.
-    // opts: { theme = { foreground = {r,g,b}, ... },          -- palette table
-    //         spinner = { frames = {...}, frame_interval_ms = 80 },
-    //         thinking = { expressions = {...}, tool_expression = "...",
-    //                      expression_interval_ms = 2000 },
-    //         tool_renderers = { bash = { verb = "exec", ... }, ... } }
-    // Every member is optional; absent members fall back to the base
-    // registrations while the style is active.
-    let register_style_fn = lua.create_function(|lua, (name, opts): (String, mlua::Table)| {
-        let globals = lua.globals();
-        let styles: mlua::Table = globals.get("_phi_styles")?;
-        styles.set(name.as_str(), opts)?;
-        let reg: mlua::Table = globals.get("_phi_registered_styles")?;
-        register_unique(&reg, name)?;
-        Ok(())
-    })?;
-    phi.set("register_style", register_style_fn)?;
 
     // phi.register_overlay(name, opts)
     // opts: {

@@ -4,9 +4,9 @@ use std::time::Duration;
 
 use anyhow::Result;
 use phi_ext::{
-    CommandInvocation, CommandOutput, CommandSpec, EventHandlerRegistration, ExtensionHost,
+    SpinnerSpec, CommandInvocation, CommandOutput, CommandSpec, EventHandlerRegistration, ExtensionHost,
     ExtensionManifest, FlagSpec, FlagType, LifecycleEvent, MessageRendererSpec, ProviderConfig,
-    ProviderModelConfig, ShortcutSpec, SpinnerSpec, StyleSpec, ThemeSpec, ThinkingExpressionSpec,
+    ProviderModelConfig, ShortcutSpec, ThemeSpec, ThinkingExpressionSpec,
     ToolDispatch, ToolExposure, ToolInvocation, ToolOutput, ToolParam, ToolRenderSpec, ToolSpec,
 };
 use std::collections::BTreeMap;
@@ -434,53 +434,6 @@ impl phi_ext::Extension for LuaExtension {
             thinking_exprs.push(thinking_from_table(&lua, name.clone(), &te_table)?);
         }
 
-        // ── Read registered styles (WS10) ──────────────────────────────────
-        // A style bundles the shapes parsed above; each member reuses the
-        // same parser as its standalone registration, so the vocabulary is
-        // identical in and out of a bundle.
-        let reg_styles: mlua::Table = globals.get("_phi_registered_styles")?;
-        let style_names: Vec<String> = (1..)
-            .map_while(|i| reg_styles.get::<Option<String>>(i).ok().flatten())
-            .collect();
-
-        let phi_styles_table: mlua::Table = globals.get("_phi_styles")?;
-        let mut styles: Vec<StyleSpec> = Vec::new();
-        for name in &style_names {
-            let st: mlua::Table = phi_styles_table.get(name.as_str())?;
-            let mut spec = StyleSpec::new(name.clone());
-            if let Some(theme_table) = st.get::<Option<mlua::Table>>("theme")? {
-                spec.theme = Some(ThemeSpec::new(
-                    format!("{name}:theme"),
-                    palette_from_table(&theme_table)?,
-                ));
-            }
-            if let Some(sp_table) = st.get::<Option<mlua::Table>>("spinner")? {
-                spec.spinner = Some(spinner_from_table(
-                    &lua,
-                    format!("{name}:spinner"),
-                    &sp_table,
-                )?);
-            }
-            if let Some(te_table) = st.get::<Option<mlua::Table>>("thinking")? {
-                spec.thinking_expression = Some(thinking_from_table(
-                    &lua,
-                    format!("{name}:thinking"),
-                    &te_table,
-                )?);
-            }
-            if let Some(trs) = st.get::<Option<mlua::Table>>("tool_renderers")? {
-                for pair in trs.pairs::<String, mlua::Table>() {
-                    let (tool, spec_table) = pair?;
-                    spec.tool_renderers
-                        .push(tool_render_spec_from_table(&lua, &tool, spec_table)?);
-                }
-            }
-            if let Some(ch_table) = st.get::<Option<mlua::Table>>("chrome")? {
-                spec.chrome = Some(chrome_spec_from_table(&lua, name, ch_table)?);
-            }
-            styles.push(spec);
-        }
-
         // ── Read registered overlays ──────────────────────────────────────────
         let reg_overlays: mlua::Table = globals.get("_phi_registered_overlays")?;
         let overlay_names: Vec<String> = (1..)
@@ -689,11 +642,7 @@ impl phi_ext::Extension for LuaExtension {
             host.register_thinking_expression(expr)?;
         }
 
-        // ── Register styles ─────────────────────────────────────────────────
-        for style in styles {
-            host.register_style(style)?;
-        }
-
+    
         // ── Register overlays ──────────────────────────────────────────────
         for (name, description, toggle_key, fns) in lua_overlays {
             host.register_overlay(overlay::build_overlay_spec(

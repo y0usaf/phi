@@ -60,13 +60,6 @@ pub trait ExtensionHost {
     /// terminal's reported colours (programmatic).
     fn register_theme(&mut self, theme: ThemeSpec) -> Result<()>;
 
-    // ── Visual: styles ─────────────────────────────────────────────────
-    /// Register a named style pack: a bundle of the visual shapes above
-    /// (theme, spinner, thinking expressions, tool renderers) activated as
-    /// a unit via `AppRuntime::set_active_style`. Members are optional and
-    /// fall back to the base registrations while the style is active.
-    fn register_style(&mut self, style: crate::StyleSpec) -> Result<()>;
-
     // ── Visual: animations ───────────────────────────────────────────────
     /// Register a named spinner (frame array + interval).
     fn register_spinner(&mut self, spinner: crate::SpinnerSpec) -> Result<()>;

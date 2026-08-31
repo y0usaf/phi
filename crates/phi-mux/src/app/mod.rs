@@ -525,6 +525,12 @@ fn build_visual_runtime(cwd: &std::path::Path) -> Option<Arc<AppRuntime>> {
         )
         .ok()?;
         rt_builder = rt_builder.register_extension(crush_style);
+        let fx_style = phi_lua::LuaExtension::from_source(
+            "phi-style-fx",
+            phi_builtins::defaults::STYLE_FX_LUA.to_owned(),
+        )
+        .ok()?;
+        rt_builder = rt_builder.register_extension(fx_style);
         // Mux colon commands (Lua default).
         let mux_cmds = phi_lua::LuaExtension::from_source(
             "phi-mux-commands",
