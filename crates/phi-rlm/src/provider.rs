@@ -16,6 +16,19 @@ use crate::lm_core::{
     Completion, DeltaSink, LanguageModel, ThinkingSink, ToolCallEvent, ToolCallSink,
 };
 
+/// Recover from lock poisoning instead of panicking: take the guard's inner
+/// data. Poisoned locks only appear if a panic happened mid-critical-section;
+/// the data is still structurally valid, so recovering matches the crate's
+/// existing `unwrap_or_else(PoisonError::into_inner)` convention (see
+/// handler.rs, session.rs).
+fn read_lock<T>(lock: &std::sync::RwLock<T>) -> std::sync::RwLockReadGuard<'_, T> {
+    lock.read().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn write_lock<T>(lock: &std::sync::RwLock<T>) -> std::sync::RwLockWriteGuard<'_, T> {
+    lock.write().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 pub struct ProviderLm {
     registry: Arc<Registry>,
     model: RwLock<Model>,
@@ -78,36 +91,36 @@ impl ProviderLm {
     /// Set the extension runtime for provider interception and message
     /// streaming events. Called after construction once the runtime is built.
     pub fn set_runtime(&self, runtime: Arc<phi_ext::AppRuntime>) {
-        *self.runtime.write().unwrap() = Some(runtime);
+        *write_lock(&self.runtime) = Some(runtime);
     }
 
     /// Set the tool definitions the model can call natively.
     pub fn set_tools(&self, tools: Vec<ToolDefinition>) {
-        *self.tools.write().unwrap() = tools;
+        *write_lock(&self.tools) = tools;
     }
 
     /// Whether any tool definitions are registered.
     pub fn has_tools(&self) -> bool {
-        !self.tools.read().unwrap().is_empty()
+        !read_lock(&self.tools).is_empty()
     }
 
     pub fn model(&self) -> Model {
-        self.model.read().unwrap().clone()
+        read_lock(&self.model).clone()
     }
 
     pub fn thinking(&self) -> ThinkingLevel {
-        *self.thinking.read().unwrap()
+        *read_lock(&self.thinking)
     }
 
     /// Swap the thinking level; takes effect on the next completion.
     pub fn set_thinking(&self, level: ThinkingLevel) {
-        *self.thinking.write().unwrap() = level;
+        *write_lock(&self.thinking) = level;
     }
 
     /// Swap the model; takes effect on the next completion (auth is
     /// resolved per call, so no other state needs rebuilding).
     pub fn set_model(&self, model: Model) {
-        *self.model.write().unwrap() = model;
+        *write_lock(&self.model) = model;
     }
 
     fn context(model: &Model, prompt: &[ChatMessage]) -> Context {
@@ -160,7 +173,7 @@ impl ProviderLm {
 impl LanguageModel for ProviderLm {
     // Provider-qualified so usage buckets don't collide across providers.
     fn name(&self) -> String {
-        let model = self.model.read().unwrap();
+        let model = read_lock(&self.model);
         format!("{}/{}", model.provider, model.id)
     }
 
@@ -184,7 +197,7 @@ impl LanguageModel for ProviderLm {
     }
 
     fn context_window(&self) -> Option<u64> {
-        let window = self.model.read().unwrap().context_window;
+        let window = read_lock(&self.model).context_window;
         (window > 0).then_some(window)
     }
 
@@ -274,13 +287,13 @@ impl ProviderLm {
         let mut context = Self::context(&model, prompt);
         // Copy registered tool definitions into the context so the API
         // request includes the native `tools` array.
-        context.tools = self.tools.read().unwrap().clone();
+        context.tools = read_lock(&self.tools).clone();
 
         // ── Extension: BeforeProviderRequest + MessageStart ────────────────
         // Fire-and-forget: these are observational notifications (their returns
         // are discarded), so detaching them keeps a slow extension from stalling
         // the start of the stream. The dispatch primitive bounds each handler.
-        let ext_rt = self.runtime.read().unwrap().clone();
+        let ext_rt = read_lock(&self.runtime).clone();
         if let Some(rt) = &ext_rt {
             let rt = Arc::clone(rt);
             let model_label = format!("{}/{}", model.provider, model.id);
