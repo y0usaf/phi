@@ -77,18 +77,64 @@ pub fn shell_expand(value: &str) -> String {
     out
 }
 
+/// Deadline for a single `$(cmd)` expansion: a config command like
+/// `$(tail -f /dev/null)` must not hang server startup forever.
+const RUN_COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 fn run_command(cmd: &str) -> String {
-    match std::process::Command::new("sh").arg("-c").arg(cmd).output() {
-        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout)
-            .trim_end_matches('\n')
-            .to_owned(),
+    let mut child = match std::process::Command::new("sh")
+        .arg("-c")
+        .arg(cmd)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(_) => return String::new(),
+    };
+
+    // Drain stdout on a thread so a chatty command can't fill the pipe and
+    // deadlock while we wait; bound the whole expansion with a deadline.
+    let stdout_handle = child.stdout.take().map(|mut s| {
+        std::thread::spawn(move || {
+            let mut buf = String::new();
+            let _ = std::io::Read::read_to_string(&mut s, &mut buf);
+            buf
+        })
+    });
+
+    let deadline = std::time::Instant::now() + RUN_COMMAND_TIMEOUT;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if std::time::Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                eprintln!(
+                    "warning: MCP $() command timed out after {}s: {}",
+                    RUN_COMMAND_TIMEOUT.as_secs(),
+                    cmd
+                );
+                break None;
+            }
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(50)),
+            Err(_) => break None,
+        }
+    };
+
+    let stdout = match stdout_handle {
+        Some(h) => h.join().unwrap_or_default(),
+        None => String::new(),
+    };
+    match status {
+        Some(s) if s.success() => stdout.trim_end_matches('\n').to_owned(),
         _ => String::new(),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::shell_expand;
+    use super::{RUN_COMMAND_TIMEOUT, shell_expand};
 
     // Tests run in parallel; each uses its own uniquely-named variable.
     fn with_var(name: &str, value: &str, f: impl FnOnce()) {
@@ -137,4 +183,12 @@ mod tests {
         assert_eq!(shell_expand("${OOPS"), "${OOPS");
         assert_eq!(shell_expand("$(oops"), "$(oops");
     }
+    #[test]
+    fn command_expansion_times_out() {
+        let start = std::time::Instant::now();
+        let out = shell_expand("$(tail -f /dev/null)");
+        assert_eq!(out, "");
+        assert!(start.elapsed() < RUN_COMMAND_TIMEOUT + std::time::Duration::from_secs(5));
+    }
+
 }
