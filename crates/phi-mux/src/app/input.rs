@@ -118,8 +118,13 @@ impl MuxApp {
             return;
         }
 
-        if matches!(key.code, KeyCode::Char(':'))
-            && key.modifiers.difference(KeyModifiers::SHIFT).is_empty()
+        // Command-line open is a remappable action (mux.keybinds), routed
+        // through the same Keymap as every other single-stroke shortcut.
+        if let Some(stroke) = KeyStroke::from_key_event(&key)
+            && matches!(
+                self.keymap.lookup(&stroke),
+                KeymapMatch::Triggered(AppAction::OpenCommandLine)
+            )
         {
             view.command_line = Some(CommandLineState::new());
             return;

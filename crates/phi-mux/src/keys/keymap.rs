@@ -25,6 +25,7 @@ pub enum AppAction {
     PasteClipboard,
     Help,
     Quit,
+    OpenCommandLine,
 }
 
 /// Per-action binding declaration. `BindingSpec` is the shared shape; the
@@ -109,6 +110,12 @@ pub const ACTION_SPECS: &[ActionSpec] = &[
         name: "quit",
         defaults: &["ctrl+q"],
         desc: "quit the mux",
+    },
+    ActionSpec {
+        action: AppAction::OpenCommandLine,
+        name: "open_command_line",
+        defaults: &[":"],
+        desc: "open the command line",
     },
 ];
 

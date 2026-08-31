@@ -100,6 +100,11 @@ impl MuxApp {
             }
             AppAction::Help => self.toggle_help_overlay(vid),
             AppAction::Quit => self.quit = true,
+            AppAction::OpenCommandLine => {
+                if let Some(view) = self.views.get_mut(&vid) {
+                    view.command_line = Some(CommandLineState::new());
+                }
+            }
         }
     }
 
@@ -757,5 +762,6 @@ fn action_help_text(action: AppAction) -> &'static str {
         AppAction::PasteClipboard => "paste clipboard",
         AppAction::Help => "toggle help",
         AppAction::Quit => "quit",
+        AppAction::OpenCommandLine => "open the command line",
     }
 }
