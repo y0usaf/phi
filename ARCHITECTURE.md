@@ -432,8 +432,7 @@ crate phi_grid
 ├── mod color: pub
 │   └── struct Color: pub
 ├── mod damage: pub
-│   ├── struct DirtyRegion: pub
-│   └── struct Rect: pub
+│   └── struct DirtyRegion: pub
 ├── mod layout: pub
 │   ├── struct CellLayout: pub
 │   └── struct CellRect: pub
@@ -568,7 +567,6 @@ crate phi_mux
 crate phi_repl
 ├── struct AnswerState: pub
 ├── struct EnvSetup: pub
-├── trait ReplEnv: pub
 ├── enum ReplError: pub
 ├── struct ReplResult: pub
 ├── trait SubcallHandler: pub
