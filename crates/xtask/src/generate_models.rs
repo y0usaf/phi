@@ -3,7 +3,7 @@ mod models_dev;
 
 use std::path::Path;
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use phi_ai::types::{Api, Modality, Model};
 use phi_ext::{ProviderConfig, ProviderModelConfig, ProviderModelCost};
 
@@ -56,15 +56,25 @@ pub fn run() -> Result<()> {
     let out_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../phi-ai/src/models.json");
     // Cursor's native-API models aren't listed on models.dev; they're
     // hand-maintained in models.json and preserved across regenerations.
-    if let Ok(existing) = std::fs::read_to_string(&out_path) {
-        let existing: Vec<Model> = serde_json::from_str(&existing)?;
-        models.extend(existing.into_iter().filter(|m| m.api == Api::CursorNative));
+    match std::fs::read_to_string(&out_path) {
+        Ok(existing) => {
+            let existing: Vec<Model> = serde_json::from_str(&existing)?;
+            models.extend(existing.into_iter().filter(|m| m.api == Api::CursorNative));
+        }
+        // First run: no models.json yet.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        // A read error (permissions, I/O) must not silently drop the
+        // hand-maintained CursorNative entries — that's data loss.
+        Err(e) => {
+            return Err(anyhow::Error::new(e))
+                .with_context(|| format!("reading existing {}", out_path.display()))
+        }
     }
     models.sort_by(|a, b| (&a.provider, &a.id).cmp(&(&b.provider, &b.id)));
 
     let mut json = serde_json::to_string_pretty(&models)?;
     json.push('\n');
-    std::fs::write(&out_path, json)?;
+    write_atomic(&out_path, json.as_bytes())?;
 
     catalog.sort_by(|a, b| a.name.cmp(&b.name));
     let catalog_path =
@@ -73,7 +83,7 @@ pub fn run() -> Result<()> {
     // regeneration diffs are per-provider lines either way.
     let mut catalog_json = serde_json::to_string(&catalog)?;
     catalog_json.push('\n');
-    std::fs::write(&catalog_path, catalog_json)?;
+    write_atomic(&catalog_path, catalog_json.as_bytes())?;
 
     let mut per_provider: std::collections::BTreeMap<&str, usize> = Default::default();
     for m in &models {
@@ -156,4 +166,13 @@ mod tests {
             Some((200_000, 65_536))
         );
     }
+}
+
+/// Write `bytes` to `path` atomically: tmp file + rename, so a crash mid-write
+/// can't leave a torn file (models.json and catalog.json are embedded in the
+/// binary at the next build — corruption ships).
+fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, bytes)?;
+    std::fs::rename(&tmp, path).with_context(|| format!("renaming {}", tmp.display()))
 }
