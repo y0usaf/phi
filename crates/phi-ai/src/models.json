@@ -1260,10 +1260,10 @@
       "image"
     ],
     "cost": {
-      "input": 5.0,
-      "output": 30.0,
-      "cache_read": 0.5,
-      "cache_write": 6.25
+      "input": 4.0,
+      "output": 20.0,
+      "cache_read": 0.4,
+      "cache_write": 5.0
     },
     "context_window": 1050000,
     "max_tokens": 128000,
@@ -1316,10 +1316,10 @@
       "image"
     ],
     "cost": {
-      "input": 5.0,
-      "output": 30.0,
-      "cache_read": 0.5,
-      "cache_write": 6.25
+      "input": 4.0,
+      "output": 20.0,
+      "cache_read": 0.4,
+      "cache_write": 5.0
     },
     "context_window": 1050000,
     "max_tokens": 128000,
