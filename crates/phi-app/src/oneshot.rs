@@ -151,6 +151,12 @@ pub async fn run(
             eprintln!("\ninterrupted, finishing up...");
             ctrl_c_cancel.cancel();
         }
+        // Second Ctrl+C: force-exit. Tokio's signal registration disables the
+        // process-default terminate, so without this a stuck stream is
+        // unkillable short of SIGKILL.
+        tokio::signal::ctrl_c().await.ok();
+        eprintln!("\nforced exit (second interrupt)");
+        std::process::exit(130);
     });
 
     let harness = PhiHarness::new(rlm);
@@ -159,7 +165,11 @@ pub async fn run(
         .await?;
     drop(harness);
     if let Some(printer) = printer {
-        let _ = printer.await;
+        // A panic in the printer means events were dropped mid-stream; warn
+        // instead of silently finishing.
+        if let Err(join_err) = printer.await {
+            eprintln!("warning: event printer task failed: {join_err}");
+        }
     }
 
     if ndjson {
