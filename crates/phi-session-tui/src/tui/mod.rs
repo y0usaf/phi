@@ -2605,6 +2605,41 @@ match1
     }
 
     #[test]
+    fn root_text_answer_is_not_recommitted_by_run_done() {
+        // Regression: the engine emits RootText for the final iteration too,
+        // and `handle_run_done` re-pushed `completion.response` — the answer
+        // rendered twice in the transcript.
+        let mut ui = test_ui(80, 24);
+        ui.running = Some(CancellationToken::new());
+        ui.handle_rlm_event(RlmEvent::IterationStart {
+            depth: 0,
+            iteration: 0,
+        });
+        ui.handle_rlm_event(RlmEvent::RootText {
+            depth: 0,
+            iteration: 0,
+            text: "the answer".to_owned(),
+        });
+        ui.handle_run_done(RlmCompletion {
+            response: "the answer".to_owned(),
+            summary: None,
+            stop: StopCause::Prose,
+            error: None,
+            iterations: 1,
+            duration: Duration::from_millis(10),
+            usage: Default::default(),
+            usage_by_model: Vec::new(),
+        });
+
+        let lines = pending_lines(&mut ui);
+        let cards = lines
+            .iter()
+            .filter(|line| line.contains("the answer"))
+            .count();
+        assert_eq!(cards, 1, "answer duplicated: {:?}", lines);
+    }
+
+    #[test]
     fn streamed_prose_around_block_is_not_recommitted_by_root_text() {
         // Regression: prose before an executed block was committed once by
         // `CodeExecStart` and a second time by `RootText`, leaving earlier

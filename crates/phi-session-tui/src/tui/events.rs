@@ -1414,7 +1414,22 @@ impl Ui {
             self.pending
                 .push(TranscriptEntry::RawLines(vec![self.err(&error)]));
         } else if !completion.response.is_empty() {
-            self.push_assistant_message(&completion.response);
+            // RootText already committed this exact prose as a card earlier
+            // in the run (the engine emits RootText for every iteration,
+            // including the final one). Re-pushing here renders the answer
+            // twice; skip when the last pending card carries the same text.
+            // The last entry may be a spacer gap; look past trailing gaps
+            // to find the most recent prose card.
+            let already_committed = self.pending.iter().rev().find_map(|entry| match entry {
+                TranscriptEntry::AssistantProse(existing) => Some(existing.trim()),
+                TranscriptEntry::RawLines(rows) if rows.iter().all(|r| r.trim().is_empty()) => {
+                    None
+                }
+                _ => None,
+            }) == Some(completion.response.trim());
+            if !already_committed {
+                self.push_assistant_message(&completion.response);
+            }
         }
         // Durably close the turn: completed, failed, or interrupted is a
         // recorded fact, not an inference from a missing assistant message.
