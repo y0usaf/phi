@@ -645,8 +645,18 @@ pub fn external_editor(text: &str) -> Result<Option<String>, String> {
     let editor = std::env::var("VISUAL")
         .or_else(|_| std::env::var("EDITOR"))
         .map_err(|_| "set $VISUAL or $EDITOR to use ctrl+g".to_owned())?;
-    let path = std::env::temp_dir().join(format!("phi-edit-{}.md", std::process::id()));
-    std::fs::write(&path, text).map_err(|e| e.to_string())?;
+    // NamedTempFile: 0600 perms (the transcript is private) and RAII cleanup
+    // so a panic or kill can't orphan the file in /tmp.
+    let mut tmp = tempfile::Builder::new()
+        .prefix("phi-edit-")
+        .suffix(".md")
+        .rand_bytes(4)
+        .tempfile()
+        .map_err(|e| format!("failed to create editor temp file: {e}"))?;
+    use std::io::Write;
+    tmp.write_all(text.as_bytes()).map_err(|e| e.to_string())?;
+    tmp.flush().map_err(|e| e.to_string())?;
+    let path = tmp.path().to_path_buf();
     let mut parts = editor.split_whitespace();
     let cmd = parts.next().ok_or_else(|| "$EDITOR is empty".to_owned())?;
     let status = std::process::Command::new(cmd)
@@ -661,7 +671,6 @@ pub fn external_editor(text: &str) -> Result<Option<String>, String> {
         Ok(_) => Ok(None),
         Err(e) => Err(e),
     };
-    let _ = std::fs::remove_file(&path);
     result
 }
 
