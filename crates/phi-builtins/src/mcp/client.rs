@@ -54,6 +54,10 @@ pub struct McpClient {
     next_id: AtomicI64,
 }
 
+/// Cap on `tools/list` pages: a server that always echoes a non-empty
+/// `nextCursor` must not hang session startup (pagination DoS guard).
+const MCP_MAX_PAGES: usize = 50;
+
 impl McpClient {
     /// Spawn/dial the server, run the `initialize` handshake, and list its
     /// tools. `timeout` bounds each request in the sequence. The stdio child
@@ -110,7 +114,7 @@ impl McpClient {
     async fn list_tools(&self, timeout: Duration) -> Result<Vec<McpTool>> {
         let mut tools = Vec::new();
         let mut cursor: Option<String> = None;
-        loop {
+        for _page in 0..MCP_MAX_PAGES {
             let params = match &cursor {
                 Some(c) => json!({"cursor": c}),
                 None => json!({}),
@@ -143,6 +147,10 @@ impl McpClient {
                 None => return Ok(tools),
             }
         }
+        bail!(
+            "server '{}' did not finish tools/list within MCP_MAX_PAGES pages",
+            self.server
+        );
     }
 
     /// Call a tool and flatten its result content to text. A result flagged
