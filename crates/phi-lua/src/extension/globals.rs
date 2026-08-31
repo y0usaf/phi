@@ -97,8 +97,7 @@ pub(super) fn setup_phi_global(lua: &mlua::Lua) -> mlua::Result<()> {
                 opts_table.set(event_name.as_str(), opts)?;
             }
             let reg: mlua::Table = globals.get("_phi_registered_events")?;
-            let len = reg.raw_len();
-            reg.raw_set(len + 1, event_name)?;
+            register_unique(&reg, event_name)?;
             Ok(())
         },
     )?;
@@ -117,8 +116,7 @@ pub(super) fn setup_phi_global(lua: &mlua::Lua) -> mlua::Result<()> {
         let commands: mlua::Table = globals.get("_phi_commands")?;
         commands.set(name.as_str(), opts)?;
         let reg: mlua::Table = globals.get("_phi_registered_commands")?;
-        let len = reg.raw_len();
-        reg.raw_set(len + 1, name)?;
+        register_unique(&reg, name)?;
         Ok(())
     })?;
     phi.set("register_command", register_command_fn)?;
@@ -137,8 +135,7 @@ pub(super) fn setup_phi_global(lua: &mlua::Lua) -> mlua::Result<()> {
         let tools: mlua::Table = globals.get("_phi_tools")?;
         tools.set(name.as_str(), opts)?;
         let reg: mlua::Table = globals.get("_phi_registered_tools")?;
-        let len = reg.raw_len();
-        reg.raw_set(len + 1, name)?;
+        register_unique(&reg, name)?;
         Ok(())
     })?;
     phi.set("register_tool", register_tool_fn)?;
@@ -150,8 +147,7 @@ pub(super) fn setup_phi_global(lua: &mlua::Lua) -> mlua::Result<()> {
         let shortcuts: mlua::Table = globals.get("_phi_shortcuts")?;
         shortcuts.set(key.as_str(), opts)?;
         let reg: mlua::Table = globals.get("_phi_registered_shortcuts")?;
-        let len = reg.raw_len();
-        reg.raw_set(len + 1, key)?;
+        register_unique(&reg, key)?;
         Ok(())
     })?;
     phi.set("register_shortcut", register_shortcut_fn)?;
@@ -163,8 +159,7 @@ pub(super) fn setup_phi_global(lua: &mlua::Lua) -> mlua::Result<()> {
         let flags: mlua::Table = globals.get("_phi_flags")?;
         flags.set(name.as_str(), opts)?;
         let reg: mlua::Table = globals.get("_phi_registered_flags")?;
-        let len = reg.raw_len();
-        reg.raw_set(len + 1, name)?;
+        register_unique(&reg, name)?;
         Ok(())
     })?;
     phi.set("register_flag", register_flag_fn)?;
@@ -177,8 +172,7 @@ pub(super) fn setup_phi_global(lua: &mlua::Lua) -> mlua::Result<()> {
             let providers: mlua::Table = globals.get("_phi_providers")?;
             providers.set(name.as_str(), config)?;
             let reg: mlua::Table = globals.get("_phi_registered_providers")?;
-            let len = reg.raw_len();
-            reg.raw_set(len + 1, name)?;
+            register_unique(&reg, name)?;
             Ok(())
         })?;
     phi.set("register_provider", register_provider_fn)?;
@@ -195,8 +189,7 @@ pub(super) fn setup_phi_global(lua: &mlua::Lua) -> mlua::Result<()> {
             renderers.set(custom_type.as_str(), opts)?;
 
             let reg: mlua::Table = globals.get("_phi_registered_renderers")?;
-            let len = reg.raw_len();
-            reg.raw_set(len + 1, custom_type)?;
+            register_unique(&reg, custom_type)?;
             Ok(())
         })?;
     phi.set("register_message_renderer", register_renderer_fn)?;
@@ -219,8 +212,7 @@ pub(super) fn setup_phi_global(lua: &mlua::Lua) -> mlua::Result<()> {
             let renderers: mlua::Table = globals.get("_phi_tool_renderers")?;
             renderers.set(name.as_str(), spec)?;
             let reg: mlua::Table = globals.get("_phi_registered_tool_renderers")?;
-            let len = reg.raw_len();
-            reg.raw_set(len + 1, name)?;
+            register_unique(&reg, name)?;
             Ok(())
         })?;
     phi.set("register_tool_renderer", register_tool_renderer_fn)?;
@@ -233,8 +225,7 @@ pub(super) fn setup_phi_global(lua: &mlua::Lua) -> mlua::Result<()> {
             let themes: mlua::Table = globals.get("_phi_themes")?;
             themes.set(name.as_str(), palette)?;
             let reg: mlua::Table = globals.get("_phi_registered_themes")?;
-            let len = reg.raw_len();
-            reg.raw_set(len + 1, name)?;
+            register_unique(&reg, name)?;
             Ok(())
         })?;
     phi.set("register_theme", register_theme_fn)?;
@@ -246,8 +237,7 @@ pub(super) fn setup_phi_global(lua: &mlua::Lua) -> mlua::Result<()> {
         let spinners: mlua::Table = globals.get("_phi_spinners")?;
         spinners.set(name.as_str(), opts)?;
         let reg: mlua::Table = globals.get("_phi_registered_spinners")?;
-        let len = reg.raw_len();
-        reg.raw_set(len + 1, name)?;
+        register_unique(&reg, name)?;
         Ok(())
     })?;
     phi.set("register_spinner", register_spinner_fn)?;
@@ -261,8 +251,7 @@ pub(super) fn setup_phi_global(lua: &mlua::Lua) -> mlua::Result<()> {
             let exprs: mlua::Table = globals.get("_phi_thinking_expressions")?;
             exprs.set(name.as_str(), opts)?;
             let reg: mlua::Table = globals.get("_phi_registered_thinking_expressions")?;
-            let len = reg.raw_len();
-            reg.raw_set(len + 1, name)?;
+            register_unique(&reg, name)?;
             Ok(())
         })?;
     phi.set("register_thinking_expression", register_thinking_expr_fn)?;
@@ -281,8 +270,7 @@ pub(super) fn setup_phi_global(lua: &mlua::Lua) -> mlua::Result<()> {
         let styles: mlua::Table = globals.get("_phi_styles")?;
         styles.set(name.as_str(), opts)?;
         let reg: mlua::Table = globals.get("_phi_registered_styles")?;
-        let len = reg.raw_len();
-        reg.raw_set(len + 1, name)?;
+        register_unique(&reg, name)?;
         Ok(())
     })?;
     phi.set("register_style", register_style_fn)?;
@@ -316,8 +304,7 @@ pub(super) fn setup_phi_global(lua: &mlua::Lua) -> mlua::Result<()> {
         let overlays: mlua::Table = globals.get("_phi_overlays")?;
         overlays.set(name.as_str(), opts)?;
         let reg: mlua::Table = globals.get("_phi_registered_overlays")?;
-        let len = reg.raw_len();
-        reg.raw_set(len + 1, name)?;
+        register_unique(&reg, name)?;
         Ok(())
     })?;
     phi.set("register_overlay", register_overlay_fn)?;
@@ -480,5 +467,19 @@ pub(super) fn attach_ui_namespace(lua: &mlua::Lua, ui: phi_ext::UiHandle) -> mlu
     )?;
 
     phi.set("ui", ui_table)?;
+    Ok(())
+}
+
+/// Append `value` to a registration table unless it's already present.
+/// Re-registration (e.g. a hot reload) must not duplicate the entry — the
+/// host dispatches once per registered name.
+fn register_unique<V: mlua::IntoLua + Clone + PartialEq + mlua::FromLua>(reg: &mlua::Table, value: V) -> mlua::Result<()> {
+    let len = reg.raw_len();
+    let already = (1..=len).any(|i| {
+        reg.raw_get::<V>(i).is_ok_and(|existing| existing == value)
+    });
+    if !already {
+        reg.raw_set(len + 1, value)?;
+    }
     Ok(())
 }
