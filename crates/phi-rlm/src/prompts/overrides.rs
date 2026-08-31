@@ -41,12 +41,29 @@ mod tests {
     use std::fs;
     use tempfile::tempdir;
 
+    /// Point XDG_CONFIG_HOME at an empty temp dir for the duration of `f`, so
+    /// the global-fallback lookup can't see the developer's real
+    /// ~/.config/phi/*.md (the machine running these tests has one).
+    fn without_global_overrides<T>(f: impl FnOnce() -> T) -> T {
+        let dir = tempdir().unwrap();
+        let prev = std::env::var_os("XDG_CONFIG_HOME");
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", dir.path()) };
+        let out = f();
+        match prev {
+            Some(v) => unsafe { std::env::set_var("XDG_CONFIG_HOME", v) },
+            None => unsafe { std::env::remove_var("XDG_CONFIG_HOME") },
+        }
+        out
+    }
+
     #[test]
     fn no_files_returns_none() {
-        let dir = tempdir().unwrap();
-        let (sys, append) = discover_prompt_overrides(dir.path(), true);
-        assert!(sys.is_none());
-        assert!(append.is_none());
+        without_global_overrides(|| {
+            let dir = tempdir().unwrap();
+            let (sys, append) = discover_prompt_overrides(dir.path(), true);
+            assert!(sys.is_none());
+            assert!(append.is_none());
+        });
     }
 
     #[test]
@@ -62,13 +79,15 @@ mod tests {
 
     #[test]
     fn local_append_md_is_found() {
-        let dir = tempdir().unwrap();
-        let phi_dir = dir.path().join(".phi");
-        fs::create_dir_all(&phi_dir).unwrap();
-        fs::write(phi_dir.join("APPEND_SYSTEM.md"), "Extra rules.").unwrap();
-        let (sys, append) = discover_prompt_overrides(dir.path(), true);
-        assert!(sys.is_none());
-        assert_eq!(append.as_deref(), Some("Extra rules."));
+        without_global_overrides(|| {
+            let dir = tempdir().unwrap();
+            let phi_dir = dir.path().join(".phi");
+            fs::create_dir_all(&phi_dir).unwrap();
+            fs::write(phi_dir.join("APPEND_SYSTEM.md"), "Extra rules.").unwrap();
+            let (sys, append) = discover_prompt_overrides(dir.path(), true);
+            assert!(sys.is_none());
+            assert_eq!(append.as_deref(), Some("Extra rules."));
+        });
     }
 
     #[test]
