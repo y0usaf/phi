@@ -473,11 +473,12 @@ pub(super) fn attach_ui_namespace(lua: &mlua::Lua, ui: phi_ext::UiHandle) -> mlu
 /// Append `value` to a registration table unless it's already present.
 /// Re-registration (e.g. a hot reload) must not duplicate the entry — the
 /// host dispatches once per registered name.
-fn register_unique<V: mlua::IntoLua + Clone + PartialEq + mlua::FromLua>(reg: &mlua::Table, value: V) -> mlua::Result<()> {
+fn register_unique<V: mlua::IntoLua + Clone + PartialEq + mlua::FromLua>(
+    reg: &mlua::Table,
+    value: V,
+) -> mlua::Result<()> {
     let len = reg.raw_len();
-    let already = (1..=len).any(|i| {
-        reg.raw_get::<V>(i).is_ok_and(|existing| existing == value)
-    });
+    let already = (1..=len).any(|i| reg.raw_get::<V>(i).is_ok_and(|existing| existing == value));
     if !already {
         reg.raw_set(len + 1, value)?;
     }

@@ -67,7 +67,7 @@ pub fn run() -> Result<()> {
         // hand-maintained CursorNative entries — that's data loss.
         Err(e) => {
             return Err(anyhow::Error::new(e))
-                .with_context(|| format!("reading existing {}", out_path.display()))
+                .with_context(|| format!("reading existing {}", out_path.display()));
         }
     }
     models.sort_by(|a, b| (&a.provider, &a.id).cmp(&(&b.provider, &b.id)));

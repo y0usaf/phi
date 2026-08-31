@@ -190,5 +190,4 @@ mod tests {
         assert_eq!(out, "");
         assert!(start.elapsed() < RUN_COMMAND_TIMEOUT + std::time::Duration::from_secs(5));
     }
-
 }

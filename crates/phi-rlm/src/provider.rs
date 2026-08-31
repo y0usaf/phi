@@ -22,11 +22,13 @@ use crate::lm_core::{
 /// existing `unwrap_or_else(PoisonError::into_inner)` convention (see
 /// handler.rs, session.rs).
 fn read_lock<T>(lock: &std::sync::RwLock<T>) -> std::sync::RwLockReadGuard<'_, T> {
-    lock.read().unwrap_or_else(std::sync::PoisonError::into_inner)
+    lock.read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn write_lock<T>(lock: &std::sync::RwLock<T>) -> std::sync::RwLockWriteGuard<'_, T> {
-    lock.write().unwrap_or_else(std::sync::PoisonError::into_inner)
+    lock.write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 pub struct ProviderLm {

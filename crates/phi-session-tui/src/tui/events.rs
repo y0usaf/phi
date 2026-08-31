@@ -1422,9 +1422,7 @@ impl Ui {
             // to find the most recent prose card.
             let already_committed = self.pending.iter().rev().find_map(|entry| match entry {
                 TranscriptEntry::AssistantProse(existing) => Some(existing.trim()),
-                TranscriptEntry::RawLines(rows) if rows.iter().all(|r| r.trim().is_empty()) => {
-                    None
-                }
+                TranscriptEntry::RawLines(rows) if rows.iter().all(|r| r.trim().is_empty()) => None,
                 _ => None,
             }) == Some(completion.response.trim());
             if !already_committed {
