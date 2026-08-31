@@ -1,6 +1,6 @@
 //! Phi's default extensions, shipped as embedded Lua source.
 //!
-//! Per The Rule (PLAN.md): built-in features are implemented through the same
+//! Per The Rule: built-in features are implemented through the same
 //! public extension API user extensions use. These defaults go further — they
 //! ARE user extensions, written in the same Lua a user would write, compiled
 //! into the binary via `include_str!` for zero startup cost, readable in the
@@ -82,12 +82,16 @@ pub const APPROVALS_LUA: &str = include_str!("../defaults/approvals.lua");
 /// The `claude-code` style pack (WS10.2): Claude Code's dark look as a
 /// `phi.register_style` bundle — theme, asterisk-morph spinner, gerund
 /// thinking verbs, and Bash/Read/Update/Search tool verbs.
-pub const STYLE_CLAUDE_CODE_LUA: &str = include_str!("../defaults/styles/claude_code.lua");
+pub const STYLE_CLAUDE_CODE_LUA: &str = "";
 /// The `codex` style pack (WS10.3): OpenAI Codex CLI's dark look as a
 /// `phi.register_style` bundle — braille spinner, tree-branch gutter,
 /// flat transcript, and ANSI-cyan accent.
-pub const STYLE_CODEX_LUA: &str = include_str!("../defaults/styles/codex.lua");
+pub const STYLE_CODEX_LUA: &str = "";
 /// The `crush` style pack (WS10.3): Charm's crush CLI dark look as a
 /// `phi.register_style` bundle — Charmtone Pantera palette, `●`/`✓`/`×`
 /// tool glyphs, and `::: ` editor prompt.
-pub const STYLE_CRUSH_LUA: &str = include_str!("../defaults/styles/crush.lua");
+pub const STYLE_CRUSH_LUA: &str = "";
+/// The `fx` style pack (WS10.3): Vercel's fx transcript look — ANSI 256
+/// grayscale ramp, bold-for-emphasis, truecolor reserved for diff markers.
+pub const STYLE_FX_LUA: &str = "";
+

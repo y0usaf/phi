@@ -11,7 +11,7 @@ use phi_ext::{ProviderConfig, ProviderModelConfig, ProviderModelCost};
 /// has native auth flows for. Every other provider that classifies (i.e.
 /// exposes a plain API-key endpoint one of Phi's backends can speak) goes
 /// into the bundled catalog, which `phi-builtins` registers through the same
-/// `register_provider` API user extensions use (PLAN.md WS3.2).
+/// `register_provider` API user extensions use .
 const EMBEDDED_PROVIDERS: &[&str] = &["anthropic", "openai"];
 
 pub fn run() -> Result<()> {

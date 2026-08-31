@@ -9,7 +9,7 @@
 //! overlays a user reads to learn the extension API. This extension keeps
 //! only the data-dependent ones.
 //!
-//! Per The Rule (PLAN.md): these are extension-shaped features, so they
+//! Per The Rule: these are extension-shaped features, so they
 //! live here and go through `phi_ext::OverlaySpec`. The host opens them
 //! by name (`phi_ext::OVERLAY_USAGE` / `OVERLAY_MODEL` / `OVERLAY_ARCHIVE`)
 //! with a typed payload.
@@ -105,9 +105,6 @@ pub(crate) mod test_host {
             Ok(())
         }
         fn register_text_effect(&mut self, _e: phi_ext::TextEffectSpec) -> Result<()> {
-            Ok(())
-        }
-        fn register_style(&mut self, _s: phi_ext::StyleSpec) -> Result<()> {
             Ok(())
         }
         fn register_overlay(&mut self, overlay: OverlaySpec) -> Result<()> {
