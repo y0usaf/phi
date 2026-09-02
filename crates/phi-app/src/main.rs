@@ -85,14 +85,28 @@ async fn async_main() -> Result<()> {
         return Ok(());
     }
 
-    let registry = Arc::new(Registry::builtin());
+    if args.update_models {
+        let registry = Registry::builtin();
+        let fresh = registry.refresh().await.context("updating model cache")?;
+        if let Some(path) = Registry::models_cache_path() {
+            println!("model cache updated: {}", path.display());
+        }
+        println!("{} models available", fresh.models().len());
+        return Ok(());
+    }
+
+    // Cache-aware registry: the embedded models.json is the build-time
+    // snapshot; the local cache (written by `phi --update-models`) overlays
+    // it with fresh limits and pricing. A missing/unreadable cache falls
+    // back to the embedded list with a notice — never a hard failure.
+    let (registry, notice) = Registry::with_cache();
+    let registry = Arc::new(registry);
+    let mut notices: Vec<String> = notice.into_iter().collect();
 
     if let Some(pattern) = &args.list_models {
-        // The listing covers the embedded first-party models plus the
+        // The listing covers the cached/embedded first-party models plus the
         // bundled catalog — the same set a session resolves against before
         // any user extension registers additional providers.
-        #[allow(unused_mut)]
-        let mut notices: Vec<String> = Vec::new();
         #[allow(unused_mut)]
         let mut extra = Vec::new();
         #[cfg(feature = "builtins")]

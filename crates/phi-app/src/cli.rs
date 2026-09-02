@@ -85,6 +85,12 @@ pub struct Args {
     #[arg(long, value_name = "PATTERN", num_args = 0..=1, default_missing_value = "")]
     pub list_models: Option<String>,
 
+    /// Refresh the local model cache from models.dev and exit. Updates
+    /// context windows, pricing, and thinking levels without a rebuild;
+    /// the embedded list is the offline fallback.
+    #[arg(long)]
+    pub update_models: bool,
+
     /// Run as a session multiplexer (one process, many sessions).
     #[arg(long, conflicts_with = "no_mux")]
     pub mux: bool,
