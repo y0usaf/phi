@@ -4,9 +4,9 @@ use std::time::Duration;
 
 use anyhow::Result;
 use phi_ext::{
-    SpinnerSpec, CommandInvocation, CommandOutput, CommandSpec, EventHandlerRegistration, ExtensionHost,
+    CommandInvocation, CommandOutput, CommandSpec, EventHandlerRegistration, ExtensionHost,
     ExtensionManifest, FlagSpec, FlagType, LifecycleEvent, MessageRendererSpec, ProviderConfig,
-    ProviderModelConfig, ShortcutSpec, ThemeSpec, ThinkingExpressionSpec,
+    ProviderModelConfig, ShortcutSpec, SpinnerSpec, ThemeSpec, ThinkingExpressionSpec,
     ToolDispatch, ToolExposure, ToolInvocation, ToolOutput, ToolParam, ToolRenderSpec, ToolSpec,
 };
 use std::collections::BTreeMap;
@@ -642,7 +642,6 @@ impl phi_ext::Extension for LuaExtension {
             host.register_thinking_expression(expr)?;
         }
 
-    
         // ── Register overlays ──────────────────────────────────────────────
         for (name, description, toggle_key, fns) in lua_overlays {
             host.register_overlay(overlay::build_overlay_spec(

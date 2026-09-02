@@ -94,4 +94,3 @@ pub const STYLE_CRUSH_LUA: &str = "";
 /// The `fx` style pack (WS10.3): Vercel's fx transcript look — ANSI 256
 /// grayscale ramp, bold-for-emphasis, truecolor reserved for diff markers.
 pub const STYLE_FX_LUA: &str = "";
-

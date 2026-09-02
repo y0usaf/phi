@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 
 use crate::{
     CommandContext, CommandSpec, EventHandlerRegistration, ExtensionHost, FlagSpec,
-    MessageRendererSpec, OverlaySpec, ProviderConfig, ShortcutSpec, SpinnerSpec,
-    TextEffectSpec, ThemeSpec, ThinkingExpressionSpec, ToolRenderSpec, ToolSpec,
+    MessageRendererSpec, OverlaySpec, ProviderConfig, ShortcutSpec, SpinnerSpec, TextEffectSpec,
+    ThemeSpec, ThinkingExpressionSpec, ToolRenderSpec, ToolSpec,
 };
 use anyhow::{Result, bail};
 
@@ -142,7 +142,6 @@ impl ExtensionHost for RegistryHost {
         self.text_effects.insert(name, effect);
         Ok(())
     }
-
 
     fn register_overlay(&mut self, overlay: OverlaySpec) -> Result<()> {
         let name = overlay.name.clone();

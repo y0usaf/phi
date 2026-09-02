@@ -395,7 +395,6 @@ phi.register_thinking_expression("my-expr", {
     assert_eq!(expr.expression(0, true), "working...");
 }
 
-
 #[tokio::test]
 async fn lua_multiple_visual_registrations() {
     let source = r#"

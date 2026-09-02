@@ -84,7 +84,14 @@ pub async fn run(
         max_iterations: settings.max_iterations,
         max_concurrent_subcalls: settings.max_concurrent_subcalls,
         custom_system_prompt: (!qa_run).then(|| phi_rlm::CODING_IDENTITY.to_owned()),
-        setup_code: Some(CODING_PRELUDE.to_owned()),
+        setup_code: Some({
+            let ext_stubs = runtime.extension_prelude_stubs();
+            if ext_stubs.is_empty() {
+                CODING_PRELUDE.to_owned()
+            } else {
+                format!("{CODING_PRELUDE}\n\n# Extension tools\n{ext_stubs}")
+            }
+        }),
         tools_section: Some(coding_tools_section()),
         cwd: Some(cwd.display().to_string()),
         orchestrator: qa_run,

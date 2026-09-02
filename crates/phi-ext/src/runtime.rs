@@ -9,8 +9,8 @@ use crate::{
     ChromeSpec, CommandContext, CommandInvocation, CommandOutput, CommandSpec,
     EventHandlerRegistration, EventKind, EventPayload, EventReturn, ExtensionContextRef,
     ExtensionManifest, ExtensionMode, FlagSpec, LifecycleEvent, MessageRendererSpec, OverlaySpec,
-    ProviderConfig, ShortcutSpec, SpinnerSpec, TextEffectSpec, ThemeSpec,
-    ThinkingExpressionSpec, ToolRenderIndex, ToolRenderSpec, ToolSpec,
+    ProviderConfig, ShortcutSpec, SpinnerSpec, TextEffectSpec, ThemeSpec, ThinkingExpressionSpec,
+    ToolRenderIndex, ToolRenderSpec, ToolSpec,
 };
 use anyhow::{Result, anyhow, bail};
 
@@ -2359,5 +2359,4 @@ mod tests {
         host.await.unwrap();
         assert!(returns.is_empty(), "allowed call yields no ToolBlock");
     }
-
 }

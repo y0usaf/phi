@@ -256,7 +256,6 @@ pub(super) fn setup_phi_global(lua: &mlua::Lua) -> mlua::Result<()> {
         })?;
     phi.set("register_thinking_expression", register_thinking_expr_fn)?;
 
-
     // phi.register_overlay(name, opts)
     // opts: {
     //   description = "...",
