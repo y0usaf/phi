@@ -1,30 +1,21 @@
-mod common;
-mod models_dev;
-
 use std::path::Path;
 
 use anyhow::{Context as _, Result};
+use phi_ai::models_dev;
 use phi_ai::types::{Api, Modality, Model};
 use phi_ext::{ProviderConfig, ProviderModelConfig, ProviderModelCost};
-
-/// First-party providers whose models Phi embeds in `phi-ai` — the ones Phi
-/// has native auth flows for. Every other provider that classifies (i.e.
-/// exposes a plain API-key endpoint one of Phi's backends can speak) goes
-/// into the bundled catalog, which `phi-builtins` registers through the same
-/// `register_provider` API user extensions use .
-const EMBEDDED_PROVIDERS: &[&str] = &["anthropic", "openai"];
 
 pub fn run() -> Result<()> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    let providers = models_dev::fetch_providers(&runtime)?;
+    let providers = runtime.block_on(models_dev::fetch_providers())?;
 
     let mut models = Vec::new();
     let mut catalog: Vec<ProviderConfig> = Vec::new();
     let mut skipped: Vec<&str> = Vec::new();
     for provider in providers.values() {
-        if EMBEDDED_PROVIDERS.contains(&provider.id.as_str()) {
+        if models_dev::FIRST_PARTY_PROVIDERS.contains(&provider.id.as_str()) {
             match models_dev::classify(provider) {
                 Some((api, base_url)) => {
                     models.extend(models_dev::convert(provider, api, &base_url))
@@ -152,7 +143,7 @@ fn to_provider_model(m: &Model) -> ProviderModelConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::models_dev::override_for;
+    use phi_ai::models_dev::override_for;
 
     #[test]
     fn override_for_unknown_returns_none() {

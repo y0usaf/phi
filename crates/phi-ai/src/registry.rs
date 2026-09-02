@@ -1,5 +1,8 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
+
+use anyhow::Context as _;
 
 use crate::stream::AssistantEventStream;
 use crate::types::{Api, AssistantMessage, Context, Model, StreamOptions};
@@ -16,8 +19,18 @@ pub struct Registry {
 
 impl Registry {
     pub fn builtin() -> Self {
-        let models: Vec<Model> = serde_json::from_str(include_str!("models.json"))
-            .unwrap_or_else(|e| panic!("embedded models.json failed to parse: {e}"));
+        Self::with_providers(Self::builtin_models())
+    }
+
+    /// The embedded catalog: `models.json` generated at build time by
+    /// `cargo run -p xtask -- generate-models` from models.dev, plus the
+    /// hand-maintained CursorNative entries preserved across regenerations.
+    pub fn builtin_models() -> Vec<Model> {
+        serde_json::from_str(include_str!("models.json"))
+            .unwrap_or_else(|e| panic!("embedded models.json failed to parse: {e}"))
+    }
+
+    fn with_providers(models: Vec<Model>) -> Self {
         let mut providers: HashMap<Api, Arc<dyn ApiProvider>> = HashMap::new();
         providers.insert(
             Api::AnthropicMessages,
@@ -36,6 +49,110 @@ impl Registry {
             Arc::new(crate::providers::cursor::CursorProvider::new()),
         );
         Self { models, providers }
+    }
+
+    /// Local cache for runtime refreshes (`phi --update-models`), under the
+    /// user's cache dir. `None` when the platform has no dirs resolution.
+    pub fn models_cache_path() -> Option<PathBuf> {
+        directories::ProjectDirs::from("", "", "phi")
+            .map(|dirs| dirs.cache_dir().join("models-cache.json"))
+    }
+
+    /// Registry from the embedded list, overlaid with the local models
+    /// cache written by `refresh()` when one exists. The cache holds the
+    /// first-party models only (the same scope as `models.json`): the
+    /// bundled third-party catalog and extension-registered providers
+    /// attach through the `register_provider`/`extended` path, so they
+    /// must not appear here twice. CursorNative entries are hand-maintained
+    /// in the binary and never cached.
+    ///
+    /// Returns the registry plus a user-facing notice when the cache is
+    /// missing, unreadable, or corrupt — the embedded list keeps the
+    /// process fully functional, so a bad cache degrades to a warning.
+    pub fn with_cache() -> (Self, Option<String>) {
+        let Some(path) = Self::models_cache_path() else {
+            return (Self::builtin(), None);
+        };
+        let cached = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return (
+                    Self::builtin(),
+                    Some(format!(
+                        "no model cache at {} yet; using the embedded list (run `phi --update-models` to fetch fresh limits from models.dev)",
+                        path.display()
+                    )),
+                );
+            }
+            Err(e) => {
+                return (
+                    Self::builtin(),
+                    Some(format!(
+                        "model cache at {} unreadable ({e}); using the embedded list",
+                        path.display()
+                    )),
+                );
+            }
+        };
+        match serde_json::from_slice::<Vec<Model>>(&cached) {
+            Ok(cache) => {
+                let mut models = cache;
+                models.extend(
+                    Self::builtin_models()
+                        .into_iter()
+                        .filter(|m| m.api == Api::CursorNative),
+                );
+                models.sort_by(|a, b| (&a.provider, &a.id).cmp(&(&b.provider, &b.id)));
+                (Self::with_providers(models), None)
+            }
+            Err(e) => (
+                Self::builtin(),
+                Some(format!(
+                    "model cache at {} failed to parse ({e}); using the embedded list (run `phi --update-models` to rewrite it)",
+                    path.display()
+                )),
+            ),
+        }
+    }
+
+    /// Fetch models.dev, rebuild the first-party model list, write the
+    /// local cache, and return the fresh registry (embedded CursorNative
+    /// entries preserved). Callers not already inside a runtime can
+    /// `block_on` this; `phi --update-models` awaits it directly.
+    pub async fn refresh(&self) -> anyhow::Result<Self> {
+        let providers = crate::models_dev::fetch_providers().await?;
+        let mut models = Vec::new();
+        for provider in providers.values() {
+            if !crate::models_dev::FIRST_PARTY_PROVIDERS.contains(&provider.id.as_str()) {
+                continue;
+            }
+            let Some((api, base_url)) = crate::models_dev::classify(provider) else {
+                anyhow::bail!("embedded provider '{}' failed to classify", provider.id);
+            };
+            models.extend(crate::models_dev::convert(provider, api, &base_url));
+        }
+        models.extend(
+            self.models
+                .iter()
+                .filter(|m| m.api == Api::CursorNative)
+                .cloned(),
+        );
+        models.sort_by(|a, b| (&a.provider, &a.id).cmp(&(&b.provider, &b.id)));
+
+        // Atomic write: a crash mid-write must not leave a torn cache that
+        // every later launch would fail to parse.
+        if let Some(path) = Self::models_cache_path() {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)
+                    .with_context(|| format!("creating {}", parent.display()))?;
+            }
+            let json = serde_json::to_string_pretty(&models)?;
+            let tmp = path.with_extension("json.tmp");
+            std::fs::write(&tmp, json.as_bytes())
+                .with_context(|| format!("writing {}", tmp.display()))?;
+            std::fs::rename(&tmp, &path).with_context(|| format!("renaming {}", tmp.display()))?;
+        }
+        Ok(Self::with_providers(models))
     }
 
     pub fn models(&self) -> &[Model] {

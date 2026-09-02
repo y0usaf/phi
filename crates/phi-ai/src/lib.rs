@@ -19,6 +19,7 @@ pub use types::{
 pub use registry::{ApiProvider, Registry};
 pub use stream::{Accumulator, AssistantEvent, AssistantEventStream, EventSink};
 
+pub mod models_dev;
 pub mod overflow;
 pub mod providers;
 pub mod registry;
