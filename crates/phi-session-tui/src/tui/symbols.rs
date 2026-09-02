@@ -9,7 +9,7 @@
 /// Editor prompt chevron (Nerd Font).
 pub(crate) const NERD_SUCCESS_SYMBOL: &str = "\u{f013e}";
 /// Editor prompt chevron (ASCII fallback).
-pub(crate) const ASCII_SUCCESS_SYMBOL: &str = ">";
+pub(crate) const ASCII_SUCCESS_SYMBOL: &str = ">_";
 
 /// Width at which effort collapses from full label to 3-letter abbreviation.
 pub(crate) const WIDE_TERMINAL_THRESHOLD: usize = 100;
