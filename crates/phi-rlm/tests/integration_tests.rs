@@ -588,32 +588,6 @@ async fn empty_turn_nudged_then_recovers() {
 }
 
 #[tokio::test]
-async fn consecutive_empty_turns_fail_run() {
-    // MAX_CONSECUTIVE_EMPTY (3) empty turns in a row fail the run — an empty
-    // string can never be accepted as an answer, so failing beats spinning.
-    let root = Arc::new(ScriptedLm::new("root-model", &[]).with_default(""));
-    let engine = rlm(RlmConfig::default(), root.clone(), quiet_sub());
-    let result = engine
-        .completion(
-            ContextPayload::Str("ctx".into()),
-            Some("What is the answer?"),
-            &CancellationToken::new(),
-        )
-        .await;
-    assert_eq!(result.stop, StopCause::Failed);
-    assert!(
-        result
-            .error
-            .as_deref()
-            .unwrap_or_default()
-            .contains("consecutive empty model turns"),
-        "{:?}",
-        result.error
-    );
-    assert_eq!(result.iterations, 3);
-}
-
-#[tokio::test]
 async fn root_ignores_iteration_limit() {
     let root = Arc::new(ScriptedLm::new(
         "root-model",

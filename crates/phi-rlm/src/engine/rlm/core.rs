@@ -38,13 +38,6 @@ static TASK_COMPLETE_RE: LazyLock<Regex> = LazyLock::new(|| {
         .expect("task_complete regex")
 });
 
-/// Maximum consecutive *empty* turns (no tool calls AND no text) before the
-/// run fails. Non-empty prose is the final answer immediately (WS9.1), so
-/// only a model emitting nothing at all reaches this — each empty turn gets
-/// an `EMPTY_TURN_NUDGE` first, and an empty string can never be accepted as
-/// an answer, so the run fails rather than spinning.
-const MAX_CONSECUTIVE_EMPTY: usize = 3;
-
 /// When a turn-capped run has this many turns (or fewer) remaining, a
 /// remaining-turns reminder is included in the next turn's user preamble
 /// (codex's token-budget-reminder pattern). Uncapped root runs never see it.
@@ -56,16 +49,9 @@ const TURN_WARNING_THRESHOLD: usize = 3;
 /// `LOOP_NUDGE_THRESHOLD + 1` total identical iterations (e.g., value 2 means
 /// 3 identical iterations before the nudge). The signature includes stdout and
 /// stderr so that polling code whose output changes (e.g. job status checks
-/// returning new runtimes) is never flagged as looping.
+/// returning new runtimes) is never flagged as looping. This is a nudge only:
+/// the loop is never hard-stopped by identical iterations.
 const LOOP_NUDGE_THRESHOLD: usize = 2;
-
-/// Maximum value of the additional-identical-iterations counter before the
-/// engine stops with `LimitKind::Loop`. Because the counter starts at 0 on the
-/// first match, this fires after `MAX_CONSECUTIVE_LOOP + 1` total identical
-/// iterations (e.g., value 5 means 6 identical iterations before the hard
-/// stop). The nudge fires at `LOOP_NUDGE_THRESHOLD` to give the model a chance
-/// to recover first.
-const MAX_CONSECUTIVE_LOOP: usize = 5;
 
 /// Nudge injected into history after `LOOP_NUDGE_THRESHOLD` identical
 /// iterations, asking the model to re-read its output and try something new.
@@ -418,7 +404,6 @@ impl Rlm {
         // model-finish path ends the run (answer, prose, default answer).
         let mut run_summary: Option<String> = None;
         let mut consecutive_errors = 0usize;
-        let mut consecutive_empty = 0usize;
         let mut iterations = 0usize;
         // Loop-detection state: tracks the hash of all (code, stdout, stderr)
         // triples from the most recent iteration. Reset whenever the signature
@@ -924,8 +909,6 @@ impl Rlm {
             let had_tool_calls = !completion.tool_calls.is_empty();
 
             if had_tool_calls {
-                consecutive_empty = 0;
-
                 // ── Loop detection ─────────────────────────────────────────
                 // Hash all (code, stdout, stderr) triples from this iteration.
                 // Output is included in the signature so that polling code
@@ -952,33 +935,6 @@ impl Rlm {
                         prev_loop_sig = Some(loop_sig);
                         // New stall pattern: allow one nudge for this new sequence.
                         loop_nudge_injected = false;
-                    }
-                    if consecutive_loop >= MAX_CONSECUTIVE_LOOP {
-                        let preview: String = blocks
-                            .first()
-                            .map(|b| {
-                                let source = b.source();
-                                let s = source.trim();
-                                let chars: String = s.chars().take(120).collect();
-                                if s.chars().count() > 120 {
-                                    format!("{chars}…")
-                                } else {
-                                    chars
-                                }
-                            })
-                            .unwrap_or_default();
-                        let detail = format!(
-                            "{consecutive_loop} consecutive identical iterations (calls+output unchanged); repeated call preview: {preview:?}"
-                        );
-                        if !response.trim().is_empty() {
-                            best_partial = Some(response);
-                        }
-                        return self.limit_outcome(
-                            LimitKind::Loop,
-                            detail,
-                            best_partial,
-                            iterations,
-                        );
                     }
                 }
 
@@ -1068,8 +1024,8 @@ impl Rlm {
                 }
 
                 // After LOOP_NUDGE_THRESHOLD identical iterations, inject a
-                // corrective nudge so the model can course-correct before the
-                // hard stop at MAX_CONSECUTIVE_LOOP fires. The flag ensures at
+                // corrective nudge so the model can course-correct on its own.
+                // The flag ensures at
                 // most one nudge per contiguous stall sequence even if the model
                 // alternates between two stall patterns (which each reset
                 // `consecutive_loop` and re-expose the threshold).
@@ -1188,23 +1144,7 @@ impl Rlm {
             // empty assistant message is provider-hostile) and nothing that
             // could be an answer. Nudge every empty turn — without new input
             // the model faces an identical context and would likely repeat —
-            // and fail at the ceiling rather than spin.
-            consecutive_empty += 1;
-            if consecutive_empty >= MAX_CONSECUTIVE_EMPTY {
-                let message = format!(
-                    "Error: {MAX_CONSECUTIVE_EMPTY} consecutive empty model turns (no tool calls, no text); aborting run"
-                );
-                return match best_partial {
-                    Some(partial) => Outcome {
-                        stop: StopCause::Failed,
-                        response: partial,
-                        summary: None,
-                        error: Some(message),
-                        iterations,
-                    },
-                    None => Outcome::failed(message, iterations),
-                };
-            }
+            // and keep the loop open for the model to recover on its own.
             dispatch_event(
                 &self.runtime,
                 LifecycleEvent {

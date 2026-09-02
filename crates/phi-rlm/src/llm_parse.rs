@@ -25,17 +25,6 @@ impl ExecutedBlock {
             result,
         }
     }
-
-    /// Human-readable source of this block: the Python code for `repl`
-    /// executions, `name(args)` for native tool calls.
-    pub fn source(&self) -> String {
-        if self.name == "repl"
-            && let Some(code) = self.args.get("code").and_then(|v| v.as_str())
-        {
-            return code.to_owned();
-        }
-        format!("{}({})", self.name, self.args)
-    }
 }
 
 fn py_list_repr(names: &[String]) -> String {
